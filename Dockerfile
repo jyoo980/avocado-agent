@@ -1,35 +1,26 @@
 FROM ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG CBMC_VERSION=6.7.1
 
-RUN apt-get update && apt-get install -y \
-    curl \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
     wget \
-    git \
-    build-essential \
-    cmake \
-    flex \
-    bison \
-    libxml2-utils \
-    cbmc \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv (manages Python installs and dependencies)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.local/bin:$PATH"
-
-# Install Python 3.13 via uv
-RUN uv python install 3.13
+RUN ARCH="$(dpkg --print-architecture)" && \
+    if [ "$ARCH" = "arm64" ]; then \
+        CBMC_DEB="ubuntu-24.04-arm64-cbmc-${CBMC_VERSION}-Linux.deb"; \
+    elif [ "$ARCH" = "amd64" ]; then \
+        CBMC_DEB="ubuntu-24.04-cbmc-${CBMC_VERSION}-Linux.deb"; \
+    else \
+        echo "Unsupported architecture: $ARCH" && exit 1; \
+    fi && \
+    wget -q "https://github.com/diffblue/cbmc/releases/download/cbmc-${CBMC_VERSION}/${CBMC_DEB}" -O "/tmp/${CBMC_DEB}" && \
+    apt-get update && apt-get install -y --no-install-recommends "/tmp/${CBMC_DEB}" && \
+    rm -f "/tmp/${CBMC_DEB}" && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install dependencies before copying the full source for better layer caching
-COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-install-project
-
-COPY . .
-RUN uv sync --frozen
-
-ENV PYTHONUNBUFFERED=1
-
-ENTRYPOINT ["uv", "run", "python", "main.py"]
+VOLUME ["/app"]
