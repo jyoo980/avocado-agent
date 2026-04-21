@@ -7,17 +7,25 @@ This contains the top-level prompt,
 ## Running Avocado Agent
 
 All required dependencies (i.e., an installation of CBMC,
-    the [C Bounded Model Checker](https://www.cprover.org/cbmc/)) are installed in a Docker
-    container,
-    which must first be built:
+    the [C Bounded Model Checker](https://www.cprover.org/cbmc/),
+    the [Claude Code CLI](https://code.claude.com/docs/en/cli-reference)) 
+    are specified in a Docker image.
+Run the following command to build the image:
 
 ```sh
 % make docker-build
 ```
 
 Once the container is successfully built,
-    
+  run:
+
+```sh
+% make run
+```
+
+And validate the `cbmc` and `claude` commands work.
 
 ## Requirements
 
-- [Claude Code](https://code.claude.com/docs/en/overview)
+- An active [Claude Pro or Max](https://support.claude.com/en/articles/11049762-choosing-a-claude-plan)
+  subscription (required to run Claude Code).

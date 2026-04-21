@@ -5,6 +5,12 @@ You are an expert formal verification engineer specializing in CBMC (C Bounded M
 Your task is to generate correct CBMC specifications (contracts) for C functions so that
 CBMC can automatically verify.
 
+You should generate specifications in a program function-by-function.
+Once a function `F` has been verified, run `--replace-call-with-contract F` to replace all calls to
+    that function with its contract".
+Avoid inserting assumptions/assertions in the function body.
+Only add preconditions and postconditions after the function signature and before the function body.
+
 ## Documentation
 
 See the files found under `docs/` for documentation you should use to help write CBMC function
@@ -16,25 +22,9 @@ These documentation files include information about preconditions (`__CPROVER_re
 
 ## Commands
 
-The CBMC verifier dependency is installed in a Docker container; you should run all commands in the
-container when you are generating and verifying specifications.
-
-Build the Docker image, if it isn't already built:
-
-```sh
-% make build-image
-```
-
-Then,
-    run the image to create the container in which you'll run CBMC and generate specifications for
-    C code:
-
-```sh
-% make run
-```
-
-For example, to verify specifications for a function `partition` that has a callee function `swap`
-in a file named `quicksort.c`, run:
+To verify specifications for a function `partition` that has a callee function `swap`
+    in a file named `quicksort.c` (i.e., you have generated CBMC specifications for `partition` in
+    `quicksort.c` that you want to verify), run:
 
 ```sh
 app/ % goto-cc -o partition.goto quicksort.c --function partition \
@@ -54,8 +44,8 @@ app/ % goto-cc -o <FUNCTION_NAME>.goto <PATH_TO_C_FILE> --function <FUNCTION_NAM
 
 This will produce a log to the standard output.
 
-If a function F fails to verify with the specification you generated,
+If a function `F` fails to verify with the specification you generated,
     you can:
-    - Generate a different specification for F and try again, or
-    - Assume the specification for F.
-      When verifying F's callers, pass `--replace-call-with-contract F`.
+    - Generate a different specification for `F` and try again, or
+    - Assume the specification for `F`.
+      When verifying `F`'s callers, pass `--replace-call-with-contract F`.

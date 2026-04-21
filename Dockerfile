@@ -5,8 +5,15 @@ ARG CBMC_VERSION=6.7.1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    curl \
     wget \
     && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g @anthropic-ai/claude-code
 
 RUN ARCH="$(dpkg --print-architecture)" && \
     if [ "$ARCH" = "arm64" ]; then \
