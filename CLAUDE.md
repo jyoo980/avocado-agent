@@ -34,7 +34,7 @@ Then,
 ```
 
 For example, to verify specifications for a function `partition` that has a callee function `swap`
-in a file named `quicksort.c`, you would run the following command in the container:
+in a file named `quicksort.c`, run:
 
 ```sh
 app/ % goto-cc -o partition.goto quicksort.c --function partition \
@@ -52,13 +52,11 @@ app/ % goto-cc -o <FUNCTION_NAME>.goto <PATH_TO_C_FILE> --function <FUNCTION_NAM
         && cbmc checking-<FUNCTION_NAME>-contracts.goto --function <FUNCTION_NAME> --depth 100
 ```
 
-This will produce a log to the standard output that gives you information about whether verification
-succeeded or failed.
+This will produce a log to the standard output.
 
-If verification fails,
-    take a closer look at the log to see which line of the program under verification is problematic
-    and make changes starting from there;
-    it might be the case that you might need to re-visit functions you generated specifications for
-    earlier.
-For example,
-    you might strengthen postconditions or weaken preconditions.
+If a function fails to verify with the specs you generated,
+    you can:
+    - Try to "repair" the specification using the information in the log.
+    - Assume the specification and move on to another function to verify by passing the name of the
+      function with the failing specs to `--replace-call-with-contract` to the command to verify
+      any of its callers.
