@@ -54,9 +54,8 @@ app/ % goto-cc -o <FUNCTION_NAME>.goto <PATH_TO_C_FILE> --function <FUNCTION_NAM
 
 This will produce a log to the standard output.
 
-If a function fails to verify with the specs you generated,
+If a function F fails to verify with the specification you generated,
     you can:
-    - Try to "repair" the specification using the information in the log.
-    - Assume the specification and move on to another function to verify by passing the name of the
-      function with the failing specs to `--replace-call-with-contract` to the command to verify
-      any of its callers.
+    - Generate a new specification for F and try again, or
+    - Assume the specification for F.
+      When verifying F's callers, pass `--replace-call-with-contract F`.
