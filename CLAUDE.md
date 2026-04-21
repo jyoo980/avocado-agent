@@ -56,6 +56,6 @@ This will produce a log to the standard output.
 
 If a function F fails to verify with the specification you generated,
     you can:
-    - Generate a new specification for F and try again, or
+    - Generate a different specification for F and try again, or
     - Assume the specification for F.
       When verifying F's callers, pass `--replace-call-with-contract F`.
