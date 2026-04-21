@@ -8,7 +8,11 @@ CBMC can automatically verify them.
 ## Documentation
 
 See the files found under `docs/` for documentation you should use to help write CBMC function
-contracts.
+    contracts.
+These documentation files include information about preconditions (`__CPROVER_requires`),
+    postconditions (`__CPROVER_ensures`),
+    memory predicates (`__CPROVER_assigns`, `__CPROVER_old`, etc.),
+    and return values (`__CPROVER_return_value`).
 
 ## Commands
 
@@ -39,5 +43,22 @@ app/ % goto-cc -o partition.goto quicksort.c --function partition \
         && cbmc checking-partition-contracts.goto --function partition --depth 100
 ```
 
+Or, more generally:
+
+```sh
+app/ % goto-cc -o <FUNCTION_NAME>.goto <PATH_TO_C_FILE> --function <FUNCTION_NAME> \
+        && goto-instrument --partial-loops --unwind 5 <FUNCTION_NAME>.goto <FUNCTION_NAME>.goto \
+        && goto-instrument  --replace-call-with-contract <CALLEE NAME> --enforce-contract <FUNCTION_NAME> <FUNCTION_NAME>.goto checking-<FUNCTION_NAME>-contracts.goto \
+        && cbmc checking-<FUNCTION_NAME>-contracts.goto --function <FUNCTION_NAME> --depth 100
+```
+
 This will produce a log to the standard output that gives you information about whether verification
 succeeded or failed.
+
+If verification fails,
+    take a closer look at the log to see which line of the program under verification is problematic
+    and make changes starting from there;
+    it might be the case that you might need to re-visit functions you generated specifications for
+    earlier.
+For example,
+    you might strengthen postconditions or weaken preconditions.
