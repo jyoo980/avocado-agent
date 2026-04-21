@@ -8,7 +8,11 @@ CBMC can automatically verify.
 ## Documentation
 
 See the files found under `docs/` for documentation you should use to help write CBMC function
-contracts.
+    contracts.
+These documentation files include information about preconditions (`__CPROVER_requires`),
+    postconditions (`__CPROVER_ensures`),
+    memory predicates (`__CPROVER_assigns`, `__CPROVER_old`, etc.),
+    and return values (`__CPROVER_return_value`).
 
 ## Commands
 
@@ -30,7 +34,7 @@ Then,
 ```
 
 For example, to verify specifications for a function `partition` that has a callee function `swap`
-in a file named `quicksort.c`, you would run the following command in the container:
+in a file named `quicksort.c`, run:
 
 ```sh
 app/ % goto-cc -o partition.goto quicksort.c --function partition \
@@ -39,7 +43,20 @@ app/ % goto-cc -o partition.goto quicksort.c --function partition \
         && cbmc checking-partition-contracts.goto --function partition --depth 100
 ```
 
-This will produce a log to the standard output that gives you information about whether verification
-succeeded or failed.  Your goal is for verification to succeed.
+Or, more generally:
 
-Some functions cannot be verified by CBMC.  For such functions, you may assume the specification rather than proving it.
+```sh
+app/ % goto-cc -o <FUNCTION_NAME>.goto <PATH_TO_C_FILE> --function <FUNCTION_NAME> \
+        && goto-instrument --partial-loops --unwind 5 <FUNCTION_NAME>.goto <FUNCTION_NAME>.goto \
+        && goto-instrument  --replace-call-with-contract <CALLEE NAME> --enforce-contract <FUNCTION_NAME> <FUNCTION_NAME>.goto checking-<FUNCTION_NAME>-contracts.goto \
+        && cbmc checking-<FUNCTION_NAME>-contracts.goto --function <FUNCTION_NAME> --depth 100
+```
+
+This will produce a log to the standard output.
+
+If a function fails to verify with the specs you generated,
+    you can:
+    - Try to "repair" the specification using the information in the log.
+    - Assume the specification and move on to another function to verify by passing the name of the
+      function with the failing specs to `--replace-call-with-contract` to the command to verify
+      any of its callers.
