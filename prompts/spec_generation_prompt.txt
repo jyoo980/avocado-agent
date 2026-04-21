@@ -1,0 +1,22 @@
+You are verifying the C function `{function_name}`.
+
+Your workflow:
+1. Call `read_function("{function_name}")` to read its source code.
+2. Call `get_callees("{function_name}")` to find its callees, then call `read_spec` for each callee
+   to understand the axioms available to you.
+3. Call `write_spec` to propose a CBMC specification including:
+   - `__CPROVER_requires` preconditions
+   - `__CPROVER_ensures` postconditions (use `__CPROVER_return_value` and `__CPROVER_old` as needed)
+   - `__CPROVER_assigns` frame conditions
+   - Loop contracts (invariant + decreases + assigns) for each loop in the function
+4. Call `run_cbmc("{function_name}")` to verify.
+5. If verification fails:
+   - Call `get_counterexample("{function_name}")` to inspect the trace.
+   - Revise with `write_spec` and re-run `run_cbmc`. Repeat up to 5 times.
+6. Call `finish` with one of:
+   - `decision="ACCEPT"` if the last `run_cbmc` call succeeded.
+   - `decision="ASSUME"` if you cannot verify after repeated attempts and no callee is at fault.
+   - `decision="BACKTRACK"` if a callee's postcondition is too weak to support the proof.
+     Specify `backtrack_callee` (the callee's name) and `backtrack_hint` (what to strengthen).
+
+{backtrack_hint_section}

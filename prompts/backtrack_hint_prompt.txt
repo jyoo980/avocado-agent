@@ -1,0 +1,9 @@
+---
+BACKTRACKING NOTE:
+A caller of `{function_name}` could not be verified because this function's postcondition
+was too weak. The caller's agent provided the following hint about what needs to be strengthened:
+
+  {hint}
+
+Please revise the spec for `{function_name}` to address this hint before verifying.
+---
