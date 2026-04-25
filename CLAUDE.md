@@ -49,3 +49,5 @@ If a function `F` fails to verify with the specification you generated,
     - Generate a different specification for `F` and try again, or
     - Assume the specification for `F`.
       When verifying `F`'s callers, pass `--replace-call-with-contract F`.
+
+Any stub files you might use can be found in the stub/ folder.
