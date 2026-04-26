@@ -9,7 +9,8 @@ each function, one-by-one.
 
 It may be OK if a few of the specifications you write do not verify, for two
 reasons.  First, if a program is incorrect, CBMC will issue a warning.  Second,
-CBMC cannot verify all correct C code.
+CBMC cannot verify all correct C code.  Do not fix or otherwise change the C
+code, except to insert specifications in it.
 
 This `CLAUDE.md` file and directory `docs/` contain basic information about
 using CBMC.  CBMC is documented at https://diffblue.github.io/cbmc/index.html
