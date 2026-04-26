@@ -8,7 +8,7 @@ This contains the top-level prompt,
 
 All required dependencies (i.e., an installation of CBMC,
     the [C Bounded Model Checker](https://www.cprover.org/cbmc/),
-    the [Claude Code CLI](https://code.claude.com/docs/en/cli-reference)) 
+    the [Claude Code CLI](https://code.claude.com/docs/en/cli-reference))
     are specified in a Docker image.
 Run the following command to build the image:
 
