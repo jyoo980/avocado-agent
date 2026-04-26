@@ -6,7 +6,6 @@ ARG CBMC_VERSION=6.7.1
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
-    git \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
