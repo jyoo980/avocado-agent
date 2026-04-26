@@ -1,53 +1,84 @@
-# Guidelines for Specification Generation and Verification
+# Specifying and Verifying C Programs
 
-You are an expert formal verification engineer specializing in CBMC (C Bounded Model Checker).
+You are an expert formal verification engineer specializing in the CBMC (C
+Bounded Model Checker) tool.
 
-Your task is to generate correct CBMC specifications (contracts) for C functions so that
-CBMC can automatically verify.
+Your task is to edit C programs to insert CBMC specifications (contracts) that
+CBMC can verify.  Ideally, when you are done, CBMC should succeed when run on
+each function, one-by-one.
 
-You should generate specifications in a program function-by-function.
-Once a function `F` has been verified, run `--replace-call-with-contract F` to replace all calls to
-    that function with its contract".
-Avoid inserting assumptions/assertions in the function body.
-Only add preconditions and postconditions after the function signature and before the function body.
+It may be OK if a few of the specifications you write do not verify, for two
+reasons.  First, if a program is incorrect, CBMC will issue a warning.  Second,
+CBMC cannot verify all correct C code.  Do not fix or otherwise change the C
+code, except to insert specifications in it.
 
-## Documentation
+This `CLAUDE.md` file and directory `docs/` contain basic information about
+using CBMC.  CBMC is documented at https://diffblue.github.io/cbmc/index.html
+which includes a [User Guide](https://diffblue.github.io/cbmc/user_guide.html)
+and [The CPROVER
+Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 
-See the files found under `docs/` for documentation you should use to help write CBMC function
-    contracts.
-These documentation files include information about preconditions (`__CPROVER_requires`),
-    postconditions (`__CPROVER_ensures`),
-    memory predicates (`__CPROVER_assigns`, `__CPROVER_old`, etc.),
-    and return values (`__CPROVER_return_value`).
+## Syntax of C function specifications (contracts)
 
-## Commands
+Preconditions and postconditions are written after the function signature and
+before the function body, as shown in files in the `docs/` folder.
 
-To verify specifications for a function `partition` that has a callee function `swap`
-    in a file named `quicksort.c` (i.e., you have generated CBMC specifications for `partition` in
-    `quicksort.c` that you want to verify), run:
+The syntax includes:
+
+### Function contracts
+
+* Preconditions and postconditions: `__CPROVER_requires(bool cond)`, `__CPROVER_ensures(bool cond)`.
+  Documented in `contracts-requires-ensures.md`.
+* Pre-/post-conditions about function pointers: `bool __CPROVER_obeys_contract(void (*f)(void), void (*c)(void))`.
+  Documented in `docs/contracts-function-pointer-predicates.md`.
+* Side effects: `__CPROVER_assigns(targets)`.
+  Documented in `docs/contracts-assigns.md`.
+* Memory deallocation: `__CPROVER_frees(targets)`.
+  Documented in `docs/contracts-frees.md`.
+
+### Boolean expressions
+
+Requires and ensures clauses are written as C boolean expressions that may additionally use these expressions:
+
+* Pre-state value of variables: `__CPROVER_old(*identifier*)`.
+  Used only in ensures clauses.
+  Documented in `docs/contracts-history-variables.md`.
+* Pointer properties: `__CPROVER_is_fresh(p, size)`, `__CPROVER_pointer_equals(p, q)`, `__CPROVER_pointer_in_range_dfcc(lb, p, ub)`.
+  Used in requires clauses and ensures clauses.
+  Documented in `docs/contracts-memory-predicates.md`.
+* Quantified predicates: `__CPROVER_forall { *type* *identifier*; *boolean expression* }`, `__CPROVER_exists { *type* *identifier*; *boolean expression* }`.
+  Used in requires clauses and ensures clauses.
+  Documented in `docs/contracts-quantifiers.md`.
+
+## Stub files
+
+Any stub files you might use can be found in the `stub/` folder.
+
+## How to run CBMC
+
+Here is the sequence of commands to verify one function named `<FUNCTION_NAME>`.
+The function calls two other functions, `<CALLEE1>` and `<CALLEE2>`.
+The function is defined in file `<PATH_TO_C_FILE>`.
 
 ```sh
-app/ % goto-cc -o partition.goto quicksort.c --function partition \
-        && goto-instrument --partial-loops --unwind 5 partition.goto partition.goto \
-        && goto-instrument --replace-call-with-contract swap --enforce-contract partition partition.goto checking-partition-contracts.goto \
-        && cbmc checking-partition-contracts.goto --function partition --depth 100
-```
-
-Or, more generally:
-
-```sh
-app/ % goto-cc -o <FUNCTION_NAME>.goto <PATH_TO_C_FILE> --function <FUNCTION_NAME> \
-        && goto-instrument --partial-loops --unwind 5 <FUNCTION_NAME>.goto <FUNCTION_NAME>.goto \
-        && goto-instrument  --replace-call-with-contract <CALLEE NAME> --enforce-contract <FUNCTION_NAME> <FUNCTION_NAME>.goto checking-<FUNCTION_NAME>-contracts.goto \
-        && cbmc checking-<FUNCTION_NAME>-contracts.goto --function <FUNCTION_NAME> --depth 100
+FUNCTION=<FUNCTION_NAME> \
+goto-cc -o ${FUNCTION}.goto <PATH_TO_C_FILE> --function ${FUNCTION} \
+&& goto-instrument --partial-loops --unwind 5 ${FUNCTION}.goto ${FUNCTION}.goto \
+&& goto-instrument --replace-call-with-contract <CALLEE1> --replace-call-with-contract <CALLEE2> --enforce-contract ${FUNCTION} ${FUNCTION}.goto checking-${FUNCTION}-contracts.goto \
+&& cbmc checking-${FUNCTION}-contracts.goto --function ${FUNCTION} --depth 100
 ```
 
 This will produce a log to the standard output.
 
-If a function `F` fails to verify with the specification you generated,
-    you can:
-    - Generate a different specification for `F` and try again, or
-    - Assume the specification for `F`.
-      When verifying `F`'s callers, pass `--replace-call-with-contract F`.
+### Concrete example of how to run CBMC
 
-Any stub files you might use can be found in the stub/ folder.
+To verify specifications for function `partition` defined in file `quicksort.c`,
+where `partition`'s body calls function `swap`, run:
+
+```sh
+FUNCTION=partition \
+&& goto-cc -o ${FUNCTION}.goto quicksort.c --function ${FUNCTION} \
+&& goto-instrument --partial-loops --unwind 5 ${FUNCTION}.goto ${FUNCTION}.goto \
+&& goto-instrument --replace-call-with-contract swap --enforce-contract ${FUNCTION} ${FUNCTION}.goto checking-${FUNCTION}-contracts.goto \
+&& cbmc checking-${FUNCTION}-contracts.goto --function ${FUNCTION} --depth 100
+```
