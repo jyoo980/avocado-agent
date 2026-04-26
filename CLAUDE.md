@@ -20,25 +20,7 @@ Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 ## Syntax of C function specifications (contracts)
 
 Preconditions and postconditions are written after the function signature and
-before the function body, as in
-
-```c
-int sum(const uint32_t a, const uint32_t b, uint32_t* out)
-/* Precondition */
-__CPROVER_requires(__CPROVER_is_fresh(out, sizeof(*out)))
-/* Postconditions */
-__CPROVER_ensures(__CPROVER_return_value == SUCCESS || __CPROVER_return_value == FAILURE)
-__CPROVER_ensures((__CPROVER_return_value == SUCCESS) ==> (*out == (a + b)))
-__CPROVER_ensures((__CPROVER_return_value == FAILURE) ==> (*out == __CPROVER_old(*out)))
-/* Write Set */
-__CPROVER_assigns(*out)
-{
-  const uint64_t result = ((uint64_t) a) + ((uint64_t) b);
-  if (result > UINT32_MAX) return FAILURE;
-  *out = (uint32_t) result;
-  return SUCCESS;
-}
-```
+before the function body, as shown in files in the `docs/` folder.
 
 The syntax includes:
 
