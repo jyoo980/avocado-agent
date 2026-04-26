@@ -13,7 +13,7 @@ All required dependencies (i.e., an installation of CBMC,
 Run the following command to build the image:
 
 ```sh
-% make docker-build
+% make build-image
 ```
 
 Once the container is successfully built,

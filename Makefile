@@ -1,3 +1,5 @@
+.PHONY: build-image run
+
 build-image:
 	docker build -t avocado-cbmc-container .
 
