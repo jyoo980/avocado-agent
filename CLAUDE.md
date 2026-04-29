@@ -7,6 +7,10 @@ Your task is to edit C programs to insert CBMC specifications (contracts) that
 CBMC can verify.  Ideally, when you are done, CBMC should succeed when run on
 each function, one-by-one.
 
+The result of your task is a copy of the original program you are asked to
+verify with the specification you have generated for each function.
+You should comment each function with the exact command you ran to verify it.
+
 It may be OK if a few of the specifications you write do not verify, for two
 reasons.  First, if a program is incorrect, CBMC will issue a warning.  Second,
 CBMC cannot verify all correct C code.  Do not fix or otherwise change the C
