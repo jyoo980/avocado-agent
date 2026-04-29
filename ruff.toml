@@ -1,10 +1,9 @@
-# Exclude a variety of commonly ignored directories.
-
 line-length = 120
 indent-width = 4
 
-
 [lint]
+# RUF029 must be ignored; Claude Code tool handlers must be declared `async` regardless of whether
+# their actual implementation is asynchronous or not.
 ignore = ["RUF029"]
 
 # Allow fix for all enabled rules (when `--fix`) is provided.
@@ -23,7 +22,6 @@ skip-magic-trailing-comma = false
 
 # Like Black, automatically detect the appropriate line ending.
 line-ending = "auto"
-
 
 # Set the line length limit used when formatting code snippets in
 # docstrings.
