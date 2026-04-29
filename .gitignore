@@ -1,6 +1,7 @@
 .claude/settings.local*
 .env.example
 .plume-scripts
+**/*__pycache__
 
 # Files generated for/by CBMC
 **/*goto
