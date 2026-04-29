@@ -23,9 +23,20 @@ Once the container is successfully built,
 % make run
 ```
 
+Then sync all Python dependencies and activate the virual environment via `uv`:
+
+```sh
+% uv sync
+% source .venv/bin/activate
+```
+
 And validate the `cbmc` and `claude` commands work.
 
 ## Requirements
 
 - An active [Claude Pro or Max](https://support.claude.com/en/articles/11049762-choosing-a-claude-plan)
   subscription (required to run Claude Code).
+- [uv](https://docs.astral.sh/uv/)
+  - Used to manage packages,
+    dependencies,
+    and develop the tools provided to Claude Code.
