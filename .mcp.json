@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "run_cbmc": {
+      "command": "uv",
+      "args": ["run", "python", "tools/run_cbmc.py"]
+    }
+  }
+}
