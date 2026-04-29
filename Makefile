@@ -1,10 +1,13 @@
-.PHONY: build-image run checks
+.PHONY: build-image run checks test
 
 build-image:
 	docker build -t avocado-agent-container .
 
 run:
 	docker run -it --rm -v $(PWD):/app avocado-agent-container
+
+test:
+	uv run pytest
 
 # Run all code style checks.
 checks: style-fix style-check
