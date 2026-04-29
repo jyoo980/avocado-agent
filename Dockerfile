@@ -16,6 +16,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
 
 RUN npm install -g @anthropic-ai/claude-code
 
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+
 RUN ARCH="$(dpkg --print-architecture)" && \
     if [ "$ARCH" = "arm64" ]; then \
         CBMC_DEB="ubuntu-24.04-arm64-cbmc-${CBMC_VERSION}-Linux.deb"; \
