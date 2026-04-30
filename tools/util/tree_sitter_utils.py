@@ -15,15 +15,27 @@ from tree_sitter import Language, Node, Parser, Tree
 _TREE_SITTER_LANG = Language(tsc.language())
 _PARSER = Parser(_TREE_SITTER_LANG)
 
+# Names that tree-sitter parses as `call_expression` but are not real function calls in the
+# CBMC sense: contract macros (`__CPROVER_requires`, `__CPROVER_ensures`, ...) and the `sizeof`
+# operator. They have no body to link, so excluding them keeps the call graph focused on real
+# callees that affect verification (in-file functions or library calls that need a stub).
+_NON_CALLEE_PREFIXES = ("__CPROVER_",)
+_NON_CALLEE_NAMES = frozenset({"sizeof"})
 
-def get_call_graph(path_to_file: str) -> dict[str, list[str]]:
+
+def get_call_graph(path_to_file: str) -> dict[str, dict[str, list[str]]]:
     """Return a call graph comprising functions parsed from the given file.
+
+    Each caller's callees are split into `internal` (defined in the same file) and `external`
+    (everything else — typically libc or other library calls). Downstream callers use this split
+    to decide what to pass to CBMC's `--replace-call-with-contract` flag, which only makes sense
+    for in-file callees.
 
     Args:
         path_to_file (str): The path to the file where the functions are defined.
 
     Returns:
-        dict[str, list[str]]: The call graph comprising functions from the given file.
+        dict[str, dict[str, list[str]]]: Mapping from caller name to internal callees.
     """
     file_content = Path(path_to_file).read_text(encoding="utf-8")
     tree = _parse_to_ast(file_content)
@@ -34,18 +46,15 @@ def get_call_graph(path_to_file: str) -> dict[str, list[str]]:
         if node.type == "function_definition"
         and (function_name := _get_function_definition_name(node))
     }
+    in_file_functions = set(function_name_to_node)
 
-    # Functions without callees would be missing in if defaultdict(set) is used instead.
-    caller_to_callees: dict[str, set[str]] = {
-        function_name: set() for function_name in function_name_to_node
-    }
-
+    call_graph: dict[str, dict[str, list[str]]] = {}
     for function_name, node in function_name_to_node.items():
-        for callee_name in _get_names_of_functions_called_in_node(node):
-            caller_to_callees[function_name].add(callee_name)
-
-    # Convert the callee set to a list at the end, since sets are not JSON-serializable.
-    return {caller: list(callees) for caller, callees in caller_to_callees.items()}
+        callees = _get_names_of_functions_called_in_node(node)
+        internal = [name for name in callees if name in in_file_functions]
+        external = [name for name in callees if name not in in_file_functions]
+        call_graph[function_name] = {"internal": internal, "external": external}
+    return call_graph
 
 
 def _parse_to_ast(content: str, language_extension: str = ".c") -> Tree:
@@ -120,5 +129,8 @@ def _get_names_of_functions_called_in_node(node: Node) -> set[str]:
         ):
             if function.type == "identifier":
                 assert function.text, "A tree_sitter identifier node must have a 'text' attribute"
-                names.add(function.text.decode("utf-8"))
+                name = function.text.decode("utf-8")
+                if name in _NON_CALLEE_NAMES or name.startswith(_NON_CALLEE_PREFIXES):
+                    continue
+                names.add(name)
     return names

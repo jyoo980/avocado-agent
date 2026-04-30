@@ -6,7 +6,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tools.avocado_tool_registry import mcp
-from tools.util import build_stub_index, get_in_file_callees_for, resolve_stub_paths_for
+from tools.util import (
+    build_stub_index,
+    get_in_file_callees_for,
+    get_unstubbed_external_callees_for,
+    resolve_stub_paths_for,
+)
 
 # The stub index is built once on MCP server start.
 _STUB_INDEX = build_stub_index()
@@ -30,6 +35,9 @@ def run_cbmc(
     """
     stub_file_paths = resolve_stub_paths_for(function_to_verify, path_to_call_graph, _STUB_INDEX)
     callees = get_in_file_callees_for(function_to_verify, path_to_call_graph)
+    nondet_callees = get_unstubbed_external_callees_for(
+        function_to_verify, path_to_call_graph, _STUB_INDEX
+    )
     cbmc_command = _get_cbmc_command(
         function_to_verify,
         stub_file_paths,
@@ -42,6 +50,7 @@ def run_cbmc(
         function_to_verify,
         cbmc_command,
         result.returncode,
+        nondet_callees,
     )
     if result.returncode == 0:
         return f"{function_to_verify} verified successfully"
@@ -59,6 +68,7 @@ def _log_invocation(
     function: str,
     command: str,
     returncode: int,
+    nondet_callees: list[str],
 ) -> None:
     log_path = Path(f"{Path(file_under_verification).stem}-cbmc-runs.jsonl")
     record = {
@@ -67,6 +77,7 @@ def _log_invocation(
         "file": file_under_verification,
         "command": command,
         "returncode": returncode,
+        "nondet_callees": nondet_callees,
     }
     try:
         with log_path.open("a") as f:

@@ -40,9 +40,8 @@ def resolve_stub_paths_for(
 ) -> list[str]:
     """Return the stub file paths needed to verify `function_to_verify`.
 
-    External callees are the direct callees of `function_to_verify` that are not defined in the
-    same C file (i.e. not keys in the call graph). Each external callee is looked up in the stub
-    index; unresolved names are dropped.
+    External callees come from the call graph's `external` list for `function_to_verify`. Each
+    external callee is looked up in the stub index; unresolved names are dropped.
 
     Args:
         function_to_verify (str): The function whose callees should be resolved.
@@ -52,10 +51,8 @@ def resolve_stub_paths_for(
     Returns:
         list[str]: Sorted, de-duplicated list of stub file paths.
     """
-    call_graph: dict[str, list[str]] = json.loads(Path(path_to_call_graph).read_text())
-    in_file = set(call_graph)
-    direct_callees = call_graph.get(function_to_verify, [])
-    external = [name for name in direct_callees if name not in in_file]
+    call_graph: dict[str, dict[str, list[str]]] = json.loads(Path(path_to_call_graph).read_text())
+    external = call_graph.get(function_to_verify, {}).get("external", [])
     resolved = {stub_index[name] for name in external if name in stub_index}
     return sorted(str(path) for path in resolved)
 
@@ -76,9 +73,31 @@ def get_in_file_callees_for(
     Returns:
         list[str]: Sorted, de-duplicated list of in-file callee names.
     """
-    call_graph: dict[str, list[str]] = json.loads(Path(path_to_call_graph).read_text())
-    in_file = set(call_graph)
-    direct_callees = call_graph.get(function_to_verify, [])
-    return sorted(
-        {name for name in direct_callees if name in in_file and name != function_to_verify}
-    )
+    call_graph: dict[str, dict[str, list[str]]] = json.loads(Path(path_to_call_graph).read_text())
+    internal = call_graph.get(function_to_verify, {}).get("internal", [])
+    return sorted({name for name in internal if name != function_to_verify})
+
+
+def get_unstubbed_external_callees_for(
+    function_to_verify: str,
+    path_to_call_graph: str,
+    stub_index: dict[str, Path],
+) -> list[str]:
+    """Return external callees of `function_to_verify` that have no CBMC stub.
+
+    These are calls CBMC will treat as nondeterministic: the function is declared but neither
+    defined in the file under verification nor modeled in `stubs/`, so CBMC returns an arbitrary
+    value with no constraints on side effects beyond what frame inference can prove.
+
+    Args:
+        function_to_verify (str): The function whose callees should be inspected.
+        path_to_call_graph (str): Path to the JSON call graph emitted by `construct_call_graph`.
+        stub_index (dict[str, Path]): Stub index produced by `build_stub_index`.
+
+    Returns:
+        list[str]: Sorted, de-duplicated list of external callee names not present in the stub
+            index.
+    """
+    call_graph: dict[str, dict[str, list[str]]] = json.loads(Path(path_to_call_graph).read_text())
+    external = call_graph.get(function_to_verify, {}).get("external", [])
+    return sorted({name for name in external if name not in stub_index})

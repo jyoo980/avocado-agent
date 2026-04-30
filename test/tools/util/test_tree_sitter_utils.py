@@ -10,7 +10,7 @@ def test_construct_call_graph_only_leaf_nodes() -> None:
     )
     functions = ["foo", "bar", "baz"]
     for f in functions:
-        assert call_graph[f] == [], (
+        assert call_graph[f] == {"internal": [], "external": []}, (
             f"Expected '{f}' in simple.c to have no callees, but got {call_graph[f]}"
         )
 
@@ -20,15 +20,15 @@ def test_construct_call_graph_with_callees_no_libraries() -> None:
     assert len(call_graph) == 3, (
         f"Expected 3 functions in quicksort.c, but got {len(call_graph)}"
     )
-    assert call_graph["swap"] == [], (
-        f"Expected 'swap' in quicksort.c' to have no callees"
+    assert call_graph["swap"] == {"internal": [], "external": []}, (
+        f"Expected 'swap' in quicksort.c' to have no callees, but got {call_graph['swap']}"
     )
-    assert call_graph["partition"] == ["swap"], (
-        f"Expected 'partition' in quicksort.c' to have callee 'swap'"
+    assert call_graph["partition"]["internal"] == ["swap"], (
+        f"Expected 'partition' in quicksort.c' to have internal callee 'swap'"
     )
 
-    callees_of_quicksort = ["quickSort", "partition"]
-    for callee in callees_of_quicksort:
-        assert callee in call_graph["quickSort"], (
-            f"Expected '{callee}' to be a callee of quickSort"
+    internal_callees_of_quicksort = call_graph["quickSort"]["internal"]
+    for callee in ["quickSort", "partition"]:
+        assert callee in internal_callees_of_quicksort, (
+            f"Expected '{callee}' to be an internal callee of quickSort"
         )
