@@ -29,7 +29,10 @@ def run_cbmc(
         }
     )
     result = subprocess.run(cbmc_command, capture_output=True, text=True, shell=True, check=False)
-    return f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    if result.returncode == 0:
+        return f"{function_to_verify} verified successfully"
+    # Limit output, somehow?
+    return f"{function_to_verify} failed to verify"
 
 
 def _get_cbmc_command(args: dict[str, Any]) -> str:
