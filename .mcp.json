@@ -1,12 +1,8 @@
 {
   "mcpServers": {
-    "run_cbmc": {
+    "avocado-tools": {
       "command": "uv",
-      "args": ["run", "python", "tools/run_cbmc.py"]
-    },
-    "construct_call_graph": {
-      "command": "uv",
-      "args": ["run", "python", "tools/construct_call_graph.py"]
+      "args": ["run", "python", "-m", "tools.server"]
     }
   }
 }

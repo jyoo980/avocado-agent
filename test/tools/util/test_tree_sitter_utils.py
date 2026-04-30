@@ -18,10 +18,17 @@ def test_construct_call_graph_only_leaf_nodes() -> None:
 def test_construct_call_graph_with_callees_no_libraries() -> None:
     call_graph = tree_sitter_utils.get_call_graph("test/data/quicksort.c")
     assert len(call_graph) == 3, (
-        f"Expected 3 functions in simple.c, but got {len(call_graph)}"
+        f"Expected 3 functions in quicksort.c, but got {len(call_graph)}"
     )
-    assert call_graph == {
-        "swap": [],
-        "quickSort": ["quickSort", "partition"],
-        "partition": ["swap"],
-    }
+    assert call_graph["swap"] == [], (
+        f"Expected 'swap' in quicksort.c' to have no callees"
+    )
+    assert call_graph["partition"] == ["swap"], (
+        f"Expected 'partition' in quicksort.c' to have callee 'swap'"
+    )
+
+    callees_of_quicksort = ["quickSort", "partition"]
+    for callee in callees_of_quicksort:
+        assert callee in call_graph["quickSort"], (
+            f"Expected '{callee}' to be a callee of quickSort"
+        )

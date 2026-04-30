@@ -1,13 +1,10 @@
-"""Stdio MCP server exposing a `construct_call_graph` tool to Claude Code."""
+"""`construct_call_graph` tool, registered against the shared FastMCP instance in `_app`."""
 
 import json
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
-
-from .util import get_call_graph
-
-mcp = FastMCP(name="construct_call_graph")
+from tools.avocado_tool_registry import mcp
+from tools.util import get_call_graph
 
 
 @mcp.tool()
@@ -26,7 +23,3 @@ def construct_call_graph(
     path_to_call_graph = f"{Path(path_to_file_to_verify).stem}-callgraph.json"
     Path(path_to_call_graph).write_text(json.dumps(call_graph))
     return path_to_call_graph
-
-
-if __name__ == "__main__":
-    mcp.run(transport="stdio")

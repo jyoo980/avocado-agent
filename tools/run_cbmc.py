@@ -1,26 +1,35 @@
-"""Stdio MCP server exposing a `run_cbmc` tool to Claude Code."""
+"""`run_cbmc` tool, registered against the shared FastMCP instance in `_app`."""
 
+import json
 import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from tools.avocado_tool_registry import mcp
+from tools.util import build_stub_index, get_in_file_callees_for, resolve_stub_paths_for
 
-mcp = FastMCP(name="run_cbmc")
+# The stub index is built once on MCP server start.
+_STUB_INDEX = build_stub_index()
 
 
 @mcp.tool()
 def run_cbmc(
     function_to_verify: str,
-    # stub_file_paths: list[str],
     file_containing_function_to_verify: str,
+    path_to_call_graph: str,
 ) -> str:
     """Run CBMC on the given function with loop unwinding = 5, depth = 100.
+
+    Args:
+        function_to_verify (str): Name of the function to verify.
+        file_containing_function_to_verify (str): Path to the C file defining the function.
+        path_to_call_graph (str): Path to the JSON call graph produced by `construct_call_graph`.
 
     Returns:
         The combined stdout and stderr produced by the CBMC pipeline.
     """
-    # TODO: Automatically determine the stub file paths and the callees.
-    callees = []
-    stub_file_paths = []
+    stub_file_paths = resolve_stub_paths_for(function_to_verify, path_to_call_graph, _STUB_INDEX)
+    callees = get_in_file_callees_for(function_to_verify, path_to_call_graph)
     cbmc_command = _get_cbmc_command(
         function_to_verify,
         stub_file_paths,
@@ -28,10 +37,42 @@ def run_cbmc(
         file_containing_function_to_verify,
     )
     result = subprocess.run(cbmc_command, capture_output=True, text=True, shell=True, check=False)
+    _log_invocation(
+        file_containing_function_to_verify,
+        function_to_verify,
+        cbmc_command,
+        result.returncode,
+    )
     if result.returncode == 0:
         return f"{function_to_verify} verified successfully"
-    # Limit output, somehow?
-    return f"{function_to_verify} failed to verify"
+    error_lines = [line for line in result.stderr.split("\n") if line.strip().endswith("FAILURE")]
+    if not error_lines:
+        return f"{function_to_verify} failed to verify"
+    return (
+        f"{function_to_verify} failed to verify with the following errors:\n\n"
+        f"{'\n'.join(error_lines)}"
+    )
+
+
+def _log_invocation(
+    file_under_verification: str,
+    function: str,
+    command: str,
+    returncode: int,
+) -> None:
+    log_path = Path(f"{Path(file_under_verification).stem}-cbmc-runs.jsonl")
+    record = {
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "function": function,
+        "file": file_under_verification,
+        "command": command,
+        "returncode": returncode,
+    }
+    try:
+        with log_path.open("a") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError:
+        pass
 
 
 def _get_cbmc_command(
@@ -79,7 +120,3 @@ def _get_cbmc_command(
             ),
         ]
     )
-
-
-if __name__ == "__main__":
-    mcp.run(transport="stdio")
