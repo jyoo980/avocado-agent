@@ -5,7 +5,7 @@
 
 __CPROVER_thread_local int __CPROVER_errno;
 
-int *_avocado___error(void)
+int *__error(void)
 {
   return &__CPROVER_errno;
 }
@@ -17,7 +17,7 @@ int *_avocado___error(void)
 
 __CPROVER_thread_local int __CPROVER_errno;
 
-int *_avocado___errno_location(void)
+int *__errno_location(void)
 {
   return &__CPROVER_errno;
 }
@@ -29,7 +29,7 @@ int *_avocado___errno_location(void)
 
 __CPROVER_thread_local int __CPROVER_errno;
 
-int *_avocado__errno(void)
+int *_errno(void)
 {
   return &__CPROVER_errno;
 }
@@ -40,7 +40,7 @@ int *_avocado__errno(void)
 
 __CPROVER_thread_local int __CPROVER_errno;
 
-extern int *_avocado___errno(void)
+extern int *__errno(void)
 {
   return &__CPROVER_errno;
 }
@@ -51,7 +51,7 @@ extern int *_avocado___errno(void)
 
 __CPROVER_thread_local int __CPROVER_errno;
 
-extern int *_avocado____errno(void)
+extern int *___errno(void)
 {
   return &__CPROVER_errno;
 }

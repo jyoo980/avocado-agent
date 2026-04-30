@@ -6,7 +6,7 @@
 #define __CPROVER_SETJMP_H_INCLUDED
 #endif
 
-void _avocado_longjmp(jmp_buf env, int val)
+void longjmp(jmp_buf env, int val)
 {
   // does not return
   (void)env;
@@ -25,7 +25,7 @@ void _avocado_longjmp(jmp_buf env, int val)
 #define __CPROVER_SETJMP_H_INCLUDED
 #endif
 
-void _avocado__longjmp(jmp_buf env, int val)
+void _longjmp(jmp_buf env, int val)
 {
   // does not return
   (void)env;
@@ -46,7 +46,7 @@ void _avocado__longjmp(jmp_buf env, int val)
 #define __CPROVER_SETJMP_H_INCLUDED
 #endif
 
-void _avocado_siglongjmp(sigjmp_buf env, int val)
+void siglongjmp(sigjmp_buf env, int val)
 {
   // does not return
   (void)env;
@@ -69,7 +69,7 @@ void _avocado_siglongjmp(sigjmp_buf env, int val)
 
 #undef setjmp
 
-int _avocado_setjmp(jmp_buf env)
+int setjmp(jmp_buf env)
 {
   (void)env;
   // returns via longjmp require instrumentation; only such returns would
@@ -84,7 +84,7 @@ int _avocado_setjmp(jmp_buf env)
 #define __CPROVER_SETJMP_H_INCLUDED
 #endif
 
-int _avocado__setjmp(jmp_buf env)
+int _setjmp(jmp_buf env)
 {
   (void)env;
   // returns via longjmp require instrumentation; only such returns would
@@ -103,7 +103,7 @@ int _avocado__setjmp(jmp_buf env)
 
 #undef sigsetjmp
 
-int _avocado_sigsetjmp(sigjmp_buf env, int savesigs)
+int sigsetjmp(sigjmp_buf env, int savesigs)
 {
   (void)env;
   (void)savesigs;
@@ -123,7 +123,7 @@ int _avocado_sigsetjmp(sigjmp_buf env, int savesigs)
 #  define __CPROVER_SETJMP_H_INCLUDED
 #endif
 
-int _avocado___sigsetjmp(sigjmp_buf env, int savesigs)
+int __sigsetjmp(sigjmp_buf env, int savesigs)
 {
   (void)env;
   (void)savesigs;

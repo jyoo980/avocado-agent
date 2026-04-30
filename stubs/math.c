@@ -1,41 +1,41 @@
 /* FUNCTION: fabs */
 
-double _avocado_fabs(double d)
+double fabs(double d)
 {
   return __CPROVER_fabs(d);
 }
 
 /* FUNCTION: fabsl */
 
-long double _avocado_fabsl(long double d)
+long double fabsl(long double d)
 {
   return __CPROVER_fabsl(d);
 }
 
 /* FUNCTION: fabsf */
 
-float _avocado_fabsf(float f)
+float fabsf(float f)
 {
   return __CPROVER_fabsf(f);
 }
 
 /* FUNCTION: __builtin_fabs */
 
-double _avocado___builtin_fabs(double d)
+double __builtin_fabs(double d)
 {
   return __CPROVER_fabs(d);
 }
 
 /* FUNCTION: __builtin_fabsl */
 
-long double _avocado___builtin_fabsl(long double d)
+long double __builtin_fabsl(long double d)
 {
   return __CPROVER_fabsl(d);
 }
 
 /* FUNCTION: __builtin_fabsf */
 
-float _avocado___builtin_fabsf(float f)
+float __builtin_fabsf(float f)
 {
   return __CPROVER_fabsf(f);
 }
@@ -98,60 +98,60 @@ int __CPROVER_isunorderedd(double f, double g)
 
 #undef isfinite
 
-int _avocado_isfinite(double d) { return __CPROVER_isfinited(d); }
+int isfinite(double d) { return __CPROVER_isfinited(d); }
 
 /* FUNCTION: __finite */
 
-int _avocado___finite(double d) { return __CPROVER_isfinited(d); }
+int __finite(double d) { return __CPROVER_isfinited(d); }
 
 /* FUNCTION: __finitef */
 
-int _avocado___finitef(float f) { return __CPROVER_isfinitef(f); }
+int __finitef(float f) { return __CPROVER_isfinitef(f); }
 
 /* FUNCTION: __finitel */
 
-int _avocado___finitel(long double ld) { return __CPROVER_isfiniteld(ld); }
+int __finitel(long double ld) { return __CPROVER_isfiniteld(ld); }
 
 /* FUNCTION: isinf */
 
 #undef isinf
 
-int _avocado_isinf(double d)
+int isinf(double d)
 {
   return __CPROVER_isinfd(d);
 }
 
 /* FUNCTION: __isinf */
 
-int _avocado___isinf(double d)
+int __isinf(double d)
 {
   return __CPROVER_isinfd(d);
 }
 
 /* FUNCTION: isinff */
 
-int _avocado_isinff(float f)
+int isinff(float f)
 {
   return __CPROVER_isinff(f);
 }
 
 /* FUNCTION: __isinff */
 
-int _avocado___isinff(float f)
+int __isinff(float f)
 {
   return __CPROVER_isinff(f);
 }
 
 /* FUNCTION: isinfl */
 
-int _avocado_isinfl(long double ld)
+int isinfl(long double ld)
 {
   return __CPROVER_isinfld(ld);
 }
 
 /* FUNCTION: __isinfl */
 
-int _avocado___isinfl(long double ld)
+int __isinfl(long double ld)
 {
   return __CPROVER_isinfld(ld);
 }
@@ -160,42 +160,42 @@ int _avocado___isinfl(long double ld)
 
 #undef isnan
 
-int _avocado_isnan(double d)
+int isnan(double d)
 {
   return __CPROVER_isnand(d);
 }
 
 /* FUNCTION: __isnan */
 
-int _avocado___isnan(double d)
+int __isnan(double d)
 {
   return __CPROVER_isnand(d);
 }
 
 /* FUNCTION: __isnanf */
 
-int _avocado___isnanf(float f)
+int __isnanf(float f)
 {
   return __CPROVER_isnanf(f);
 }
 
 /* FUNCTION: isnanf */
 
-int _avocado_isnanf(float f)
+int isnanf(float f)
 {
   return __CPROVER_isnanf(f);
 }
 
 /* FUNCTION: isnanl */
 
-int _avocado_isnanl(long double ld)
+int isnanl(long double ld)
 {
   return __CPROVER_isnanld(ld);
 }
 
 /* FUNCTION: __isnanl */
 
-int _avocado___isnanl(long double ld)
+int __isnanl(long double ld)
 {
   return __CPROVER_isnanld(ld);
 }
@@ -204,56 +204,56 @@ int _avocado___isnanl(long double ld)
 
 #undef isnormal
 
-int _avocado_isnormal(double d)
+int isnormal(double d)
 {
   return __CPROVER_isnormald(d);
 }
 
 /* FUNCTION: __isnormalf */
 
-int _avocado___isnormalf(float f)
+int __isnormalf(float f)
 {
   return __CPROVER_isnormalf(f);
 }
 
 /* FUNCTION: __builtin_isinf */
 
-int _avocado___builtin_isinf(double d)
+int __builtin_isinf(double d)
 {
   return __CPROVER_isinfd(d);
 }
 
 /* FUNCTION: __builtin_isinff */
 
-int _avocado___builtin_isinff(float f)
+int __builtin_isinff(float f)
 {
   return __CPROVER_isinff(f);
 }
 
 /* FUNCTION: __builtin_isinf */
 
-int _avocado___builtin_isinfl(long double ld)
+int __builtin_isinfl(long double ld)
 {
   return __CPROVER_isinfld(ld);
 }
 
 /* FUNCTION: __builtin_isnan */
 
-int _avocado___builtin_isnan(double d)
+int __builtin_isnan(double d)
 {
   return __CPROVER_isnand(d);
 }
 
 /* FUNCTION: __builtin_isnanf */
 
-int _avocado___builtin_isnanf(float f)
+int __builtin_isnanf(float f)
 {
   return __CPROVER_isnanf(f);
 }
 
 /* FUNCTION: __builtin_huge_valf */
 
-float _avocado___builtin_huge_valf(void)
+float __builtin_huge_valf(void)
 {
 #pragma CPROVER check push
 #pragma CPROVER check disable "float-div-by-zero"
@@ -264,7 +264,7 @@ float _avocado___builtin_huge_valf(void)
 
 /* FUNCTION: __builtin_huge_val */
 
-double _avocado___builtin_huge_val(void)
+double __builtin_huge_val(void)
 {
 #pragma CPROVER check push
 #pragma CPROVER check disable "float-div-by-zero"
@@ -275,7 +275,7 @@ double _avocado___builtin_huge_val(void)
 
 /* FUNCTION: __builtin_huge_vall */
 
-long double _avocado___builtin_huge_vall(void)
+long double __builtin_huge_vall(void)
 {
 #pragma CPROVER check push
 #pragma CPROVER check disable "float-div-by-zero"
@@ -286,21 +286,21 @@ long double _avocado___builtin_huge_vall(void)
 
 /* FUNCTION: _dsign */
 
-int _avocado__dsign(double d)
+int _dsign(double d)
 {
   return __CPROVER_signd(d);
 }
 
 /* FUNCTION: _ldsign */
 
-int _avocado__ldsign(long double ld)
+int _ldsign(long double ld)
 {
   return __CPROVER_signld(ld);
 }
 
 /* FUNCTION: _fdsign */
 
-int _avocado__fdsign(float f)
+int _fdsign(float f)
 {
   return __CPROVER_signf(f);
 }
@@ -309,28 +309,28 @@ int _avocado__fdsign(float f)
 
 #undef signbit
 
-int _avocado_signbit(double d)
+int signbit(double d)
 {
   return __CPROVER_signd(d);
 }
 
 /* FUNCTION: __signbitd */
 
-int _avocado___signbitd(double d)
+int __signbitd(double d)
 {
   return __CPROVER_signd(d);
 }
 
 /* FUNCTION: __signbitf */
 
-int _avocado___signbitf(float f)
+int __signbitf(float f)
 {
   return __CPROVER_signf(f);
 }
 
 /* FUNCTION: __signbit */
 
-int _avocado___signbit(double ld)
+int __signbit(double ld)
 {
   return __CPROVER_signld(ld);
 }
@@ -342,7 +342,7 @@ int _avocado___signbit(double ld)
 #define __CPROVER_MATH_H_INCLUDED
 #endif
 
-short _avocado__dclass(double d)
+short _dclass(double d)
 {
 __CPROVER_HIDE:
   return __CPROVER_isnand(d)?FP_NAN:
@@ -359,7 +359,7 @@ __CPROVER_HIDE:
 #define __CPROVER_MATH_H_INCLUDED
 #endif
 
-short _avocado__ldclass(long double ld)
+short _ldclass(long double ld)
 {
 __CPROVER_HIDE:
   return __CPROVER_isnanld(ld)?FP_NAN:
@@ -376,7 +376,7 @@ __CPROVER_HIDE:
 #define __CPROVER_MATH_H_INCLUDED
 #endif
 
-short _avocado__fdclass(float f)
+short _fdclass(float f)
 {
 __CPROVER_HIDE:
   return __CPROVER_isnanf(f)?FP_NAN:
@@ -393,7 +393,7 @@ __CPROVER_HIDE:
 #define __CPROVER_MATH_H_INCLUDED
 #endif
 
-int _avocado___fpclassifyd(double d)
+int __fpclassifyd(double d)
 {
 __CPROVER_HIDE:
   return __CPROVER_fpclassify(
@@ -407,7 +407,7 @@ __CPROVER_HIDE:
 #define __CPROVER_MATH_H_INCLUDED
 #endif
 
-int _avocado___fpclassifyf(float f)
+int __fpclassifyf(float f)
 {
 __CPROVER_HIDE:
   return __CPROVER_fpclassify(
@@ -421,7 +421,7 @@ __CPROVER_HIDE:
 #define __CPROVER_MATH_H_INCLUDED
 #endif
 
-int _avocado___fpclassifyl(long double f)
+int __fpclassifyl(long double f)
 {
 __CPROVER_HIDE:
   return __CPROVER_fpclassify(
@@ -439,14 +439,14 @@ __CPROVER_HIDE:
 // only; newer ones use __fpclassifyd.
 
 #ifdef __APPLE__
-int _avocado___fpclassify(long double d)
+int __fpclassify(long double d)
 {
 __CPROVER_HIDE:
   return __CPROVER_fpclassify(
     FP_NAN, FP_INFINITE, FP_NORMAL, FP_SUBNORMAL, FP_ZERO, d);
 }
 #else
-int _avocado___fpclassify(double d)
+int __fpclassify(double d)
 {
 __CPROVER_HIDE:
   return __CPROVER_fpclassify(
@@ -458,7 +458,7 @@ __CPROVER_HIDE:
 
 double __VERIFIER_nondet_double(void);
 
-double _avocado_sin(double x)
+double sin(double x)
 {
   // gross over-approximation
   double ret=__VERIFIER_nondet_double();
@@ -479,7 +479,7 @@ double _avocado_sin(double x)
 
 long double __VERIFIER_nondet_long_double(void);
 
-long double _avocado_sinl(long double x)
+long double sinl(long double x)
 {
   // gross over-approximation
   long double ret=__VERIFIER_nondet_long_double();
@@ -500,7 +500,7 @@ long double _avocado_sinl(long double x)
 
 float __VERIFIER_nondet_float(void);
 
-float _avocado_sinf(float x)
+float sinf(float x)
 {
   // gross over-approximation
   float ret=__VERIFIER_nondet_float();
@@ -521,7 +521,7 @@ float _avocado_sinf(float x)
 
 double __VERIFIER_nondet_double(void);
 
-double _avocado_cos(double x)
+double cos(double x)
 {
   // gross over-approximation
   double ret=__VERIFIER_nondet_double();
@@ -542,7 +542,7 @@ double _avocado_cos(double x)
 
 long double __VERIFIER_nondet_long_double(void);
 
-long double _avocado_cosl(long double x)
+long double cosl(long double x)
 {
   // gross over-approximation
   long double ret=__VERIFIER_nondet_long_double();
@@ -563,7 +563,7 @@ long double _avocado_cosl(long double x)
 
 float __VERIFIER_nondet_float(void);
 
-float _avocado_cosf(float x)
+float cosf(float x)
 {
 __CPROVER_hide:;
   // gross over-approximation
@@ -583,7 +583,7 @@ __CPROVER_hide:;
 
 /* FUNCTION: __builtin_nan */
 
-double _avocado___builtin_nan(const char *str)
+double __builtin_nan(const char *str)
 {
   // the 'str' argument is not yet used
 __CPROVER_hide:;
@@ -596,7 +596,7 @@ __CPROVER_hide:;
 
 /* FUNCTION: __builtin_nanf */
 
-float _avocado___builtin_nanf(const char *str)
+float __builtin_nanf(const char *str)
 {
   // the 'str' argument is not yet used
 __CPROVER_hide:;
@@ -623,7 +623,7 @@ __CPROVER_hide:;
 
 /* FUNCTION: nan */
 
-double _avocado_nan(const char *str) {
+double nan(const char *str) {
   // the 'str' argument is not yet used
  __CPROVER_hide:;
   (void)*str;
@@ -635,7 +635,7 @@ double _avocado_nan(const char *str) {
 
 /* FUNCTION: nanf */
 
-float _avocado_nanf(const char *str) {
+float nanf(const char *str) {
   // the 'str' argument is not yet used
  __CPROVER_hide:;
   (void)*str;
@@ -647,7 +647,7 @@ float _avocado_nanf(const char *str) {
 
 /* FUNCTION: nanl */
 
-long double _avocado_nanl(const char *str) {
+long double nanl(const char *str) {
   // the 'str' argument is not yet used
  __CPROVER_hide:;
   (void)*str;
@@ -678,7 +678,7 @@ union mixf
   #endif
 };
 
-float _avocado_nextUpf(float f)
+float nextUpf(float f)
 {
 __CPROVER_hide:;
   if (__CPROVER_isnanf(f))
@@ -730,7 +730,7 @@ union mixd
   #endif
 };
 
-double _avocado_nextUp(double d)
+double nextUp(double d)
 {
 __CPROVER_hide:;
   if (__CPROVER_isnand(d))
@@ -781,7 +781,7 @@ union mixl
   #endif
 };
 
-long double _avocado_nextUpl(long double d)
+long double nextUpl(long double d)
 {
 __CPROVER_hide:;
   if(__CPROVER_isnanld(d))
@@ -846,11 +846,11 @@ __CPROVER_hide:;
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-float _avocado_nextUpf(float f);
+float nextUpf(float f);
 
 float __VERIFIER_nondet_float(void);
 
-float _avocado_sqrtf(float f)
+float sqrtf(float f)
 {
  __CPROVER_hide:;
 
@@ -877,7 +877,7 @@ float _avocado_sqrtf(float f)
     float lowerSquare = lower * lower;
     __CPROVER_assume(__CPROVER_isnormalf(lowerSquare));
 
-    float upper = _avocado_nextUpf(lower);
+    float upper = nextUpf(lower);
     float upperSquare = upper * upper;  // Might be +Inf
 #pragma CPROVER check pop
 
@@ -891,7 +891,7 @@ float _avocado_sqrtf(float f)
     __CPROVER_assume(f < upperSquare);
 
     // Select between them to work out which to return
-    switch(_avocado_fegetround())
+    switch(fegetround())
     {
     case FE_TONEAREST :
       return (f - lowerSquare < upperSquare - f) ? lower : upper; break;
@@ -939,11 +939,11 @@ float _avocado_sqrtf(float f)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-double _avocado_nextUp(double d);
+double nextUp(double d);
 
 double __VERIFIER_nondet_double(void);
 
-double _avocado_sqrt(double d)
+double sqrt(double d)
 {
  __CPROVER_hide:;
 
@@ -967,14 +967,14 @@ double _avocado_sqrt(double d)
     double lowerSquare = lower * lower;
     __CPROVER_assume(__CPROVER_isnormald(lowerSquare));
 
-    double upper = _avocado_nextUp(lower);
+    double upper = nextUp(lower);
     double upperSquare = upper * upper;  // Might be +Inf
 #pragma CPROVER check pop
 
     __CPROVER_assume(lowerSquare <= d);
     __CPROVER_assume(d < upperSquare);
 
-    switch(_avocado_fegetround())
+    switch(fegetround())
     {
     case FE_TONEAREST:
       return (d - lowerSquare < upperSquare - d) ? lower : upper; break;
@@ -1016,11 +1016,11 @@ double _avocado_sqrt(double d)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-long double _avocado_nextUpl(long double d);
+long double nextUpl(long double d);
 
 long double __VERIFIER_nondet_long_double(void);
 
-long double _avocado_sqrtl(long double d)
+long double sqrtl(long double d)
 {
  __CPROVER_hide:;
 
@@ -1044,14 +1044,14 @@ long double _avocado_sqrtl(long double d)
     long double lowerSquare = lower * lower;
     __CPROVER_assume(__CPROVER_isnormalld(lowerSquare));
 
-    long double upper = _avocado_nextUpl(lower);
+    long double upper = nextUpl(lower);
     long double upperSquare = upper * upper;  // Might be +Inf
 #pragma CPROVER check pop
 
     __CPROVER_assume(lowerSquare <= d);
     __CPROVER_assume(d < upperSquare);
 
-    switch(_avocado_fegetround())
+    switch(fegetround())
     {
     case FE_TONEAREST:
       return (d - lowerSquare < upperSquare - d) ? lower : upper; break;
@@ -1108,7 +1108,7 @@ long double _avocado_sqrtl(long double d)
 #endif
 
 // TODO : Should call a __CPROVER_function so that it can be converted to SMT-LIB
-double _avocado_fmax(double f, double g) { return ((f >= g) || _avocado_isnan(g)) ? f : g; }
+double fmax(double f, double g) { return ((f >= g) || isnan(g)) ? f : g; }
 
 /* FUNCTION: fmaxf */
 
@@ -1118,7 +1118,7 @@ double _avocado_fmax(double f, double g) { return ((f >= g) || _avocado_isnan(g)
 #endif
 
 // TODO : Should call a __CPROVER_function so that it can be converted to SMT-LIB
-float _avocado_fmaxf(float f, float g) { return ((f >= g) || _avocado_isnan(g)) ? f : g; }
+float fmaxf(float f, float g) { return ((f >= g) || isnan(g)) ? f : g; }
 
 /* FUNCTION: fmaxl */
 
@@ -1128,7 +1128,7 @@ float _avocado_fmaxf(float f, float g) { return ((f >= g) || _avocado_isnan(g)) 
 #endif
 
 // TODO : Should call a __CPROVER_function so that it can be converted to SMT-LIB
-long double _avocado_fmaxl(long double f, long double g) { return ((f >= g) || _avocado_isnan(g)) ? f : g; }
+long double fmaxl(long double f, long double g) { return ((f >= g) || isnan(g)) ? f : g; }
 
 
 /* ISO 9899:2011
@@ -1151,7 +1151,7 @@ long double _avocado_fmaxl(long double f, long double g) { return ((f >= g) || _
 #endif
  
 // TODO : Should call a __CPROVER_function so that it can be converted to SMT-LIB
-double _avocado_fmin(double f, double g) { return ((f <= g) || _avocado_isnan(g)) ? f : g; }
+double fmin(double f, double g) { return ((f <= g) || isnan(g)) ? f : g; }
 
 /* FUNCTION: fminf */
 
@@ -1161,7 +1161,7 @@ double _avocado_fmin(double f, double g) { return ((f <= g) || _avocado_isnan(g)
 #endif
 
 // TODO : Should call a __CPROVER_function so that it can be converted to SMT-LIB 
-float _avocado_fminf(float f, float g) { return ((f <= g) || _avocado_isnan(g)) ? f : g; }
+float fminf(float f, float g) { return ((f <= g) || isnan(g)) ? f : g; }
 
 /* FUNCTION: fminl */
 
@@ -1171,7 +1171,7 @@ float _avocado_fminf(float f, float g) { return ((f <= g) || _avocado_isnan(g)) 
 #endif
 
 // TODO : Should call a __CPROVER_function so that it can be converted to SMT-LIB 
-long double _avocado_fminl(long double f, long double g) { return ((f <= g) || _avocado_isnan(g)) ? f : g; }
+long double fminl(long double f, long double g) { return ((f <= g) || isnan(g)) ? f : g; }
 
 
 /* ISO 9899:2011
@@ -1189,7 +1189,7 @@ long double _avocado_fminl(long double f, long double g) { return ((f <= g) || _
 #define __CPROVER_MATH_H_INCLUDED
 #endif
 
-double _avocado_fdim(double f, double g) { return ((f > g) ? f - g : +0.0); }
+double fdim(double f, double g) { return ((f > g) ? f - g : +0.0); }
 
 
 /* FUNCTION: fdimf */
@@ -1199,7 +1199,7 @@ double _avocado_fdim(double f, double g) { return ((f > g) ? f - g : +0.0); }
 #define __CPROVER_MATH_H_INCLUDED
 #endif
 
-float _avocado_fdimf(float f, float g) { return ((f > g) ? f - g : +0.0f); }
+float fdimf(float f, float g) { return ((f > g) ? f - g : +0.0f); }
 
 
 /* FUNCTION: fdiml */
@@ -1209,7 +1209,7 @@ float _avocado_fdimf(float f, float g) { return ((f > g) ? f - g : +0.0f); }
 #define __CPROVER_MATH_H_INCLUDED
 #endif
 
-long double _avocado_fdiml(long double f, long double g) { return ((f > g) ? f - g : +0.0); }
+long double fdiml(long double f, long double g) { return ((f > g) ? f - g : +0.0); }
 
 /* ISO 9899:2011
  *
@@ -1229,7 +1229,7 @@ long double _avocado_fdiml(long double f, long double g) { return ((f > g) ? f -
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-double _avocado_ceil(double x)
+double ceil(double x)
 {
   return __CPROVER_round_to_integrald(x, 2); // FE_UPWARD
 }
@@ -1246,7 +1246,7 @@ double _avocado_ceil(double x)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-float _avocado_ceilf(float x)
+float ceilf(float x)
 {
   return __CPROVER_round_to_integralf(x, 2); // FE_UPWARD
 }
@@ -1264,7 +1264,7 @@ float _avocado_ceilf(float x)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-long double _avocado_ceill(long double x)
+long double ceill(long double x)
 {
   return __CPROVER_round_to_integralld(x, 2); // FE_UPWARD
 }
@@ -1287,7 +1287,7 @@ long double _avocado_ceill(long double x)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-double _avocado_floor(double x)
+double floor(double x)
 {
   return __CPROVER_round_to_integrald(x, 1); // FE_DOWNWARD
 }
@@ -1304,7 +1304,7 @@ double _avocado_floor(double x)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-float _avocado_floorf(float x)
+float floorf(float x)
 {
   return __CPROVER_round_to_integralf(x, 1); // FE_DOWNWARD
 }
@@ -1322,7 +1322,7 @@ float _avocado_floorf(float x)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-long double _avocado_floorl(long double x)
+long double floorl(long double x)
 {
   return __CPROVER_round_to_integralld(x, 1); // FE_DOWNWARD
 }
@@ -1346,7 +1346,7 @@ long double _avocado_floorl(long double x)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-double _avocado_trunc(double x)
+double trunc(double x)
 {
   return __CPROVER_round_to_integrald(x, 3); // FE_TOWARDZERO
 }
@@ -1363,7 +1363,7 @@ double _avocado_trunc(double x)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-float _avocado_truncf(float x)
+float truncf(float x)
 {
   return __CPROVER_round_to_integralf(x, 3); // FE_TOWARDZERO
 }
@@ -1381,7 +1381,7 @@ float _avocado_truncf(float x)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-long double _avocado_truncl(long double x)
+long double truncl(long double x)
 {
   return __CPROVER_round_to_integralld(x, 3); // FE_TOWARDZERO
 }
@@ -1405,7 +1405,7 @@ long double _avocado_truncl(long double x)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-double _avocado_round(double x)
+double round(double x)
 {
   return __CPROVER_round_to_integrald(x, 4); // RNA
 }
@@ -1422,7 +1422,7 @@ double _avocado_round(double x)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-float _avocado_roundf(float x)
+float roundf(float x)
 {
   return __CPROVER_round_to_integralf(x, 4); // RNA
 }
@@ -1440,7 +1440,7 @@ float _avocado_roundf(float x)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-long double _avocado_roundl(long double x)
+long double roundl(long double x)
 {
   return __CPROVER_round_to_integralld(x, 4); // RNA
 }
@@ -1468,7 +1468,7 @@ long double _avocado_roundl(long double x)
 
 extern int __CPROVER_rounding_mode;
 
-double _avocado_nearbyint(double x)
+double nearbyint(double x)
 {
   return __CPROVER_round_to_integrald(x, __CPROVER_rounding_mode);
 }
@@ -1487,7 +1487,7 @@ double _avocado_nearbyint(double x)
 
 extern int __CPROVER_rounding_mode;
 
-float _avocado_nearbyintf(float x)
+float nearbyintf(float x)
 {
   return __CPROVER_round_to_integralf(x, __CPROVER_rounding_mode);
 }
@@ -1507,7 +1507,7 @@ float _avocado_nearbyintf(float x)
 
 extern int __CPROVER_rounding_mode;
 
-long double _avocado_nearbyintl(long double x)
+long double nearbyintl(long double x)
 {
   return __CPROVER_round_to_integralld(x, __CPROVER_rounding_mode);
 }
@@ -1535,7 +1535,7 @@ long double _avocado_nearbyintl(long double x)
 
 extern int __CPROVER_rounding_mode;
 
-double _avocado_rint(double x)
+double rint(double x)
 {
   return __CPROVER_round_to_integrald(x, __CPROVER_rounding_mode);
 }
@@ -1554,7 +1554,7 @@ double _avocado_rint(double x)
 
 extern int __CPROVER_rounding_mode;
 
-float _avocado_rintf(float x)
+float rintf(float x)
 {
   return __CPROVER_round_to_integralf(x, __CPROVER_rounding_mode);
 }
@@ -1573,7 +1573,7 @@ float _avocado_rintf(float x)
 
 extern int __CPROVER_rounding_mode;
 
-long double _avocado_rintl(long double x)
+long double rintl(long double x)
 {
   return __CPROVER_round_to_integralld(x, __CPROVER_rounding_mode);
 }
@@ -1603,7 +1603,7 @@ long double _avocado_rintl(long double x)
 
 extern int __CPROVER_rounding_mode;
 
-long int _avocado_lrint(double x)
+long int lrint(double x)
 {
   double rti = __CPROVER_round_to_integrald(x, __CPROVER_rounding_mode);
   return (long int)rti;
@@ -1623,7 +1623,7 @@ long int _avocado_lrint(double x)
 
 extern int __CPROVER_rounding_mode;
 
-long int _avocado_lrintf(float x)
+long int lrintf(float x)
 {
   float rti = __CPROVER_round_to_integralf(x, __CPROVER_rounding_mode);
   return (long int)rti;
@@ -1644,7 +1644,7 @@ long int _avocado_lrintf(float x)
 
 extern int __CPROVER_rounding_mode;
 
-long int _avocado_lrintl(long double x)
+long int lrintl(long double x)
 {
   long double rti = __CPROVER_round_to_integralld(x, __CPROVER_rounding_mode);
   return (long int)rti;
@@ -1665,7 +1665,7 @@ long int _avocado_lrintl(long double x)
 
 extern int __CPROVER_rounding_mode;
 
-long long int _avocado_llrint(double x)
+long long int llrint(double x)
 {
   double rti = __CPROVER_round_to_integrald(x, __CPROVER_rounding_mode);
   return (long long int)rti;
@@ -1685,7 +1685,7 @@ long long int _avocado_llrint(double x)
 
 extern int __CPROVER_rounding_mode;
 
-long long int _avocado_llrintf(float x)
+long long int llrintf(float x)
 {
   float rti = __CPROVER_round_to_integralf(x, __CPROVER_rounding_mode);
   return (long long int)rti;
@@ -1706,7 +1706,7 @@ long long int _avocado_llrintf(float x)
 
 extern int __CPROVER_rounding_mode;
 
-long long int _avocado_llrintl(long double x)
+long long int llrintl(long double x)
 {
   long double rti = __CPROVER_round_to_integralld(x, __CPROVER_rounding_mode);
   return (long long int)rti;
@@ -1734,7 +1734,7 @@ long long int _avocado_llrintl(long double x)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-long int _avocado_lround(double x)
+long int lround(double x)
 {
   double rti = __CPROVER_round_to_integrald(x, 4); // RNA
   return (long int)rti;
@@ -1752,7 +1752,7 @@ long int _avocado_lround(double x)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-long int _avocado_lroundf(float x)
+long int lroundf(float x)
 {
   float rti = __CPROVER_round_to_integralf(x, 4); // RNA
   return (long int)rti;
@@ -1771,7 +1771,7 @@ long int _avocado_lroundf(float x)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-long int _avocado_lroundl(long double x)
+long int lroundl(long double x)
 {
   long double rti = __CPROVER_round_to_integralld(x, 4); // RNA
   return (long int)rti;
@@ -1790,7 +1790,7 @@ long int _avocado_lroundl(long double x)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-long long int _avocado_llround(double x)
+long long int llround(double x)
 {
   double rti = __CPROVER_round_to_integrald(x, 4); // RNA
   return (long long int)rti;
@@ -1808,7 +1808,7 @@ long long int _avocado_llround(double x)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-long long int _avocado_llroundf(float x)
+long long int llroundf(float x)
 {
   float rti = __CPROVER_round_to_integralf(x, 4); // RNA
   return (long long int)rti;
@@ -1827,7 +1827,7 @@ long long int _avocado_llroundf(float x)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-long long int _avocado_llroundl(long double x)
+long long int llroundl(long double x)
 {
   long double rti = __CPROVER_round_to_integralld(x, 4); // RNA
   return (long long int)rti;
@@ -1854,7 +1854,7 @@ long long int _avocado_llroundl(long double x)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-double _avocado_modf(double x, double *iptr)
+double modf(double x, double *iptr)
 {
   *iptr = __CPROVER_round_to_integrald(x, 3); // FE_TOWARDZERO
   return (x - *iptr);
@@ -1872,7 +1872,7 @@ double _avocado_modf(double x, double *iptr)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-float _avocado_modff(float x, float *iptr)
+float modff(float x, float *iptr)
 {
   *iptr = __CPROVER_round_to_integralf(x, 3); // FE_TOWARDZERO
   return (x - *iptr);
@@ -1891,7 +1891,7 @@ float _avocado_modff(float x, float *iptr)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-long double _avocado_modfl(long double x, long double *iptr)
+long double modfl(long double x, long double *iptr)
 {
   *iptr = __CPROVER_round_to_integralld(x, 3); // FE_TOWARDZERO
   return (x - *iptr);
@@ -1902,7 +1902,7 @@ long double _avocado_modfl(long double x, long double *iptr)
 /* FUNCTION: __sort_of_CPROVER_remainder */
 // TODO : Should be a real __CPROVER function to convert to SMT-LIB
 
-double _avocado___sort_of_CPROVER_remainder (int rounding_mode, double x, double y)
+double __sort_of_CPROVER_remainder (int rounding_mode, double x, double y)
 {
   if (x == 0.0 || __CPROVER_isinfd(y))
     return x;
@@ -1917,7 +1917,7 @@ double _avocado___sort_of_CPROVER_remainder (int rounding_mode, double x, double
 /* FUNCTION: __sort_of_CPROVER_remainderf */
 // TODO : Should be a real __CPROVER function to convert to SMT-LIB
 
-float _avocado___sort_of_CPROVER_remainderf (int rounding_mode, float x, float y)
+float __sort_of_CPROVER_remainderf (int rounding_mode, float x, float y)
 {
   if (x == 0.0f || __CPROVER_isinff(y))
     return x;
@@ -1932,7 +1932,7 @@ float _avocado___sort_of_CPROVER_remainderf (int rounding_mode, float x, float y
 /* FUNCTION: __sort_of_CPROVER_remainderl */
 // TODO : Should be a real __CPROVER function to convert to SMT-LIB
 
-long double _avocado___sort_of_CPROVER_remainderl (int rounding_mode, long double x, long double y)
+long double __sort_of_CPROVER_remainderl (int rounding_mode, long double x, long double y)
 {
   if (x == 0.0 || __CPROVER_isinfld(y))
     return x;
@@ -1967,7 +1967,7 @@ long double _avocado___sort_of_CPROVER_remainderl (int rounding_mode, long doubl
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-double _avocado_fmod(double x, double y)
+double fmod(double x, double y)
 {
   return __CPROVER_fmod(x, y);
 }
@@ -1984,7 +1984,7 @@ double _avocado_fmod(double x, double y)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-float _avocado_fmodf(float x, float y)
+float fmodf(float x, float y)
 {
   return __CPROVER_fmodf(x, y);
 }
@@ -2001,7 +2001,7 @@ float _avocado_fmodf(float x, float y)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-long double _avocado_fmodl(long double x, long double y)
+long double fmodl(long double x, long double y)
 {
   return __CPROVER_fmodl(x, y);
 }
@@ -2031,9 +2031,9 @@ long double _avocado_fmodl(long double x, long double y)
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-double _avocado___sort_of_CPROVER_remainder (int rounding_mode, double x, double y);
+double __sort_of_CPROVER_remainder (int rounding_mode, double x, double y);
 
-double _avocado_remainder(double x, double y) { return _avocado___sort_of_CPROVER_remainder(FE_TONEAREST, x, y); }
+double remainder(double x, double y) { return __sort_of_CPROVER_remainder(FE_TONEAREST, x, y); }
 
 
 /* FUNCTION: remainderf */
@@ -2048,9 +2048,9 @@ double _avocado_remainder(double x, double y) { return _avocado___sort_of_CPROVE
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-float _avocado___sort_of_CPROVER_remainderf (int rounding_mode, float x, float y);
+float __sort_of_CPROVER_remainderf (int rounding_mode, float x, float y);
 
-float _avocado_remainderf(float x, float y) { return _avocado___sort_of_CPROVER_remainderf(FE_TONEAREST, x, y); }
+float remainderf(float x, float y) { return __sort_of_CPROVER_remainderf(FE_TONEAREST, x, y); }
 
 
 /* FUNCTION: remainderl */
@@ -2065,9 +2065,9 @@ float _avocado_remainderf(float x, float y) { return _avocado___sort_of_CPROVER_
 #define __CPROVER_FENV_H_INCLUDED
 #endif
 
-long double _avocado___sort_of_CPROVER_remainderl (int rounding_mode, long double x, long double y);
+long double __sort_of_CPROVER_remainderl (int rounding_mode, long double x, long double y);
 
-long double _avocado_remainderl(long double x, long double y) { return _avocado___sort_of_CPROVER_remainderl(FE_TONEAREST, x, y); }
+long double remainderl(long double x, long double y) { return __sort_of_CPROVER_remainderl(FE_TONEAREST, x, y); }
 
 
 
@@ -2087,12 +2087,12 @@ long double _avocado_remainderl(long double x, long double y) { return _avocado_
 #define __CPROVER_MATH_H_INCLUDED
 #endif
 
-double _avocado_fabs (double d);
+double fabs (double d);
 
-double _avocado_copysign(double x, double y)
+double copysign(double x, double y)
 {
-  double abs = _avocado_fabs(x);
-  return (_avocado_signbit(y)) ? -abs : abs;
+  double abs = fabs(x);
+  return (signbit(y)) ? -abs : abs;
 }
 
 /* FUNCTION: copysignf */
@@ -2102,12 +2102,12 @@ double _avocado_copysign(double x, double y)
 #define __CPROVER_MATH_H_INCLUDED
 #endif
 
-float _avocado_fabsf (float d);
+float fabsf (float d);
 
-float _avocado_copysignf(float x, float y)
+float copysignf(float x, float y)
 {
-  float abs = _avocado_fabsf(x);
-  return (_avocado_signbit(y)) ? -abs : abs;
+  float abs = fabsf(x);
+  return (signbit(y)) ? -abs : abs;
 }
 
 /* FUNCTION: copysignl */
@@ -2117,12 +2117,12 @@ float _avocado_copysignf(float x, float y)
 #define __CPROVER_MATH_H_INCLUDED
 #endif
 
-long double _avocado_fabsl (long double d);
+long double fabsl (long double d);
 
-long double _avocado_copysignl(long double x, long double y)
+long double copysignl(long double x, long double y)
 {
-  long double abs = _avocado_fabsl(x);
-  return (_avocado_signbit(y)) ? -abs : abs;
+  long double abs = fabsl(x);
+  return (signbit(y)) ? -abs : abs;
 }
 
 /* FUNCTION: exp2 */
@@ -2132,9 +2132,9 @@ long double _avocado_copysignl(long double x, long double y)
 #  define __CPROVER_MATH_H_INCLUDED
 #endif
 
-double _avocado_exp2(double x)
+double exp2(double x)
 {
-  return _avocado_pow(2.0, x);
+  return pow(2.0, x);
 }
 
 /* FUNCTION: exp2f */
@@ -2144,9 +2144,9 @@ double _avocado_exp2(double x)
 #  define __CPROVER_MATH_H_INCLUDED
 #endif
 
-float _avocado_exp2f(float x)
+float exp2f(float x)
 {
-  return _avocado_powf(2.0f, x);
+  return powf(2.0f, x);
 }
 
 /* FUNCTION: exp2l */
@@ -2156,9 +2156,9 @@ float _avocado_exp2f(float x)
 #  define __CPROVER_MATH_H_INCLUDED
 #endif
 
-long double _avocado_exp2l(long double x)
+long double exp2l(long double x)
 {
-  return _avocado_powl(2.0l, x);
+  return powl(2.0l, x);
 }
 
 /* FUNCTION: exp */
@@ -2183,7 +2183,7 @@ long double _avocado_exp2l(long double x)
 
 int32_t __VERIFIER_nondet_int32_t(void);
 
-double _avocado_exp(double x)
+double exp(double x)
 {
   if(__CPROVER_isnand(x) || (__CPROVER_isinfd(x) && !__CPROVER_signd(x)))
     return x;
@@ -2260,7 +2260,7 @@ double _avocado_exp(double x)
 
 int32_t __VERIFIER_nondet_int32_t(void);
 
-float _avocado_expf(float x)
+float expf(float x)
 {
   if(__CPROVER_isnanf(x) || (__CPROVER_isinff(x) && !__CPROVER_signf(x)))
     return x;
@@ -2335,7 +2335,7 @@ float _avocado_expf(float x)
 
 int32_t __VERIFIER_nondet_int32_t(void);
 
-long double _avocado_expl(long double x)
+long double expl(long double x)
 {
   if(__CPROVER_isnanld(x) || (__CPROVER_isinfld(x) && !__CPROVER_signld(x)))
     return x;
@@ -2343,7 +2343,7 @@ long double _avocado_expl(long double x)
     return +0.0l;
 
 #if LDBL_MAX_EXP == DBL_MAX_EXP
-  return _avocado_exp(x);
+  return exp(x);
 #else
   // underflow/overflow when the result is not representable in 15 exponent bits
   if(x < -16384.0l * M_LN2)
@@ -2413,7 +2413,7 @@ long double _avocado_expl(long double x)
 
 int32_t __VERIFIER_nondet_int32_t(void);
 
-double _avocado_log(double x)
+double log(double x)
 {
   if(__CPROVER_isnand(x) || (__CPROVER_isinfd(x) && !__CPROVER_signd(x)))
     return x;
@@ -2481,7 +2481,7 @@ double _avocado_log(double x)
 
 int32_t __VERIFIER_nondet_int32_t(void);
 
-float _avocado_logf(float x)
+float logf(float x)
 {
   if(__CPROVER_isnanf(x) || (__CPROVER_isinff(x) && !__CPROVER_signf(x)))
     return x;
@@ -2550,7 +2550,7 @@ float _avocado_logf(float x)
 
 int32_t __VERIFIER_nondet_int32_t(void);
 
-long double _avocado_logl(long double x)
+long double logl(long double x)
 {
   if(__CPROVER_isnanld(x) || (__CPROVER_isinfld(x) && !__CPROVER_signld(x)))
     return x;
@@ -2574,7 +2574,7 @@ long double _avocado_logl(long double x)
   }
 
 #if LDBL_MAX_EXP == DBL_MAX_EXP
-  return _avocado_log(x);
+  return log(x);
 #else
 #  ifndef _MSC_VER
   _Static_assert
@@ -2624,7 +2624,7 @@ long double _avocado_logl(long double x)
 
 int32_t __VERIFIER_nondet_int32_t(void);
 
-double _avocado_log2(double x)
+double log2(double x)
 {
   if(__CPROVER_isnand(x) || (__CPROVER_isinfd(x) && !__CPROVER_signd(x)))
     return x;
@@ -2691,7 +2691,7 @@ double _avocado_log2(double x)
 
 int32_t __VERIFIER_nondet_int32_t(void);
 
-float _avocado_log2f(float x)
+float log2f(float x)
 {
   if(__CPROVER_isnanf(x) || (__CPROVER_isinff(x) && !__CPROVER_signf(x)))
     return x;
@@ -2759,7 +2759,7 @@ float _avocado_log2f(float x)
 
 int32_t __VERIFIER_nondet_int32_t(void);
 
-long double _avocado_log2l(long double x)
+long double log2l(long double x)
 {
   if(__CPROVER_isnanld(x) || (__CPROVER_isinfld(x) && !__CPROVER_signld(x)))
     return x;
@@ -2783,7 +2783,7 @@ long double _avocado_log2l(long double x)
   }
 
 #if LDBL_MAX_EXP == DBL_MAX_EXP
-  return _avocado_log2(x);
+  return log2(x);
 #else
 #  ifndef _MSC_VER
   _Static_assert
@@ -2833,7 +2833,7 @@ long double _avocado_log2l(long double x)
 
 int32_t __VERIFIER_nondet_int32_t(void);
 
-double _avocado_log10(double x)
+double log10(double x)
 {
   if(__CPROVER_isnand(x) || (__CPROVER_isinfd(x) && !__CPROVER_signd(x)))
     return x;
@@ -2903,7 +2903,7 @@ double _avocado_log10(double x)
 
 int32_t __VERIFIER_nondet_int32_t(void);
 
-float _avocado_log10f(float x)
+float log10f(float x)
 {
   if(__CPROVER_isnanf(x) || (__CPROVER_isinff(x) && !__CPROVER_signf(x)))
     return x;
@@ -2973,7 +2973,7 @@ float _avocado_log10f(float x)
 
 int32_t __VERIFIER_nondet_int32_t(void);
 
-long double _avocado_log10l(long double x)
+long double log10l(long double x)
 {
   if(__CPROVER_isnanld(x) || (__CPROVER_isinfld(x) && !__CPROVER_signld(x)))
     return x;
@@ -2997,7 +2997,7 @@ long double _avocado_log10l(long double x)
   }
 
 #if LDBL_MAX_EXP == DBL_MAX_EXP
-  return _avocado_log10(x);
+  return log10(x);
 #else
 #  ifndef _MSC_VER
   _Static_assert
@@ -3044,14 +3044,14 @@ long double _avocado_log10l(long double x)
 
 int32_t __VERIFIER_nondet_int32_t(void);
 
-double _avocado___builtin_inf(void);
+double __builtin_inf(void);
 
-double _avocado_pow(double x, double y)
+double pow(double x, double y)
 {
   // see man pow (https://linux.die.net/man/3/pow)
   if(
     __CPROVER_isfinited(x) && __CPROVER_signd(x) && __CPROVER_isfinited(y) &&
-    _avocado_nearbyint(y) != y)
+    nearbyint(y) != y)
   {
     errno = EDOM;
 #pragma CPROVER check push
@@ -3065,67 +3065,67 @@ double _avocado_pow(double x, double y)
     return 1.0;
   else if(fpclassify(x) == FP_ZERO && !__CPROVER_signd(y))
   {
-    if(_avocado_nearbyint(y) == y && _avocado_fabs(_avocado_fmod(y, 2.0)) == 1.0)
+    if(nearbyint(y) == y && fabs(fmod(y, 2.0)) == 1.0)
       return x;
     else
       return +0.0;
   }
-  else if(_avocado_isinf(y))
+  else if(isinf(y))
   {
     // x == 1.0 and y-is-zero caught above
     if(x == -1.0)
       return 1.0;
     else if(__CPROVER_signd(y))
     {
-      if(_avocado_fabs(x) < 1.0)
-        return _avocado___builtin_inf();
+      if(fabs(x) < 1.0)
+        return __builtin_inf();
       else
         return +0.0;
     }
     else
     {
-      if(_avocado_fabs(x) < 1.0)
+      if(fabs(x) < 1.0)
         return +0.0;
       else
-        return _avocado___builtin_inf();
+        return __builtin_inf();
     }
   }
-  else if(_avocado_isinf(x) && __CPROVER_signd(x))
+  else if(isinf(x) && __CPROVER_signd(x))
   {
     if(__CPROVER_signd(y))
     {
-      if(_avocado_nearbyint(y) == y && _avocado_fabs(_avocado_fmod(y, 2.0)) == 1.0)
+      if(nearbyint(y) == y && fabs(fmod(y, 2.0)) == 1.0)
         return -0.0;
       else
         return +0.0;
     }
     else
     {
-      if(_avocado_nearbyint(y) == y && _avocado_fabs(_avocado_fmod(y, 2.0)) == 1.0)
-        return -_avocado___builtin_inf();
+      if(nearbyint(y) == y && fabs(fmod(y, 2.0)) == 1.0)
+        return -__builtin_inf();
       else
-        return _avocado___builtin_inf();
+        return __builtin_inf();
     }
   }
-  else if(_avocado_isinf(x) && !__CPROVER_signd(x))
+  else if(isinf(x) && !__CPROVER_signd(x))
   {
     if(__CPROVER_signd(y))
       return +0.0;
     else
-      return _avocado___builtin_inf();
+      return __builtin_inf();
   }
   else if(fpclassify(x) == FP_ZERO && __CPROVER_signd(y))
   {
     errno = ERANGE;
 #pragma CPROVER check push
 #pragma CPROVER check disable "float-overflow"
-    if(__CPROVER_signd(x) && _avocado_nearbyint(y) == y && _avocado_fabs(_avocado_fmod(y, 2.0)) == 1.0)
+    if(__CPROVER_signd(x) && nearbyint(y) == y && fabs(fmod(y, 2.0)) == 1.0)
       return -HUGE_VAL;
     else
       return HUGE_VAL;
 #pragma CPROVER check pop
   }
-  else if(_avocado_isnan(x) || _avocado_isnan(y))
+  else if(isnan(x) || isnan(y))
 #pragma CPROVER check push
 #pragma CPROVER check disable "float-div-by-zero"
     return 0.0 / 0.0;
@@ -3155,7 +3155,7 @@ double _avocado_pow(double x, double y)
   double mult_result = y * (double)(u.i[0] - (bias + exp_c));
 #endif
 #pragma CPROVER check pop
-  if(_avocado_fabs(mult_result) > (double)(1 << 30))
+  if(fabs(mult_result) > (double)(1 << 30))
   {
     errno = ERANGE;
 #pragma CPROVER check push
@@ -3192,14 +3192,14 @@ double _avocado_pow(double x, double y)
 
 int32_t __VERIFIER_nondet_int32_t(void);
 
-float _avocado___builtin_inff(void);
+float __builtin_inff(void);
 
-float _avocado_powf(float x, float y)
+float powf(float x, float y)
 {
   // see man pow (https://linux.die.net/man/3/pow)
   if(
     __CPROVER_isfinitef(x) && __CPROVER_signf(x) && __CPROVER_isfinitef(y) &&
-    _avocado_nearbyintf(y) != y)
+    nearbyintf(y) != y)
   {
     errno = EDOM;
 #pragma CPROVER check push
@@ -3213,54 +3213,54 @@ float _avocado_powf(float x, float y)
     return 1.0f;
   else if(fpclassify(x) == FP_ZERO && !__CPROVER_signf(y))
   {
-    if(_avocado_nearbyintf(y) == y && _avocado_fabsf(_avocado_fmodf(y, 2.0f)) == 1.0f)
+    if(nearbyintf(y) == y && fabsf(fmodf(y, 2.0f)) == 1.0f)
       return x;
     else
       return +0.0f;
   }
-  else if(_avocado_isinff(y))
+  else if(isinff(y))
   {
     // x == 1.0f and y-is-zero caught above
     if(x == -1.0f)
       return 1.0f;
     else if(__CPROVER_signf(y))
     {
-      if(_avocado_fabsf(x) < 1.0f)
-        return _avocado___builtin_inff();
+      if(fabsf(x) < 1.0f)
+        return __builtin_inff();
       else
         return +0.0f;
     }
     else
     {
-      if(_avocado_fabsf(x) < 1.0f)
+      if(fabsf(x) < 1.0f)
         return +0.0f;
       else
-        return _avocado___builtin_inff();
+        return __builtin_inff();
     }
   }
-  else if(_avocado_isinff(x) && __CPROVER_signf(x))
+  else if(isinff(x) && __CPROVER_signf(x))
   {
     if(__CPROVER_signf(y))
     {
-      if(_avocado_nearbyintf(y) == y && _avocado_fabsf(_avocado_fmodf(y, 2.0f)) == 1.0f)
+      if(nearbyintf(y) == y && fabsf(fmodf(y, 2.0f)) == 1.0f)
         return -0.0f;
       else
         return +0.0f;
     }
     else
     {
-      if(_avocado_nearbyintf(y) == y && _avocado_fabsf(_avocado_fmodf(y, 2.0f)) == 1.0f)
-        return -_avocado___builtin_inff();
+      if(nearbyintf(y) == y && fabsf(fmodf(y, 2.0f)) == 1.0f)
+        return -__builtin_inff();
       else
-        return _avocado___builtin_inff();
+        return __builtin_inff();
     }
   }
-  else if(_avocado_isinff(x) && !__CPROVER_signf(x))
+  else if(isinff(x) && !__CPROVER_signf(x))
   {
     if(__CPROVER_signf(y))
       return +0.0f;
     else
-      return _avocado___builtin_inff();
+      return __builtin_inff();
   }
   else if(fpclassify(x) == FP_ZERO && __CPROVER_signf(y))
   {
@@ -3268,7 +3268,7 @@ float _avocado_powf(float x, float y)
 #pragma CPROVER check push
 #pragma CPROVER check disable "float-overflow"
     if(
-      __CPROVER_signf(x) && _avocado_nearbyintf(y) == y && _avocado_fabsf(_avocado_fmodf(y, 2.0f)) == 1.0f)
+      __CPROVER_signf(x) && nearbyintf(y) == y && fabsf(fmodf(y, 2.0f)) == 1.0f)
     {
       return -HUGE_VALF;
     }
@@ -3276,7 +3276,7 @@ float _avocado_powf(float x, float y)
       return HUGE_VALF;
 #pragma CPROVER check pop
   }
-  else if(_avocado_isnanf(x) || _avocado_isnanf(y))
+  else if(isnanf(x) || isnanf(y))
 #pragma CPROVER check push
 #pragma CPROVER check disable "float-div-by-zero"
     return 0.0f / 0.0f;
@@ -3301,7 +3301,7 @@ float _avocado_powf(float x, float y)
 #pragma CPROVER check disable "signed-overflow"
   float mult_result = y * (float)(u.i - (bias + exp_c));
 #pragma CPROVER check pop
-  if(_avocado_fabsf(mult_result) > (float)(1 << 30))
+  if(fabsf(mult_result) > (float)(1 << 30))
   {
     errno = ERANGE;
 #pragma CPROVER check push
@@ -3337,14 +3337,14 @@ float _avocado_powf(float x, float y)
 
 int32_t __VERIFIER_nondet_int32_t(void);
 
-long double _avocado___builtin_infl(void);
+long double __builtin_infl(void);
 
-long double _avocado_powl(long double x, long double y)
+long double powl(long double x, long double y)
 {
   // see man pow (https://linux.die.net/man/3/pow)
   if(
     __CPROVER_isfiniteld(x) && __CPROVER_signld(x) && __CPROVER_isfiniteld(y) &&
-    _avocado_nearbyintl(y) != y)
+    nearbyintl(y) != y)
   {
     errno = EDOM;
 #pragma CPROVER check push
@@ -3358,54 +3358,54 @@ long double _avocado_powl(long double x, long double y)
     return 1.0l;
   else if(fpclassify(x) == FP_ZERO && !__CPROVER_signld(y))
   {
-    if(_avocado_nearbyintl(y) == y && _avocado_fabsl(_avocado_fmodl(y, 2.0l)) == 1.0l)
+    if(nearbyintl(y) == y && fabsl(fmodl(y, 2.0l)) == 1.0l)
       return x;
     else
       return +0.0l;
   }
-  else if(_avocado_isinfl(y))
+  else if(isinfl(y))
   {
     // x == 1.0l and y-is-zero caught above
     if(x == -1.0l)
       return 1.0l;
     else if(__CPROVER_signld(y))
     {
-      if(_avocado_fabsl(x) < 1.0l)
-        return _avocado___builtin_infl();
+      if(fabsl(x) < 1.0l)
+        return __builtin_infl();
       else
         return +0.0l;
     }
     else
     {
-      if(_avocado_fabsl(x) < 1.0l)
+      if(fabsl(x) < 1.0l)
         return +0.0l;
       else
-        return _avocado___builtin_infl();
+        return __builtin_infl();
     }
   }
-  else if(_avocado_isinfl(x) && __CPROVER_signld(x))
+  else if(isinfl(x) && __CPROVER_signld(x))
   {
     if(__CPROVER_signld(y))
     {
-      if(_avocado_nearbyintl(y) == y && _avocado_fabsl(_avocado_fmodl(y, 2.0l)) == 1.0l)
+      if(nearbyintl(y) == y && fabsl(fmodl(y, 2.0l)) == 1.0l)
         return -0.0l;
       else
         return +0.0l;
     }
     else
     {
-      if(_avocado_nearbyintl(y) == y && _avocado_fabsl(_avocado_fmodl(y, 2.0l)) == 1.0l)
-        return -_avocado___builtin_infl();
+      if(nearbyintl(y) == y && fabsl(fmodl(y, 2.0l)) == 1.0l)
+        return -__builtin_infl();
       else
-        return _avocado___builtin_infl();
+        return __builtin_infl();
     }
   }
-  else if(_avocado_isinfl(x) && !__CPROVER_signld(x))
+  else if(isinfl(x) && !__CPROVER_signld(x))
   {
     if(__CPROVER_signld(y))
       return +0.0f;
     else
-      return _avocado___builtin_infl();
+      return __builtin_infl();
   }
   else if(fpclassify(x) == FP_ZERO && __CPROVER_signld(y))
   {
@@ -3413,8 +3413,8 @@ long double _avocado_powl(long double x, long double y)
 #pragma CPROVER check push
 #pragma CPROVER check disable "float-overflow"
     if(
-      __CPROVER_signld(x) && _avocado_nearbyintl(y) == y &&
-      _avocado_fabsl(_avocado_fmodl(y, 2.0l)) == 1.0l)
+      __CPROVER_signld(x) && nearbyintl(y) == y &&
+      fabsl(fmodl(y, 2.0l)) == 1.0l)
     {
       return -HUGE_VALL;
     }
@@ -3422,14 +3422,14 @@ long double _avocado_powl(long double x, long double y)
       return HUGE_VALL;
 #pragma CPROVER check pop
   }
-  else if(_avocado_isnanl(x) || _avocado_isnanl(y))
+  else if(isnanl(x) || isnanl(y))
 #pragma CPROVER check push
 #pragma CPROVER check disable "float-div-by-zero"
     return 0.0l / 0.0l;
 #pragma CPROVER check pop
 
 #if LDBL_MAX_EXP == DBL_MAX_EXP
-  return _avocado_pow(x, y);
+  return pow(x, y);
 #else
 #  ifndef _MSC_VER
   _Static_assert
@@ -3455,7 +3455,7 @@ long double _avocado_powl(long double x, long double y)
 #  pragma CPROVER check disable "signed-overflow"
   long double mult_result = y * (long double)(exponent - (bias + exp_c));
 #  pragma CPROVER check pop
-  if(_avocado_fabsl(mult_result) > (long double)(1 << 30))
+  if(fabsl(mult_result) > (long double)(1 << 30))
   {
     errno = ERANGE;
 #  pragma CPROVER check push
@@ -3486,40 +3486,40 @@ long double _avocado_powl(long double x, long double y)
 #  define __CPROVER_FENV_H_INCLUDED
 #endif
 
-double _avocado___builtin_inf(void);
+double __builtin_inf(void);
 
-double _avocado_fma(double x, double y, double z)
+double fma(double x, double y, double z)
 {
   // see man fma (https://linux.die.net/man/3/fma)
 #pragma CPROVER check push
 #pragma CPROVER check disable "float-div-by-zero"
-  if(_avocado_isnan(x) || _avocado_isnan(y))
+  if(isnan(x) || isnan(y))
     return 0.0 / 0.0;
   else if(
-    (_avocado_isinf(x) || _avocado_isinf(y)) &&
+    (isinf(x) || isinf(y)) &&
     (fpclassify(x) == FP_ZERO || fpclassify(y) == FP_ZERO))
   {
-    _avocado_feraiseexcept(FE_INVALID);
+    feraiseexcept(FE_INVALID);
     return 0.0 / 0.0;
   }
-  else if(_avocado_isnan(z))
+  else if(isnan(z))
     return 0.0 / 0.0;
 
 #pragma CPROVER check disable "float-overflow"
   double x_times_y = x * y;
   if(
-    _avocado_isinf(x_times_y) && _avocado_isinf(z) &&
+    isinf(x_times_y) && isinf(z) &&
     __CPROVER_signd(x_times_y) != __CPROVER_signd(z))
   {
-    _avocado_feraiseexcept(FE_INVALID);
+    feraiseexcept(FE_INVALID);
     return 0.0 / 0.0;
   }
 #pragma CPROVER check pop
 
-  if(_avocado_isinf(x_times_y))
+  if(isinf(x_times_y))
   {
-    _avocado_feraiseexcept(FE_OVERFLOW);
-    return __CPROVER_signd(x_times_y) ? -_avocado___builtin_inf() : _avocado___builtin_inf();
+    feraiseexcept(FE_OVERFLOW);
+    return __CPROVER_signd(x_times_y) ? -__builtin_inf() : __builtin_inf();
   }
   // TODO: detect underflow (FE_UNDERFLOW), return +/- 0
 
@@ -3538,40 +3538,40 @@ double _avocado_fma(double x, double y, double z)
 #  define __CPROVER_FENV_H_INCLUDED
 #endif
 
-float _avocado___builtin_inff(void);
+float __builtin_inff(void);
 
-float _avocado_fmaf(float x, float y, float z)
+float fmaf(float x, float y, float z)
 {
   // see man fma (https://linux.die.net/man/3/fma)
 #pragma CPROVER check push
 #pragma CPROVER check disable "float-div-by-zero"
-  if(_avocado_isnanf(x) || _avocado_isnanf(y))
+  if(isnanf(x) || isnanf(y))
     return 0.0f / 0.0f;
   else if(
-    (_avocado_isinff(x) || _avocado_isinff(y)) &&
+    (isinff(x) || isinff(y)) &&
     (fpclassify(x) == FP_ZERO || fpclassify(y) == FP_ZERO))
   {
-    _avocado_feraiseexcept(FE_INVALID);
+    feraiseexcept(FE_INVALID);
     return 0.0f / 0.0f;
   }
-  else if(_avocado_isnanf(z))
+  else if(isnanf(z))
     return 0.0f / 0.0f;
 
 #pragma CPROVER check disable "float-overflow"
   float x_times_y = x * y;
   if(
-    _avocado_isinff(x_times_y) && _avocado_isinff(z) &&
+    isinff(x_times_y) && isinff(z) &&
     __CPROVER_signf(x_times_y) != __CPROVER_signf(z))
   {
-    _avocado_feraiseexcept(FE_INVALID);
+    feraiseexcept(FE_INVALID);
     return 0.0f / 0.0f;
   }
 #pragma CPROVER check pop
 
-  if(_avocado_isinff(x_times_y))
+  if(isinff(x_times_y))
   {
-    _avocado_feraiseexcept(FE_OVERFLOW);
-    return __CPROVER_signf(x_times_y) ? -_avocado___builtin_inff() : _avocado___builtin_inff();
+    feraiseexcept(FE_OVERFLOW);
+    return __CPROVER_signf(x_times_y) ? -__builtin_inff() : __builtin_inff();
   }
   // TODO: detect underflow (FE_UNDERFLOW), return +/- 0
 
@@ -3595,43 +3595,43 @@ float _avocado_fmaf(float x, float y, float z)
 #  define __CPROVER_FLOAT_H_INCLUDED
 #endif
 
-long double _avocado___builtin_infl(void);
+long double __builtin_infl(void);
 
-long double _avocado_fmal(long double x, long double y, long double z)
+long double fmal(long double x, long double y, long double z)
 {
   // see man fma (https://linux.die.net/man/3/fma)
 #pragma CPROVER check push
 #pragma CPROVER check disable "float-div-by-zero"
-  if(_avocado_isnanl(x) || _avocado_isnanl(y))
+  if(isnanl(x) || isnanl(y))
     return 0.0l / 0.0l;
   else if(
-    (_avocado_isinfl(x) || _avocado_isinfl(y)) &&
+    (isinfl(x) || isinfl(y)) &&
     (fpclassify(x) == FP_ZERO || fpclassify(y) == FP_ZERO))
   {
-    _avocado_feraiseexcept(FE_INVALID);
+    feraiseexcept(FE_INVALID);
     return 0.0l / 0.0l;
   }
-  else if(_avocado_isnanl(z))
+  else if(isnanl(z))
     return 0.0l / 0.0l;
 
 #pragma CPROVER check disable "float-overflow"
   long double x_times_y = x * y;
   if(
-    _avocado_isinfl(x_times_y) && _avocado_isinfl(z) &&
+    isinfl(x_times_y) && isinfl(z) &&
     __CPROVER_signld(x_times_y) != __CPROVER_signld(z))
   {
-    _avocado_feraiseexcept(FE_INVALID);
+    feraiseexcept(FE_INVALID);
     return 0.0l / 0.0l;
   }
 #pragma CPROVER check pop
 
 #if LDBL_MAX_EXP == DBL_MAX_EXP
-  return _avocado_fma(x, y, z);
+  return fma(x, y, z);
 #else
-  if(_avocado_isinfl(x_times_y))
+  if(isinfl(x_times_y))
   {
-    _avocado_feraiseexcept(FE_OVERFLOW);
-    return __CPROVER_signld(x_times_y) ? -_avocado___builtin_infl() : _avocado___builtin_infl();
+    feraiseexcept(FE_OVERFLOW);
+    return __CPROVER_signld(x_times_y) ? -__builtin_infl() : __builtin_infl();
   }
   // TODO: detect underflow (FE_UNDERFLOW), return +/- 0
 
@@ -3658,9 +3658,9 @@ long double _avocado_fmal(long double x, long double y, long double z)
 
 int32_t __VERIFIER_nondet_int32_t(void);
 
-double _avocado___builtin_inf(void);
+double __builtin_inf(void);
 
-double _avocado___builtin_powi(double x, int y)
+double __builtin_powi(double x, int y)
 {
   // see man pow (https://linux.die.net/man/3/pow), specialized for y being an
   // integer
@@ -3675,7 +3675,7 @@ double _avocado___builtin_powi(double x, int y)
     else
       return +0.0;
   }
-  else if(_avocado_isinf(x) && __CPROVER_signd(x))
+  else if(isinf(x) && __CPROVER_signd(x))
   {
     if(y < 0)
     {
@@ -3687,17 +3687,17 @@ double _avocado___builtin_powi(double x, int y)
     else
     {
       if(y % 2 == 1)
-        return -_avocado___builtin_inf();
+        return -__builtin_inf();
       else
-        return _avocado___builtin_inf();
+        return __builtin_inf();
     }
   }
-  else if(_avocado_isinf(x) && !__CPROVER_signd(x))
+  else if(isinf(x) && !__CPROVER_signd(x))
   {
     if(y < 0)
       return +0.0;
     else
-      return _avocado___builtin_inf();
+      return __builtin_inf();
   }
   else if(fpclassify(x) == FP_ZERO && y < 0)
   {
@@ -3710,7 +3710,7 @@ double _avocado___builtin_powi(double x, int y)
       return HUGE_VAL;
 #pragma CPROVER check pop
   }
-  else if(_avocado_isnan(x))
+  else if(isnan(x))
 #pragma CPROVER check push
 #pragma CPROVER check disable "float-div-by-zero"
     return 0.0 / 0.0;
@@ -3740,7 +3740,7 @@ double _avocado___builtin_powi(double x, int y)
   double mult_result = (double)(y) * (double)(u.i[0] - (bias + exp_c));
 #endif
 #pragma CPROVER check pop
-  if(_avocado_fabs(mult_result) > (double)(1 << 30))
+  if(fabs(mult_result) > (double)(1 << 30))
   {
     errno = ERANGE;
 #pragma CPROVER check push
@@ -3777,9 +3777,9 @@ double _avocado___builtin_powi(double x, int y)
 
 int32_t __VERIFIER_nondet_int32_t(void);
 
-float _avocado___builtin_inff(void);
+float __builtin_inff(void);
 
-float _avocado___builtin_powif(float x, int y)
+float __builtin_powif(float x, int y)
 {
   // see man pow (https://linux.die.net/man/3/pow), specialized for y being an
   // integer
@@ -3794,7 +3794,7 @@ float _avocado___builtin_powif(float x, int y)
     else
       return +0.0f;
   }
-  else if(_avocado_isinff(x) && __CPROVER_signf(x))
+  else if(isinff(x) && __CPROVER_signf(x))
   {
     if(y < 0)
     {
@@ -3806,17 +3806,17 @@ float _avocado___builtin_powif(float x, int y)
     else
     {
       if(y % 2 == 1)
-        return -_avocado___builtin_inff();
+        return -__builtin_inff();
       else
-        return _avocado___builtin_inff();
+        return __builtin_inff();
     }
   }
-  else if(_avocado_isinff(x) && !__CPROVER_signf(x))
+  else if(isinff(x) && !__CPROVER_signf(x))
   {
     if(y < 0)
       return +0.0f;
     else
-      return _avocado___builtin_inff();
+      return __builtin_inff();
   }
   else if(fpclassify(x) == FP_ZERO && y < 0)
   {
@@ -3831,7 +3831,7 @@ float _avocado___builtin_powif(float x, int y)
       return HUGE_VALF;
 #pragma CPROVER check pop
   }
-  else if(_avocado_isnanf(x))
+  else if(isnanf(x))
 #pragma CPROVER check push
 #pragma CPROVER check disable "float-div-by-zero"
     return 0.0f / 0.0f;
@@ -3856,7 +3856,7 @@ float _avocado___builtin_powif(float x, int y)
 #pragma CPROVER check disable "signed-overflow"
   float mult_result = (float)(y) * (float)(u.i - (bias + exp_c));
 #pragma CPROVER check pop
-  if(_avocado_fabsf(mult_result) > (float)(1 << 30))
+  if(fabsf(mult_result) > (float)(1 << 30))
   {
     errno = ERANGE;
 #pragma CPROVER check push
@@ -3892,10 +3892,10 @@ float _avocado___builtin_powif(float x, int y)
 
 int32_t __VERIFIER_nondet_int32_t(void);
 
-long double _avocado___builtin_infl(void);
-double _avocado___builtin_powi(double, int);
+long double __builtin_infl(void);
+double __builtin_powi(double, int);
 
-long double _avocado___builtin_powil(long double x, int y)
+long double __builtin_powil(long double x, int y)
 {
   // see man pow (https://linux.die.net/man/3/pow), specialized for y being an
   // integer
@@ -3910,7 +3910,7 @@ long double _avocado___builtin_powil(long double x, int y)
     else
       return +0.0l;
   }
-  else if(_avocado_isinf(x) && __CPROVER_signld(x))
+  else if(isinf(x) && __CPROVER_signld(x))
   {
     if(y < 0)
     {
@@ -3922,17 +3922,17 @@ long double _avocado___builtin_powil(long double x, int y)
     else
     {
       if(y % 2 == 1)
-        return -_avocado___builtin_infl();
+        return -__builtin_infl();
       else
-        return _avocado___builtin_infl();
+        return __builtin_infl();
     }
   }
-  else if(_avocado_isinf(x) && !__CPROVER_signld(x))
+  else if(isinf(x) && !__CPROVER_signld(x))
   {
     if(y < 0)
       return +0.0f;
     else
-      return _avocado___builtin_infl();
+      return __builtin_infl();
   }
   else if(fpclassify(x) == FP_ZERO && y < 0)
   {
@@ -3947,14 +3947,14 @@ long double _avocado___builtin_powil(long double x, int y)
       return HUGE_VALL;
 #pragma CPROVER check pop
   }
-  else if(_avocado_isnan(x))
+  else if(isnan(x))
 #pragma CPROVER check push
 #pragma CPROVER check disable "float-div-by-zero"
     return 0.0l / 0.0l;
 #pragma CPROVER check pop
 
 #if LDBL_MAX_EXP == DBL_MAX_EXP
-  return _avocado___builtin_powi(x, y);
+  return __builtin_powi(x, y);
 #else
 #  ifndef _MSC_VER
   _Static_assert
@@ -3981,7 +3981,7 @@ long double _avocado___builtin_powil(long double x, int y)
   long double mult_result =
     (long double)y * (long double)(exponent - (bias + exp_c));
 #  pragma CPROVER check pop
-  if(_avocado_fabsl(mult_result) > (long double)(1 << 30))
+  if(fabsl(mult_result) > (long double)(1 << 30))
   {
     errno = ERANGE;
 #  pragma CPROVER check push
