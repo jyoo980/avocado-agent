@@ -18,6 +18,15 @@ which includes a [User Guide](https://diffblue.github.io/cbmc/user_guide.html)
 and [The CPROVER
 Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 
+## Tool Use
+
+You should always try to use the tools available to you via `avocado-tools` to accomplish tasks.
+
+- **To obtain a call graph of the functions in a file**: Use the `construct_call_graph` tool.
+- **To run CBMC on a function in a file**: Use the `run_cbmc` tool.
+
+Only fall back to manually running CBMC if and only if these tools fail.
+
 ## Syntax of C function specifications (contracts)
 
 Preconditions and postconditions are written after the function signature and
