@@ -1,47 +1,47 @@
 
 /* FUNCTION: isalnum */
 
-int _avocado_isalnum(int c)
+int isalnum(int c)
 { return (c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9'); }
 
 /* FUNCTION: isalpha */
 
-int _avocado_isalpha(int c)
+int isalpha(int c)
 { return (c>='a' && c<='z') || (c>='A' && c<='Z'); }
 
 /* FUNCTION: isblank */
 
-int _avocado_isblank(int c)
+int isblank(int c)
 { return c==' ' || c=='\t'; }
 
 /* FUNCTION: iscntrl */
 
-int _avocado_iscntrl(int c)
+int iscntrl(int c)
 { return (c>=0 && c<='\037') || c=='\177'; }
 
 /* FUNCTION: isdigit */
 
-int _avocado_isdigit(int c)
+int isdigit(int c)
 { return c>='0' && c<='9'; }
 
 /* FUNCTION: isgraph */
 
-int _avocado_isgraph(int c)
+int isgraph(int c)
 { return c>='!' && c<='~'; }
 
 /* FUNCTION: islower */
 
-int _avocado_islower(int c)
+int islower(int c)
 { return c>='a' && c<='z'; }
 
 /* FUNCTION: isprint */
 
-int _avocado_isprint(int c)
+int isprint(int c)
 { return c>=' ' && c<='~'; }
 
 /* FUNCTION: ispunct */
 
-int _avocado_ispunct(int c)
+int ispunct(int c)
 { return c=='!' ||
          c=='"' ||
          c=='#' ||
@@ -77,7 +77,7 @@ int _avocado_ispunct(int c)
 
 /* FUNCTION: isspace */
 
-int _avocado_isspace(int c)
+int isspace(int c)
 { return c=='\t' ||
          c=='\n' ||
          c=='\v' ||
@@ -87,12 +87,12 @@ int _avocado_isspace(int c)
 
 /* FUNCTION: isupper */
 
-int _avocado_isupper(int c)
+int isupper(int c)
 { return c>='A' && c<='Z'; }
 
 /* FUNCTION: isxdigit */
 
-int _avocado_isxdigit(int c)
+int isxdigit(int c)
 { return (c>='A' && c<='F') || (c>='a' && c<='f') || (c>='0' && c<='9'); }
 
 /* FUNCTION: __CPROVER_tolower */
@@ -106,7 +106,7 @@ int __CPROVER_tolower(int c)
 
 int __CPROVER_tolower(int c);
 
-int _avocado_tolower(int c)
+int tolower(int c)
 {
   return __CPROVER_tolower(c);
 }
@@ -115,7 +115,7 @@ int _avocado_tolower(int c)
 
 int __CPROVER_tolower(int c);
 
-int _avocado___tolower(int c)
+int __tolower(int c)
 {
   return __CPROVER_tolower(c);
 }
@@ -131,7 +131,7 @@ int __CPROVER_toupper(int c)
 
 int __CPROVER_toupper(int c);
 
-int _avocado_toupper(int c)
+int toupper(int c)
 {
   return __CPROVER_toupper(c);
 }
@@ -140,7 +140,7 @@ int _avocado_toupper(int c)
 
 int __CPROVER_toupper(int c);
 
-int _avocado___toupper(int c)
+int __toupper(int c)
 {
   return __CPROVER_toupper(c);
 }
