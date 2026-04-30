@@ -1,4 +1,4 @@
-.PHONY: build-image run checks test
+.PHONY: build-image run checks test clean
 
 build-image:
 	docker build -t avocado-agent-container .
@@ -11,6 +11,10 @@ test:
 
 # Run all code style checks.
 checks: style-fix style-check
+
+# Delete artifacts from CBMC runs.
+clean:
+	rm *.goto
 
 # Code style; defines `style-check` and `style-fix`.
 CODE_STYLE_EXCLUSIONS_USER := --exclude-dir test --exclude-dir data --exclude-dir docs --exclude CLAUDE.md
