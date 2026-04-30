@@ -1,7 +1,6 @@
 """Stdio MCP server exposing a `run_cbmc` tool to Claude Code."""
 
 import subprocess
-from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -11,22 +10,22 @@ mcp = FastMCP(name="run_cbmc")
 @mcp.tool()
 def run_cbmc(
     function_to_verify: str,
-    stub_file_paths: list[str],
+    # stub_file_paths: list[str],
     file_containing_function_to_verify: str,
-    callee_functions: list[str],
 ) -> str:
     """Run CBMC on the given function with loop unwinding = 5, depth = 100.
 
     Returns:
         The combined stdout and stderr produced by the CBMC pipeline.
     """
+    # TODO: Automatically determine the stub file paths and the callees.
+    callees = []
+    stub_file_paths = []
     cbmc_command = _get_cbmc_command(
-        {
-            "function_to_verify": function_to_verify,
-            "stub_file_paths": stub_file_paths,
-            "file_containing_function_to_verify": file_containing_function_to_verify,
-            "callee_functions": callee_functions,
-        }
+        function_to_verify,
+        stub_file_paths,
+        callees,
+        file_containing_function_to_verify,
     )
     result = subprocess.run(cbmc_command, capture_output=True, text=True, shell=True, check=False)
     if result.returncode == 0:
@@ -35,29 +34,33 @@ def run_cbmc(
     return f"{function_to_verify} failed to verify"
 
 
-def _get_cbmc_command(args: dict[str, Any]) -> str:
+def _get_cbmc_command(
+    function_to_verify: str,
+    stub_file_paths: list[str],
+    callees: list[str],
+    file_containing_function: str,
+) -> str:
     """Return the command that should be used to verify a function in a C file with CBMC.
 
     The command will run CBMC with a loop unrolling bound of 5, and a symbolic exploration depth of
     100 along execution paths.
 
     Args:
-        args (dict[str, Any]): The map containing the arguments to populate the CBMC command with.
+        function_to_verify (str): The function to verify.
+        stub_file_paths (list[str]): The list of stub files to pass to CBMC.
+        callees (list[str]): The callees of the function to verify.
+        file_containing_function (str): The path to the file containing the function to verify.
 
     Returns:
         str: The CBMC command that should be used by Claude.
     """
-    function_to_verify = args["function_to_verify"]
-    stub_file_paths: list[str] = args["stub_file_paths"]
-    file_containing_function_to_verify: str = args["file_containing_function_to_verify"]
-    callee_functions: list[str] = args["callee_functions"]
-    replace_calls = "".join(f" --replace-call-with-contract {c}" for c in callee_functions)
+    replace_calls = "".join(f" --replace-call-with-contract {c}" for c in callees)
     return " && ".join(
         [
             (
                 f"goto-cc -o {function_to_verify}.goto"
                 f"{' ' + ' '.join(stub_file_paths) if stub_file_paths else ''} "
-                f"{file_containing_function_to_verify} "
+                f"{file_containing_function} "
                 f"{function_to_verify} "
                 f"--function {function_to_verify}"
             ),

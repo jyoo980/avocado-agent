@@ -3,6 +3,10 @@
     "run_cbmc": {
       "command": "uv",
       "args": ["run", "python", "tools/run_cbmc.py"]
+    },
+    "construct_call_graph": {
+      "command": "uv",
+      "args": ["run", "python", "tools/construct_call_graph.py"]
     }
   }
 }

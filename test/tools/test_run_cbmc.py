@@ -4,13 +4,12 @@ from tools.run_cbmc import _get_cbmc_command
 
 
 def test__get_cbmc_command_no_callees_no_stubs() -> None:
-    args = {
-        "function_to_verify": "swap",
-        "stub_file_paths": [],
-        "file_containing_function_to_verify": "quicksort.c",
-        "callee_functions": [],
-    }
-    command = _get_cbmc_command(args)
+    command = _get_cbmc_command(
+        function_to_verify="swap",
+        stub_file_paths=[],
+        callees=[],
+        file_containing_function="quicksort.c",
+    )
     assert command == (
         "goto-cc -o swap.goto quicksort.c swap --function swap && "
         "goto-instrument --partial-loops --unwind 5 swap.goto swap.goto && "
