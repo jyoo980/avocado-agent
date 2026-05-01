@@ -1,4 +1,4 @@
-"""`construct_call_graph` tool, registered against the shared FastMCP instance in `_app`."""
+"""Tool to construct a call graph comprising functions in a given file."""
 
 import json
 from pathlib import Path

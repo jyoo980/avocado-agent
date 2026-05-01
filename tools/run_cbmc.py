@@ -1,4 +1,4 @@
-"""`run_cbmc` tool, registered against the shared FastMCP instance in `_app`."""
+"""Tool to run CBMC on a given function."""
 
 import json
 import subprocess
