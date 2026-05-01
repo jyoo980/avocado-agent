@@ -1,0 +1,21 @@
+---
+name: Test
+'on':
+  - push
+  - pull_request
+jobs:
+  test:
+    defaults:
+      run:
+        shell: 'bash -l {0}'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          show-progress: false
+          submodules: true
+      - name: Build Docker image
+        run: make build-image
+      - name: Run tests
+        run: make test
