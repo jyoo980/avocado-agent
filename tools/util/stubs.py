@@ -9,8 +9,7 @@ from pathlib import Path
 _STUBS_DIR = Path(__file__).resolve().parents[2] / "stubs"
 
 # CBMC stub files mark each modeled symbol with a `/* FUNCTION: <name> */` comment immediately
-# preceding the C definition. The C identifier itself is often a renamed/prefixed alias (e.g.
-# `_avocado_printf`), so the comment marker is the source of truth for the symbol name.
+# preceding the C definition.
 _FUNCTION_MARKER = re.compile(r"/\*\s*FUNCTION:\s*(\S+)\s*\*/")
 
 

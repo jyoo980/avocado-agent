@@ -56,7 +56,9 @@ def test_get_in_file_callees_for_excludes_externals_and_self(tmp_path: Path) -> 
     assert get_in_file_callees_for("swap", str(cg_path)) == []
 
 
-def test_get_unstubbed_external_callees_for_returns_only_unmodeled(tmp_path: Path) -> None:
+def test_get_unstubbed_external_callees_for_returns_only_unmodeled(
+    tmp_path: Path,
+) -> None:
     call_graph = {
         "foo": {
             "internal": ["bar"],
@@ -66,14 +68,19 @@ def test_get_unstubbed_external_callees_for_returns_only_unmodeled(tmp_path: Pat
     cg_path = tmp_path / "cg.json"
     cg_path.write_text(json.dumps(call_graph))
 
-    assert get_unstubbed_external_callees_for("foo", str(cg_path), build_stub_index()) == [
-        "some_project_helper"
-    ]
+    assert get_unstubbed_external_callees_for(
+        "foo", str(cg_path), build_stub_index()
+    ) == ["some_project_helper"]
 
 
-def test_get_unstubbed_external_callees_for_empty_when_all_stubbed(tmp_path: Path) -> None:
+def test_get_unstubbed_external_callees_for_empty_when_all_stubbed(
+    tmp_path: Path,
+) -> None:
     call_graph = {"foo": {"internal": [], "external": ["printf", "malloc", "strcpy"]}}
     cg_path = tmp_path / "cg.json"
     cg_path.write_text(json.dumps(call_graph))
 
-    assert get_unstubbed_external_callees_for("foo", str(cg_path), build_stub_index()) == []
+    assert (
+        get_unstubbed_external_callees_for("foo", str(cg_path), build_stub_index())
+        == []
+    )

@@ -38,7 +38,7 @@ def run_cbmc(
     nondet_callees = get_unstubbed_external_callees_for(
         function_to_verify, path_to_call_graph, _STUB_INDEX
     )
-    cbmc_command = _get_cbmc_command(
+    cbmc_command = get_cbmc_command(
         function_to_verify,
         stub_file_paths,
         callees,
@@ -86,7 +86,7 @@ def _log_invocation(
         pass
 
 
-def _get_cbmc_command(
+def get_cbmc_command(
     function_to_verify: str,
     stub_file_paths: list[str],
     callees: list[str],

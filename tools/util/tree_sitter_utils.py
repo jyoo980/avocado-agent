@@ -21,6 +21,7 @@ _PARSER = Parser(_TREE_SITTER_LANG)
 # callees that affect verification (in-file functions or library calls that need a stub).
 _NON_CALLEE_PREFIXES = ("__CPROVER_",)
 _NON_CALLEE_NAMES = frozenset({"sizeof"})
+_CONTRACT_CLAUSE_PREFIX = "__CPROVER_"
 
 
 def get_call_graph(path_to_file: str) -> dict[str, dict[str, list[str]]]:
@@ -55,6 +56,40 @@ def get_call_graph(path_to_file: str) -> dict[str, dict[str, list[str]]]:
         external = [name for name in callees if name not in in_file_functions]
         call_graph[function_name] = {"internal": internal, "external": external}
     return call_graph
+
+
+def get_functions_with_cprover_annotations(path_to_file: str) -> set[str]:
+    """Return names of functions in the given C file that carry at least one CBMC contract clause.
+
+    A clause like `__CPROVER_requires(...)` is parsed by tree-sitter as a `call_expression`
+    descendant of the function's `function_definition` node. A function is "annotated" iff at
+    least one such call exists with an identifier starting with `__CPROVER_`.
+
+    Args:
+        path_to_file (str): The path to the C file to scan.
+
+    Returns:
+        set[str]: Names of functions in the file with at least one CBMC contract clause.
+    """
+    file_content = Path(path_to_file).read_text(encoding="utf-8")
+    tree = _parse_to_ast(file_content)
+    annotated: set[str] = set()
+    for node in _dfs_traversal(tree.root_node):
+        if node.type != "function_definition":
+            continue
+        name = _get_function_definition_name(node)
+        if not name:
+            continue
+        for descendant in _dfs_traversal(node):
+            if descendant.type != "call_expression":
+                continue
+            function = descendant.child_by_field_name("function")
+            if function is None or function.type != "identifier" or not function.text:
+                continue
+            if function.text.decode("utf-8").startswith(_CONTRACT_CLAUSE_PREFIX):
+                annotated.add(name)
+                break
+    return annotated
 
 
 def _parse_to_ast(content: str, language_extension: str = ".c") -> Tree:

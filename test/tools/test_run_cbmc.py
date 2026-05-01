@@ -1,10 +1,10 @@
 """Tests for the run_cbmc tool."""
 
-from tools.run_cbmc import _get_cbmc_command
+from tools.run_cbmc import get_cbmc_command
 
 
 def test__get_cbmc_command_no_callees_no_stubs() -> None:
-    command = _get_cbmc_command(
+    command = get_cbmc_command(
         function_to_verify="swap",
         stub_file_paths=[],
         callees=[],
