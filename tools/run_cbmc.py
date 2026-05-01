@@ -10,7 +10,6 @@ from tools.util import (
     build_stub_index,
     get_in_file_callees_for,
     get_unstubbed_external_callees_for,
-    resolve_stub_paths_for,
 )
 
 # The stub index is built once on MCP server start.
@@ -33,14 +32,12 @@ def run_cbmc(
     Returns:
         The combined stdout and stderr produced by the CBMC pipeline.
     """
-    stub_file_paths = resolve_stub_paths_for(function_to_verify, path_to_call_graph, _STUB_INDEX)
     callees = get_in_file_callees_for(function_to_verify, path_to_call_graph)
     nondet_callees = get_unstubbed_external_callees_for(
         function_to_verify, path_to_call_graph, _STUB_INDEX
     )
     cbmc_command = _get_cbmc_command(
         function_to_verify,
-        stub_file_paths,
         callees,
         file_containing_function_to_verify,
     )
@@ -88,7 +85,6 @@ def _log_invocation(
 
 def _get_cbmc_command(
     function_to_verify: str,
-    stub_file_paths: list[str],
     callees: list[str],
     file_containing_function: str,
 ) -> str:
@@ -99,7 +95,6 @@ def _get_cbmc_command(
 
     Args:
         function_to_verify (str): The function to verify.
-        stub_file_paths (list[str]): The list of stub files to pass to CBMC.
         callees (list[str]): The callees of the function to verify.
         file_containing_function (str): The path to the file containing the function to verify.
 
@@ -111,13 +106,12 @@ def _get_cbmc_command(
         [
             (
                 f"goto-cc -o {function_to_verify}.goto"
-                f"{' ' + ' '.join(stub_file_paths) if stub_file_paths else ''} "
                 f"{file_containing_function} "
                 f"{function_to_verify} "
                 f"--function {function_to_verify}"
             ),
             (
-                f"goto-instrument --partial-loops --unwind 5 "
+                f"goto-instrument --add-library --partial-loops --unwind 5 "
                 f"{function_to_verify}.goto {function_to_verify}.goto"
             ),
             (
