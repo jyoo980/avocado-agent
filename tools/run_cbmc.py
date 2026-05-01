@@ -51,7 +51,7 @@ def run_cbmc(
     )
     if result.returncode == 0:
         return f"{function_to_verify} verified successfully"
-    error_lines = [line for line in result.stderr.split("\n") if line.strip().endswith("FAILURE")]
+    error_lines = [line for line in result.stdout.split("\n") if "FAILURE" in line]
     if not error_lines:
         return f"{function_to_verify} failed to verify"
     return (
@@ -105,7 +105,7 @@ def _get_cbmc_command(
     return " && ".join(
         [
             (
-                f"goto-cc -o {function_to_verify}.goto"
+                f"goto-cc -o {function_to_verify}.goto "
                 f"{file_containing_function} "
                 f"{function_to_verify} "
                 f"--function {function_to_verify}"
