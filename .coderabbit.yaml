@@ -1,4 +1,5 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Adopted from: https://github.com/plume-lib/plume-scripts/blob/master/.coderabbit.yaml
 
 language: "en-US"
 
@@ -17,6 +18,8 @@ reviews:
     - "!**/test_*.py"
     - "!**/.claude/**"
   auto_review:
+    # Setting this value to 0 means CodeRabbit will review on every single new push, which drives me
+    # insane. Stop reviewing after 3 new commits, then re-request review via @coderabbit review.
     auto_pause_after_reviewed_commits: 3
     ignore_title_keywords:
       - "wip"
