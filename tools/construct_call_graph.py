@@ -17,9 +17,10 @@ def construct_call_graph(
         path_to_file_to_verify (str): The path to the file from which to construct a call graph.
 
     Returns:
-        str: The path to the file to which the call graph is written, as a JSON dictionary.
+        str: The path to the file to which the call graph is written.
     """
     call_graph = get_call_graph(path_to_file_to_verify)
-    path_to_call_graph = f"{Path(path_to_file_to_verify).stem}-callgraph.json"
-    Path(path_to_call_graph).write_text(json.dumps(call_graph))
-    return path_to_call_graph
+    source_path = Path(path_to_file_to_verify)
+    path_to_call_graph = source_path.with_name(f"{source_path.stem}-callgraph.json")
+    path_to_call_graph.write_text(json.dumps(call_graph))
+    return str(path_to_call_graph)

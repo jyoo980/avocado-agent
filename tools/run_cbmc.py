@@ -107,7 +107,6 @@ def _get_cbmc_command(
             (
                 f"goto-cc -o {function_to_verify}.goto "
                 f"{file_containing_function} "
-                f"{function_to_verify} "
                 f"--function {function_to_verify}"
             ),
             (

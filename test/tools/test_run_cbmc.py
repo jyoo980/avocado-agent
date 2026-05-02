@@ -10,7 +10,7 @@ def test__get_cbmc_command_no_callees_no_stubs() -> None:
         file_containing_function="quicksort.c",
     )
     assert command == (
-        "goto-cc -o swap.goto quicksort.c swap --function swap && "
+        "goto-cc -o swap.goto quicksort.c --function swap && "
         "goto-instrument --add-library --partial-loops --unwind 5 swap.goto swap.goto && "
         "goto-instrument --enforce-contract swap swap.goto checking-swap-contracts.goto && "
         "cbmc checking-swap-contracts.goto --function swap --depth 100"
