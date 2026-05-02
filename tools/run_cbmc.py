@@ -2,7 +2,7 @@
 
 import json
 import subprocess
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from tools.avocado_tool_registry import mcp
@@ -67,9 +67,20 @@ def _log_invocation(
     returncode: int,
     nondet_callees: list[str],
 ) -> None:
-    log_path = Path(f"{Path(file_under_verification).stem}-cbmc-runs.jsonl")
+    """Log a CBMC invocation with the given arguments.
+
+    Args:
+        file_under_verification (str): The file that contains the function under verification.
+        function (str): The function under verification.
+        command (str): The CBMC command used to verify the function.
+        returncode (int): The return code of the CBMC command used to verify the function.
+        nondet_callees (list[str]): The list of callees that CBMC treated as non-deterministic
+            during verification.
+    """
+    source_path = Path(file_under_verification)
+    log_path = source_path.with_name(f"{source_path.stem}-cbmc-runs.jsonl")
     record = {
-        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "function": function,
         "file": file_under_verification,
         "command": command,
@@ -80,6 +91,7 @@ def _log_invocation(
         with log_path.open("a") as f:
             f.write(json.dumps(record) + "\n")
     except OSError:
+        # This does fail silently, but it shouldn't stop the tool from making progress.
         pass
 
 
