@@ -23,7 +23,6 @@ from tools.util import (
     get_functions_with_cprover_annotations,
     get_in_file_callees_for,
     get_unstubbed_external_callees_for,
-    resolve_stub_paths_for,
 )
 
 
@@ -90,7 +89,7 @@ def _verify_program(file: str) -> list[VerificationResult]:
             continue
         nondet = get_unstubbed_external_callees_for(function, call_graph_path, stub_index)
         print(f"[verify] {function}" + (f"  (nondet: {', '.join(nondet)})" if nondet else ""))
-        result = _verify_function(function, file, call_graph_path, stub_index)
+        result = _verify_function(function, file, call_graph_path)
         status = "PASS" if result.passed else "FAIL"
         print(f"  -> {status} (returncode={result.returncode})")
         for failure in result.failures:
@@ -99,23 +98,19 @@ def _verify_program(file: str) -> list[VerificationResult]:
     return results
 
 
-def _verify_function(
-    function: str, file: str, call_graph_path: str, stub_index: dict[str, Path]
-) -> VerificationResult:
+def _verify_function(function: str, file: str, call_graph_path: str) -> VerificationResult:
     """Return the result of verifying a function.
 
     Args:
         function (str): The function to verify.
         file (str): The file in which the function to verify is declared.
         call_graph_path (str): The path to the call graph.
-        stub_index (dict[str, Path]): The index of stub files.
 
     Returns:
         VerificationResult: The result of verifying a function.
     """
-    stub_paths = resolve_stub_paths_for(function, call_graph_path, stub_index)
     callees = get_in_file_callees_for(function, call_graph_path)
-    command = get_cbmc_command(function, stub_paths, callees, file)
+    command = get_cbmc_command(function, callees, file)
     completed = subprocess.run(command, capture_output=True, text=True, shell=True, check=False)
     failures = [
         line.strip() for line in completed.stderr.splitlines() if line.strip().endswith("FAILURE")
