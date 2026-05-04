@@ -56,6 +56,22 @@ def test_get_in_file_callees_for_excludes_externals_and_self(tmp_path: Path) -> 
     assert get_in_file_callees_for("swap", str(cg_path)) == []
 
 
+def test_get_in_file_callees_for_include_self_keeps_recursive_callee(tmp_path: Path) -> None:
+    call_graph = {
+        "quickSort": {"internal": ["quickSort", "partition"], "external": ["printf"]},
+        "partition": {"internal": ["swap"], "external": []},
+    }
+    cg_path = tmp_path / "cg.json"
+    cg_path.write_text(json.dumps(call_graph))
+
+    assert get_in_file_callees_for("quickSort", str(cg_path), include_self=True) == [
+        "partition",
+        "quickSort",
+    ]
+    # Non-recursive functions are unaffected by the flag.
+    assert get_in_file_callees_for("partition", str(cg_path), include_self=True) == ["swap"]
+
+
 def test_get_unstubbed_external_callees_for_returns_only_unmodeled(tmp_path: Path) -> None:
     call_graph = {
         "foo": {

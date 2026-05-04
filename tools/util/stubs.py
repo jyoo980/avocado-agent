@@ -60,21 +60,31 @@ def resolve_stub_paths_for(
 def get_in_file_callees_for(
     function_to_verify: str,
     path_to_call_graph: str,
+    include_self: bool = False,
 ) -> list[str]:
     """Return direct callees of `function_to_verify` that are defined in the same C file.
 
-    These are the candidates to pass to CBMC via `--replace-call-with-contract`. The function
-    itself is excluded so a self-recursive call doesn't get rewritten into a contract call.
+    These are the candidates to pass to CBMC via `--replace-call-with-contract`. By default the
+    function itself is excluded; set `include_self=True` to keep it so a self-recursive call gets
+    rewritten into a contract call. That is the standard pattern for inductively verifying a
+    recursive function: pass it to both `--enforce-contract` and `--replace-call-with-contract`
+    so the recursive call is discharged by the function's own contract instead of being unwound.
+    The contract must be inductive — strong enough to imply itself at the recursive call site —
+    or the proof is vacuous.
 
     Args:
         function_to_verify (str): The function whose callees should be resolved.
         path_to_call_graph (str): Path to the JSON call graph emitted by `construct_call_graph`.
+        include_self (bool): When True, keep `function_to_verify` in the result if it calls
+            itself. Defaults to False.
 
     Returns:
         list[str]: Sorted, de-duplicated list of in-file callee names.
     """
     call_graph: dict[str, dict[str, list[str]]] = json.loads(Path(path_to_call_graph).read_text())
     internal = call_graph.get(function_to_verify, {}).get("internal", [])
+    if include_self:
+        return sorted(set(internal))
     return sorted({name for name in internal if name != function_to_verify})
 
 
