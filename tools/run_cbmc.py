@@ -15,6 +15,14 @@ from tools.util import (
 # The stub index is built once on MCP server start.
 _STUB_INDEX = build_stub_index()
 
+# Char budget for failure responses, sized to stay under Claude Code's default
+# MAX_MCP_OUTPUT_TOKENS=25000 at ~4 chars/token.
+_MAX_RESPONSE_CHARS = 100_000
+
+# Of the budget left after the header, FAILURE lines, and section labels, this
+# fraction is given to the stdout tail; the remainder goes to the stderr tail.
+_STDOUT_TAIL_SHARE = 0.7
+
 
 @mcp.tool()
 def run_cbmc(
@@ -51,13 +59,86 @@ def run_cbmc(
     )
     if result.returncode == 0:
         return f"{function_to_verify} verified successfully"
-    error_lines = [line for line in result.stdout.split("\n") if "FAILURE" in line]
-    if not error_lines:
-        return f"{function_to_verify} failed to verify"
-    return (
-        f"{function_to_verify} failed to verify with the following errors:\n\n"
-        f"{'\n'.join(error_lines)}"
+    return _format_failure_response(function_to_verify, result.stdout, result.stderr)
+
+
+def _format_failure_response(function: str, stdout: str, stderr: str) -> str:
+    """Format a CBMC failure response, truncating only if it exceeds the char budget.
+
+    When the combined labeled output fits within `_MAX_RESPONSE_CHARS`, both streams are
+    returned in full. Otherwise, FAILURE lines from stdout are preserved and the rest of
+    each stream is replaced by its tail, with an explicit truncation marker.
+
+    Args:
+        function (str): The name of the function that failed verification.
+        stdout (str): The stdout content for the CBMC process.
+        stderr (str): The stderr content for the CBMC process.
+
+    Returns:
+        str: The formatted CBMC failure response, truncated iff it has exceeded the char budget.
+    """
+    header = f"{function} failed to verify with the following errors:\n\n"
+    full = f"{header}--- stderr ---\n{stderr}\n--- stdout ---\n{stdout}"
+    if len(full) <= _MAX_RESPONSE_CHARS:
+        return full
+
+    failure_lines = [line for line in stdout.split("\n") if "FAILURE" in line]
+    failure_block = "\n".join(failure_lines)
+    # Cap the FAILURE block at half the total budget so a pathological run with
+    # tens of thousands of FAILURE lines can't blow past the limit on its own.
+    failure_cap = _MAX_RESPONSE_CHARS // 2
+    if len(failure_block) > failure_cap:
+        dropped = len(failure_block) - failure_cap
+        failure_block = (
+            f"[... {dropped} characters of FAILURE lines truncated ...]\n"
+            f"{failure_block[-failure_cap:]}"
+        )
+
+    # Reserve space for headers, section labels, and truncation markers. The
+    # `_MAX_RESPONSE_CHARS`-wide placeholder pads the digit count so the actual
+    # marker (with the real dropped count) cannot push us over budget.
+    digit_pad = str(_MAX_RESPONSE_CHARS)
+    fixed = (
+        f"{header}"
+        f"--- stderr (tail) ---\n[... {digit_pad} characters truncated ...]\n\n"
+        f"--- stdout (FAILURE lines) ---\n{failure_block}\n"
+        f"--- stdout (tail) ---\n[... {digit_pad} characters truncated ...]\n"
     )
+    remaining = max(_MAX_RESPONSE_CHARS - len(fixed), 0)
+    stdout_budget = int(remaining * _STDOUT_TAIL_SHARE)
+    stderr_budget = remaining - stdout_budget
+
+    stderr_section = _tail_section("stderr (tail)", stderr, stderr_budget)
+    stdout_tail_section = _tail_section("stdout (tail)", stdout, stdout_budget)
+
+    response = (
+        f"{header}"
+        f"{stderr_section}\n"
+        f"--- stdout (FAILURE lines) ---\n{failure_block}\n"
+        f"{stdout_tail_section}"
+    )
+    # Hard clamp: the per-section budget accounting can drift by a few chars
+    # against the `fixed` estimate, so guarantee we never exceed the cap.
+    return response[:_MAX_RESPONSE_CHARS]
+
+
+def _tail_section(label: str, content: str, budget: int) -> str:
+    """Render a labeled section containing the tail of content within budget chars.
+
+    Args:
+        label (str): The label of the section.
+        content (str): The content to truncate.
+        budget (int): The maximum number of characters to include in the section.
+
+    Returns:
+        str: The labeled section containing the tail of content within budget chars.
+    """
+    if len(content) <= budget:
+        body = content
+    else:
+        dropped = len(content) - budget
+        body = f"[... {dropped} characters truncated ...]\n{content[-budget:]}"
+    return f"--- {label} ---\n{body}\n"
 
 
 def _log_invocation(
@@ -122,7 +203,7 @@ def _get_cbmc_command(
                 f"--function {function_to_verify}"
             ),
             (
-                f"goto-instrument --add-library --partial-loops --unwind 5 "
+                f"goto-instrument --partial-loops --unwind 5 "
                 f"{function_to_verify}.goto {function_to_verify}.goto"
             ),
             (
