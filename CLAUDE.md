@@ -26,7 +26,7 @@ You should always try to use the tools available to you via `avocado-tools` to a
 - **To get the order in which to write specifications and verify them for a program**: Use the `get_topological_ordering_of_functions` tool.
 - **To run CBMC on a function in a file**: Use the `run_cbmc` tool.
 
-Only fall back to manually running CBMC if and only if these tools fail.
+Fall back to manually running CBMC if and only if these tools fail.
 
 ## Syntax of C function specifications (contracts)
 
