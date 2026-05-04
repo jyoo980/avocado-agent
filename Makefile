@@ -14,7 +14,7 @@ checks: style-fix style-check
 
 # Delete artifacts from CBMC runs.
 clean:
-	rm *.goto
+	find . \( -name '*.goto' -o -name '*callgraph.json' -o -name '*.jsonl' \) -delete
 
 # Code style; defines `style-check` and `style-fix`.
 CODE_STYLE_EXCLUSIONS_USER := --exclude-dir test --exclude-dir data --exclude-dir docs --exclude CLAUDE.md
