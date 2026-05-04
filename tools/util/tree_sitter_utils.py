@@ -52,8 +52,10 @@ def get_call_graph(path_to_file: str) -> dict[str, dict[str, list[str]]]:
     call_graph: dict[str, dict[str, list[str]]] = {}
     for function_name, node in function_name_to_node.items():
         callees = _get_names_of_functions_called_in_node(node)
-        internal = [name for name in callees if name in in_file_functions]
-        external = [name for name in callees if name not in in_file_functions]
+        # This sorting isn't necessary for correctness, but makes call-graph construction
+        # deterministic.
+        internal = sorted(name for name in callees if name in in_file_functions)
+        external = sorted(name for name in callees if name not in in_file_functions)
         call_graph[function_name] = {"internal": internal, "external": external}
     return call_graph
 
@@ -159,13 +161,14 @@ def _get_names_of_functions_called_in_node(node: Node) -> set[str]:
     """
     names: set[str] = set()
     for descendant in _dfs_traversal(node):
-        if descendant.type == "call_expression" and (
-            function := descendant.child_by_field_name("function")
+        if (
+            descendant.type == "call_expression"
+            and (function := descendant.child_by_field_name("function"))
+            and function.type == "identifier"
         ):
-            if function.type == "identifier":
-                assert function.text, "A tree_sitter identifier node must have a 'text' attribute"
-                name = function.text.decode("utf-8")
-                if name in _NON_CALLEE_NAMES or name.startswith(_NON_CALLEE_PREFIXES):
-                    continue
-                names.add(name)
+            assert function.text, "A tree_sitter identifier node must have a 'text' attribute"
+            name = function.text.decode("utf-8")
+            if name in _NON_CALLEE_NAMES or name.startswith(_NON_CALLEE_PREFIXES):
+                continue
+            names.add(name)
     return names

@@ -60,10 +60,6 @@ Requires and ensures clauses are written as C boolean expressions that may addit
   Used in requires clauses and ensures clauses.
   Documented in `docs/contracts-quantifiers.md`.
 
-## Stub files
-
-Any stub files you might use can be found in the `stub/` folder.
-
 ## How to run CBMC
 
 Here is the sequence of commands to verify one function named `<FUNCTION_NAME>`.
