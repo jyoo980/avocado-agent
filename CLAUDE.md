@@ -20,8 +20,10 @@ Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 
 ## Tool Use
 
-You should always prefer the project's CLI tools (installed by `uv sync`) over invoking
-CBMC by hand. Each tool runs in the shell and prints its result to stdout.
+You should always prefer the project's CLI tools over invoking CBMC by hand.
+The container entrypoint runs `uv sync` and puts `.venv/bin` on `PATH` before
+your shell starts, so the tools below are directly callable — no `uv run`
+prefix needed. Each tool runs in the shell and prints its result to stdout.
 
 - **To obtain a call graph of the functions in a file**, run:
 
