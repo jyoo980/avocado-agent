@@ -49,12 +49,11 @@ def run_cbmc(
     """
     if stub_index is None:
         stub_index = build_stub_index()
+    call_graph = json.loads(Path(path_to_call_graph).read_text(encoding="utf-8"))
     callees = get_in_file_callees_for(
-        function_to_verify, path_to_call_graph, include_self=replace_recursive_calls
+        function_to_verify, call_graph, include_self=replace_recursive_calls
     )
-    nondet_callees = get_unstubbed_external_callees_for(
-        function_to_verify, path_to_call_graph, stub_index
-    )
+    nondet_callees = get_unstubbed_external_callees_for(function_to_verify, call_graph, stub_index)
     cbmc_command = _get_cbmc_command(
         function_to_verify,
         callees,

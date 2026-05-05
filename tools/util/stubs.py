@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -35,7 +34,7 @@ def build_stub_index(stubs_dir: Path = _STUBS_DIR) -> dict[str, Path]:
 
 def resolve_stub_paths_for(
     function_to_verify: str,
-    path_to_call_graph: str,
+    call_graph: dict[str, dict[str, list[str]]],
     stub_index: dict[str, Path],
 ) -> list[str]:
     """Return the stub file paths needed to verify `function_to_verify`.
@@ -45,23 +44,20 @@ def resolve_stub_paths_for(
 
     Args:
         function_to_verify (str): The function whose callees should be resolved.
-        path_to_call_graph (str): Path to the JSON call graph emitted by `construct_call_graph`.
+        call_graph (dict[str, dict[str, list[str]]]): The call graph.
         stub_index (dict[str, Path]): Stub index produced by `build_stub_index`.
 
     Returns:
         list[str]: Sorted, de-duplicated list of stub file paths.
     """
-    call_graph: dict[str, dict[str, list[str]]] = json.loads(
-        Path(path_to_call_graph).read_text(encoding="utf-8")
-    )
-    external = call_graph.get(function_to_verify, {}).get("external", [])
+    external = get_call_graph_entry(function_to_verify, call_graph).get("external", [])
     resolved = {stub_index[name] for name in external if name in stub_index}
     return sorted(str(path) for path in resolved)
 
 
 def get_in_file_callees_for(
     function_to_verify: str,
-    path_to_call_graph: str,
+    call_graph: dict[str, dict[str, list[str]]],
     include_self: bool = False,
 ) -> list[str]:
     """Return direct callees of `function_to_verify` that are defined in the same C file.
@@ -76,14 +72,13 @@ def get_in_file_callees_for(
 
     Args:
         function_to_verify (str): The function whose callees should be resolved.
-        path_to_call_graph (str): Path to the JSON call graph emitted by `construct_call_graph`.
+        call_graph (dict[str, dict[str, list[str]]]): The call graph.
         include_self (bool): When True, keep `function_to_verify` in the result if it calls
             itself. Defaults to False.
 
     Returns:
         list[str]: Sorted, de-duplicated list of in-file callee names.
     """
-    call_graph: dict[str, dict[str, list[str]]] = json.loads(Path(path_to_call_graph).read_text())
     internal = call_graph.get(function_to_verify, {}).get("internal", [])
     if include_self:
         return sorted(set(internal))
@@ -92,7 +87,7 @@ def get_in_file_callees_for(
 
 def get_unstubbed_external_callees_for(
     function_to_verify: str,
-    path_to_call_graph: str,
+    call_graph: dict[str, dict[str, list[str]]],
     stub_index: dict[str, Path],
 ) -> list[str]:
     """Return external callees of `function_to_verify` that have no CBMC stub.
@@ -103,13 +98,31 @@ def get_unstubbed_external_callees_for(
 
     Args:
         function_to_verify (str): The function whose callees should be inspected.
-        path_to_call_graph (str): Path to the JSON call graph emitted by `construct_call_graph`.
+        call_graph (dict[str, dict[str, list[str]]]): The call graph.
         stub_index (dict[str, Path]): Stub index produced by `build_stub_index`.
 
     Returns:
         list[str]: Sorted, de-duplicated list of external callee names not present in the stub
             index.
     """
-    call_graph: dict[str, dict[str, list[str]]] = json.loads(Path(path_to_call_graph).read_text())
-    external = call_graph.get(function_to_verify, {}).get("external", [])
+    external = get_call_graph_entry(function_to_verify, call_graph).get("external", [])
     return sorted({name for name in external if name not in stub_index})
+
+
+def get_call_graph_entry(
+    function: str, call_graph: dict[str, dict[str, list[str]]]
+) -> dict[str, list]:
+    """Return the call graph entry for a function.
+
+    Args:
+        function (str): The function for which to return the call graph entry.
+        call_graph (dict[str, dict[str, list[str]]]): The call graph from which to fetch the
+            function's call graph entry.
+
+    Returns:
+        dict[str, list[str]]: The call graph entry for a function comprising a map of its callees.
+    """
+    if call_graph_entry := call_graph.get(function):
+        return call_graph_entry
+    msg = f"Function '{function}' was missing from the call graph"
+    raise ValueError(msg)
