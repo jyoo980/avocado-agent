@@ -11,6 +11,11 @@ dependencies = [
     "tree-sitter-c>=0.24.2",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.3",
+]
+
 [project.scripts]
 avocado-construct-call-graph = "tools.construct_call_graph:main"
 avocado-topological-order = "tools.get_topological_ordering_of_functions:main"

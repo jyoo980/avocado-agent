@@ -51,7 +51,9 @@ def resolve_stub_paths_for(
     Returns:
         list[str]: Sorted, de-duplicated list of stub file paths.
     """
-    call_graph: dict[str, dict[str, list[str]]] = json.loads(Path(path_to_call_graph).read_text())
+    call_graph: dict[str, dict[str, list[str]]] = json.loads(
+        Path(path_to_call_graph).read_text(encoding="utf-8")
+    )
     external = call_graph.get(function_to_verify, {}).get("external", [])
     resolved = {stub_index[name] for name in external if name in stub_index}
     return sorted(str(path) for path in resolved)

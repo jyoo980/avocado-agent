@@ -21,7 +21,7 @@ def construct_call_graph(
     call_graph = get_call_graph(path_to_file_to_verify)
     source_path = Path(path_to_file_to_verify)
     path_to_call_graph = source_path.with_name(f"{source_path.stem}-callgraph.json")
-    path_to_call_graph.write_text(json.dumps(call_graph))
+    path_to_call_graph.write_text(json.dumps(call_graph, indent=4))
     return str(path_to_call_graph)
 
 

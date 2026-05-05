@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import shlex
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -208,25 +209,27 @@ def _get_cbmc_command(
         str: The CBMC command that should be used by Claude.
     """
     replace_calls = "".join(f" --replace-call-with-contract {c}" for c in callees)
+    quoted_function_to_verify = shlex.quote(function_to_verify)
     return " && ".join(
         [
             (
-                f"goto-cc -o {function_to_verify}.goto "
-                f"{file_containing_function} "
-                f"--function {function_to_verify}"
+                f"goto-cc -o {quoted_function_to_verify}.goto "
+                f"{shlex.quote(file_containing_function)} "
+                f"--function {quoted_function_to_verify}"
             ),
             (
                 f"goto-instrument --partial-loops --unwind 5 "
-                f"{function_to_verify}.goto {function_to_verify}.goto"
+                f"{quoted_function_to_verify}.goto {quoted_function_to_verify}.goto"
             ),
             (
                 f"goto-instrument{replace_calls} "
-                f"--enforce-contract {function_to_verify} "
-                f"{function_to_verify}.goto checking-{function_to_verify}-contracts.goto"
+                f"--enforce-contract {quoted_function_to_verify} "
+                f"{quoted_function_to_verify}.goto "
+                f"checking-{quoted_function_to_verify}-contracts.goto"
             ),
             (
-                f"cbmc checking-{function_to_verify}-contracts.goto "
-                f"--function {function_to_verify} --depth 100"
+                f"cbmc checking-{quoted_function_to_verify}-contracts.goto "
+                f"--function {quoted_function_to_verify} --depth 100"
             ),
         ]
     )
