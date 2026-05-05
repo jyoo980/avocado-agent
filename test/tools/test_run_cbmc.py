@@ -18,7 +18,7 @@ def test__get_cbmc_command_no_callees_no_stubs() -> None:
 
 
 def test__get_cbmc_command_includes_self_for_inductive_recursive_verification() -> None:
-    command = _get_cbmc_command(
+    command = get_cbmc_command(
         function_to_verify="quickSort",
         callees=["partition", "quickSort"],
         file_containing_function="test/data/quicksort.c",
