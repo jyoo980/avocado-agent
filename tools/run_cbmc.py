@@ -1,22 +1,20 @@
-"""Tool to run CBMC on a given function."""
+"""CLI to run CBMC on a given function."""
 
+import argparse
 import json
 import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from tools.avocado_tool_registry import mcp
 from tools.util import (
     build_stub_index,
     get_in_file_callees_for,
     get_unstubbed_external_callees_for,
 )
 
-# The stub index is built once on MCP server start.
-_STUB_INDEX = build_stub_index()
-
-# Char budget for failure responses, sized to stay under Claude Code's default
-# MAX_MCP_OUTPUT_TOKENS=25000 at ~4 chars/token.
+# Char budget for failure responses, sized to keep CLI output bounded so it
+# doesn't blow past an agent's tool-output limits.
 _MAX_RESPONSE_CHARS = 100_000
 
 # Of the budget left after the header, FAILURE lines, and section labels, this
@@ -24,13 +22,13 @@ _MAX_RESPONSE_CHARS = 100_000
 _STDOUT_TAIL_SHARE = 0.7
 
 
-@mcp.tool()
 def run_cbmc(
     function_to_verify: str,
     file_containing_function_to_verify: str,
     path_to_call_graph: str,
     replace_recursive_calls: bool = False,
-) -> str:
+    stub_index: dict | None = None,
+) -> tuple[str, int]:
     """Run CBMC on the given function with loop unwinding = 5, depth = 100.
 
     Args:
@@ -42,15 +40,19 @@ def run_cbmc(
             of being handled by `--unwind`. The contract must be inductive — strong enough to
             imply itself at the recursive call site — or the proof will be vacuous. Defaults to
             False.
+        stub_index (dict | None): Index of stub functions to their files, defaults to None.
 
     Returns:
-        The combined stdout and stderr produced by the CBMC pipeline.
+        A (response_text, returncode) tuple. The text is a success message or a
+        truncated failure block; the returncode is CBMC's exit code (0 on success).
     """
+    if stub_index is None:
+        stub_index = build_stub_index()
     callees = get_in_file_callees_for(
         function_to_verify, path_to_call_graph, include_self=replace_recursive_calls
     )
     nondet_callees = get_unstubbed_external_callees_for(
-        function_to_verify, path_to_call_graph, _STUB_INDEX
+        function_to_verify, path_to_call_graph, stub_index
     )
     cbmc_command = _get_cbmc_command(
         function_to_verify,
@@ -66,8 +68,11 @@ def run_cbmc(
         nondet_callees,
     )
     if result.returncode == 0:
-        return f"{function_to_verify} verified successfully"
-    return _format_failure_response(function_to_verify, result.stdout, result.stderr)
+        return (f"{function_to_verify} verified successfully", 0)
+    return (
+        _format_failure_response(function_to_verify, result.stdout, result.stderr),
+        result.returncode,
+    )
 
 
 def _format_failure_response(function: str, stdout: str, stderr: str) -> str:
@@ -225,3 +230,41 @@ def _get_cbmc_command(
             ),
         ]
     )
+
+
+def main() -> None:
+    """CLI to run CBMC on a given function."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run CBMC on a function with loop unwinding = 5, depth = 100. "
+            "Exits 0 on verification success and 1 on verification failure."
+        )
+    )
+    parser.add_argument("--function", required=True, help="Name of the function to verify.")
+    parser.add_argument("--file", required=True, help="Path to the C file defining the function.")
+    parser.add_argument(
+        "--call-graph",
+        required=True,
+        help="Path to the JSON call graph produced by avocado-construct-call-graph.",
+    )
+    parser.add_argument(
+        "--replace-recursive-calls",
+        action="store_true",
+        help=(
+            "Set when verifying a self-recursive function so the recursive call is discharged "
+            "by the function's own contract (induction) instead of --unwind."
+        ),
+    )
+    args = parser.parse_args()
+    response, returncode = run_cbmc(
+        function_to_verify=args.function,
+        file_containing_function_to_verify=args.file,
+        path_to_call_graph=args.call_graph,
+        replace_recursive_calls=args.replace_recursive_calls,
+    )
+    print(response)
+    sys.exit(0 if returncode == 0 else 1)
+
+
+if __name__ == "__main__":
+    main()

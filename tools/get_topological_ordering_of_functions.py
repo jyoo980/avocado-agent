@@ -1,12 +1,10 @@
-"""Tool to obtain a topological ordering of functions from a call graph."""
+"""CLI to obtain a topological ordering of functions from a call graph."""
 
+import argparse
 import json
 from pathlib import Path
 
-from tools.avocado_tool_registry import mcp
 
-
-@mcp.tool()
 def get_topological_ordering_of_functions(
     path_to_call_graph: str,
 ) -> list[str]:
@@ -39,3 +37,24 @@ def get_topological_ordering_of_functions(
     for function in call_graph:
         visit(function)
     return ordering
+
+
+def main() -> None:
+    """CLI to obtain a topological ordering of functions from a call graph."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Print a callees-first topological ordering of functions from a call graph JSON, "
+            "one function name per line."
+        )
+    )
+    parser.add_argument(
+        "path_to_call_graph",
+        help="Path to the call graph JSON produced by avocado-construct-call-graph.",
+    )
+    args = parser.parse_args()
+    for function in get_topological_ordering_of_functions(args.path_to_call_graph):
+        print(function)
+
+
+if __name__ == "__main__":
+    main()

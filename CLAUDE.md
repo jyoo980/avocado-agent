@@ -20,11 +20,38 @@ Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 
 ## Tool Use
 
-You should always try to use the tools available to you via `avocado-tools` to accomplish tasks.
+You should always prefer the project's CLI tools (installed by `uv sync`) over invoking
+CBMC by hand. Each tool runs in the shell and prints its result to stdout.
 
-- **To obtain a call graph of the functions in a file**: Use the `construct_call_graph` tool.
-- **To get the order in which to write specifications and verify them for a program**: Use the `get_topological_ordering_of_functions` tool.
-- **To run CBMC on a function in a file**: Use the `run_cbmc` tool.
+- **To obtain a call graph of the functions in a file**, run:
+
+  ```sh
+  avocado-construct-call-graph <PATH_TO_C_FILE>
+  ```
+
+  Prints the path to a newly written `<stem>-callgraph.json` next to the source file.
+
+- **To get the order in which to write specifications and verify them**, run:
+
+  ```sh
+  avocado-topological-order <PATH_TO_CALL_GRAPH_JSON>
+  ```
+
+  Prints function names callees-first, one per line.
+
+- **To run CBMC on a function**, run:
+
+  ```sh
+  avocado-run-cbmc --function <FUNCTION_NAME> \
+                   --file <PATH_TO_C_FILE> \
+                   --call-graph <PATH_TO_CALL_GRAPH_JSON> \
+                   [--replace-recursive-calls]
+  ```
+
+  Exits `0` on verification success and `1` on failure; either way, the response (a
+  success line or a truncated failure block) is printed to stdout. Pass
+  `--replace-recursive-calls` only when verifying a self-recursive function whose
+  contract is inductive.
 
 Fall back to manually running CBMC if and only if these tools fail.
 
