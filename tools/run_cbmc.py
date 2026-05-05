@@ -29,6 +29,7 @@ def run_cbmc(
     function_to_verify: str,
     file_containing_function_to_verify: str,
     path_to_call_graph: str,
+    replace_recursive_calls: bool = False,
 ) -> str:
     """Run CBMC on the given function with loop unwinding = 5, depth = 100.
 
@@ -36,11 +37,18 @@ def run_cbmc(
         function_to_verify (str): Name of the function to verify.
         file_containing_function_to_verify (str): Path to the C file defining the function.
         path_to_call_graph (str): Path to the JSON call graph produced by `construct_call_graph`.
+        replace_recursive_calls (bool): Set to True when verifying a self-recursive function so
+            the recursive call is discharged by the function's own contract (induction) instead
+            of being handled by `--unwind`. The contract must be inductive — strong enough to
+            imply itself at the recursive call site — or the proof will be vacuous. Defaults to
+            False.
 
     Returns:
         The combined stdout and stderr produced by the CBMC pipeline.
     """
-    callees = get_in_file_callees_for(function_to_verify, path_to_call_graph)
+    callees = get_in_file_callees_for(
+        function_to_verify, path_to_call_graph, include_self=replace_recursive_calls
+    )
     nondet_callees = get_unstubbed_external_callees_for(
         function_to_verify, path_to_call_graph, _STUB_INDEX
     )
