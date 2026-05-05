@@ -23,7 +23,8 @@ Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 You should always try to use the tools available to you via `avocado-tools` to accomplish tasks.
 
 - **To obtain a call graph of the functions in a file**: Use the `construct_call_graph` tool.
-- **To get the order in which to write specifications and verify them for a program**: Use the `get_topological_ordering_of_functions` tool.
+- **To obtain a topological ordering of functions in a call graph (i.e., all callees before callers)**:
+    Use the `get_topological_ordering_of_functions` tool. 
 - **To run CBMC on a function in a file**: Use the `run_cbmc` tool.
 
 Fall back to manually running CBMC if and only if these tools fail.
