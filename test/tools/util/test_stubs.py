@@ -23,11 +23,8 @@ def test_resolve_stub_paths_for_external_callees(tmp_path: Path) -> None:
         "foo": {"internal": ["bar"], "external": ["printf", "malloc"]},
         "bar": {"internal": [], "external": ["strcpy"]},
     }
-    cg_path = tmp_path / "cg.json"
-    cg_path.write_text(json.dumps(call_graph))
-
     index = build_stub_index()
-    resolved = resolve_stub_paths_for("foo", str(cg_path), index)
+    resolved = resolve_stub_paths_for("foo", call_graph, index)
 
     # Only `foo`'s direct externals are resolved; `strcpy` is only reachable via `bar`.
     names = sorted(Path(p).name for p in resolved)
@@ -39,7 +36,7 @@ def test_resolve_stub_paths_for_unknown_callee_is_dropped(tmp_path: Path) -> Non
     cg_path = tmp_path / "cg.json"
     cg_path.write_text(json.dumps(call_graph))
 
-    assert resolve_stub_paths_for("foo", str(cg_path), build_stub_index()) == []
+    assert resolve_stub_paths_for("foo", call_graph, build_stub_index()) == []
 
 
 def test_get_in_file_callees_for_excludes_externals_and_self(tmp_path: Path) -> None:
@@ -51,9 +48,9 @@ def test_get_in_file_callees_for_excludes_externals_and_self(tmp_path: Path) -> 
     cg_path = tmp_path / "cg.json"
     cg_path.write_text(json.dumps(call_graph))
 
-    assert get_in_file_callees_for("quickSort", str(cg_path)) == ["partition"]
-    assert get_in_file_callees_for("partition", str(cg_path)) == ["swap"]
-    assert get_in_file_callees_for("swap", str(cg_path)) == []
+    assert get_in_file_callees_for("quickSort", call_graph) == ["partition"]
+    assert get_in_file_callees_for("partition", call_graph) == ["swap"]
+    assert get_in_file_callees_for("swap", call_graph) == []
 
 
 def test_get_in_file_callees_for_include_self_keeps_recursive_callee(tmp_path: Path) -> None:
@@ -64,12 +61,12 @@ def test_get_in_file_callees_for_include_self_keeps_recursive_callee(tmp_path: P
     cg_path = tmp_path / "cg.json"
     cg_path.write_text(json.dumps(call_graph))
 
-    assert get_in_file_callees_for("quickSort", str(cg_path), include_self=True) == [
+    assert get_in_file_callees_for("quickSort", call_graph, include_self=True) == [
         "partition",
         "quickSort",
     ]
     # Non-recursive functions are unaffected by the flag.
-    assert get_in_file_callees_for("partition", str(cg_path), include_self=True) == ["swap"]
+    assert get_in_file_callees_for("partition", call_graph, include_self=True) == ["swap"]
 
 
 def test_get_unstubbed_external_callees_for_returns_only_unmodeled(tmp_path: Path) -> None:
@@ -82,7 +79,7 @@ def test_get_unstubbed_external_callees_for_returns_only_unmodeled(tmp_path: Pat
     cg_path = tmp_path / "cg.json"
     cg_path.write_text(json.dumps(call_graph))
 
-    assert get_unstubbed_external_callees_for("foo", str(cg_path), build_stub_index()) == [
+    assert get_unstubbed_external_callees_for("foo", call_graph, build_stub_index()) == [
         "some_project_helper"
     ]
 
@@ -92,4 +89,4 @@ def test_get_unstubbed_external_callees_for_empty_when_all_stubbed(tmp_path: Pat
     cg_path = tmp_path / "cg.json"
     cg_path.write_text(json.dumps(call_graph))
 
-    assert get_unstubbed_external_callees_for("foo", str(cg_path), build_stub_index()) == []
+    assert get_unstubbed_external_callees_for("foo", call_graph, build_stub_index()) == []
