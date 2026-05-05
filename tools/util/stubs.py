@@ -79,7 +79,7 @@ def get_in_file_callees_for(
     Returns:
         list[str]: Sorted, de-duplicated list of in-file callee names.
     """
-    internal = call_graph.get(function_to_verify, {}).get("internal", [])
+    internal = get_call_graph_entry(function_to_verify, call_graph).get("internal", [])
     if include_self:
         return sorted(set(internal))
     return sorted({name for name in internal if name != function_to_verify})
