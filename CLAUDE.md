@@ -31,7 +31,7 @@ CBMC by hand. Each tool runs in the shell and prints its result to stdout.
 
   Prints the path to a newly written `<stem>-callgraph.json` next to the source file.
 
-- **To get the order in which to write specifications and verify them**, run:
+- **To obtain a topological ordering of functions in a call graph (i.e., all callees before callers)**:
 
   ```sh
   avocado-topological-order <PATH_TO_CALL_GRAPH_JSON>
