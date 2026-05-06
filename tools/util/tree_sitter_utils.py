@@ -12,19 +12,21 @@ from pathlib import Path
 import tree_sitter_c as tsc
 from tree_sitter import Language, Node, Parser, Tree
 
+from .callgraph import CallGraph
+
 _TREE_SITTER_LANG = Language(tsc.language())
 _PARSER = Parser(_TREE_SITTER_LANG)
 
 # Names that tree-sitter parses as `call_expression` but are not real function calls in the
 # CBMC sense: contract macros (`__CPROVER_requires`, `__CPROVER_ensures`, ...) and the `sizeof`
 # operator. They have no body to link, so excluding them keeps the call graph focused on real
-# callees that affect verification (in-file functions or library calls that need a stub).
+# callees that affect verification.
 _NON_CALLEE_PREFIXES = ("__CPROVER_",)
 _NON_CALLEE_NAMES = frozenset({"sizeof"})
 _CONTRACT_CLAUSE_PREFIX = "__CPROVER_"
 
 
-def get_call_graph(path_to_file: str) -> dict[str, dict[str, list[str]]]:
+def get_call_graph(path_to_file: str) -> CallGraph:
     """Return a call graph comprising functions parsed from the given file.
 
     Each caller's callees are split into `internal` (defined in the same file) and `external`
@@ -36,7 +38,7 @@ def get_call_graph(path_to_file: str) -> dict[str, dict[str, list[str]]]:
         path_to_file (str): The path to the file where the functions are defined.
 
     Returns:
-        dict[str, dict[str, list[str]]]: Mapping from caller name to internal callees.
+        CallGraph: A call graph comprising functions from the given file.
     """
     file_content = Path(path_to_file).read_text(encoding="utf-8")
     tree = _parse_to_ast(file_content)
@@ -54,10 +56,10 @@ def get_call_graph(path_to_file: str) -> dict[str, dict[str, list[str]]]:
         callees = _get_names_of_functions_called_in_node(node)
         # This sorting isn't necessary for correctness, but makes call-graph construction
         # deterministic.
-        internal = sorted(name for name in callees if name in in_file_functions)
+        internal_callees = sorted(name for name in callees if name in in_file_functions)
         external = sorted(name for name in callees if name not in in_file_functions)
-        call_graph[function_name] = {"internal": internal, "external": external}
-    return call_graph
+        call_graph[function_name] = {"internal": internal_callees, "external": external}
+    return CallGraph(call_graph)
 
 
 def get_functions_with_cprover_annotations(path_to_file: str) -> set[str]:
@@ -101,11 +103,12 @@ def _parse_to_ast(content: str, language_extension: str = ".c") -> Tree:
 
     Arguments:
         content (str): The source code to parse.
-        language_extension (str): The language extension of the language to parse an AST for.
-            Defaults to C (.c).
+        language_extension (str): The language extension (including leading period) of the language
+            to parse an AST for.  Defaults to ".c".
 
     Returns:
         Tree: A tree_sitter AST.
+
     """
     match language_extension:
         case ".c":

@@ -18,6 +18,7 @@ clean:
 
 # Code style; defines `style-check` and `style-fix`.
 CODE_STYLE_EXCLUSIONS_USER := --exclude-dir test --exclude-dir data --exclude-dir docs --exclude CLAUDE.md
+CODE_STYLE_FILTER_OUT_USER := ./eval/benchmarks/%
 ifeq (,$(wildcard .plume-scripts))
 dummy := $(shell git clone --depth=1 -q https://github.com/plume-lib/plume-scripts.git .plume-scripts)
 endif

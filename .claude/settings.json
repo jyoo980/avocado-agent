@@ -3,9 +3,7 @@
     "effortLevel": "medium",
     "permissions": {
         "allow": [
-            "mcp__avocado-tools__construct_call_graph",
-            "mcp__avocado-tools__run_cbmc",
-            "mcp__avocado-tools__get_topological_ordering_of_functions"
+            "Bash(avocado-*)"
         ]
     }
 }

@@ -35,23 +35,28 @@ wheels = [
 [[package]]
 name = "avocado-agent"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "claude-agent-sdk" },
-    { name = "mcp" },
     { name = "pytest" },
     { name = "tree-sitter" },
     { name = "tree-sitter-c" },
 ]
 
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "claude-agent-sdk", specifier = ">=0.1.71" },
-    { name = "mcp", specifier = ">=1.27" },
     { name = "pytest", specifier = ">=9.0.3" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },
     { name = "tree-sitter", specifier = ">=0.25.2" },
     { name = "tree-sitter-c", specifier = ">=0.24.2" },
 ]
+provides-extras = ["dev"]
 
 [[package]]
 name = "certifi"

@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "avocado-tools": {
-      "command": "uv",
-      "args": ["run", "python", "-m", "tools.server"]
-    }
-  }
-}
