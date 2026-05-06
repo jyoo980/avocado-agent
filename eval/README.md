@@ -3,7 +3,7 @@
 Use [`verify_program.py`](./verify_program.py) to run CBMC on a benchmark program.
 
 For example,
-  to check the specified functions in `eval/quicksort`,
+  to check the specified functions in `eval/benchmarks/csv_parser`,
   run
 
 ```sh
