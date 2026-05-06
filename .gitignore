@@ -8,7 +8,7 @@
 *-cbmc-runs.jsonl
 
 # C files (no top-level C files; create a directory for them.)
-*.c
+/*.c
 
 # JSON files.
 *.json
