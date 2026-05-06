@@ -7,7 +7,7 @@ from tools.util.stubs import (
     build_stub_index,
     get_in_file_callees_for,
     get_unstubbed_external_callees_for,
-    resolve_stub_paths_for,
+    get_stub_paths_for,
 )
 
 
@@ -18,23 +18,23 @@ def test_build_stub_index_resolves_common_libc_names() -> None:
     assert index["strcpy"].name == "string.c"
 
 
-def test_resolve_stub_paths_for_external_callees(tmp_path: Path) -> None:
+def test_get_stub_paths_for_external_callees(tmp_path: Path) -> None:
     call_graph = {
         "foo": {"internal": ["bar"], "external": ["printf", "malloc"]},
         "bar": {"internal": [], "external": ["strcpy"]},
     }
     index = build_stub_index()
-    resolved = resolve_stub_paths_for("foo", call_graph, index)
+    resolved = get_stub_paths_for("foo", call_graph, index)
 
     # Only `foo`'s direct externals are resolved; `strcpy` is only reachable via `bar`.
     names = sorted(Path(p).name for p in resolved)
     assert names == ["stdio.c", "stdlib.c"]
 
 
-def test_resolve_stub_paths_for_unknown_callee_is_dropped(tmp_path: Path) -> None:
+def test_get_stub_paths_for_unknown_callee_is_dropped(tmp_path: Path) -> None:
     call_graph = {"foo": {"internal": [], "external": ["nonexistent_libc_thing"]}}
 
-    assert resolve_stub_paths_for("foo", call_graph, build_stub_index()) == []
+    assert get_stub_paths_for("foo", call_graph, build_stub_index()) == []
 
 
 def test_get_in_file_callees_for_excludes_externals_and_self(tmp_path: Path) -> None:
