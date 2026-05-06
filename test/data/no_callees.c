@@ -1,12 +1,10 @@
-#include <stdlib.h>
-
 void foo() {}
 
-void bar() {
-
+int bar() {
+    return 1;
 }
 
-int baz()
+int baz(int a, int b)
 {
-    return 1;
+    return a + b;
 }

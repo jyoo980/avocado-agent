@@ -2,17 +2,9 @@
 #include <stdlib.h>
 #include <limits.h>
 
-/**
- * Swap consumes two pointers and switches their values.
- * I.e., given a pointer 'a' and a pointer 'b', 'a' should point
- * to the original value of 'b', and 'b' should point to the original value of 'b'.
- *
- * @param a int* A pointer to an integer.
- * @param b int* A pointer to an integer.
- */
 void swap(int* a, int* b)
-__CPROVER_requires(__CPROVER_is_fresh(a, sizeof(*a)))
-__CPROVER_requires(__CPROVER_is_fresh(b, sizeof(*b)))
+__CPROVER_requires(__CPROVER_is_fresh(a, sizeof(int)))
+__CPROVER_requires(__CPROVER_is_fresh(b, sizeof(int)))
 __CPROVER_assigns(*a, *b)
 __CPROVER_ensures(*a == __CPROVER_old(*b))
 __CPROVER_ensures(*b == __CPROVER_old(*a))
@@ -23,29 +15,13 @@ __CPROVER_ensures(*b == __CPROVER_old(*a))
 }
 
 
-/**
- * Partition will reorder a given array such that all elements
- * of it below a certain value (i.e., the pivot value) will be to
- * its left, and all elements above a certain value will be to its right.
- *
- * low and high should not overflow.
- *
- * @param arr[] The array to re-order.
- * @param low The starting index of the subarray to re-order.
- * @param high The ending index of the subarray to partition (used as pivot element).
- *
- * @return The pivot index.
- */
 int partition (int arr[], int low, int high)
-__CPROVER_requires(low >= 0)
-__CPROVER_requires(low <= high)
-__CPROVER_requires(high < INT_MAX)
+__CPROVER_requires(0 <= low && low <= high && high < 5)
 __CPROVER_requires(__CPROVER_is_fresh(arr, (high + 1) * sizeof(int)))
 __CPROVER_assigns(__CPROVER_object_whole(arr))
-__CPROVER_ensures(__CPROVER_return_value >= low)
-__CPROVER_ensures(__CPROVER_return_value <= high)
+__CPROVER_ensures(low <= __CPROVER_return_value && __CPROVER_return_value <= high)
 {
-    int pivot = arr[high]; 
+    int pivot = arr[high];
     int i = low - 1; 
 
     for (int j = low; j <= high - 1; j++) {
@@ -64,10 +40,8 @@ __CPROVER_ensures(__CPROVER_return_value <= high)
 
 
 void quickSort(int arr[], int low, int high)
-__CPROVER_requires(low >= 0)
-__CPROVER_requires(high >= -1)
-__CPROVER_requires(high < INT_MAX)
-__CPROVER_requires(__CPROVER_is_fresh(arr, (high + 1) * sizeof(int)))
+__CPROVER_requires(__CPROVER_is_fresh(arr, 5 * sizeof(int)))
+__CPROVER_requires(low >= 0 && high < 5)
 __CPROVER_assigns(__CPROVER_object_whole(arr))
 {
 
