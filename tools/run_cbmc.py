@@ -14,6 +14,7 @@ from tools.util import (
     get_in_file_callees_for,
     get_unstubbed_external_callees_for,
 )
+from tools.util.callgraph import CallGraph
 
 # Char budget for failure responses, sized to keep CLI output bounded so it
 # doesn't exceed an agent's tool-output limits.
@@ -50,7 +51,7 @@ def run_cbmc(
     """
     if stub_index is None:
         stub_index = build_stub_index()
-    call_graph = json.loads(Path(path_to_call_graph).read_text(encoding="utf-8"))
+    call_graph = CallGraph(json.loads(Path(path_to_call_graph).read_text(encoding="utf-8")))
     callees = get_in_file_callees_for(
         function_to_verify, call_graph, include_self=replace_recursive_calls
     )

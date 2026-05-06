@@ -12,6 +12,8 @@ from pathlib import Path
 import tree_sitter_c as tsc
 from tree_sitter import Language, Node, Parser, Tree
 
+from .callgraph import CallGraph
+
 _TREE_SITTER_LANG = Language(tsc.language())
 _PARSER = Parser(_TREE_SITTER_LANG)
 
@@ -23,11 +25,7 @@ _NON_CALLEE_PREFIXES = ("__CPROVER_",)
 _NON_CALLEE_NAMES = frozenset({"sizeof"})
 
 
-# [[MDE: I find the (undocumented) structure of the second dictionary a bit gross, because it is
-# "stringly-typed".  I suggest instead defining a data structure named Calles or CGCallees or
-# CallGraphCallees, which has two fields named "internal" and "external".  Then code like
-# "cg.get("external", [])" can be replaced by "cg.external".]]
-def get_call_graph(path_to_file: str) -> dict[str, dict[str, list[str]]]:
+def get_call_graph(path_to_file: str) -> CallGraph:
     """Return a call graph comprising functions parsed from the given file.
 
     Each caller's callees are split into `internal` (defined in the same file) and `external`
@@ -39,8 +37,7 @@ def get_call_graph(path_to_file: str) -> dict[str, dict[str, list[str]]]:
         path_to_file (str): The path to the file where the functions are defined.
 
     Returns:
-        dict[str, dict[str, list[str]]]: Mapping from caller name to internal callees.
-            [[MDE: That description is not correct, since it also contains external callees.]]
+        CallGraph: A call graph comprising functions from the given file.
     """
     file_content = Path(path_to_file).read_text(encoding="utf-8")
     tree = _parse_to_ast(file_content)
@@ -61,7 +58,7 @@ def get_call_graph(path_to_file: str) -> dict[str, dict[str, list[str]]]:
         internal_callees = sorted(name for name in callees if name in in_file_functions)
         external = sorted(name for name in callees if name not in in_file_functions)
         call_graph[function_name] = {"internal": internal_callees, "external": external}
-    return call_graph
+    return CallGraph(call_graph)
 
 
 def _parse_to_ast(content: str, language_extension: str = ".c") -> Tree:
