@@ -47,12 +47,8 @@ You should always prefer this project's CLI tools over invoking CBMC by hand.
                    [--replace-recursive-calls]
   ```
 
-  [[MDE: I do not think that `--call-graph` should be an argument.  I think that the `avocado-run-cbmc` script should compute the call graph itself, to make this script easier for users to run.]]
-  [[MDE: I do not think that `--replace-recursive-calls` should be an argument.  I think that the `avocado-run-cbmc` script should try running CBMC twice:  first with `--replace-recursive-calls` for the target function (if it's recursive) and, if that does not work, with unrolling.  The user should not have to reason about whether the contract is inductive just to run CBMC.]]
-  [[MDE: Should there be a concrete example?  That might help an LLM, though I doubt it is essential.]]
-
-  If verification succeeds, exits with status 0 and prints a success line to stdout.
-  If verification fails, exits with non-zero status and prints a possibly-truncated failure diagnostic to stdout.
+If verification succeeds, exits with status 0 and prints a success line to stdout.
+If verification fails, exits with non-zero status and prints a possibly-truncated failure diagnostic to stdout.
 
 Fall back to directly running CBMC only if necessary.
 
