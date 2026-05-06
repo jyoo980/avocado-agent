@@ -1,18 +1,20 @@
+# Subclassing `dict` enables JSON-serialization;
+# Ignore https://docs.astral.sh/ruff/rules/subclass-builtin/#subclass-builtin-furb189.
+# ruff: noqa : FURB189
+
 """Class to represent a call graph."""
 
 from __future__ import annotations
 
-from collections import UserDict
 
-
-class CallGraphCallees(UserDict):
+class CallGraphCallees(dict):
     """Represent callees in a call graph.
 
     Callees are split into `internal` (defined in the same file) and `external` (everything else —
     typically libc or other library calls). Downstream callers use this split to decide what to pass
     to CBMC's `--replace-call-with-contract` flag, which only makes sense for in-file callees.
 
-    Stored as a `dict` so instances are JSON-serializable directly via `json.dumps`.
+    Subclasses `dict` so instances are JSON-serializable directly via `json.dumps`.
 
     Attributes:
         internal (list[str]): Internal (i.e., same-file) callees.
@@ -34,7 +36,7 @@ class CallGraphCallees(UserDict):
         return self["external"]
 
 
-class CallGraph(UserDict):
+class CallGraph(dict):
     """Represent a call graph.
 
     A `CallGraph` is a `dict` mapping function name to its `CallGraphCallees`. Subclassing `dict`
