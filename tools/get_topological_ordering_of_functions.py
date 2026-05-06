@@ -1,4 +1,4 @@
-"""CLI to obtain a topological ordering of functions from a call graph."""
+"""Print to stdout a reverse topological ordering of functions from a call graph."""
 
 import argparse
 import json
@@ -10,16 +10,16 @@ def get_topological_ordering_of_functions(
 ) -> list[str]:
     """Return a topological ordering of functions from the given call graph JSON.
 
-    Callees come before their callers, so verifying functions in this order means each
-    function's in-file callees already have established contracts when CBMC reaches them. Only
-    internal callees are considered; self-recursion and mutual recursion are tolerated (visited
-    nodes are skipped, breaking back-edges in cycles).
+    Callees come before their callers, so verifying functions in this order means each function's
+    in-file callees already have established contracts when CBMC reaches them. In case of mutual
+    recursion, functions in the SCC are printed in arbitary order.
 
     Args:
         path_to_call_graph (str): The path to the call graph JSON.
 
     Returns:
         list[str]: Function names ordered callees-first.
+
     """
     call_graph: dict[str, dict[str, list[str]]] = json.loads(Path(path_to_call_graph).read_text())
 
@@ -40,7 +40,7 @@ def get_topological_ordering_of_functions(
 
 
 def main() -> None:
-    """CLI to obtain a topological ordering of functions from a call graph."""
+    """Print a reverse topological ordering of functions from a call graph."""
     parser = argparse.ArgumentParser(
         description=(
             "Print a callees-first topological ordering of functions from a call graph JSON, "

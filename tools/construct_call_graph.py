@@ -1,4 +1,5 @@
-"""CLI to construct a call graph comprising functions in a given file."""
+"""Saves a call graph to a file and prints the file name."""
+# [[MDE: Here and elsewhere, please include a description of usage.]]
 
 import argparse
 import json
@@ -10,7 +11,7 @@ from tools.util import get_call_graph
 def construct_call_graph(
     path_to_file_to_verify: str,
 ) -> str:
-    """Construct a call graph comprised of functions parsed from the given C file.
+    """Construct a call graph for the given C file.
 
     Args:
         path_to_file_to_verify (str): The path to the file from which to construct a call graph.
@@ -18,6 +19,8 @@ def construct_call_graph(
     Returns:
         str: The path to the file to which the call graph is written.
     """
+    # [[MDE: If the file already exists and is newer than the .c file, then this function should do
+    # no work.]]
     call_graph = get_call_graph(path_to_file_to_verify)
     source_path = Path(path_to_file_to_verify)
     path_to_call_graph = source_path.with_name(f"{source_path.stem}-callgraph.json")
@@ -26,7 +29,7 @@ def construct_call_graph(
 
 
 def main() -> None:
-    """CLI to construct a call graph comprising functions in a given file."""
+    """Construct a call graph comprising functions in a given file."""
     parser = argparse.ArgumentParser(
         description="Parse a C file and write a call graph JSON next to it."
     )

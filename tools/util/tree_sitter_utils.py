@@ -18,11 +18,15 @@ _PARSER = Parser(_TREE_SITTER_LANG)
 # Names that tree-sitter parses as `call_expression` but are not real function calls in the
 # CBMC sense: contract macros (`__CPROVER_requires`, `__CPROVER_ensures`, ...) and the `sizeof`
 # operator. They have no body to link, so excluding them keeps the call graph focused on real
-# callees that affect verification (in-file functions or library calls that need a stub).
+# callees that affect verification.
 _NON_CALLEE_PREFIXES = ("__CPROVER_",)
 _NON_CALLEE_NAMES = frozenset({"sizeof"})
 
 
+# [[MDE: I find the (undocumented) structure of the second dictionary a bit gross, because it is
+# "stringly-typed".  I suggest instead defining a data structure named Calles or CGCallees or
+# CallGraphCallees, which has two fields named "internal" and "external".  Then code like
+# "cg.get("external", [])" can be replaced by "cg.external".]]
 def get_call_graph(path_to_file: str) -> dict[str, dict[str, list[str]]]:
     """Return a call graph comprising functions parsed from the given file.
 
@@ -36,6 +40,7 @@ def get_call_graph(path_to_file: str) -> dict[str, dict[str, list[str]]]:
 
     Returns:
         dict[str, dict[str, list[str]]]: Mapping from caller name to internal callees.
+            [[MDE: That description is not correct, since it also contains external callees.]]
     """
     file_content = Path(path_to_file).read_text(encoding="utf-8")
     tree = _parse_to_ast(file_content)
@@ -53,9 +58,9 @@ def get_call_graph(path_to_file: str) -> dict[str, dict[str, list[str]]]:
         callees = _get_names_of_functions_called_in_node(node)
         # This sorting isn't necessary for correctness, but makes call-graph construction
         # deterministic.
-        internal = sorted(name for name in callees if name in in_file_functions)
+        internal_callees = sorted(name for name in callees if name in in_file_functions)
         external = sorted(name for name in callees if name not in in_file_functions)
-        call_graph[function_name] = {"internal": internal, "external": external}
+        call_graph[function_name] = {"internal": internal_callees, "external": external}
     return call_graph
 
 
@@ -66,11 +71,12 @@ def _parse_to_ast(content: str, language_extension: str = ".c") -> Tree:
 
     Arguments:
         content (str): The source code to parse.
-        language_extension (str): The language extension of the language to parse an AST for.
-            Defaults to C (.c).
+        language_extension (str): The language extension (including leading period) of the language
+            to parse an AST for.  Defaults to ".c".
 
     Returns:
         Tree: A tree_sitter AST.
+
     """
     match language_extension:
         case ".c":

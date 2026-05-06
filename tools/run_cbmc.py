@@ -1,4 +1,5 @@
-"""CLI to run CBMC on a given function."""
+"""Run CBMC on a function."""
+# [[MDE: Here and elsewhere, document usage.]]
 
 import argparse
 import json
@@ -15,10 +16,10 @@ from tools.util import (
 )
 
 # Char budget for failure responses, sized to keep CLI output bounded so it
-# doesn't blow past an agent's tool-output limits.
+# doesn't exceed an agent's tool-output limits.
 _MAX_RESPONSE_CHARS = 100_000
 
-# Of the budget left after the header, FAILURE lines, and section labels, this
+# Of the output size budget left after the header, FAILURE lines, and section labels, this
 # fraction is given to the stdout tail; the remainder goes to the stderr tail.
 _STDOUT_TAIL_SHARE = 0.7
 
@@ -234,12 +235,16 @@ def _get_cbmc_command(
     )
 
 
+# [[MDE: As a general rule, please put `main()` first in a file.  That makes the file easier to
+# understand.]]
 def main() -> None:
-    """CLI to run CBMC on a given function."""
+    """Run CBMC on a function."""
     parser = argparse.ArgumentParser(
         description=(
             "Run CBMC on a function with loop unwinding = 5, depth = 100. "
-            "Exits 0 on verification success and 1 on verification failure."
+            "Exits with status 0 on verification success and 1 on verification failure."
+            # [[MDE: Why guarantee status 1 on verification failure?  Returning the actual return
+            # code may provide more information (it cannot hurt, so far as I can see).]]
         )
     )
     parser.add_argument("--function", required=True, help="Name of the function to verify.")
