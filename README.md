@@ -23,14 +23,13 @@ Once the container is successfully built,
 % make run
 ```
 
-Then sync all Python dependencies and activate the virual environment via `uv`:
+The container entrypoint runs `uv sync --frozen` and prepends `.venv/bin` to
+`PATH` automatically, so the avocado tools (`avocado-construct-call-graph`,
+`avocado-topological-order`, `avocado-run-cbmc`) are directly callable in
+the shell. Validate that `cbmc` and `claude` are also on `PATH`.
 
-```sh
-% uv sync
-% source .venv/bin/activate
-```
-
-And validate the `cbmc` and `claude` commands work.
+Running outside Docker still requires manually invoking `uv sync` and
+either activating the venv or prefixing tool calls with `uv run`.
 
 ## Requirements
 

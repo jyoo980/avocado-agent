@@ -18,6 +18,44 @@ which includes a [User Guide](https://diffblue.github.io/cbmc/user_guide.html)
 and [The CPROVER
 Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 
+## Tool Use
+
+You should always prefer this project's CLI tools over invoking CBMC by hand.
+
+- **To obtain a call graph of the functions in a file in JSON format**, run:
+
+  ```sh
+  avocado-construct-call-graph <PATH_TO_C_FILE>
+  ```
+
+  Prints the path to a newly written `<stem>-callgraph.json` next to the source file.
+
+- **To obtain a reverse topological ordering of functions in a call graph, with all callees before their callers**:
+
+  ```sh
+  avocado-topological-order <PATH_TO_CALL_GRAPH_JSON>
+  ```
+
+  Prints function names callees-first, one per line.
+
+- **To run CBMC on a function**, run:
+
+  ```sh
+  avocado-run-cbmc --function <FUNCTION_NAME> \
+                   --file <PATH_TO_C_FILE> \
+                   --call-graph <PATH_TO_CALL_GRAPH_JSON> \
+                   [--replace-recursive-calls]
+  ```
+
+  [[MDE: I do not think that `--call-graph` should be an argument.  I think that the `avocado-run-cbmc` script should compute the call graph itself, to make this script easier for users to run.]]
+  [[MDE: I do not think that `--replace-recursive-calls` should be an argument.  I think that the `avocado-run-cbmc` script should try running CBMC twice:  first with `--replace-recursive-calls` for the target function (if it's recursive) and, if that does not work, with unrolling.  The user should not have to reason about whether the contract is inductive just to run CBMC.]]
+  [[MDE: Should there be a concrete example?  That might help an LLM, though I doubt it is essential.]]
+
+  If verification succeeds, exits with status 0 and prints a success line to stdout.
+  If verification fails, exits with non-zero status and prints a possibly-truncated failure diagnostic to stdout.
+
+Fall back to directly running CBMC only if necessary.
+
 ## Syntax of C function specifications (contracts)
 
 Preconditions and postconditions are written after the function signature and
@@ -28,8 +66,8 @@ The syntax includes:
 ### Function contracts
 
 * Preconditions and postconditions: `__CPROVER_requires(bool cond)`, `__CPROVER_ensures(bool cond)`.
-  Documented in `contracts-requires-ensures.md`.
-* Pre-/post-conditions about function pointers: `bool __CPROVER_obeys_contract(void (*f)(void), void (*c)(void))`.
+  Documented in `docs/contracts-requires-ensures.md`.
+* Preconditions and postconditions about function pointers: `bool __CPROVER_obeys_contract(void (*f)(void), void (*c)(void))`.
   Documented in `docs/contracts-function-pointer-predicates.md`.
 * Side effects: `__CPROVER_assigns(targets)`.
   Documented in `docs/contracts-assigns.md`.
@@ -50,11 +88,11 @@ Requires and ensures clauses are written as C boolean expressions that may addit
   Used in requires clauses and ensures clauses.
   Documented in `docs/contracts-quantifiers.md`.
 
-## Stub files
+## How to run CBMC directly
 
-Any stub files you might use can be found in the `stub/` folder.
-
-## How to run CBMC
+You should run CBMC via the `avocado-run-cbmc` script.  Here is what it does
+internally.  You can try these commands if the `avocado-run-cbmc` script
+misbehaves.
 
 Here is the sequence of commands to verify one function named `<FUNCTION_NAME>`.
 The function calls two other functions, `<CALLEE1>` and `<CALLEE2>`.
