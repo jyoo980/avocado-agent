@@ -39,3 +39,23 @@ either activating the venv or prefixing tool calls with `uv run`.
   - Used to manage packages,
     dependencies,
     and develop the tools provided to Claude Code.
+
+## FAQ
+
+> How do I run Claude Code with the `--dangerously-skip-permissions` flag in a Docker container?
+
+This is not a recommended modality in which to run Claude Code;
+  do so at your own risk.
+If you are in a sandboxed environment with no internet access (e.g., a Docker container with limited
+  network access),
+  you can run:
+
+```sh
+% export IS_SANDBOX=1
+```
+
+And then run:
+
+```sh
+% claude --dangerously-skip-permissions
+```
