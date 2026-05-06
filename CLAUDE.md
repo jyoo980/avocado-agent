@@ -21,13 +21,8 @@ Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 ## Tool Use
 
 You should always prefer this project's CLI tools over invoking CBMC by hand.
-[[MDE: The following sentence seems like an implementation detail that a user does not care about.  Can you omit it?]]
-The container entrypoint runs `uv sync` and adds `.venv/bin` to `PATH` before
-your shell starts, so the tools below are directly callable — no `uv run`
-prefix is needed. Each tool runs in the shell and prints its result to stdout.
 
-- **To obtain a call graph of the functions in a file**, run:
-  [[MDE: in what format?]]
+- **To obtain a call graph of the functions in a file in JSON format**, run:
 
   ```sh
   avocado-construct-call-graph <PATH_TO_C_FILE>

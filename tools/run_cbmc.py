@@ -1,5 +1,11 @@
-"""Run CBMC on a function."""
-# [[MDE: Here and elsewhere, document usage.]]
+"""Run CBMC on a function.
+
+Usage:
+    % avocado-run-cbmc --function <FUNCTION_NAME> \
+                       --file <PATH_TO_C_FILE> \
+                       --call-graph <PATH_TO_CALL_GRAPH_JSON> \
+                       [--replace-recursive-calls]
+"""
 
 import argparse
 import json
@@ -23,6 +29,42 @@ _MAX_RESPONSE_CHARS = 100_000
 # Of the output size budget left after the header, FAILURE lines, and section labels, this
 # fraction is given to the stdout tail; the remainder goes to the stderr tail.
 _STDOUT_TAIL_SHARE = 0.7
+
+
+def main() -> None:
+    """Run CBMC on a function."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run CBMC on a function with loop unwinding = 5, depth = 100. "
+            "Exits with status 0 on verification success and 1 on verification failure."
+            # [[MDE: Why guarantee status 1 on verification failure?  Returning the actual return
+            # code may provide more information (it cannot hurt, so far as I can see).]]
+        )
+    )
+    parser.add_argument("--function", required=True, help="Name of the function to verify.")
+    parser.add_argument("--file", required=True, help="Path to the C file defining the function.")
+    parser.add_argument(
+        "--call-graph",
+        required=True,
+        help="Path to the JSON call graph produced by avocado-construct-call-graph.",
+    )
+    parser.add_argument(
+        "--replace-recursive-calls",
+        action="store_true",
+        help=(
+            "Set when verifying a self-recursive function so the recursive call is discharged "
+            "by the function's own contract (induction) instead of --unwind."
+        ),
+    )
+    args = parser.parse_args()
+    response, returncode = run_cbmc(
+        function_to_verify=args.function,
+        file_containing_function_to_verify=args.file,
+        path_to_call_graph=args.call_graph,
+        replace_recursive_calls=args.replace_recursive_calls,
+    )
+    print(response)
+    sys.exit(0 if returncode == 0 else 1)
 
 
 def run_cbmc(
@@ -234,44 +276,6 @@ def _get_cbmc_command(
             ),
         ]
     )
-
-
-# [[MDE: As a general rule, please put `main()` first in a file.  That makes the file easier to
-# understand.]]
-def main() -> None:
-    """Run CBMC on a function."""
-    parser = argparse.ArgumentParser(
-        description=(
-            "Run CBMC on a function with loop unwinding = 5, depth = 100. "
-            "Exits with status 0 on verification success and 1 on verification failure."
-            # [[MDE: Why guarantee status 1 on verification failure?  Returning the actual return
-            # code may provide more information (it cannot hurt, so far as I can see).]]
-        )
-    )
-    parser.add_argument("--function", required=True, help="Name of the function to verify.")
-    parser.add_argument("--file", required=True, help="Path to the C file defining the function.")
-    parser.add_argument(
-        "--call-graph",
-        required=True,
-        help="Path to the JSON call graph produced by avocado-construct-call-graph.",
-    )
-    parser.add_argument(
-        "--replace-recursive-calls",
-        action="store_true",
-        help=(
-            "Set when verifying a self-recursive function so the recursive call is discharged "
-            "by the function's own contract (induction) instead of --unwind."
-        ),
-    )
-    args = parser.parse_args()
-    response, returncode = run_cbmc(
-        function_to_verify=args.function,
-        file_containing_function_to_verify=args.file,
-        path_to_call_graph=args.call_graph,
-        replace_recursive_calls=args.replace_recursive_calls,
-    )
-    print(response)
-    sys.exit(0 if returncode == 0 else 1)
 
 
 if __name__ == "__main__":
