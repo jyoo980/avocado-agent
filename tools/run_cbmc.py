@@ -36,9 +36,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Run CBMC on a function with loop unwinding = 5, depth = 100. "
-            "Exits with status 0 on verification success and 1 on verification failure."
-            # [[MDE: Why guarantee status 1 on verification failure?  Returning the actual return
-            # code may provide more information (it cannot hurt, so far as I can see).]]
+            "Exits with status 0 on verification success."
         )
     )
     parser.add_argument("--function", required=True, help="Name of the function to verify.")
@@ -64,7 +62,7 @@ def main() -> None:
         replace_recursive_calls=args.replace_recursive_calls,
     )
     print(response)
-    sys.exit(0 if returncode == 0 else 1)
+    sys.exit(returncode)
 
 
 def run_cbmc(
