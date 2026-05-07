@@ -152,6 +152,9 @@ static const mkey_props _props[sizeof(mkey_devices) / sizeof(*mkey_devices)] =
 };
 
 static const mkey_props* mkey_get_props(const char* device)
+__CPROVER_requires(__CPROVER_is_fresh(device, 4))
+__CPROVER_ensures(__CPROVER_return_value == NULL ||
+                  __CPROVER_pointer_in_range_dfcc(&_props[0], __CPROVER_return_value, &_props[4]))
 {
     for(int i = 0; i < mkey_num_devices(); i++) {
         if(!strcmp(device, _props[i].device))
@@ -162,6 +165,12 @@ static const mkey_props* mkey_get_props(const char* device)
 }
 
 static int mkey_detect_algorithm(mkey_session* session, const char* inquiry_number)
+__CPROVER_requires(__CPROVER_is_fresh(session, sizeof(*session)))
+__CPROVER_requires(__CPROVER_is_fresh(session->ctx, sizeof(*(session->ctx))))
+__CPROVER_requires(__CPROVER_is_fresh(session->props, sizeof(*(session->props))))
+__CPROVER_requires(__CPROVER_is_fresh(session->device, 4))
+__CPROVER_requires(__CPROVER_is_fresh(inquiry_number, 16))
+__CPROVER_ensures(__CPROVER_return_value >= -2 && __CPROVER_return_value <= 4)
 {
     mkey_ctx* ctx = session->ctx;
     const mkey_props* props = session->props;
@@ -209,6 +218,11 @@ static int mkey_detect_algorithm(mkey_session* session, const char* inquiry_numb
 static u32 mkey_calculate_crc(u32 poly, u32 xorout, u32 addout, const void* inbuf, size_t size);
 
 static int mkey_generate_v0(mkey_session* session, u64 inquiry, u8 month, u8 day, char* master_key)
+__CPROVER_requires(__CPROVER_is_fresh(session, sizeof(*session)))
+__CPROVER_requires(__CPROVER_is_fresh(session->ctx, sizeof(*(session->ctx))))
+__CPROVER_requires(__CPROVER_is_fresh(session->props, sizeof(*(session->props))))
+__CPROVER_requires(__CPROVER_is_fresh(master_key, 10))
+__CPROVER_assigns(__CPROVER_object_upto(master_key, 10))
 {
     mkey_ctx* ctx = session->ctx;
     const mkey_props* props = session->props;
@@ -245,6 +259,10 @@ static int mkey_read_mkey_file(mkey_session* session, const char* file_name, voi
 static int mkey_read_hmac_key(mkey_session* session, const char* file_name, void* out);
 
 static int mkey_generate_v1_v2(mkey_session* session, u64 inquiry, u8 month, u8 day, char* master_key)
+__CPROVER_requires(__CPROVER_is_fresh(session, sizeof(*session)))
+__CPROVER_requires(__CPROVER_is_fresh(session->ctx, sizeof(*(session->ctx))))
+__CPROVER_requires(__CPROVER_is_fresh(session->props, sizeof(*(session->props))))
+__CPROVER_requires(__CPROVER_is_fresh(master_key, 10))
 {
     int ret = 0;
     mkey_ctx* ctx = session->ctx;
@@ -392,6 +410,11 @@ static int mkey_generate_v1_v2(mkey_session* session, u64 inquiry, u8 month, u8 
 }
 
 static int mkey_generate_v3_v4(mkey_session* session, u64 inquiry, const char* aux, char* master_key)
+__CPROVER_requires(__CPROVER_is_fresh(session, sizeof(*session)))
+__CPROVER_requires(__CPROVER_is_fresh(session->ctx, sizeof(*(session->ctx))))
+__CPROVER_requires(__CPROVER_is_fresh(session->props, sizeof(*(session->props))))
+__CPROVER_requires(aux == NULL || __CPROVER_is_fresh(aux, 17))
+__CPROVER_requires(__CPROVER_is_fresh(master_key, 10))
 {
     int ret = 0;
     mkey_ctx* ctx = session->ctx;
@@ -503,6 +526,11 @@ static int mkey_generate_v3_v4(mkey_session* session, u64 inquiry, const char* a
 }
 
 int mkey_generate(mkey_ctx* ctx, const char* inquiry_number, u8 month, u8 day, const char* aux, const char* device, char* master_key)
+__CPROVER_requires(__CPROVER_is_fresh(ctx, sizeof(*ctx)))
+__CPROVER_requires(inquiry_number == NULL || __CPROVER_is_fresh(inquiry_number, 16))
+__CPROVER_requires(aux == NULL || __CPROVER_is_fresh(aux, 17))
+__CPROVER_requires(device == NULL || __CPROVER_is_fresh(device, 4))
+__CPROVER_requires(__CPROVER_is_fresh(master_key, 10))
 {
     int res = 0;
 
@@ -555,6 +583,10 @@ int mkey_generate(mkey_ctx* ctx, const char* inquiry_number, u8 month, u8 day, c
 
 // Read AES key (v2).
 static int mkey_read_aes_key(mkey_session* session, const char* file_name, void* out)
+__CPROVER_requires(__CPROVER_is_fresh(session, sizeof(*session)))
+__CPROVER_requires(__CPROVER_is_fresh(session->ctx, sizeof(*(session->ctx))))
+__CPROVER_requires(file_name == NULL || __CPROVER_is_fresh(file_name, MAX_PATH))
+__CPROVER_requires(out == NULL || __CPROVER_is_fresh(out, 0x10))
 {
     if(!file_name || !out) return -1;
     mkey_ctx* ctx = session->ctx;
@@ -599,6 +631,10 @@ static int mkey_read_aes_key(mkey_session* session, const char* file_name, void*
 
 // Read masterkey.bin (v2).
 static int mkey_read_mkey_file(mkey_session* session, const char* file_name, void* out)
+__CPROVER_requires(__CPROVER_is_fresh(session, sizeof(*session)))
+__CPROVER_requires(__CPROVER_is_fresh(session->ctx, sizeof(*(session->ctx))))
+__CPROVER_requires(file_name == NULL || __CPROVER_is_fresh(file_name, MAX_PATH))
+__CPROVER_requires(out == NULL || __CPROVER_is_fresh(out, sizeof(mkey_data)))
 {
     if(!file_name || !out) return -1;
     mkey_ctx* ctx = session->ctx;
@@ -641,6 +677,10 @@ static int mkey_read_mkey_file(mkey_session* session, const char* file_name, voi
 
 // Read HMAC key (v1/v3/v4).
 static int mkey_read_hmac_key(mkey_session* session, const char* file_name, void* out)
+__CPROVER_requires(__CPROVER_is_fresh(session, sizeof(*session)))
+__CPROVER_requires(__CPROVER_is_fresh(session->ctx, sizeof(*(session->ctx))))
+__CPROVER_requires(file_name == NULL || __CPROVER_is_fresh(file_name, MAX_PATH))
+__CPROVER_requires(out == NULL || __CPROVER_is_fresh(out, sizeof_member(mkey_data, hmac_key)))
 {
     if(!file_name || !out) return -1;
     mkey_ctx* ctx = session->ctx;
@@ -683,6 +723,8 @@ static int mkey_read_hmac_key(mkey_session* session, const char* file_name, void
 
 // CRC-32 implementation (v0).
 static u32 mkey_calculate_crc(u32 poly, u32 xorout, u32 addout, const void* inbuf, size_t size)
+__CPROVER_requires(inbuf == NULL || __CPROVER_is_fresh(inbuf, size))
+__CPROVER_requires(size <= 16)
 {
     u32 crc = 0xFFFFFFFF;
     const u8* in = inbuf;
@@ -705,17 +747,27 @@ static u32 mkey_calculate_crc(u32 poly, u32 xorout, u32 addout, const void* inbu
 }
 
 void mkey_set_debug(mkey_ctx* ctx, bool enable)
+__CPROVER_requires(__CPROVER_is_fresh(ctx, sizeof(*ctx)))
+__CPROVER_assigns(ctx->dbg)
+__CPROVER_ensures(ctx->dbg == enable)
 {
     ctx->dbg = enable;
 }
 
 void mkey_set_data_path(mkey_ctx* ctx, const char* data_path)
+__CPROVER_requires(__CPROVER_is_fresh(ctx, sizeof(*ctx)))
+__CPROVER_requires(__CPROVER_is_fresh(data_path, MAX_PATH))
+__CPROVER_assigns(ctx->data_path, ctx->data_path_set)
+__CPROVER_ensures(ctx->data_path_set == true)
 {
     strncpy(ctx->data_path, data_path, sizeof(ctx->data_path));
     ctx->data_path_set = true;
 }
 
 void mkey_set_default_device(mkey_ctx* ctx, const char* device)
+__CPROVER_requires(__CPROVER_is_fresh(ctx, sizeof(*ctx)))
+__CPROVER_requires(__CPROVER_is_fresh(device, 4))
+__CPROVER_assigns(ctx->default_device)
 {
     const mkey_props* props = mkey_get_props(device);
     if(!props) {
@@ -727,6 +779,9 @@ void mkey_set_default_device(mkey_ctx* ctx, const char* device)
 }
 
 void mkey_init(mkey_ctx* ctx, bool debug, const char* data_path)
+__CPROVER_requires(__CPROVER_is_fresh(ctx, sizeof(*ctx)))
+__CPROVER_requires(data_path == NULL || __CPROVER_is_fresh(data_path, MAX_PATH))
+__CPROVER_assigns(*ctx)
 {
     memset(ctx, 0, sizeof(mkey_ctx));
     mkey_set_debug(ctx, debug);

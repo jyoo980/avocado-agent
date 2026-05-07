@@ -189,6 +189,7 @@ def _run_cbmc(
 
     # Try running the base CBMC command.
     command = get_cbmc_command(function, callees, file, stub_paths=stub_paths)
+    logger.debug(command)
     completed = subprocess.run(command, capture_output=True, text=True, shell=True, check=False)
 
     # On failure, re-run without macro expansion if the error contains a message about missing
@@ -197,6 +198,7 @@ def _run_cbmc(
         command = get_cbmc_command(
             function, callees, file, prevent_macro_expansion=True, stub_paths=stub_paths
         )
+        logger.debug(command)
         completed = subprocess.run(command, capture_output=True, text=True, shell=True, check=False)
     failures = [
         line.strip() for line in completed.stderr.splitlines() if line.strip().endswith("FAILURE")
