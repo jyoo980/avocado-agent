@@ -93,9 +93,11 @@ def _resolve_c_files(path_str: str) -> list[Path]:
         list[Path]: Sorted list of paths to verify.
     """
     path = Path(path_str)
+    if not path.exists():
+        return []
     if path.is_dir():
         return sorted(path.rglob("*.c"))
-    return [path]
+    return [path] if path.suffix == ".c" else []
 
 
 def _verify_program(file: str) -> list[VerificationResult]:
