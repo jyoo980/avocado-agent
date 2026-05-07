@@ -3,7 +3,7 @@
 from tools.run_cbmc import get_cbmc_command
 
 
-def test__get_cbmc_command_no_callees_no_stubs() -> None:
+def test_get_cbmc_command_no_callees_no_stubs() -> None:
     command = get_cbmc_command(
         function_to_verify="swap",
         callees=[],
@@ -17,7 +17,7 @@ def test__get_cbmc_command_no_callees_no_stubs() -> None:
     )
 
 
-def test__get_cbmc_command_includes_self_for_inductive_recursive_verification() -> None:
+def test_get_cbmc_command_includes_self_for_inductive_recursive_verification() -> None:
     command = get_cbmc_command(
         function_to_verify="quickSort",
         callees=["partition", "quickSort"],
