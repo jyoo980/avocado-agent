@@ -30,6 +30,10 @@ _MAX_RESPONSE_CHARS = 100_000
 # fraction is given to the stdout tail; the remainder goes to the stderr tail.
 _STDOUT_TAIL_SHARE = 0.7
 
+_DISABLE_MACRO_FLAGS = [
+    "-D__NO_CTYPE"  # for ctype.h
+]
+
 
 def main() -> None:
     """Run CBMC on a function."""
@@ -96,7 +100,7 @@ def run_cbmc(
         function_to_verify, call_graph, include_self=replace_recursive_calls
     )
     nondet_callees = get_unstubbed_external_callees_for(function_to_verify, call_graph, stub_index)
-    cbmc_command = _get_cbmc_command(
+    cbmc_command = get_cbmc_command(
         function_to_verify,
         callees,
         file_containing_function_to_verify,
@@ -109,12 +113,48 @@ def run_cbmc(
         result.returncode,
         nondet_callees,
     )
+    if result.returncode != 0 and _missing_body_for_callee(result.stdout, result.stderr):
+        cbmc_command = get_cbmc_command(
+            function_to_verify,
+            callees,
+            file_containing_function_to_verify,
+            prevent_macro_expansion=True,
+        )
+        result = subprocess.run(
+            cbmc_command, capture_output=True, text=True, shell=True, check=False
+        )
+        _log_invocation(
+            file_containing_function_to_verify,
+            function_to_verify,
+            cbmc_command,
+            result.returncode,
+            nondet_callees,
+        )
     if result.returncode == 0:
         return (f"{function_to_verify} verified successfully", 0)
     return (
         _format_failure_response(function_to_verify, result.stdout, result.stderr),
         result.returncode,
     )
+
+
+def _missing_body_for_callee(stdout: str, stderr: str) -> bool:
+    """Return True iff CBMC output indicates a callee body is missing.
+
+    The CBMC error output contains the string "no body for callee" when a callee of a function under
+    verification is missing its body. In this case, it doesn't hurt to re-run CBMC while suppressing
+    macro expansion (e.g., `isspace` in ctype.h expands to `__ctype_loc`, which CBMC lacks a model
+    for).
+
+    Args:
+        stdout (str): The stdout of a CBMC command.
+        stderr (str): The stderr of a CBMC command.
+
+    Returns:
+        bool: True iff CBMC output indicates a callee body is missing.
+    """
+    missing_callee_indicator = "no body for callee"
+    return missing_callee_indicator in stdout or missing_callee_indicator in stderr
 
 
 def _format_failure_response(function: str, stdout: str, stderr: str) -> str:
@@ -231,49 +271,75 @@ def _log_invocation(
         pass
 
 
-def _get_cbmc_command(
+def get_cbmc_command(
     function_to_verify: str,
     callees: list[str],
     file_containing_function: str,
+    prevent_macro_expansion: bool = False,
 ) -> str:
     """Return the command that should be used to verify a function in a C file with CBMC.
 
     The command will run CBMC with a loop unrolling bound of 5, and a symbolic exploration depth of
     100 along execution paths.
 
+    The `prevent_macro_expansion` flag adds steps that helps code using standard headers
+    verify cleanly:
+
+    * `goto-cc` is passed `-D__NO_CTYPE` so glibc's `<ctype.h>` exposes plain function declarations
+      instead of macros that expand to `(*__ctype_b_loc())[c] & _ISspace`. CBMC has no model for
+      glibc's internal `__ctype_b_loc()`, so without this flag the call site references an
+      unmodeled symbol and verification can't reason about `isspace`/`isalpha`/etc.
+    * `goto-instrument --add-library` is run after `goto-cc` to inject CBMC's bundled C-library
+      models (`isspace`, `strchr`, etc.) into the goto-binary before `--enforce-contract` runs.
+      Without this, those calls are treated as nondeterministic, which loosens precision and
+      can cause `goto-instrument` to emit "no body for function" warnings.
+
     Args:
         function_to_verify (str): The function to verify.
         callees (list[str]): The callees of the function to verify.
         file_containing_function (str): The path to the file containing the function to verify.
+        prevent_macro_expansion (bool): True iff any macro expansions should be disabled.
+            Defaults to False.
 
     Returns:
         str: The CBMC command that should be used by Claude.
     """
-    replace_calls = "".join(f" --replace-call-with-contract {c}" for c in callees)
     quoted_function_to_verify = shlex.quote(function_to_verify)
-    return " && ".join(
-        [
-            (
-                f"goto-cc -o {quoted_function_to_verify}.goto "
-                f"{shlex.quote(file_containing_function)} "
-                f"--function {quoted_function_to_verify}"
-            ),
-            (
-                f"goto-instrument --partial-loops --unwind 5 "
-                f"{quoted_function_to_verify}.goto {quoted_function_to_verify}.goto"
-            ),
-            (
-                f"goto-instrument{replace_calls} "
-                f"--enforce-contract {quoted_function_to_verify} "
-                f"{quoted_function_to_verify}.goto "
-                f"checking-{quoted_function_to_verify}-contracts.goto"
-            ),
-            (
-                f"cbmc checking-{quoted_function_to_verify}-contracts.goto "
-                f"--function {quoted_function_to_verify} --depth 100"
-            ),
-        ]
+    replace_calls = "".join(f" --replace-call-with-contract {c}" for c in callees)
+    flags_disabling_macro_expansion = (
+        f"{' '.join(_DISABLE_MACRO_FLAGS)} " if prevent_macro_expansion else ""
     )
+    inject_cbmc_model_command = (
+        (
+            f"goto-instrument --add-library "
+            f"{quoted_function_to_verify}.goto {quoted_function_to_verify}.goto"
+        )
+        if prevent_macro_expansion
+        else ""
+    )
+    commands = [
+        (
+            f"goto-cc {flags_disabling_macro_expansion}-o {quoted_function_to_verify}.goto "
+            f"{shlex.quote(file_containing_function)} "
+            f"--function {quoted_function_to_verify}"
+        ),
+        inject_cbmc_model_command,
+        (
+            f"goto-instrument --partial-loops --unwind 5 "
+            f"{quoted_function_to_verify}.goto {quoted_function_to_verify}.goto"
+        ),
+        (
+            f"goto-instrument{replace_calls} "
+            f"--enforce-contract {quoted_function_to_verify} "
+            f"{quoted_function_to_verify}.goto "
+            f"checking-{quoted_function_to_verify}-contracts.goto"
+        ),
+        (
+            f"cbmc checking-{quoted_function_to_verify}-contracts.goto "
+            f"--function {quoted_function_to_verify} --depth 100"
+        ),
+    ]
+    return " && ".join(c for c in commands if c)
 
 
 if __name__ == "__main__":
