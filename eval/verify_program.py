@@ -14,17 +14,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from loguru import logger
+
 if TYPE_CHECKING:
     from tools.util.callgraph import CallGraph
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tools.run_cbmc import get_cbmc_command
+from tools.run_cbmc import get_cbmc_command, missing_body_for_callee
 from tools.util import (
     build_stub_index,
     get_call_graph,
     get_functions_with_cprover_annotations,
     get_in_file_callees_for,
+    get_stub_paths_for,
     get_unstubbed_external_callees_for,
 )
 
@@ -65,16 +68,24 @@ def main() -> int:
         description="Run CBMC on every annotated function in a C file or directory of C files."
     )
     parser.add_argument("path", help="Path to a C file, or a directory containing C files.")
+    parser.add_argument("-v", help="Enable debug logging", action="store_true")
     args = parser.parse_args()
+
+    logger.remove()
+    logger.add(sys.stderr, level="INFO")
+
+    if args.v:
+        logger.remove()
+        logger.add(sys.stderr, level="DEBUG")
 
     files = _resolve_c_files(args.path)
     if not files:
-        print(f"No .c files found at: {args.path}")
+        logger.info(f"No .c files found at: {args.path}")
         return 1
 
     results: list[VerificationResult] = []
     for file in files:
-        print(f"=== {file} ===")
+        logger.info(f"=== {file} ===")
         results.extend(_verify_program(str(file)))
     _print_summary(results)
     return 0 if all(result.passed for result in results) else 1
@@ -118,15 +129,17 @@ def _verify_program(file: str) -> list[VerificationResult]:
     results: list[VerificationResult] = []
     for function in call_graph:
         if function not in annotated:
-            print(f"[skip] {function} (no CBMC annotations)")
+            logger.info(f"[skip] {function} (no CBMC annotations)")
             continue
         nondet = get_unstubbed_external_callees_for(function, call_graph, stub_index)
-        print(f"[verify] {function}" + (f"  (nondet: {', '.join(nondet)})" if nondet else ""))
+        logger.debug(
+            f"[verify] {function}" + (f"  (nondet: {', '.join(nondet)})" if nondet else "")
+        )
         result = _verify_function(function, file, call_graph)
         status = "PASS" if result.passed else "FAIL"
-        print(f"  -> {status} (returncode={result.returncode})")
+        logger.debug(f"  -> {status} (returncode={result.returncode})")
         for failure in result.failures:
-            print(f"     {failure}")
+            logger.debug(f"     {failure}")
         results.append(result)
     return results
 
@@ -171,8 +184,20 @@ def _run_cbmc(
         VerificationResult: The result of running CBMC on `function`.
     """
     callees = get_in_file_callees_for(function, call_graph, include_self=replace_self)
-    command = get_cbmc_command(function, callees, file)
+    stub_index = build_stub_index()
+    stub_paths = get_stub_paths_for(function, call_graph, stub_index)
+
+    # Try running the base CBMC command.
+    command = get_cbmc_command(function, callees, file, stub_paths=stub_paths)
     completed = subprocess.run(command, capture_output=True, text=True, shell=True, check=False)
+
+    # On failure, re-run without macro expansion if the error contains a message about missing
+    # callee bodies.
+    if completed.returncode != 0 and missing_body_for_callee(completed.stdout, completed.stderr):
+        command = get_cbmc_command(
+            function, callees, file, prevent_macro_expansion=True, stub_paths=stub_paths
+        )
+        completed = subprocess.run(command, capture_output=True, text=True, shell=True, check=False)
     failures = [
         line.strip() for line in completed.stderr.splitlines() if line.strip().endswith("FAILURE")
     ]
@@ -187,10 +212,10 @@ def _print_summary(results: list[VerificationResult]) -> None:
     """
     passed = sum(1 for r in results if r.passed)
     total = len(results)
-    print(f"Summary: {passed}/{total} functions verified")
+    logger.info(f"Summary: {passed}/{total} functions verified")
     for r in results:
         marker = "ok" if r.passed else "FAIL"
-        print(f"  [{marker}] {r.file}::{r.function}")
+        logger.info(f"  [{marker}] {r.file}::{r.function}")
 
 
 if __name__ == "__main__":
