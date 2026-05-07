@@ -32,7 +32,8 @@ def build_stub_index(stubs_dir: Path = _STUBS_DIR) -> dict[str, Path]:
             stub file that defines its stub).
     """
     index: dict[str, Path] = {}
-    for stub_path in sorted(stubs_dir.glob("*.c")):
+    paths = sorted(stubs_dir.glob("*.c"))
+    for stub_path in paths:
         for name in _FUNCTION_MARKER.findall(stub_path.read_text(encoding="utf-8")):
             index.setdefault(name, stub_path)
             # [[MDE: I think it be an error if a function name appears more than once.]]
@@ -47,12 +48,14 @@ def get_stub_paths_for(
     """Return the stub file paths needed to verify `function_to_verify`.
 
     External callees come from the call graph's `external` list for `function_to_verify`. Each
-    external callee is looked up in the stub index; unresolved names are dropped.
+    external callee is looked up in the stub index; unresolved names are dropped. The CBMC-bundled
+    library models must be injected by `goto-instrument --add-library` instead).
 
     Args:
         function_to_verify (str): The function whose callees should be resolved.
         call_graph (CallGraph): The call graph.
-        stub_index (dict[str, Path]): Stub index produced by `build_stub_index`.
+        stub_index (dict[str, Path]): Stub index produced by `build_stub_index` (or
+            `build_extra_stub_index` when only compile-safe stubs are wanted).
 
     Returns:
         list[str]: Sorted, de-duplicated list of stub file paths.
