@@ -108,7 +108,23 @@ def _get_function_definition_name(function_definition_node: Node) -> str:
     Returns:
         str: The name of the function definition represented by the given node.
     """
-    declarator = function_definition_node.child_by_field_name("declarator")
+    # When CBMC annotations sit between the function signature and body, tree-sitter
+    # creates an ERROR node that swallows the real function_declarator, and uses the
+    # last annotation before `{` as the `declarator` field. Recover by preferring a
+    # function_declarator found inside an ERROR child.
+    declarator = None
+    for child in function_definition_node.children:
+        if child.type == "ERROR":
+            for error_child in child.children:
+                if error_child.type == "function_declarator":
+                    declarator = error_child
+                    break
+            if declarator:
+                break
+
+    if declarator is None:
+        declarator = function_definition_node.child_by_field_name("declarator")
+
     assert declarator, "A tree_sitter function_definition node must have a 'declarator' field"
     while declarator.type != "identifier":
         inner = declarator.child_by_field_name("declarator")
