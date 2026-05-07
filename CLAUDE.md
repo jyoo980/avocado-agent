@@ -52,6 +52,8 @@ If verification fails, exits with non-zero status and prints a possibly-truncate
 
 Fall back to directly running CBMC only if necessary.
 
+Do not attempt to fix a failing specification for a function more than 5 times.
+
 ## Syntax of C function specifications (contracts)
 
 Preconditions and postconditions are written after the function signature and
