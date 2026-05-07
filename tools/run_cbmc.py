@@ -305,8 +305,9 @@ def get_cbmc_command(
         str: The CBMC command that should be used by Claude.
     """
     quoted_function_to_verify = shlex.quote(function_to_verify)
+    replace_calls = "".join(f" --replace-call-with-contract {c}" for c in callees)
     flags_disabling_macro_expansion = (
-        " ".join(_DISABLE_MACRO_FLAGS) if prevent_macro_expansion else ""
+        f"{' '.join(_DISABLE_MACRO_FLAGS)} " if prevent_macro_expansion else ""
     )
     inject_cbmc_model_command = (
         (
@@ -316,31 +317,29 @@ def get_cbmc_command(
         if prevent_macro_expansion
         else ""
     )
-    replace_calls = "".join(f" --replace-call-with-contract {c}" for c in callees)
-    return " && ".join(
-        [
-            (
-                f"goto-cc {flags_disabling_macro_expansion} -o {quoted_function_to_verify}.goto "
-                f"{shlex.quote(file_containing_function)} "
-                f"--function {quoted_function_to_verify}"
-            ),
-            (inject_cbmc_model_command),
-            (
-                f"goto-instrument --partial-loops --unwind 5 "
-                f"{quoted_function_to_verify}.goto {quoted_function_to_verify}.goto"
-            ),
-            (
-                f"goto-instrument{replace_calls} "
-                f"--enforce-contract {quoted_function_to_verify} "
-                f"{quoted_function_to_verify}.goto "
-                f"checking-{quoted_function_to_verify}-contracts.goto"
-            ),
-            (
-                f"cbmc checking-{quoted_function_to_verify}-contracts.goto "
-                f"--function {quoted_function_to_verify} --depth 100"
-            ),
-        ]
-    )
+    commands = [
+        (
+            f"goto-cc {flags_disabling_macro_expansion}-o {quoted_function_to_verify}.goto "
+            f"{shlex.quote(file_containing_function)} "
+            f"--function {quoted_function_to_verify}"
+        ),
+        inject_cbmc_model_command,
+        (
+            f"goto-instrument --partial-loops --unwind 5 "
+            f"{quoted_function_to_verify}.goto {quoted_function_to_verify}.goto"
+        ),
+        (
+            f"goto-instrument{replace_calls} "
+            f"--enforce-contract {quoted_function_to_verify} "
+            f"{quoted_function_to_verify}.goto "
+            f"checking-{quoted_function_to_verify}-contracts.goto"
+        ),
+        (
+            f"cbmc checking-{quoted_function_to_verify}-contracts.goto "
+            f"--function {quoted_function_to_verify} --depth 100"
+        ),
+    ]
+    return " && ".join(c for c in commands if c)
 
 
 if __name__ == "__main__":
