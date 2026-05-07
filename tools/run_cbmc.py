@@ -151,7 +151,7 @@ def _missing_body_for_callee(stdout: str, stderr: str) -> bool:
         stderr (str): The stderr of a CBMC command.
 
     Returns:
-        str: True iff CBMC output indicates a callee body is missing.
+        bool: True iff CBMC output indicates a callee body is missing.
     """
     missing_callee_indicator = "no body for callee"
     return missing_callee_indicator in stdout or missing_callee_indicator in stderr
