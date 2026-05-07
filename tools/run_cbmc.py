@@ -241,6 +241,17 @@ def _get_cbmc_command(
     The command will run CBMC with a loop unrolling bound of 5, and a symbolic exploration depth of
     100 along execution paths.
 
+    Two libc-handling steps make verification of code that uses standard headers work cleanly:
+
+    * `goto-cc` is passed `-D__NO_CTYPE` so glibc's `<ctype.h>` exposes plain function declarations
+      instead of macros that expand to `(*__ctype_b_loc())[c] & _ISspace`. CBMC has no model for
+      glibc's internal `__ctype_b_loc()`, so without this flag the call site references an
+      unmodeled symbol and verification can't reason about `isspace`/`isalpha`/etc.
+    * `goto-instrument --add-library` is run after `goto-cc` to inject CBMC's bundled C-library
+      models (`isspace`, `strchr`, etc.) into the goto-binary before `--enforce-contract` runs.
+      Without this, those calls are treated as nondeterministic, which loosens precision and
+      can cause `goto-instrument` to emit "no body for function" warnings.
+
     Args:
         function_to_verify (str): The function to verify.
         callees (list[str]): The callees of the function to verify.
@@ -254,9 +265,13 @@ def _get_cbmc_command(
     return " && ".join(
         [
             (
-                f"goto-cc -o {quoted_function_to_verify}.goto "
+                f"goto-cc -D__NO_CTYPE -o {quoted_function_to_verify}.goto "
                 f"{shlex.quote(file_containing_function)} "
                 f"--function {quoted_function_to_verify}"
+            ),
+            (
+                f"goto-instrument --add-library "
+                f"{quoted_function_to_verify}.goto {quoted_function_to_verify}.goto"
             ),
             (
                 f"goto-instrument --partial-loops --unwind 5 "
