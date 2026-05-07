@@ -305,7 +305,7 @@ def get_cbmc_command(
         str: The CBMC command that should be used by Claude.
     """
     quoted_function_to_verify = shlex.quote(function_to_verify)
-    replace_calls = "".join(f" --replace-call-with-contract {c}" for c in callees)
+    replace_calls = "".join(f" --replace-call-with-contract {shlex.quote(c)}" for c in callees)
     flags_disabling_macro_expansion = (
         f"{' '.join(_DISABLE_MACRO_FLAGS)} " if prevent_macro_expansion else ""
     )
