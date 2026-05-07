@@ -49,7 +49,7 @@ def get_stub_paths_for(
 
     External callees come from the call graph's `external` list for `function_to_verify`. Each
     external callee is looked up in the stub index; unresolved names are dropped. The CBMC-bundled
-    ones must be injected by `goto-instrument --add-library` instead).
+    library models must be injected by `goto-instrument --add-library` instead).
 
     Args:
         function_to_verify (str): The function whose callees should be resolved.

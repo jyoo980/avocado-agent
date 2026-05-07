@@ -75,7 +75,6 @@ def run_cbmc(
     file_containing_function_to_verify: str,
     path_to_call_graph: str,
     replace_recursive_calls: bool = False,
-    stub_index: dict | None = None,
 ) -> tuple[str, int]:
     """Run CBMC on the given function with loop unwinding = 5, depth = 100.
 
@@ -88,19 +87,19 @@ def run_cbmc(
             of being handled by `--unwind`. The contract must be inductive — strong enough to
             imply itself at the recursive call site — or the proof will be vacuous. Defaults to
             False.
-        stub_index (dict | None): Index of stub functions to their files, defaults to None.
 
     Returns:
         A (response_text, returncode) tuple. The text is a success message or a
         truncated failure block; the returncode is CBMC's exit code (0 on success).
     """
-    if stub_index is None:
-        stub_index = build_stub_index()
     call_graph = CallGraph(json.loads(Path(path_to_call_graph).read_text(encoding="utf-8")))
     callees = get_in_file_callees_for(
         function_to_verify, call_graph, include_self=replace_recursive_calls
     )
-    stub_paths = get_stub_paths_for(function_to_verify, call_graph, build_stub_index())
+    # Building the stub index is inexpensive for now (there is a single file).
+    # Re-visit this if/when we have more stub files to parse.
+    stub_index = build_stub_index()
+    stub_paths = get_stub_paths_for(function_to_verify, call_graph, stub_index)
     nondet_callees = get_unstubbed_external_callees_for(function_to_verify, call_graph, stub_index)
     cbmc_command = get_cbmc_command(
         function_to_verify,
