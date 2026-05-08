@@ -85,8 +85,8 @@ def run_cbmc(
         A (response_text, returncode) tuple. The text is a success message or a
             truncated failure block; the returncode is CBMC's exit code (0 on success).
     """
-    raw_call_graph = construct_call_graph(file_containing_function_to_verify)
-    call_graph = CallGraph(json.loads(raw_call_graph))
+    path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)
+    call_graph = CallGraph(json.loads(Path(path_to_raw_call_graph).read_text(encoding="utf-8")))
     callees = get_in_file_callees_for(
         function_to_verify, call_graph, include_self=replace_recursive_calls
     )
