@@ -3,7 +3,6 @@
 Usage:
     % avocado-run-cbmc --function <FUNCTION_NAME> \
                        --file <PATH_TO_C_FILE> \
-                       --call-graph <PATH_TO_CALL_GRAPH_JSON> \
                        [--replace-recursive-calls]
 """
 
@@ -15,6 +14,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from tools.construct_call_graph import construct_call_graph
 from tools.util import (
     build_stub_index,
     get_in_file_callees_for,
@@ -47,11 +47,6 @@ def main() -> None:
     parser.add_argument("--function", required=True, help="Name of the function to verify.")
     parser.add_argument("--file", required=True, help="Path to the C file defining the function.")
     parser.add_argument(
-        "--call-graph",
-        required=True,
-        help="Path to the JSON call graph produced by avocado-construct-call-graph.",
-    )
-    parser.add_argument(
         "--replace-recursive-calls",
         action="store_true",
         help=(
@@ -63,7 +58,6 @@ def main() -> None:
     response, returncode = run_cbmc(
         function_to_verify=args.function,
         file_containing_function_to_verify=args.file,
-        path_to_call_graph=args.call_graph,
         replace_recursive_calls=args.replace_recursive_calls,
     )
     print(response)
@@ -73,7 +67,6 @@ def main() -> None:
 def run_cbmc(
     function_to_verify: str,
     file_containing_function_to_verify: str,
-    path_to_call_graph: str,
     replace_recursive_calls: bool = False,
 ) -> tuple[str, int]:
     """Run CBMC on the given function with loop unwinding = 5, depth = 100.
@@ -81,7 +74,6 @@ def run_cbmc(
     Args:
         function_to_verify (str): Name of the function to verify.
         file_containing_function_to_verify (str): Path to the C file defining the function.
-        path_to_call_graph (str): Path to the JSON call graph produced by `construct_call_graph`.
         replace_recursive_calls (bool): Set to True when verifying a self-recursive function so
             the recursive call is discharged by the function's own contract (induction) instead
             of being handled by `--unwind`. The contract must be inductive — strong enough to
@@ -90,9 +82,10 @@ def run_cbmc(
 
     Returns:
         A (response_text, returncode) tuple. The text is a success message or a
-        truncated failure block; the returncode is CBMC's exit code (0 on success).
+            truncated failure block; the returncode is CBMC's exit code (0 on success).
     """
-    call_graph = CallGraph(json.loads(Path(path_to_call_graph).read_text(encoding="utf-8")))
+    path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)
+    call_graph = CallGraph(json.loads(Path(path_to_raw_call_graph).read_text(encoding="utf-8")))
     callees = get_in_file_callees_for(
         function_to_verify, call_graph, include_self=replace_recursive_calls
     )
