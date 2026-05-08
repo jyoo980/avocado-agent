@@ -43,7 +43,6 @@ You should always prefer this project's CLI tools over invoking CBMC by hand.
   ```sh
   avocado-run-cbmc --function <FUNCTION_NAME> \
                    --file <PATH_TO_C_FILE> \
-                   --call-graph <PATH_TO_CALL_GRAPH_JSON> \
                    [--replace-recursive-calls]
   ```
 
