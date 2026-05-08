@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "claude-agent-sdk>=0.1.71",
+    "loguru>=0.7.3",
     "pytest>=9.0.3",
     "tree-sitter>=0.25.2",
     "tree-sitter-c>=0.24.2",

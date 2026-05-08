@@ -108,7 +108,7 @@ def run_cbmc(
         result.returncode,
         nondet_callees,
     )
-    if result.returncode != 0 and _missing_body_for_callee(result.stdout, result.stderr):
+    if result.returncode != 0 and has_missing_body_for_callee_message(result.stdout, result.stderr):
         cbmc_command = get_cbmc_command(
             function_to_verify,
             callees,
@@ -134,7 +134,7 @@ def run_cbmc(
     )
 
 
-def _missing_body_for_callee(stdout: str, stderr: str) -> bool:
+def has_missing_body_for_callee_message(stdout: str, stderr: str) -> bool:
     """Return True iff CBMC output indicates a callee body is missing.
 
     The CBMC error output contains the string "no body for callee" when a callee of a function under

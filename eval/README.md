@@ -1,5 +1,17 @@
 # Benchmarks for Avocado Agent
 
+Use [`verify_program.py`](./verify_program.py) to run CBMC on a benchmark program.
+
+For example,
+  to check the specified functions in `eval/benchmarks/csv_parser`,
+  run
+
+```sh
+% ./eval/verify_program.py eval/benchmarks/csv_parser/
+```
+
+## Sample Programs
+
 - [`csv_parser`](./benchmarks/csv_parser/): Simple, minimal CSV parser.
   - [Source](https://github.com/semitrivial/csv_parser/tree/master)
 - [`mkey`](./benchmarks/mkey/): Nintendo console master key generator
