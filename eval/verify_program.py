@@ -72,11 +72,8 @@ def main() -> int:
     args = parser.parse_args()
 
     logger.remove()
-    logger.add(sys.stderr, level="INFO")
-
-    if args.v:
-        logger.remove()
-        logger.add(sys.stderr, level="DEBUG")
+    debug_level = "DEBUG" if args.v else "INFO"
+    logger.add(sys.stderr, level=debug_level)
 
     files = _get_c_files(args.path)
     if not files:
