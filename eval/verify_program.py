@@ -2,7 +2,10 @@
 
 """Run CBMC on every annotated function in a C file or directory of C files and report pass/fail.
 
-Usage: ./eval/verify_program.py <PATH_TO_C_FILE_OR_DIRECTORY>
+Usage: ./eval/verify_program.py <PATH_TO_C_FILE_OR_DIRECTORY> \
+                                [--v] \
+                                [--skip-unannotated-functions]
+
 """
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ from tools.util import (
 
 
 @dataclass(frozen=True)
-class VerificationResult:
+class FunctionVerificationResult:
     """Represent the result of running CBMC on a function.
 
     Attributes:
@@ -58,37 +61,69 @@ class VerificationResult:
         return self.returncode == 0
 
 
+@dataclass(frozen=True)
+class ProgramVerificationResult:
+    """Represent the result(s) of running CBMC on a program.
+
+    Attributes:
+        file (str): The C file containing the function on which CBMC is run.
+        skipped_function_names (list[str]): The names of the functions for which verification was
+            skipped.
+        vresults (list[VerificationResult]): The verification results.
+    """
+
+    file: str
+    skipped_function_names: list[str]
+    vresults: list[FunctionVerificationResult]
+
+    @property
+    def passed(self) -> bool:
+        """Return True iff all verification results are successful.
+
+        Returns:
+            bool: True iff all verification results are successful.
+        """
+        return all(vresult.passed for vresult in self.vresults)
+
+
 def main() -> int:
-    """Run CBMC on function in a C program with CBMC annotations and report pass/fail.
+    """Run CBMC on function in a C program and report pass/fail.
 
     Returns:
-        int: 0 if all specified functions successfully verify, else 1.
+        int: 0 if all functions successfully verify, else 1.
     """
     parser = argparse.ArgumentParser(
-        description="Run CBMC on every annotated function in a C file or directory of C files."
+        description="Run CBMC on every function in a C file or directory of C files."
     )
     parser.add_argument("path", help="Path to a C file, or a directory containing C files.")
-    parser.add_argument("-v", help="Enable debug logging", action="store_true")
+    parser.add_argument("--v", help="Enable debug logging", action="store_true")
+    parser.add_argument(
+        "--skip-unannotated-functions",
+        help="Skip running CBMC on unannotated functions",
+        action="store_true",
+    )
     args = parser.parse_args()
 
     logger.remove()
     debug_level = "DEBUG" if args.v else "INFO"
     logger.add(sys.stderr, level=debug_level)
 
-    files = _get_c_files(args.path)
+    files = _get_files_for_verification(args.path)
     if not files:
         logger.info(f"No .c files found at: {args.path}")
         return 1
 
-    results: list[VerificationResult] = []
+    results: list[ProgramVerificationResult] = []
     for file in files:
         logger.info(f"=== {file} ===")
-        results.extend(_verify_program(str(file)))
+        results.append(
+            _verify_program(str(file), skip_unannotated_functions=args.skip_unannotated_functions)
+        )
     _print_summary(results)
     return 0 if all(result.passed for result in results) else 1
 
 
-def _get_c_files(path_str: str) -> list[Path]:
+def _get_files_for_verification(path_str: str) -> list[Path]:
     """Return the list of C files to verify for a given path.
 
     If the path is a directory, recursively collects all `.c` files underneath it, including
@@ -108,26 +143,28 @@ def _get_c_files(path_str: str) -> list[Path]:
     return [path] if path.suffix == ".c" else []
 
 
-def _verify_program(file: str) -> list[VerificationResult]:
-    """Return verification results for each specified function in the given file.
+def _verify_program(file: str, skip_unannotated_functions: bool) -> ProgramVerificationResult:
+    """Return the verification result for the given file.
 
     Args:
         file (str): The C file to verify.
+        skip_unannotated_functions (bool): True iff unannotated functions should be skipped
+            (i.e., CBMC should not be run on them).
 
     Returns:
-        list[VerificationResult]: The verification results for each specified function in the given
-            file.
+        ProgramVerificationResult: The verification result for the given file.
     """
     call_graph = get_call_graph(file)
-
     stub_index = build_stub_index()
-    annotated = get_functions_with_cprover_annotations(file)
+    names_of_functions_to_verify = call_graph.keys()
+    skipped_functions = {}
 
-    results: list[VerificationResult] = []
-    for function in call_graph:
-        if function not in annotated:
-            logger.info(f"[skip] {function} (no CBMC annotations)")
-            continue
+    if skip_unannotated_functions:
+        names_of_functions_to_verify = get_functions_with_cprover_annotations(file)
+        skipped_functions = set(call_graph.keys()).difference(names_of_functions_to_verify)
+
+    results: list[FunctionVerificationResult] = []
+    for function in names_of_functions_to_verify:
         nondet_callees = get_unstubbed_external_callees_for(function, call_graph, stub_index)
         logger.debug(
             f"[verify] {function}"
@@ -139,10 +176,10 @@ def _verify_program(file: str) -> list[VerificationResult]:
         for failure in result.failures:
             logger.debug(f"     {failure}")
         results.append(result)
-    return results
+    return ProgramVerificationResult(file, list(skipped_functions), results)
 
 
-def _verify_function(function: str, file: str, call_graph: CallGraph) -> VerificationResult:
+def _verify_function(function: str, file: str, call_graph: CallGraph) -> FunctionVerificationResult:
     """Return the result of verifying a function.
 
     Self-recursive functions are tried inductively first (recursive call discharged by the
@@ -168,7 +205,7 @@ def _verify_function(function: str, file: str, call_graph: CallGraph) -> Verific
 
 def _run_cbmc(
     function: str, file: str, call_graph: CallGraph, replace_self: bool
-) -> VerificationResult:
+) -> FunctionVerificationResult:
     """Run CBMC on `function` once and return the result.
 
     Args:
@@ -203,21 +240,25 @@ def _run_cbmc(
     failures = [
         line.strip() for line in completed.stderr.splitlines() if line.strip().endswith("FAILURE")
     ]
-    return VerificationResult(file, function, completed.returncode, failures)
+    return FunctionVerificationResult(file, function, completed.returncode, failures)
 
 
-def _print_summary(results: list[VerificationResult]) -> None:
-    """Print a summary of verification results.
+def _print_summary(program_verification_results: list[ProgramVerificationResult]) -> None:
+    """Print a summary of program verification results.
 
     Args:
-        results (list[VerificationResult]): The verification results to summarize.
+        program_verification_results (list[ProgramVerificationResult]): The verification results to
+            summarize.
     """
-    passed = sum(1 for r in results if r.passed)
-    total = len(results)
-    logger.info(f"Summary: {passed}/{total} functions verified")
-    for r in results:
-        marker = "ok" if r.passed else "FAIL"
-        logger.info(f"  [{marker}] {r.file}::{r.function}")
+    for program_verification_result in program_verification_results:
+        passed = sum(1 for r in program_verification_result.vresults if r.passed)
+        total = len(program_verification_result.vresults)
+        logger.info(f"Summary: {passed}/{total} functions verified")
+        for r in program_verification_result.vresults:
+            marker = "ok" if r.passed else "FAIL"
+            logger.info(f"  [{marker}] {r.file}::{r.function}")
+        for skipped_f in program_verification_result.skipped_function_names:
+            logger.info(f"[skipped, no specs] {program_verification_result.file}::{skipped_f}")
 
 
 if __name__ == "__main__":
