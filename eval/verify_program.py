@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tools.run_cbmc import get_cbmc_command, missing_body_for_callee
+from tools.run_cbmc import get_cbmc_command, has_missing_body_for_callee_message
 from tools.util import (
     build_stub_index,
     get_call_graph,
@@ -78,7 +78,7 @@ def main() -> int:
         logger.remove()
         logger.add(sys.stderr, level="DEBUG")
 
-    files = _resolve_c_files(args.path)
+    files = _get_c_files(args.path)
     if not files:
         logger.info(f"No .c files found at: {args.path}")
         return 1
@@ -91,11 +91,11 @@ def main() -> int:
     return 0 if all(result.passed for result in results) else 1
 
 
-def _resolve_c_files(path_str: str) -> list[Path]:
+def _get_c_files(path_str: str) -> list[Path]:
     """Return the list of C files to verify for a given path.
 
-    If the path is a directory, recursively collects all `.c` files within it. If the path is a
-    file, returns it as a single-element list regardless of extension.
+    If the path is a directory, recursively collects all `.c` files underneath it, including
+    sub-directories.
 
     Args:
         path_str (str): Path to a C file or a directory containing C files.
@@ -131,9 +131,10 @@ def _verify_program(file: str) -> list[VerificationResult]:
         if function not in annotated:
             logger.info(f"[skip] {function} (no CBMC annotations)")
             continue
-        nondet = get_unstubbed_external_callees_for(function, call_graph, stub_index)
+        nondet_callees = get_unstubbed_external_callees_for(function, call_graph, stub_index)
         logger.debug(
-            f"[verify] {function}" + (f"  (nondet: {', '.join(nondet)})" if nondet else "")
+            f"[verify] {function}"
+            + (f"  (nondet: {', '.join(nondet_callees)})" if nondet_callees else "")
         )
         result = _verify_function(function, file, call_graph)
         status = "PASS" if result.passed else "FAIL"
@@ -194,7 +195,9 @@ def _run_cbmc(
 
     # On failure, re-run without macro expansion if the error contains a message about missing
     # callee bodies.
-    if completed.returncode != 0 and missing_body_for_callee(completed.stdout, completed.stderr):
+    if completed.returncode != 0 and has_missing_body_for_callee_message(
+        completed.stdout, completed.stderr
+    ):
         command = get_cbmc_command(
             function, callees, file, prevent_macro_expansion=True, stub_paths=stub_paths
         )
