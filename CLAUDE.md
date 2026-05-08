@@ -50,9 +50,10 @@ You should always prefer this project's CLI tools over invoking CBMC by hand.
 If verification succeeds, exits with status 0 and prints a success line to stdout.
 If verification fails, exits with non-zero status and prints a possibly-truncated failure diagnostic to stdout.
 
-Fall back to directly running CBMC only if necessary.
-
-Do not attempt to fix a failing specification for a function more than 5 times.
+You must remember the following guidelines:
+- Fall back to directly running CBMC only if necessary.
+- Do not attempt to fix a failing specification for a function more than 5 times.
+- Do not attempt to verify `main` functions.
 
 ## Syntax of C function specifications (contracts)
 
