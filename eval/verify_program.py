@@ -113,14 +113,19 @@ def main() -> int:
         logger.info(f"No .c files found at: {args.path}")
         return 1
 
-    results: list[ProgramVerificationResult] = []
+    files_to_program_verification_results: dict[str, ProgramVerificationResult] = {}
     for file in files:
         logger.info(f"=== {file} ===")
-        results.append(
-            _verify_program(str(file), skip_unannotated_functions=args.skip_unannotated_functions)
+        results_for_file = _verify_program(
+            str(file), skip_unannotated_functions=args.skip_unannotated_functions
         )
-    _print_summary(results)
-    return 0 if all(result.passed for result in results) else 1
+        if not results_for_file.vresults:
+            logger.info("No specifications to verify.")
+        files_to_program_verification_results[str(file)] = results_for_file
+    _print_summary(files_to_program_verification_results)
+    return (
+        0 if all(result.passed for result in files_to_program_verification_results.values()) else 1
+    )
 
 
 def _get_files_for_verification(path_str: str) -> list[Path]:
@@ -167,14 +172,17 @@ def _verify_program(file: str, skip_unannotated_functions: bool) -> ProgramVerif
     for function in names_of_functions_to_verify:
         nondet_callees = get_unstubbed_external_callees_for(function, call_graph, stub_index)
         logger.debug(
-            f"[verify] {function}"
+            f"[verifying] {function}"
             + (f"  (nondet: {', '.join(nondet_callees)})" if nondet_callees else "")
         )
         result = _verify_function(function, file, call_graph)
         status = "PASS" if result.passed else "FAIL"
-        logger.debug(f"  -> {status} (returncode={result.returncode})")
+        if status == "PASS":
+            logger.debug(f"  -> {status} (returncode={result.returncode})")
+        else:
+            logger.error(f"  -> {status} (returncode={result.returncode})")
         for failure in result.failures:
-            logger.debug(f"     {failure}")
+            logger.error(f"     {failure}")
         results.append(result)
     return ProgramVerificationResult(file, list(skipped_functions), results)
 
@@ -243,22 +251,26 @@ def _run_cbmc(
     return FunctionVerificationResult(file, function, completed.returncode, failures)
 
 
-def _print_summary(program_verification_results: list[ProgramVerificationResult]) -> None:
+def _print_summary(files_to_results: dict[str, ProgramVerificationResult]) -> None:
     """Print a summary of program verification results.
 
     Args:
-        program_verification_results (list[ProgramVerificationResult]): The verification results to
-            summarize.
+        files_to_results (dict[str, ProgramVerificationResult]): A dictionary of files to their
+            verification results to summarize.
     """
-    for program_verification_result in program_verification_results:
+    for file, program_verification_result in files_to_results.items():
         passed = sum(1 for r in program_verification_result.vresults if r.passed)
         total = len(program_verification_result.vresults)
-        logger.info(f"Summary: {passed}/{total} functions verified")
+        if total:
+            logger.info(f"Summary ({file!s}): {passed}/{total} functions verified")
         for r in program_verification_result.vresults:
             marker = "ok" if r.passed else "FAIL"
-            logger.info(f"  [{marker}] {r.file}::{r.function}")
+            if marker == "ok":
+                logger.info(f"  [{marker}] {r.file}::{r.function}")
+            else:
+                logger.error(f"  [{marker}] {r.file}::{r.function}")
         for skipped_f in program_verification_result.skipped_function_names:
-            logger.info(f"[skipped, no specs] {program_verification_result.file}::{skipped_f}")
+            logger.warning(f"  [skipped, no specs] {program_verification_result.file}::{skipped_f}")
 
 
 if __name__ == "__main__":
