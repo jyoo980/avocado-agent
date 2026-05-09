@@ -21,6 +21,9 @@ dev = [
 avocado-construct-call-graph = "tools.construct_call_graph:main"
 avocado-topological-order = "tools.get_topological_ordering_of_functions:main"
 avocado-run-cbmc = "tools.run_cbmc:main"
+avocado-static-metrics = "tools.static_metrics:main"
+avocado-mutate-function = "tools.mutate:main"
+avocado-mutate-clauses = "tools.clause_mutate:main"
 
 [build-system]
 requires = ["hatchling"]

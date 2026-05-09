@@ -4,13 +4,15 @@
 
 Usage: ./eval/verify_program.py <PATH_TO_C_FILE_OR_DIRECTORY> \
                                 [--v] \
-                                [--skip-unannotated-functions]
+                                [--skip-unannotated-functions] \
+                                [--jsonl PATH]
 
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -102,6 +104,15 @@ def main() -> int:
         help="Skip running CBMC on unannotated functions",
         action="store_true",
     )
+    parser.add_argument(
+        "--jsonl",
+        help=(
+            "Write per-function verification results to this JSONL file. "
+            "Each line is one record describing one function (verified or skipped). "
+            "Downstream spec-quality metrics consume this output."
+        ),
+        default=None,
+    )
     args = parser.parse_args()
 
     logger.remove()
@@ -123,9 +134,45 @@ def main() -> int:
             logger.info("No specifications to verify.")
         files_to_program_verification_results[str(file)] = results_for_file
     _print_summary(files_to_program_verification_results)
+    if args.jsonl:
+        _write_jsonl(Path(args.jsonl), files_to_program_verification_results)
     return (
         0 if all(result.passed for result in files_to_program_verification_results.values()) else 1
     )
+
+
+def _write_jsonl(output_path: Path, files_to_results: dict[str, ProgramVerificationResult]) -> None:
+    """Write per-function verification results to a JSONL file.
+
+    Each line is a self-describing record. Verified functions emit `kind: "verified"` with
+    `passed`, `returncode`, and `failures`; functions that were skipped because they had no
+    contract clauses emit `kind: "skipped"`.
+
+    Args:
+        output_path (Path): The file to write JSONL records to. Overwritten if it exists.
+        files_to_results (dict[str, ProgramVerificationResult]): Verification results to serialize.
+    """
+    with output_path.open("w", encoding="utf-8") as f:
+        for file, program_result in files_to_results.items():
+            for vresult in program_result.vresults:
+                record = {
+                    "kind": "verified",
+                    "file": vresult.file,
+                    "function": vresult.function,
+                    "passed": vresult.passed,
+                    "returncode": vresult.returncode,
+                    "failures": vresult.failures,
+                }
+                f.write(json.dumps(record) + "\n")
+            for skipped in program_result.skipped_function_names:
+                record = {
+                    "kind": "skipped",
+                    "file": file,
+                    "function": skipped,
+                    "reason": "no_annotations",
+                }
+                f.write(json.dumps(record) + "\n")
+    logger.info(f"Wrote verification results to {output_path}")
 
 
 def _get_files_for_verification(path_str: str) -> list[Path]:
