@@ -6,7 +6,11 @@ A mutant is killed when CBMC fails (i.e., the generated specification "catches" 
 while survival is denoted by a successful verification run even on a mutant.
 
 Usage:
-    % ./eval/mutation_score.py --function <NAME> --file <PATH_TO_C_FILE> [--jsonl PATH]
+    % ./eval/generate_mutants_and_compute_score.py \
+        --function <NAME> \
+        --file <PATH_TO_C_FILE> \
+        [--keep-artifacts] \
+        [--jsonl PATH]
 """
 
 from __future__ import annotations
@@ -124,7 +128,9 @@ def main() -> None:
 
     body = "\n".join(output_lines) + "\n"
     if args.jsonl:
-        Path(args.jsonl).write_text(body, encoding="utf-8")
+        output_path = Path(args.jsonl)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(body, encoding="utf-8")
     else:
         sys.stdout.write(body)
 
@@ -137,9 +143,8 @@ def generate_mutants_and_compute_score(
 ) -> MutationScore:
     """Score body-mutation kill rate for `function_name` in `file_path`.
 
-    Mutant `.c` files are written next to the original source by default so relative
-    `#include` resolution mirrors the unmutated build. Pass `workspace` to override the
-    location. Files are removed unless `keep_artifacts=True` (useful for debugging).
+    Mutant `.c` files are written next to the original source by default to simplify compilation
+    and instrumentation with CBMC. Mutants are removed unless keep_artifacts is set to `True`.
 
     Args:
         file_path (str): Path to the C source defining the function.
