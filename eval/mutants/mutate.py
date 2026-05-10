@@ -2,6 +2,11 @@
 
 """Mutant generator for C code.
 
+We write our own instead of using off-the-shelf tools like Universal Mutator
+(https://github.com/agroce/universalmutator), which is broken beyond Python 3.12, or other tools
+because they are heavier-weight and may require integration with a compiler toolchain, which might
+be too much upfront work, for now.
+
 This module walks the body of an annotated function with tree-sitter, enumerates small mutations of
 binary operators (e.g., arithmetic, relational, conditional, logical), and produces a mutant C
 source string for each; leaving the function's contract clauses and every other function in the
