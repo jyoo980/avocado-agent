@@ -3,7 +3,6 @@
 Usage:
     % avocado-run-cbmc --function <FUNCTION_NAME> \
                        --file <PATH_TO_C_FILE> \
-                       [--replace-recursive-calls]
 """
 
 import argparse
@@ -108,6 +107,28 @@ def run_cbmc(
         result.returncode,
         nondet_callees,
     )
+    if (
+        result.returncode != 0
+        and has_recursion_inlining_error_message(function_to_verify, result.stdout, result.stderr)
+        and call_graph.is_self_recursive(function_to_verify)
+    ):
+        cbmc_command = get_cbmc_command(
+            function_to_verify,
+            get_in_file_callees_for(function_to_verify, call_graph, include_self=True),
+            file_containing_function_to_verify,
+            stub_paths=stub_paths,
+        )
+        result = subprocess.run(
+            cbmc_command, capture_output=True, text=True, shell=True, check=False
+        )
+        _log_invocation(
+            file_containing_function_to_verify,
+            function_to_verify,
+            cbmc_command,
+            result.returncode,
+            nondet_callees,
+        )
+
     if result.returncode != 0 and has_missing_body_for_callee_message(result.stdout, result.stderr):
         cbmc_command = get_cbmc_command(
             function_to_verify,
@@ -132,6 +153,21 @@ def run_cbmc(
         _format_failure_response(function_to_verify, result.stdout, result.stderr),
         result.returncode,
     )
+
+
+def has_recursion_inlining_error_message(function: str, stdout: str, stderr: str) -> bool:
+    """Return True iff CBMC reports an error with inlining given function, which might be recursive.
+
+    Args:
+        function (str): The function that might be recursive.
+        stdout (str): The stdout of a CBMC command.
+        stderr (str): The stderr of a CBMC command.
+
+    Returns:
+        bool: True iff CBMC reports an error with inlining given function, which might be recursive.
+    """
+    recursion_error_message = f"Recursive call to '{function}' during inlining"
+    return recursion_error_message in stdout or recursion_error_message in stderr
 
 
 def has_missing_body_for_callee_message(stdout: str, stderr: str) -> bool:
