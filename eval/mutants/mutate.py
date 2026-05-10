@@ -33,9 +33,16 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tree_sitter import Node
 
-from tools.util.tree_sitter_utils import dfs_traversal, get_function_body, is_binary_operator_node
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools.util.tree_sitter_utils import (  # noqa: E402
+    dfs_traversal,
+    get_function_body,
+    is_binary_operator_node,
+)
 
 
 class MutationClasses(StrEnum):
@@ -47,10 +54,10 @@ class MutationClasses(StrEnum):
 
 
 _RELATIONAL_REPLACEMENTS: dict[str, list[str]] = {
-    "<": ["<=", ">", "==", "!="],
-    "<=": ["<", ">=", "==", "!="],
-    ">": [">=", "<", "==", "!="],
-    ">=": [">", "<=", "==", "!="],
+    "<": ["<=", ">", ">=", "==", "!="],
+    "<=": ["<", ">", ">=", "==", "!="],
+    ">": ["<", "<=", ">=", "==", "!="],
+    ">=": ["<", "<=", ">", "==", "!="],
     "==": ["!="],
     "!=": ["=="],
 }
