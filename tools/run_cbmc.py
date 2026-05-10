@@ -99,6 +99,7 @@ def run_cbmc(
         file_containing_function_to_verify,
         stub_paths=stub_paths,
     )
+    # Try the simplest verification command.
     result = subprocess.run(cbmc_command, capture_output=True, text=True, shell=True, check=False)
     _log_invocation(
         file_containing_function_to_verify,
@@ -107,14 +108,17 @@ def run_cbmc(
         result.returncode,
         nondet_callees,
     )
-    if (
-        result.returncode != 0
-        and has_recursion_inlining_error_message(function_to_verify, result.stdout, result.stderr)
-        and call_graph.is_self_recursive(function_to_verify)
+    # Check if the failure is related to recursion and retry, if appropriate.
+    if result.returncode != 0 and has_recursion_inlining_error_message(
+        function_to_verify, result.stdout, result.stderr
     ):
         cbmc_command = get_cbmc_command(
             function_to_verify,
-            get_in_file_callees_for(function_to_verify, call_graph, include_self=True),
+            get_in_file_callees_for(
+                function_to_verify,
+                call_graph,
+                include_self=call_graph.is_self_recursive(function_to_verify),
+            ),
             file_containing_function_to_verify,
             stub_paths=stub_paths,
         )
@@ -129,6 +133,7 @@ def run_cbmc(
             nondet_callees,
         )
 
+    # Check if the failure is related to missing callee bodies and retry, if appropriate.
     if result.returncode != 0 and has_missing_body_for_callee_message(result.stdout, result.stderr):
         cbmc_command = get_cbmc_command(
             function_to_verify,
