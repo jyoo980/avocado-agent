@@ -45,7 +45,7 @@ def get_call_graph(path_to_file: str) -> CallGraph:
 
     function_name_to_node: dict[str, Node] = {
         function_name: node
-        for node in _dfs_traversal(tree.root_node)
+        for node in dfs_traversal(tree.root_node)
         if node.type == "function_definition"
         and (function_name := _get_function_definition_name(node))
     }
@@ -78,13 +78,13 @@ def get_functions_with_cprover_annotations(path_to_file: str) -> set[str]:
     file_content = Path(path_to_file).read_text(encoding="utf-8")
     tree = _parse_to_ast(file_content)
     annotated: set[str] = set()
-    for node in _dfs_traversal(tree.root_node):
+    for node in dfs_traversal(tree.root_node):
         if node.type != "function_definition":
             continue
         name = _get_function_definition_name(node)
         if not name:
             continue
-        for descendant in _dfs_traversal(node):
+        for descendant in dfs_traversal(node):
             if descendant.type != "call_expression":
                 continue
             function = descendant.child_by_field_name("function")
@@ -94,6 +94,89 @@ def get_functions_with_cprover_annotations(path_to_file: str) -> set[str]:
                 annotated.add(name)
                 break
     return annotated
+
+
+def get_function_body(path_to_file: str, function_name: str) -> Node | None:
+    """Return the function body (i.e., everything between the braces, exclusive) of a function.
+
+    Args:
+        path_to_file (str): The path to the file in which to look for the function.
+        function_name (str): The name of the function whose body to return.
+
+    Returns:
+        Node | None: The body node of the function with the given name.
+    """
+    source_code = Path(path_to_file).read_bytes()
+    tree = _PARSER.parse(source_code)
+    if (target_function := get_function_definition(tree.root_node, function_name)) and (
+        target_function_body := target_function.child_by_field_name("body")
+    ):
+        return target_function_body
+    return None
+
+
+def get_function_definition(root: Node, name: str) -> Node | None:
+    """DFS for the first `function_definition` whose name matches `name`.
+
+    Args:
+        root (Node): The AST root to search under.
+        name (str): The function name to match.
+
+    Returns:
+        Node | None: The matching `function_definition` node, or None if not found.
+    """
+    for n in dfs_traversal(root):
+        if n.type != "function_definition":
+            continue
+        declarator = _get_function_declarator(n)
+        if declarator is None:
+            continue
+        ident = declarator
+        while ident.type != "identifier":
+            inner = ident.child_by_field_name("declarator")
+            if inner is None:
+                break
+            ident = inner
+        if ident.type == "identifier" and ident.text and ident.text.decode("utf-8") == name:
+            return n
+    return None
+
+
+def is_binary_operator_node(node: Node) -> bool:
+    """Return True iff the given node is a binary operator node.
+
+    Args:
+        node (Node): The node to check for a binary operator.
+
+    Returns:
+        bool: True iff the given node is a binary operator node.
+    """
+    if node.type != "binary_expression":
+        return False
+    return node.child_by_field_name("operator") is not None
+
+
+def _get_function_declarator(fn_def: Node) -> Node | None:
+    """Return the `function_declarator` node.
+
+    Mirrors the recovery in `tools/static_metrics.py` because contract clauses with subscript
+    expressions can confuse tree-sitter's grammar.
+
+    Args:
+        fn_def (Node): The `function_definition` node.
+
+    Returns:
+        Node | None: The recovered `function_declarator`, or the original declarator child
+            (which may not be a `function_declarator`) when no recovery is possible.
+    """
+    if (
+        declarator := fn_def.child_by_field_name("declarator")
+    ) and declarator.type == "function_declarator":
+        return declarator
+    for descendant in dfs_traversal(fn_def):
+        if descendant.type == "function_declarator":
+            return descendant
+    return None
 
 
 def _parse_to_ast(content: str, language_extension: str = ".c") -> Tree:
@@ -118,7 +201,7 @@ def _parse_to_ast(content: str, language_extension: str = ".c") -> Tree:
             raise ValueError(msg)
 
 
-def _dfs_traversal(root: Node) -> Iterator[Node]:
+def dfs_traversal(root: Node) -> Iterator[Node]:
     """Return an DFS iterator over a tree_sitter node.
 
     Args:
@@ -179,7 +262,7 @@ def _get_names_of_functions_called_in_node(node: Node) -> set[str]:
         set[str]: The names of functions that appear as call expressions in the given node.
     """
     names: set[str] = set()
-    for descendant in _dfs_traversal(node):
+    for descendant in dfs_traversal(node):
         if (
             descendant.type == "call_expression"
             and (function := descendant.child_by_field_name("function"))

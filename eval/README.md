@@ -10,6 +10,10 @@ For example,
 % ./eval/verify_program.py eval/benchmarks/csv_parser/
 ```
 
+## Additional Evaluation Infrastructure
+
+- [mutate.py](./mutants/mutate.py): Generates a set of mutants given a C file and a target function.
+
 ## Sample Programs
 
 - [`csv_parser`](./benchmarks/csv_parser/): Simple, minimal CSV parser.
