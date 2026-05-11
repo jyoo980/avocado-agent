@@ -25,8 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from itertools import starmap
 
-from mutate import Mutant, get_mutants
-
+from eval.mutants.mutate_function import Mutant, get_mutants
 from tools.run_cbmc import run_cbmc
 
 

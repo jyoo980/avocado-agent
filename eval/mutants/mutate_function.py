@@ -14,7 +14,7 @@ file untouched.
 
 Usage:
 
-    % ./eval/mutants/mutate.py --function <NAME> --file <PATH_TO_C_FILE> [--out-dir <DIR>]
+    % ./eval/mutants/mutate_function.py --function <NAME> --file <PATH_TO_C_FILE> [--out-dir <DIR>]
 
 If `--out-dir` is given, each mutant is written to a separate `.c` file inside it. Otherwise a JSONL
 summary is emitted to stdout.
