@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from itertools import starmap
 
 from eval.mutants.mutate_specification import ClauseMutant, get_clause_mutants
+from eval.mutants.util import check_expected_cbmc_return_code
 from tools.run_cbmc import run_cbmc
 
 
@@ -103,6 +104,8 @@ def compute_clause_redundancy_score(
         for i, mutant in enumerate(mutants)
     }
 
+    # TODO: Check if the original function verifies.
+
     try:
         removed_clause_mutant_vresults = list(
             starmap(_verify_removed_clause_source, paths_to_removed_clauses.items())
@@ -166,24 +169,10 @@ def _verify_removed_clause_source(
         function_to_verify=clause_mutant.function,
         file_containing_function_to_verify=str(path_to_write_removed_clause_mutant),
     )
-    _check_expected_cbmc_return_code(returncode)
+    check_expected_cbmc_return_code(returncode)
     return ClauseRemovalVerificationResult(
         clause_mutant, is_redundant=returncode == 0, returncode=returncode
     )
-
-
-def _check_expected_cbmc_return_code(returncode: int) -> None:
-    """Check if the CBMC return code is either 0 (verification success) or 10 (failure).
-
-    Args:
-        returncode (int): The CBMC return code to check.
-    """
-    if returncode not in {0, 10}:
-        msg = (
-            f"Unexpected CBMC return code: {returncode}. "
-            "See: https://diffblue.github.io/cbmc//exit__codes_8h.html"
-        )
-        raise RuntimeError(msg)
 
 
 def main() -> int:

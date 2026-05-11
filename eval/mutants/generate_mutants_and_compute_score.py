@@ -159,6 +159,8 @@ def generate_mutants_and_compute_score(
     workspace = workspace or source_path.parent
     workspace.mkdir(parents=True, exist_ok=True)
 
+    # TODO: Check if the original function verifies.
+
     mutants = get_mutants(str(source_path), target_function)
     mutant_vresults: list[MutantVerificationResult] = []
     paths_to_mutants = {
