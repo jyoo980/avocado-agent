@@ -12,8 +12,9 @@ For example,
 
 ## Additional Evaluation Infrastructure
 
-- [mutate.py](./mutants/mutate.py): Generates a set of mutants given a C file and a target function.
-- [generate_mutants_and_compute_score.py](./mutants/generate_mutants_and_compute_score.py): Generates a set of mutants (via `mutate.py`) and runs mutation testing.
+- [mutate_function.py](./mutants/mutate_function.py): Generates a set of mutants for a C function,
+    given a C file and a target function.
+- [generate_mutants_and_compute_score.py](./mutants/generate_mutants_and_compute_score.py): Generates a set of mutants (via `mutate_function.py`) and runs mutation testing.
 
 ## Sample Programs
 

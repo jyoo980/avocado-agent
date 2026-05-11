@@ -1,6 +1,6 @@
 """Tests for mutate.py"""
 
-from eval import get_mutants, MutationClasses, Mutant
+from eval import get_mutants, MutationClasses 
 
 
 def test_get_mutants_no_op() -> None:
