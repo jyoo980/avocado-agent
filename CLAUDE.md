@@ -43,7 +43,6 @@ You should always prefer this project's CLI tools over invoking CBMC by hand.
   ```sh
   avocado-run-cbmc --function <FUNCTION_NAME> \
                    --file <PATH_TO_C_FILE> \
-                   [--replace-recursive-calls]
   ```
 
 If verification succeeds, exits with status 0 and prints a success line to stdout.

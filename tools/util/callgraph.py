@@ -63,6 +63,23 @@ class CallGraph(dict):
             raise ValueError(msg)
         return self[function]
 
+    def is_self_recursive(self, function: str) -> bool:
+        """Return True iff the given function is self-recursive.
+
+        This checks for self-recursive function; mutually-recursive functions are not handled.
+
+        Args:
+            function (str): The function to check for self-recursion.
+
+        Returns:
+            bool: True iff the function is self-recursive.
+        """
+        external_and_internal_callees = self[function]
+        return (
+            function
+            in external_and_internal_callees["internal"] + external_and_internal_callees["external"]
+        )
+
     def size(self) -> int:
         """Return the number of functions in this call graph.
 
