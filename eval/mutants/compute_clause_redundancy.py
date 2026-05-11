@@ -10,9 +10,7 @@ Workflow per function:
   4. Aggregate per-function counts and emit JSONL.
 
 Usage:
-    eval/clause_redundancy.py --function <NAME> --file <PATH_TO_C_FILE> [--jsonl PATH]
-
-Requires CBMC, goto-cc, and goto-instrument on PATH.
+    % ./eval/compute_clause_redundancy.py --function <NAME> --file <PATH_TO_C_FILE> [--jsonl PATH]
 """
 
 from __future__ import annotations
@@ -168,9 +166,24 @@ def _verify_removed_clause_source(
         function_to_verify=clause_mutant.function,
         file_containing_function_to_verify=str(path_to_write_removed_clause_mutant),
     )
+    _check_expected_cbmc_return_code(returncode)
     return ClauseRemovalVerificationResult(
         clause_mutant, is_redundant=returncode == 0, returncode=returncode
     )
+
+
+def _check_expected_cbmc_return_code(returncode: int) -> None:
+    """Check if the CBMC return code is either 0 (verification success) or 10 (failure).
+
+    Args:
+        returncode (int): The CBMC return code to check.
+    """
+    if returncode not in {0, 10}:
+        msg = (
+            f"Unexpected CBMC return code: {returncode}. "
+            "See: https://diffblue.github.io/cbmc//exit__codes_8h.html"
+        )
+        raise RuntimeError(msg)
 
 
 def main() -> int:
