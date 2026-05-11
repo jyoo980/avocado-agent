@@ -112,13 +112,14 @@ def run_cbmc(
     if result.returncode != 0 and has_recursion_inlining_error_message(
         function_to_verify, result.stdout, result.stderr
     ):
+        callees = get_in_file_callees_for(
+            function_to_verify,
+            call_graph,
+            include_self=call_graph.is_self_recursive(function_to_verify),
+        )
         cbmc_command = get_cbmc_command(
             function_to_verify,
-            get_in_file_callees_for(
-                function_to_verify,
-                call_graph,
-                include_self=call_graph.is_self_recursive(function_to_verify),
-            ),
+            callees,
             file_containing_function_to_verify,
             stub_paths=stub_paths,
         )
