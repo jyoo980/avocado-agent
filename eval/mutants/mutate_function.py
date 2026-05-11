@@ -117,6 +117,39 @@ class Mutant:
     mutant_source: str
 
 
+def main() -> None:
+    """CLI entry point. generate mutants for one function; optionally write them to disk."""
+    parser = argparse.ArgumentParser(
+        description="Enumerate body-mutation candidates for a single annotated C function."
+    )
+    parser.add_argument("--function", required=True, help="Function whose body should be mutated.")
+    parser.add_argument("--file", required=True, help="Path to the C file containing the function.")
+    parser.add_argument(
+        "--out-dir",
+        default=None,
+        help=(
+            "When set, write each mutant to a stable filename under this directory and emit "
+            "a JSONL manifest. Without it, only the in-memory mutant metadata is emitted."
+        ),
+    )
+    args = parser.parse_args()
+
+    mutants = get_mutants(args.file, args.function)
+    if args.out_dir:
+        paths = write_mutants_to_dir(mutants, Path(args.out_dir))
+        for mutant, path in zip(mutants, paths, strict=True):
+            record = {**asdict(mutant), "path": str(path)}
+            # Drop the full source from the manifest line — the file already has it.
+            record.pop("mutant_source", None)
+            print(json.dumps(record))
+    else:
+        for mutant in mutants:
+            record = asdict(mutant)
+            # Just print the metadata, don't clog stdout with the file.
+            record.pop("mutant_source", None)
+            print(json.dumps(record))
+
+
 def get_mutants(file_path: str, function_name: str) -> list[Mutant]:
     """Return mutants for the function with the given name in the file.
 
@@ -226,44 +259,6 @@ def write_mutants_to_dir(mutants: list[Mutant], out_dir: Path) -> list[Path]:
         path.write_text(m.mutant_source, encoding="utf-8")
         paths.append(path)
     return paths
-
-
-def main() -> int:
-    """CLI entry point. Enumerate mutants for one function; optionally write them to disk.
-
-    Returns:
-        int: 0 on success.
-    """
-    parser = argparse.ArgumentParser(
-        description="Enumerate body-mutation candidates for a single annotated C function."
-    )
-    parser.add_argument("--function", required=True, help="Function whose body should be mutated.")
-    parser.add_argument("--file", required=True, help="Path to the C file containing the function.")
-    parser.add_argument(
-        "--out-dir",
-        default=None,
-        help=(
-            "When set, write each mutant to a stable filename under this directory and emit "
-            "a JSONL manifest. Without it, only the in-memory mutant metadata is emitted."
-        ),
-    )
-    args = parser.parse_args()
-
-    mutants = get_mutants(args.file, args.function)
-    if args.out_dir:
-        paths = write_mutants_to_dir(mutants, Path(args.out_dir))
-        for mutant, path in zip(mutants, paths, strict=True):
-            record = {**asdict(mutant), "path": str(path)}
-            # Drop the full source from the manifest line — the file already has it.
-            record.pop("mutant_source", None)
-            print(json.dumps(record))
-    else:
-        for mutant in mutants:
-            record = asdict(mutant)
-            # Just print the metadata, don't clog stdout with the file.
-            record.pop("mutant_source", None)
-            print(json.dumps(record))
-    return 0
 
 
 if __name__ == "__main__":
