@@ -22,7 +22,7 @@ import sys
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import tree_sitter_c as tsc
 from tree_sitter import Language, Node, Parser
@@ -51,7 +51,9 @@ class CbmcClause(StrEnum):
         Returns:
             bool: True iff the value is a CBMC clause.
         """
-        return any(value.startswith(clause.value) for clause in CbmcClause)
+        if clause_str := cast("str", value):
+            return any(clause_str.startswith(clause.value) for clause in CbmcClause)
+        return False
 
 
 @dataclass(frozen=True)
@@ -100,7 +102,7 @@ def main() -> None:
             record.pop("mutant_source", None)
             print(json.dumps(record))
     else:
-        for mutant in get_clause_mutants(args.file, args.function):
+        for mutant in clause_mutants:
             record = asdict(mutant)
             record.pop("mutant_source", None)
             print(json.dumps(record))
