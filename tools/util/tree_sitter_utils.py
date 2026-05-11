@@ -128,7 +128,7 @@ def get_function_definition(root: Node, name: str) -> Node | None:
     for n in dfs_traversal(root):
         if n.type != "function_definition":
             continue
-        declarator = _get_function_declarator(n)
+        declarator = get_function_declarator(n)
         if declarator is None:
             continue
         ident = declarator
@@ -156,7 +156,7 @@ def is_binary_operator_node(node: Node) -> bool:
     return node.child_by_field_name("operator") is not None
 
 
-def _get_function_declarator(fn_def: Node) -> Node | None:
+def get_function_declarator(fn_def: Node) -> Node | None:
     """Return the `function_declarator` node.
 
     Mirrors the recovery in `tools/static_metrics.py` because contract clauses with subscript
