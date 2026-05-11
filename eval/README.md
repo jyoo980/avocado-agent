@@ -14,6 +14,9 @@ For example,
 
 - [mutate_function.py](./mutants/mutate_function.py): Generates a set of mutants for a C function,
     given a C file and a target function.
+- [mutate_specification.py](./mutants/mutate_specification.py): Generates a set of mutants for a CBMC
+    specification, given a C file and a target function.
+  - It currently produces specification mutants in which clauses have been removed.
 - [generate_mutants_and_compute_score.py](./mutants/generate_mutants_and_compute_score.py): Generates a set of mutants (via `mutate_function.py`) and runs mutation testing.
 
 ## Sample Programs
