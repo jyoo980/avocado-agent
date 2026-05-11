@@ -51,7 +51,7 @@ class CbmcClause(StrEnum):
         Returns:
             bool: True iff the value is a CBMC clause.
         """
-        return value in {clause.value for clause in CbmcClause}
+        return any(value.startswith(clause.value) for clause in CbmcClause)
 
 
 @dataclass(frozen=True)
@@ -75,6 +75,37 @@ class ClauseMutant:
     mutant_source: str
 
 
+def main() -> None:
+    """CLI entry point: get clause-removal mutants and print a JSONL manifest."""
+    parser = argparse.ArgumentParser(
+        description="Enumerate clause-removal mutants for an annotated C function."
+    )
+    parser.add_argument("--function", required=True)
+    parser.add_argument("--file", required=True)
+    parser.add_argument(
+        "--out-dir",
+        default=None,
+        help=(
+            "When set, write each mutant to a stable filename under this directory and emit "
+            "a JSONL manifest."
+        ),
+    )
+    args = parser.parse_args()
+
+    clause_mutants = get_clause_mutants(args.file, args.function)
+    if out_dir := args.out_dir:
+        paths = _write_clause_mutants_to_dir(clause_mutants, Path(out_dir))
+        for clause_mutant, path in zip(clause_mutants, paths, strict=True):
+            record = {**asdict(clause_mutant), "path": str(path)}
+            record.pop("mutant_source", None)
+            print(json.dumps(record))
+    else:
+        for mutant in get_clause_mutants(args.file, args.function):
+            record = asdict(mutant)
+            record.pop("mutant_source", None)
+            print(json.dumps(record))
+
+
 def get_clause_mutants(file_path: str, function_name: str) -> list[ClauseMutant]:
     """Return mutants for the CBMC clauses for the function with the given name in the file.
 
@@ -93,12 +124,12 @@ def get_clause_mutants(file_path: str, function_name: str) -> list[ClauseMutant]
         raise ValueError(msg)
 
     mutants: list[ClauseMutant] = []
-    for clause in _get_cbmc_clauses(fn_def):
+    for clause in _get_cbmc_clause_nodes(fn_def):
         mutant_bytes = source_code[: clause.start_byte] + source_code[clause.end_byte :]
         mutants.append(
             ClauseMutant(
                 function=function_name,
-                clause_kind=CbmcClause(clause),
+                clause_kind=_get_cbmc_clause_kind(clause),
                 clause_text=source_code[clause.start_byte : clause.end_byte].decode("utf-8"),
                 line=clause.start_point[0] + 1,
                 column=clause.start_point[1],
@@ -108,7 +139,27 @@ def get_clause_mutants(file_path: str, function_name: str) -> list[ClauseMutant]
     return mutants
 
 
-def _get_cbmc_clauses(fn_def: Node) -> list[Node]:
+def _get_cbmc_clause_kind(node: Node) -> CbmcClause:
+    """Return the CbmcClause for the given node.
+
+    Args:
+        node (Node): The node for which to return a CbmcClause.
+
+    Returns:
+        CbmcClause: The CbmcClause for the given node.
+    """
+    if not node.text:
+        msg = f"Expected a candidate CbmcClause node to have a .text attribute, but got: {node}"
+        raise ValueError(msg)
+    node_text = node.text.decode("utf-8").strip()
+    for clause_kind in CbmcClause:
+        if node_text.startswith(clause_kind.value):
+            return clause_kind
+    msg = f"Unable to find a CbmcClause kind for {node}"
+    raise ValueError(msg)
+
+
+def _get_cbmc_clause_nodes(fn_def: Node) -> list[Node]:
     """Return the contract-clause `call_expression` nodes attached to a function definition.
 
     Args:
@@ -173,37 +224,6 @@ def _write_clause_mutants_to_dir(
         path.write_text(clause_mutant.mutant_source, encoding="utf-8")
         paths.append(path)
     return paths
-
-
-def main() -> None:
-    """CLI entry point: get clause-removal mutants and print a JSONL manifest."""
-    parser = argparse.ArgumentParser(
-        description="Enumerate clause-removal mutants for an annotated C function."
-    )
-    parser.add_argument("--function", required=True)
-    parser.add_argument("--file", required=True)
-    parser.add_argument(
-        "--out-dir",
-        default=None,
-        help=(
-            "When set, write each mutant to a stable filename under this directory and emit "
-            "a JSONL manifest."
-        ),
-    )
-    args = parser.parse_args()
-
-    clause_mutants = get_clause_mutants(args.file, args.function)
-    if out_dir := args.out_dir:
-        paths = _write_clause_mutants_to_dir(clause_mutants, Path(out_dir))
-        for clause_mutant, path in zip(clause_mutants, paths, strict=True):
-            record = {**asdict(clause_mutant), "path": str(path)}
-            record.pop("mutant_source", None)
-            print(json.dumps(record))
-    else:
-        for mutant in get_clause_mutants(args.file, args.function):
-            record = asdict(mutant)
-            record.pop("mutant_source", None)
-            print(json.dumps(record))
 
 
 if __name__ == "__main__":
