@@ -11,26 +11,19 @@ Usage: ./eval/verify_program.py <PATH_TO_C_FILE_OR_DIRECTORY> \
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from loguru import logger
 
-if TYPE_CHECKING:
-    from tools.util.callgraph import CallGraph
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tools.run_cbmc import get_cbmc_command, has_missing_body_for_callee_message
+from tools.run_cbmc import run_cbmc
 from tools.util import (
     build_stub_index,
     get_call_graph,
     get_functions_with_cprover_annotations,
-    get_in_file_callees_for,
-    get_stub_paths_for,
     get_unstubbed_external_callees_for,
 )
 
@@ -175,7 +168,7 @@ def _verify_program(file: str, skip_unannotated_functions: bool) -> ProgramVerif
             f"[verifying] {function}"
             + (f"  (nondet: {', '.join(nondet_callees)})" if nondet_callees else "")
         )
-        result = _verify_function(function, file, call_graph)
+        result = _verify_function(function, file)
         status = "PASS" if result.passed else "FAIL"
         if status == "PASS":
             logger.debug(f"  -> {status} (returncode={result.returncode})")
@@ -187,7 +180,7 @@ def _verify_program(file: str, skip_unannotated_functions: bool) -> ProgramVerif
     return ProgramVerificationResult(file, list(skipped_functions), results)
 
 
-def _verify_function(function: str, file: str, call_graph: CallGraph) -> FunctionVerificationResult:
+def _verify_function(function: str, file: str) -> FunctionVerificationResult:
     """Return the result of verifying a function.
 
     Self-recursive functions are tried inductively first (recursive call discharged by the
@@ -198,57 +191,13 @@ def _verify_function(function: str, file: str, call_graph: CallGraph) -> Functio
     Args:
         function (str): The function to verify.
         file (str): The file in which the function to verify is declared.
-        call_graph (CallGraph): The call graph.
 
     Returns:
         VerificationResult: The result of verifying a function.
     """
-    is_recursive = function in call_graph.get_callees(function).internal
-    if is_recursive:
-        result = _run_cbmc(function, file, call_graph, replace_self=True)
-        if result.passed:
-            return result
-    return _run_cbmc(function, file, call_graph, replace_self=False)
-
-
-def _run_cbmc(
-    function: str, file: str, call_graph: CallGraph, replace_self: bool
-) -> FunctionVerificationResult:
-    """Run CBMC on `function` once and return the result.
-
-    Args:
-        function (str): The function to verify.
-        file (str): The file in which the function to verify is declared.
-        call_graph (CallGraph): The call graph.
-        replace_self (bool): When True, `function` is included in the `--replace-call-with-contract`
-            list so its recursive calls are discharged by its own contract.
-
-    Returns:
-        VerificationResult: The result of running CBMC on `function`.
-    """
-    callees = get_in_file_callees_for(function, call_graph, include_self=replace_self)
-    stub_index = build_stub_index()
-    stub_paths = get_stub_paths_for(function, call_graph, stub_index)
-
-    # Try running the base CBMC command.
-    command = get_cbmc_command(function, callees, file, stub_paths=stub_paths)
-    logger.debug(command)
-    completed = subprocess.run(command, capture_output=True, text=True, shell=True, check=False)
-
-    # On failure, re-run without macro expansion if the error contains a message about missing
-    # callee bodies.
-    if completed.returncode != 0 and has_missing_body_for_callee_message(
-        completed.stdout, completed.stderr
-    ):
-        command = get_cbmc_command(
-            function, callees, file, prevent_macro_expansion=True, stub_paths=stub_paths
-        )
-        logger.debug(command)
-        completed = subprocess.run(command, capture_output=True, text=True, shell=True, check=False)
-    failures = [
-        line.strip() for line in completed.stderr.splitlines() if line.strip().endswith("FAILURE")
-    ]
-    return FunctionVerificationResult(file, function, completed.returncode, failures)
+    failures, returncode = run_cbmc(function, file)
+    failures = [line.strip() for line in failures.splitlines() if line.strip().endswith("FAILURE")]
+    return FunctionVerificationResult(file, function, returncode, failures)
 
 
 def _print_summary(files_to_results: dict[str, ProgramVerificationResult]) -> None:
