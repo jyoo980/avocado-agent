@@ -21,6 +21,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from eval.mutants.util import check_expected_cbmc_return_code
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from itertools import starmap
@@ -93,6 +95,10 @@ def main() -> None:
         keep_artifacts=args.keep_artifacts,
     )
 
+    if not score:
+        # The function does not verify in the first place.
+        sys.exit(1)
+
     output_lines: list[str] = []
     output_lines.append(
         json.dumps(
@@ -139,11 +145,14 @@ def generate_mutants_and_compute_score(
     target_function: str,
     workspace: Path | None = None,
     keep_artifacts: bool = False,
-) -> MutationScore:
+) -> MutationScore | None:
     """Score body-mutation kill rate for `function_name` in `file_path`.
 
     Mutant `.c` files are written next to the original source by default to simplify compilation
     and instrumentation with CBMC. Mutants are removed unless keep_artifacts is set to `True`.
+
+    This function returns None if the original, unmutated function does not verify in the first
+    place.
 
     Args:
         file_path (str): Path to the C source defining the function.
@@ -153,11 +162,18 @@ def generate_mutants_and_compute_score(
         keep_artifacts (bool): When True, mutant `.c` files are kept for inspection.
 
     Returns:
-        MutationScore: Aggregated counts plus per-mutant verification results.
+        MutationScore | None: Aggregated counts plus per-mutant verification results, or None if
+            the unmutated function does not verify.
     """
     source_path = Path(file_path).resolve()
     workspace = workspace or source_path.parent
     workspace.mkdir(parents=True, exist_ok=True)
+
+    # Check that the original function verifies in the first place.
+    _, returncode = run_cbmc(target_function, file_path)
+    check_expected_cbmc_return_code(returncode)
+    if returncode != 0:
+        return None
 
     mutants = get_mutants(str(source_path), target_function)
     mutant_vresults: list[MutantVerificationResult] = []

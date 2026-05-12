@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from itertools import starmap
 
 from eval.mutants.mutate_specification import ClauseMutant, get_clause_mutants
+from eval.mutants.util import check_expected_cbmc_return_code
 from tools.run_cbmc import run_cbmc
 
 
@@ -76,11 +77,13 @@ def compute_clause_redundancy_score(
     function_name: str,
     workspace: Path | None = None,
     keep_artifacts: bool = False,
-) -> ClauseRedundancyScore:
+) -> ClauseRedundancyScore | None:
     """Score clause redundancy for `function_name` in `file_path`.
 
     Mutant `.c` files are written next to the original source by default to simplify compilation
     and instrumentation with CBMC. Mutants are removed unless keep_artifacts is set to `True`.
+
+    If the unmutated function does not verify, return None.
 
     Args:
         file_path (str): Path to the C source defining the function.
@@ -95,6 +98,12 @@ def compute_clause_redundancy_score(
     source_path = Path(file_path).resolve()
     workspace = workspace or source_path.parent
     workspace.mkdir(parents=True, exist_ok=True)
+
+    # Check that the original function verifies in the first place.
+    _, returncode = run_cbmc(function_name, file_path)
+    check_expected_cbmc_return_code(returncode)
+    if returncode != 0:
+        return None
 
     mutants = get_clause_mutants(str(source_path), function_name)
     removed_clause_mutant_vresults: list[ClauseRemovalVerificationResult] = []
@@ -166,24 +175,10 @@ def _verify_removed_clause_source(
         function_to_verify=clause_mutant.function,
         file_containing_function_to_verify=str(path_to_write_removed_clause_mutant),
     )
-    _check_expected_cbmc_return_code(returncode)
+    check_expected_cbmc_return_code(returncode)
     return ClauseRemovalVerificationResult(
         clause_mutant, is_redundant=returncode == 0, returncode=returncode
     )
-
-
-def _check_expected_cbmc_return_code(returncode: int) -> None:
-    """Check if the CBMC return code is either 0 (verification success) or 10 (failure).
-
-    Args:
-        returncode (int): The CBMC return code to check.
-    """
-    if returncode not in {0, 10}:
-        msg = (
-            f"Unexpected CBMC return code: {returncode}. "
-            "See: https://diffblue.github.io/cbmc//exit__codes_8h.html"
-        )
-        raise RuntimeError(msg)
 
 
 def main() -> int:
@@ -206,6 +201,9 @@ def main() -> int:
         function_name=args.function,
         keep_artifacts=args.keep_artifacts,
     )
+
+    if not score:
+        sys.exit(1)
 
     output_lines: list[str] = [
         json.dumps(
