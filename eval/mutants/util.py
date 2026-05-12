@@ -12,6 +12,6 @@ def check_expected_cbmc_return_code(return_code: int):
     if return_code not in _CBMC_RETURN_CODES_FOR_SUCCESS_AND_FAILURE:
         msg = (
             f"Unexpected CBMC return code: {return_code}. "
-            "See: https://diffblue.github.io/cbmc//exit__codes_8h.html"
+            "See: https://diffblue.github.io/cbmc/exit__codes_8h.html"
         )
         raise RuntimeError(msg)

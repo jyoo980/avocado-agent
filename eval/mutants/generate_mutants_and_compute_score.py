@@ -21,6 +21,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from eval.mutants.util import check_expected_cbmc_return_code
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from itertools import starmap
@@ -169,6 +171,7 @@ def generate_mutants_and_compute_score(
 
     # Check that the original function verifies in the first place.
     _, returncode = run_cbmc(target_function, file_path)
+    check_expected_cbmc_return_code(returncode)
     if returncode != 0:
         return None
 

@@ -101,6 +101,7 @@ def compute_clause_redundancy_score(
 
     # Check that the original function verifies in the first place.
     _, returncode = run_cbmc(function_name, file_path)
+    check_expected_cbmc_return_code(returncode)
     if returncode != 0:
         return None
 
