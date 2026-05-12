@@ -71,6 +71,20 @@ class ClauseRedundancyScore:
     redundancy_rate: float
     results: list[ClauseRemovalVerificationResult] = field(default_factory=list)
 
+    def summary(self) -> dict[str, str | int | float]:
+        """Return a summary of this clause redundancy score.
+
+        Returns:
+            dict[str, str | int | float]: A summary of this clause redundancy score.
+        """
+        return {
+            "kind": "clause_redundancy_summary",
+            "file": self.file,
+            "function": self.function,
+            "total_clauses": self.total_clauses,
+            "redundancy_rate": self.redundancy_rate,
+        }
+
 
 def compute_clause_redundancy_score(
     file_path: str,
