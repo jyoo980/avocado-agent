@@ -77,11 +77,13 @@ def compute_clause_redundancy_score(
     function_name: str,
     workspace: Path | None = None,
     keep_artifacts: bool = False,
-) -> ClauseRedundancyScore:
+) -> ClauseRedundancyScore | None:
     """Score clause redundancy for `function_name` in `file_path`.
 
     Mutant `.c` files are written next to the original source by default to simplify compilation
     and instrumentation with CBMC. Mutants are removed unless keep_artifacts is set to `True`.
+
+    If the unmutated function does not verify, return None.
 
     Args:
         file_path (str): Path to the C source defining the function.
@@ -97,14 +99,17 @@ def compute_clause_redundancy_score(
     workspace = workspace or source_path.parent
     workspace.mkdir(parents=True, exist_ok=True)
 
+    # Check that the original function verifies in the first place.
+    _, returncode = run_cbmc(function_name, file_path)
+    if returncode != 0:
+        return None
+
     mutants = get_clause_mutants(str(source_path), function_name)
     removed_clause_mutant_vresults: list[ClauseRemovalVerificationResult] = []
     paths_to_removed_clauses = {
         _get_path_to_source_with_removed_clause(workspace, source_path, i): mutant
         for i, mutant in enumerate(mutants)
     }
-
-    # TODO: Check if the original function verifies.
 
     try:
         removed_clause_mutant_vresults = list(
@@ -195,6 +200,9 @@ def main() -> int:
         function_name=args.function,
         keep_artifacts=args.keep_artifacts,
     )
+
+    if not score:
+        sys.exit(1)
 
     output_lines: list[str] = [
         json.dumps(
