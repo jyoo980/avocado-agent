@@ -52,6 +52,10 @@ You must remember the following guidelines:
 - Fall back to directly running CBMC only if necessary.
 - Do not attempt to fix a failing specification for a function more than 5 times.
 - Do not attempt to verify `main` functions.
+- You must not run verification on previously-verified functions unless:
+  - You suspect there is a regression,
+  - You need information from a callee's verification run to help verify a caller.
+  - When you need to report the final verification counts at the end.
 
 ## Syntax of C function specifications (contracts)
 
