@@ -1,9 +1,12 @@
+# Claude-related files.
+.claude/*.lock
 .claude/settings.local*
+
 .env.example
 .plume-scripts
 **/*__pycache__
 
-# Files generated for/by CBMC
+# Files generated for/by CBMC.
 **/*goto
 *-cbmc-runs.jsonl
 
