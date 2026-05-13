@@ -105,6 +105,33 @@ def get_in_file_callees_for(
     return sorted({name for name in internal_callees if name != function_to_verify})
 
 
+def get_in_file_callers_of(
+    function: str,
+    call_graph: CallGraph,
+) -> list[str]:
+    """Return functions in the call graph that directly call `function` in the same file.
+
+    Symmetric to `get_in_file_callees_for`: a caller is "in-file" iff it appears as a key of the
+    call graph (the call graph is constructed per-file) and its `internal` callee list includes
+    `function`. The function itself is excluded so a self-recursive call is not reported as a
+    caller of itself.
+
+    Args:
+        function (str): The function whose in-file callers should be returned.
+        call_graph (CallGraph): The call graph.
+
+    Returns:
+        list[str]: Sorted, de-duplicated list of in-file caller names.
+    """
+    return sorted(
+        {
+            caller
+            for caller, callees in call_graph.items()
+            if caller != function and function in callees.internal
+        }
+    )
+
+
 def get_unstubbed_external_callees_for(
     function_to_verify: str,
     call_graph: CallGraph,
