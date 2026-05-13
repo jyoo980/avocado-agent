@@ -48,6 +48,9 @@ def get_call_graph(path_to_file: str) -> CallGraph:
         for node in dfs_traversal(tree.root_node)
         if node.type == "function_definition"
         and (function_name := _get_function_definition_name(node))
+        # Sometimes, tree-sitter will parse a __CPROVER_ annotation as a legitimate C function call
+        # expression. These should be excluded from the call graph.
+        and function_name != _CONTRACT_CLAUSE_PREFIX
     }
     in_file_functions = set(function_name_to_node)
 
