@@ -69,6 +69,22 @@ class MutationScore:
     kill_score: float
     results: list[MutantVerificationResult] = field(default_factory=list)
 
+    def summary(self) -> dict[str, str | int | float]:
+        """Return a summary of this mutation score.
+
+        Returns:
+            dict[str, str | int | float]: A summary of this mutation score.
+        """
+        return {
+            "kind": "mutation_summary",
+            "file": self.file,
+            "function": self.function,
+            "total": self.num_mutants,
+            "killed": self.num_killed,
+            "survived": self.num_survived,
+            "kill_score": self.kill_score,
+        }
+
 
 def main() -> None:
     """Compute the mutation score for a mutant of a function with CBMC annotations."""
