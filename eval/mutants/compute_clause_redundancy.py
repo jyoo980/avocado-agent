@@ -46,7 +46,7 @@ class CallerSideVerdict(StrEnum):
     """Represent whether a specification is required or redundant for callers.
 
     A clause is redundant for callers iff all callees of the function with the mutated specification
-    still verify. If a function with a mutated spec has no callees, no information can be obtained.
+    still verify. If a function with a mutated spec has no callers, no information can be obtained.
     """
 
     REDUNDANT_FOR_CALLERS = "redundant_for_callers"
@@ -96,7 +96,7 @@ class ClauseCallerSideResult:
 
     Attributes:
         removed_clause (ClauseMutant): The removed clause.
-        caller_results (list[CallerVerificationResult]): Per-caller verification outcomes.
+        caller_vresults (list[CallerVerificationResult]): Per-caller verification outcomes.
         verdict (CallerSideVerdict): Aggregated verdict over all in-file callers.
     """
 
