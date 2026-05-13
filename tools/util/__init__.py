@@ -4,6 +4,7 @@ from .callgraph import CallGraph, CallGraphCallees
 from .stubs import (
     build_stub_index,
     get_in_file_callees_for,
+    get_in_file_callers_of,
     get_stub_paths_for,
     get_unstubbed_external_callees_for,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "get_function_definition",
     "get_functions_with_cprover_annotations",
     "get_in_file_callees_for",
+    "get_in_file_callers_of",
     "get_stub_paths_for",
     "get_unstubbed_external_callees_for",
 ]

@@ -2,12 +2,20 @@
 
 """Compute clause-removal redundancy for an annotated C function.
 
-Workflow per function:
-  1. Enumerate clause mutants via `tools.clause_mutate.enumerate_clause_mutants`.
-  2. Write each mutant alongside the original source.
-  3. Run CBMC against each mutant; if verification still passes, the removed clause was
-     redundant for soundness. (It may still strengthen the spec for callers — see M1.2.)
-  4. Aggregate per-function counts and emit JSONL.
+Two redundancy verdicts are reported per clause:
+
+  1. In-isolation: re-verify the mutated function with one clause removed. If CBMC still
+     succeeds, the clause was redundant for the body's own correctness. (Largely vacuous for
+     `__CPROVER_ensures` / `__CPROVER_assigns` / `__CPROVER_frees`: a weaker postcondition or
+     frame is trivially satisfied by the body.)
+  2. Caller-side: for each in-file caller of the mutated function, re-verify the caller while
+     CBMC stubs the call site with the *weakened* contract. A clause is redundant for callers
+     only if every in-file caller still verifies. Clauses on functions with no in-file callers
+     are bucketed as "unobservable".
+
+Cross-file callers are reported as `unobservable` because `run_cbmc` compiles a single source
+file (`tools/run_cbmc.py`); extending it to accept extra source files would unlock cross-file
+caller checks.
 
 Usage:
     % ./eval/compute_clause_redundancy.py --function <NAME> --file <PATH_TO_C_FILE> [--jsonl PATH]
@@ -19,16 +27,32 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass, field
+from enum import StrEnum
+from itertools import starmap
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
-from itertools import starmap
-
 from eval.mutants.mutate_specification import ClauseMutant, get_clause_mutants
 from eval.mutants.util import check_expected_cbmc_return_code
+from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import run_cbmc
+from tools.util import get_in_file_callers_of
+from tools.util.callgraph import CallGraph
+
+
+class CallerSideVerdict(StrEnum):
+    """Represent whether a specification is required or redundant for callers.
+
+    A clause is redundant for callers iff all callees of the function with the mutated specification
+    still verify. If a function with a mutated spec has no callers, no information can be obtained.
+    """
+
+    REDUNDANT_FOR_CALLERS = "redundant_for_callers"
+    REQUIRED_BY_CALLERS = "required_by_callers"
+    UNOBSERVABLE = "unobservable"
+    UNVERIFIABLE_BASELINE = "unverifiable_baseline"
 
 
 @dataclass(frozen=True)
@@ -48,6 +72,40 @@ class ClauseRemovalVerificationResult:
 
 
 @dataclass(frozen=True)
+class CallerVerificationResult:
+    """Result of verifying a single caller against a mutated callee contract.
+
+    Attributes:
+        caller (str): The caller function whose verification was retried.
+        returncode (int): CBMC's return code for the caller under the weakened callee contract.
+        successfully_verified (bool): True iff CBMC verified the caller (returncode == 0).
+    """
+
+    caller: str
+    returncode: int
+    successfully_verified: bool
+
+
+@dataclass(frozen=True)
+class ClauseCallerSideResult:
+    """Caller-side verdict for one clause mutant (i.e., the removed clause).
+
+    The verdict represents whether all callees verify even with the removed clause (the clause is
+    redundant). A clause is not redundant if its removal results in at least one callee failing to
+    verify.
+
+    Attributes:
+        removed_clause (ClauseMutant): The removed clause.
+        caller_vresults (list[CallerVerificationResult]): Per-caller verification outcomes.
+        verdict (CallerSideVerdict): Aggregated verdict over all in-file callers.
+    """
+
+    removed_clause: ClauseMutant
+    caller_vresults: list[CallerVerificationResult]
+    verdict: CallerSideVerdict
+
+
+@dataclass(frozen=True)
 class ClauseRedundancyScore:
     """Aggregated clause-removal redundancy statistics for a function.
 
@@ -55,12 +113,20 @@ class ClauseRedundancyScore:
         file (str): The file for the mutant.
         function (str): The name of the function for which the specification was mutated.
         total_clauses (int): The total number of clauses for the function.
-        num_redundant (int): The number of redundant clauses.
-        num_required (int): The number of required clauses.
-        redundancy_rate (float): The number of redundant clauses / total clauses.
-        results (list[ClauseRemovalVerificationResult]): The result of verifying each mutated
-            specification with removed clauses.
-
+        num_redundant (int): The number of in-isolation-redundant clauses.
+        num_required (int): The number of in-isolation-required clauses.
+        redundancy_rate (float): num_redundant / total_clauses.
+        results (list[ClauseRemovalVerificationResult]): In-isolation results per clause.
+        num_redundant_for_callers (int): Clauses redundant for all in-file callers.
+        num_required_by_callers (int): Clauses on which at least one in-file caller fails.
+        num_unobservable (int): Clauses on functions with no in-file callers.
+        num_unverifiable_baseline (int): Clauses on functions whose only in-file callers already
+            fail to verify on the unmutated source, so caller-side redundancy is not observable.
+        caller_side_redundancy_rate (float): num_redundant_for_callers over observable clauses
+            (total - num_unobservable - num_unverifiable_baseline); 0.0 when nothing is observable.
+        caller_side_results (list[ClauseCallerSideResult]): Caller-side results per clause.
+        unverifiable_baseline_callers (list[str]): In-file callers that failed to verify on the
+            unmutated source and were therefore excluded from caller-side judgement.
     """
 
     file: str
@@ -69,13 +135,20 @@ class ClauseRedundancyScore:
     num_redundant: int
     num_required: int
     redundancy_rate: float
+    num_redundant_for_callers: int
+    num_required_by_callers: int
+    num_unobservable: int
+    num_unverifiable_baseline: int
+    caller_side_redundancy_rate: float
     results: list[ClauseRemovalVerificationResult] = field(default_factory=list)
+    caller_side_results: list[ClauseCallerSideResult] = field(default_factory=list)
+    unverifiable_baseline_callers: list[str] = field(default_factory=list)
 
-    def summary(self) -> dict[str, str | int | float]:
+    def summary(self) -> dict[str, str | int | float | list[str]]:
         """Return a summary of this clause redundancy score.
 
         Returns:
-            dict[str, str | int | float]: A summary of this clause redundancy score.
+            dict[str, str | int | float | list[str]]: A summary of this clause redundancy score.
         """
         return {
             "kind": "clause_redundancy_summary",
@@ -83,7 +156,88 @@ class ClauseRedundancyScore:
             "function": self.function,
             "total_clauses": self.total_clauses,
             "redundancy_rate": self.redundancy_rate,
+            "caller_side_redundancy_rate": self.caller_side_redundancy_rate,
+            "num_unobservable": self.num_unobservable,
+            "num_unverifiable_baseline": self.num_unverifiable_baseline,
+            "unverifiable_baseline_callers": self.unverifiable_baseline_callers,
         }
+
+
+def main() -> None:
+    """CLI entry point: score clause redundancy for one function and emit JSONL."""
+    parser = argparse.ArgumentParser(
+        description="Run CBMC on clause-removal mutants and report redundancy."
+    )
+    parser.add_argument("--function", required=True)
+    parser.add_argument("--file", required=True)
+    parser.add_argument("--jsonl", default=None)
+    parser.add_argument("--keep-artifacts", action="store_true")
+    args = parser.parse_args()
+
+    clause_redundancy_score = compute_clause_redundancy_score(
+        file_path=args.file,
+        function_name=args.function,
+        keep_artifacts=args.keep_artifacts,
+    )
+
+    if not clause_redundancy_score:
+        sys.exit(1)
+
+    removed_clause_to_caller_side_verdict = {
+        (
+            caller_side_vresult.removed_clause.line,
+            caller_side_vresult.removed_clause.column,
+            caller_side_vresult.removed_clause.clause_text,
+        ): caller_side_vresult.verdict
+        for caller_side_vresult in clause_redundancy_score.caller_side_results
+    }
+
+    output_lines: list[str] = [json.dumps(clause_redundancy_score.summary())]
+
+    for in_isolation_vresult in clause_redundancy_score.results:
+        removed_clause = in_isolation_vresult.clause
+        key = (removed_clause.line, removed_clause.column, removed_clause.clause_text)
+        output_lines.append(
+            json.dumps(
+                {
+                    "kind": "clause_result",
+                    "file": clause_redundancy_score.file,
+                    "function": clause_redundancy_score.function,
+                    "clause_kind": removed_clause.clause_kind,
+                    "clause_text": removed_clause.clause_text,
+                    "line": removed_clause.line,
+                    "column": removed_clause.column,
+                    "redundant": in_isolation_vresult.is_redundant,
+                    "returncode": in_isolation_vresult.returncode,
+                    "caller_side_verdict": removed_clause_to_caller_side_verdict[key],
+                }
+            )
+        )
+
+    for caller_side_result in clause_redundancy_score.caller_side_results:
+        removed_clause = caller_side_result.removed_clause
+        output_lines.extend(
+            json.dumps(
+                {
+                    "kind": "caller_side_clause",
+                    "file": clause_redundancy_score.file,
+                    "function": clause_redundancy_score.function,
+                    "clause_kind": removed_clause.clause_kind,
+                    "clause_text": removed_clause.clause_text,
+                    "line": removed_clause.line,
+                    "column": removed_clause.column,
+                    "caller": caller_vresults.caller,
+                    "returncode": caller_vresults.returncode,
+                    "still_verifies": caller_vresults.successfully_verified,
+                }
+            )
+            for caller_vresults in caller_side_result.caller_vresults
+        )
+    body = "\n".join(output_lines) + "\n"
+    if args.jsonl:
+        Path(args.jsonl).write_text(body, encoding="utf-8")
+    else:
+        sys.stdout.write(body)
 
 
 def compute_clause_redundancy_score(
@@ -107,7 +261,7 @@ def compute_clause_redundancy_score(
         keep_artifacts (bool): When True, mutant `.c` files are kept for inspection.
 
     Returns:
-        RedundancyScore: Aggregated counts plus the per-clause results.
+        ClauseRedundancyScore: Aggregated counts plus the per-clause results.
     """
     source_path = Path(file_path).resolve()
     workspace = workspace or source_path.parent
@@ -120,25 +274,54 @@ def compute_clause_redundancy_score(
         return None
 
     mutants = get_clause_mutants(str(source_path), function_name)
-    removed_clause_mutant_vresults: list[ClauseRemovalVerificationResult] = []
     paths_to_removed_clauses = {
         _get_path_to_source_with_removed_clause(workspace, source_path, i): mutant
         for i, mutant in enumerate(mutants)
     }
 
+    in_file_callers = _get_in_file_callers(source_path, function_name)
+    in_file_callers_to_baseline_verification_results = (
+        _get_baseline_verification_results_for_callers(in_file_callers, source_path)
+    )
+
     try:
-        removed_clause_mutant_vresults = list(
+        in_isolation_results = list(
             starmap(_verify_removed_clause_source, paths_to_removed_clauses.items())
         )
+        caller_side_results = [
+            _verify_callers(
+                mutant_path,
+                mutant,
+                in_file_callers,
+                in_file_callers_to_baseline_verification_results,
+            )
+            for mutant_path, mutant in paths_to_removed_clauses.items()
+        ]
     finally:
         if not keep_artifacts:
             for path in paths_to_removed_clauses:
                 path.unlink(missing_ok=True)
 
-    total = len(removed_clause_mutant_vresults)
-    redundant = sum(1 for r in removed_clause_mutant_vresults if r.is_redundant)
+    total = len(in_isolation_results)
+    redundant = sum(1 for r in in_isolation_results if r.is_redundant)
     required = total - redundant
     rate = (redundant / total) if total else 0.0
+
+    num_unobservable = sum(
+        1 for r in caller_side_results if r.verdict == CallerSideVerdict.UNOBSERVABLE
+    )
+    num_unverifiable_baseline = sum(
+        1 for r in caller_side_results if r.verdict == CallerSideVerdict.UNVERIFIABLE_BASELINE
+    )
+    num_redundant_for_callers = sum(
+        1 for r in caller_side_results if r.verdict == CallerSideVerdict.REDUNDANT_FOR_CALLERS
+    )
+    num_required_by_callers = sum(
+        1 for r in caller_side_results if r.verdict == CallerSideVerdict.REQUIRED_BY_CALLERS
+    )
+    observable = total - num_unobservable - num_unverifiable_baseline
+    caller_side_rate = (num_redundant_for_callers / observable) if observable else 0.0
+
     return ClauseRedundancyScore(
         file=str(source_path),
         function=function_name,
@@ -146,8 +329,35 @@ def compute_clause_redundancy_score(
         num_redundant=redundant,
         num_required=required,
         redundancy_rate=round(rate, 4),
-        results=removed_clause_mutant_vresults,
+        num_redundant_for_callers=num_redundant_for_callers,
+        num_required_by_callers=num_required_by_callers,
+        num_unobservable=num_unobservable,
+        num_unverifiable_baseline=num_unverifiable_baseline,
+        caller_side_redundancy_rate=round(caller_side_rate, 4),
+        results=in_isolation_results,
+        caller_side_results=caller_side_results,
+        unverifiable_baseline_callers=[
+            c for c, ok in in_file_callers_to_baseline_verification_results.items() if not ok
+        ],
     )
+
+
+def _get_in_file_callers(source_path: Path, function_name: str) -> list[str]:
+    """Return functions in a file that directly call the function with the given name.
+
+    Args:
+        source_path (Path): The file in which to look up callers.
+        function_name (str): The function for which to look up callers.
+
+    Returns:
+        list[str]: The names of the in-file callers of the given name.
+    """
+    call_graph_path = construct_call_graph(str(source_path))
+    call_graph = CallGraph(json.loads(Path(call_graph_path).read_text(encoding="utf-8")))
+    if function_name not in call_graph:
+        msg = f"'{function_name}' was missing from the call graph"
+        raise ValueError(msg)
+    return get_in_file_callers_of(function_name, call_graph)
 
 
 def _get_path_to_source_with_removed_clause(
@@ -174,14 +384,15 @@ def _get_path_to_source_with_removed_clause(
 def _verify_removed_clause_source(
     path_to_write_removed_clause_mutant: Path, clause_mutant: ClauseMutant
 ) -> ClauseRemovalVerificationResult:
-    """Return the result of verifying a removed-clause mutant.
+    """Return the result of verifying a removed-clause mutant in isolation.
 
     Args:
-        path_to_write_removed_clause_mutant (Path): The path to which the mutated source is written.
-        clause_mutant (ClauseMutant): The mutant.
+        path_to_write_removed_clause_mutant (Path): The path to which to write the source with the
+            mutated specification.
+        clause_mutant (ClauseMutant): The clause mutant.
 
     Returns:
-        ClauseRemovalVerificationResult: The result of verifying a mutant.
+        ClauseRemovalVerificationResult: The result of verifying a removed-clause mutant.
     """
     path_to_write_removed_clause_mutant.write_text(clause_mutant.mutant_source, encoding="utf-8")
 
@@ -195,65 +406,86 @@ def _verify_removed_clause_source(
     )
 
 
-def main() -> int:
-    """CLI entry point: score clause redundancy for one function and emit JSONL.
+def _get_baseline_verification_results_for_callers(
+    in_file_callers: list[str], source_path: Path
+) -> dict[str, bool]:
+    """Return a map from in-file caller name to whether it verifies on the unmutated source.
+
+    Run once before mutation so caller-side verdicts can be judged against each caller's
+    baseline rather than against absolute CBMC success.
+
+    Args:
+        in_file_callers (list[str]): The names of the in-file callers.
+        source_path (Path): The unmutated source file.
 
     Returns:
-        int: 0 on success.
+        dict[str, bool]: Map from caller name to True iff CBMC verified it on the unmutated source.
     """
-    parser = argparse.ArgumentParser(
-        description="Run CBMC on clause-removal mutants and report redundancy."
-    )
-    parser.add_argument("--function", required=True)
-    parser.add_argument("--file", required=True)
-    parser.add_argument("--jsonl", default=None)
-    parser.add_argument("--keep-artifacts", action="store_true")
-    args = parser.parse_args()
-
-    score = compute_clause_redundancy_score(
-        file_path=args.file,
-        function_name=args.function,
-        keep_artifacts=args.keep_artifacts,
-    )
-
-    if not score:
-        sys.exit(1)
-
-    output_lines: list[str] = [
-        json.dumps(
-            {
-                "kind": "clause_redundancy_summary",
-                "file": score.file,
-                "function": score.function,
-                "total_clauses": score.total_clauses,
-                "redundant": score.num_redundant,
-                "required": score.num_required,
-                "redundancy_rate": score.redundancy_rate,
-            }
+    baselines: dict[str, bool] = {}
+    for caller in in_file_callers:
+        _, returncode = run_cbmc(
+            function_to_verify=caller,
+            file_containing_function_to_verify=str(source_path),
         )
-    ]
-    output_lines.extend(
-        json.dumps(
-            {
-                "kind": "clause_result",
-                "file": score.file,
-                "function": score.function,
-                "clause_kind": result.clause.clause_kind,
-                "clause_text": result.clause.clause_text,
-                "line": result.clause.line,
-                "column": result.clause.column,
-                "redundant": result.is_redundant,
-                "returncode": result.returncode,
-            }
+        check_expected_cbmc_return_code(returncode)
+        baselines[caller] = returncode == 0
+    return baselines
+
+
+def _verify_callers(
+    mutant_path: Path,
+    clause_mutant: ClauseMutant,
+    in_file_callers: list[str],
+    caller_baselines: dict[str, bool],
+) -> ClauseCallerSideResult:
+    """Return the caller-side verdict for one mutant.
+
+    For each in-file caller that verifies on the unmutated source, re-verify it against the
+    mutated callee source so CBMC's `--replace-call-with-contract` uses the mutated contract.
+    A clause is redundant for callers only if every baselined-verifying caller still verifies.
+    With no in-file callers the verdict is `unobservable`; if callers exist but none verify on
+    the unmutated source the verdict is `unverifiable_baseline`.
+
+    Args:
+        mutant_path (Path): The path to the source code containing the mutant.
+        clause_mutant (ClauseMutant): The clause mutant.
+        in_file_callers (list[str]): The names of the in-file callers.
+        caller_baselines (dict[str, bool]): Map from caller name to baseline verification result
+            on the unmutated source.
+
+    Returns:
+        ClauseCallerSideResult: The caller-side verification result for a mutated specification.
+    """
+    if not in_file_callers:
+        return ClauseCallerSideResult(
+            clause_mutant, caller_vresults=[], verdict=CallerSideVerdict.UNOBSERVABLE
         )
-        for result in score.results
+
+    verifying_callers = [caller for caller in in_file_callers if caller_baselines.get(caller)]
+    if not verifying_callers:
+        return ClauseCallerSideResult(
+            clause_mutant, caller_vresults=[], verdict=CallerSideVerdict.UNVERIFIABLE_BASELINE
+        )
+
+    caller_vresults: list[CallerVerificationResult] = []
+    for caller in verifying_callers:
+        _, returncode = run_cbmc(
+            function_to_verify=caller,
+            file_containing_function_to_verify=str(mutant_path),
+        )
+        check_expected_cbmc_return_code(returncode)
+        caller_vresults.append(
+            CallerVerificationResult(
+                caller=caller, returncode=returncode, successfully_verified=returncode == 0
+            )
+        )
+
+    verdict: CallerSideVerdict = (
+        CallerSideVerdict.REDUNDANT_FOR_CALLERS
+        if all(caller_vresult.successfully_verified for caller_vresult in caller_vresults)
+        else CallerSideVerdict.REQUIRED_BY_CALLERS
     )
-    body = "\n".join(output_lines) + "\n"
-    if args.jsonl:
-        Path(args.jsonl).write_text(body, encoding="utf-8")
-    else:
-        sys.stdout.write(body)
-    return 0
+    return ClauseCallerSideResult(clause_mutant, caller_vresults=caller_vresults, verdict=verdict)
 
 
 if __name__ == "__main__":
