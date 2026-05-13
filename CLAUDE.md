@@ -52,6 +52,8 @@ You must remember the following guidelines:
 - Fall back to directly running CBMC only if necessary.
 - Do not attempt to fix a failing specification for a function more than 5 times.
 - Do not attempt to verify `main` functions.
+- If a function has no side effect on memory other than local variables or
+  returns, you must still write a minimal spec (such as an empty assigns clause).
 
 ## Syntax of C function specifications (contracts)
 
