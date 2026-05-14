@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from enum import StrEnum
 from itertools import starmap
@@ -307,20 +308,19 @@ def compute_clause_redundancy_score(
     required = total - num_redundant_in_isolation
     in_isolation_redundancy_rate = (num_redundant_in_isolation / total) if total else 0.0
 
-    num_unobservable = sum(
-        1 for r in caller_side_results if r.verdict == CallerSideVerdict.UNOBSERVABLE
+    verdict_counts: dict[CallerSideVerdict, int] = Counter(
+        [result.verdict for result in caller_side_results]
     )
-    num_unverifiable_baseline = sum(
-        1 for r in caller_side_results if r.verdict == CallerSideVerdict.UNVERIFIABLE_BASELINE
+    observable = (
+        total
+        - verdict_counts[CallerSideVerdict.UNOBSERVABLE]
+        - verdict_counts[CallerSideVerdict.UNVERIFIABLE_BASELINE]
     )
-    num_redundant_for_callers = sum(
-        1 for r in caller_side_results if r.verdict == CallerSideVerdict.REDUNDANT_FOR_CALLERS
+    caller_side_rate = (
+        (verdict_counts[CallerSideVerdict.REDUNDANT_FOR_CALLERS] / observable)
+        if observable
+        else 0.0
     )
-    num_required_by_callers = sum(
-        1 for r in caller_side_results if r.verdict == CallerSideVerdict.REQUIRED_BY_CALLERS
-    )
-    observable = total - num_unobservable - num_unverifiable_baseline
-    caller_side_rate = (num_redundant_for_callers / observable) if observable else 0.0
 
     return ClauseRedundancyScore(
         file=str(source_path),
@@ -329,15 +329,17 @@ def compute_clause_redundancy_score(
         num_redundant_in_isolation=num_redundant_in_isolation,
         num_required_in_isolation=required,
         in_isolation_redundancy_rate=round(in_isolation_redundancy_rate, 4),
-        num_redundant_for_callers=num_redundant_for_callers,
-        num_required_by_callers=num_required_by_callers,
-        num_unobservable=num_unobservable,
-        num_unverifiable_baseline=num_unverifiable_baseline,
+        num_redundant_for_callers=verdict_counts[CallerSideVerdict.REDUNDANT_FOR_CALLERS],
+        num_required_by_callers=verdict_counts[CallerSideVerdict.REQUIRED_BY_CALLERS],
+        num_unobservable=verdict_counts[CallerSideVerdict.UNOBSERVABLE],
+        num_unverifiable_baseline=verdict_counts[CallerSideVerdict.UNVERIFIABLE_BASELINE],
         caller_side_redundancy_rate=round(caller_side_rate, 4),
         results=in_isolation_results,
         caller_side_results=caller_side_results,
         unverifiable_baseline_callers=[
-            c for c, ok in in_file_callers_to_baseline_verification_results.items() if not ok
+            caller
+            for caller, is_verified in in_file_callers_to_baseline_verification_results.items()
+            if not is_verified
         ],
     )
 

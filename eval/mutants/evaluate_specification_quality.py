@@ -2,11 +2,11 @@
 
 """Top-level driver for specification quality metrics.
 
-Walks one or more annotated C files and emits a JSONL stream of metric records. Each metric
-is a separate flag so the user can pay for only what they want — static metrics are cheap
-and on by default; CBMC-driven metrics, which are currently:
-    - Mutation scores for specifications that can "kill" a mutant function.
-    - Clause redundancy.
+Walks one or more annotated C files and emits a JSONL stream of metric records.
+
+Each metric is a separate flag so the user can specify the ones they want, namely:
+    - --mutation: Mutation scores for specifications that can "kill" a mutant function.
+    - --redundancy: Clause redundancy.
 
 Usage:
     % ./eval/mutants/evaluate_specification_quality.py <PATH_TO_C_FILE_OR_DIR> \
@@ -33,12 +33,8 @@ from eval.mutants.util import get_files_with_extension
 from tools.util import get_functions_with_cprover_annotations
 
 
-def main() -> int:
-    """CLI entry point: orchestrate the spec-quality metric suite over a path.
-
-    Returns:
-        int: 0 on success, 1 when no `.c` files were found.
-    """
+def main() -> None:
+    """CLI entry point: orchestrate the spec-quality metric suite over a path."""
     parser = argparse.ArgumentParser(
         description="Run spec-quality metrics over annotated C functions."
     )
@@ -66,7 +62,7 @@ def main() -> int:
     input_files = get_files_with_extension(args.path, ".c")
     if not input_files:
         logger.error(f"No .c files found at: {args.path}")
-        return 1
+        sys.exit(1)
 
     # This stream is closed in a `finally` block.
     output_stream: IO[str] = (
@@ -83,7 +79,7 @@ def main() -> int:
     finally:
         if args.jsonl:
             output_stream.close()
-    return 0
+    return sys.exit(0)
 
 
 def _process_file(
@@ -92,7 +88,14 @@ def _process_file(
     run_mutation: bool,
     run_redundancy: bool,
 ) -> None:
-    """Run all enabled metrics for a single source file and write JSONL records to `out`."""
+    """Run all enabled metrics for a single source file and write JSONL records to `out`.
+
+    Arguments:
+        source (Path): The path to the file for evaluation.
+        out (IO[str]): The output.
+        run_mutation (bool): True iff mutation testing should be reported.
+        run_redundancy (bool): True iff redundancy scoring should be reported.
+    """
     logger.info(f"Processing {source}")
     annotated = sorted(get_functions_with_cprover_annotations(str(source)))
 
@@ -106,6 +109,10 @@ def _process_file(
         if run_redundancy:
             if clause_redundancy_score := compute_clause_redundancy_score(str(source), function):
                 out.write(json.dumps(clause_redundancy_score.summary()) + "\n")
+            else:
+                logger.warning(
+                    f"No redundancy score calculation reported for: '{source!s}#{function}'"
+                )
 
 
 if __name__ == "__main__":
