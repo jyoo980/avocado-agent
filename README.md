@@ -40,6 +40,16 @@ either activating the venv or prefixing tool calls with `uv run`.
     dependencies,
     and develop the tools provided to Claude Code.
 
+## DARPA TRACTOR Test Cases
+
+Public test cases from the [DARPA TRACTOR](https://www.darpa.mil/research/programs/translating-all-c-to-rust)
+  program are included as a Git submodule.
+To obtain a local copy, run:
+
+```sh
+% git submodule update --init
+```
+
 ## FAQ
 
 > How do I run Claude Code with the `--dangerously-skip-permissions` flag in a Docker container?
