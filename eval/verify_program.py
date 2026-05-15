@@ -1,8 +1,9 @@
 #!/usr/bin/env -S uv run --quiet python3
 
-"""Run CBMC on every annotated function in a C file or directory of C files and report pass/fail.
+"""Run CBMC on every function in a C file or directory of C files and report pass/fail.
 
 Usage: ./eval/verify_program.py <PATH_TO_C_FILE_OR_DIRECTORY> \
+                                [--auto-include] \
                                 [--v] \
                                 [--skip-unannotated-functions]
 
@@ -95,6 +96,15 @@ def main() -> int:
         help="Skip running CBMC on unannotated functions",
         action="store_true",
     )
+    parser.add_argument(
+        "--auto-include",
+        help=(
+            "For each .c file, look for a sibling include/ directory at "
+            "<source>/../include and pass it to CBMC as an include path. "
+            "Fits projects whose headers live next to their src/ tree."
+        ),
+        action="store_true",
+    )
     args = parser.parse_args()
 
     logger.remove()
@@ -110,7 +120,9 @@ def main() -> int:
     for file in files:
         logger.info(f"=== {file} ===")
         results_for_file = _verify_program(
-            str(file), skip_unannotated_functions=args.skip_unannotated_functions
+            str(file),
+            skip_unannotated_functions=args.skip_unannotated_functions,
+            auto_include=args.auto_include,
         )
         if not results_for_file.vresults:
             logger.info("No specifications to verify.")
@@ -141,13 +153,19 @@ def _get_files_for_verification(path_str: str) -> list[Path]:
     return [path] if path.suffix == ".c" else []
 
 
-def _verify_program(file: str, skip_unannotated_functions: bool) -> ProgramVerificationResult:
+def _verify_program(
+    file: str,
+    skip_unannotated_functions: bool,
+    auto_include: bool = False,
+) -> ProgramVerificationResult:
     """Return the verification result for the given file.
 
     Args:
         file (str): The C file to verify.
         skip_unannotated_functions (bool): True iff unannotated functions should be skipped
             (i.e., CBMC should not be run on them).
+        auto_include (bool): True iff `<file>/../include` should be added to CBMC's include
+            search path when that directory exists. Defaults to False.
 
     Returns:
         ProgramVerificationResult: The verification result for the given file.
@@ -161,6 +179,10 @@ def _verify_program(file: str, skip_unannotated_functions: bool) -> ProgramVerif
         names_of_functions_to_verify = get_functions_with_cprover_annotations(file)
         skipped_functions = set(call_graph.keys()).difference(names_of_functions_to_verify)
 
+    include_dirs = _autodetect_include_dirs(file) if auto_include else []
+    if include_dirs:
+        logger.debug(f"[auto-include] using {include_dirs}")
+
     results: list[FunctionVerificationResult] = []
     for function in names_of_functions_to_verify:
         nondet_callees = get_unstubbed_external_callees_for(function, call_graph, stub_index)
@@ -168,7 +190,7 @@ def _verify_program(file: str, skip_unannotated_functions: bool) -> ProgramVerif
             f"[verifying] {function}"
             + (f"  (nondet: {', '.join(nondet_callees)})" if nondet_callees else "")
         )
-        result = _verify_function(function, file)
+        result = _verify_function(function, file, include_dirs=include_dirs)
         status = "PASS" if result.passed else "FAIL"
         if status == "PASS":
             logger.debug(f"  -> {status} (returncode={result.returncode})")
@@ -180,7 +202,28 @@ def _verify_program(file: str, skip_unannotated_functions: bool) -> ProgramVerif
     return ProgramVerificationResult(file, list(skipped_functions), results)
 
 
-def _verify_function(function: str, file: str) -> FunctionVerificationResult:
+def _autodetect_include_dirs(source_file: str) -> list[str]:
+    """Return `[<source>/../include]` if that directory exists, else an empty list.
+
+    Many CMake projects keep public headers in `<project>/include/` while sources live in
+    `<project>/src/`. When that layout holds, returning the sibling `include/` directory lets
+    CBMC resolve `#include "foo.h"` without the caller having to configure paths by hand.
+
+    Args:
+        source_file (str): Path to a `.c` file.
+
+    Returns:
+        list[str]: `[<resolved include dir>]` when present, else `[]`.
+    """
+    candidate = Path(source_file).resolve().parent.parent / "include"
+    return [str(candidate)] if candidate.is_dir() else []
+
+
+def _verify_function(
+    function: str,
+    file: str,
+    include_dirs: list[str] | None = None,
+) -> FunctionVerificationResult:
     """Return the result of verifying a function.
 
     Self-recursive functions are tried inductively first (recursive call discharged by the
@@ -191,11 +234,13 @@ def _verify_function(function: str, file: str) -> FunctionVerificationResult:
     Args:
         function (str): The function to verify.
         file (str): The file in which the function to verify is declared.
+        include_dirs (list[str] | None): Directories to add to CBMC's include search path,
+            forwarded to `run_cbmc`. Defaults to None.
 
     Returns:
         VerificationResult: The result of verifying a function.
     """
-    failures, returncode = run_cbmc(function, file)
+    failures, returncode = run_cbmc(function, file, include_dirs=include_dirs)
     failures = [line.strip() for line in failures.splitlines() if line.strip().endswith("FAILURE")]
     return FunctionVerificationResult(file, function, returncode, failures)
 
