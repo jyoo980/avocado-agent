@@ -3,6 +3,7 @@
 Usage:
     % avocado-run-cbmc --function <FUNCTION_NAME> \
                        --file <PATH_TO_C_FILE> \
+                       [--I <PATH_TO_INCLUDE_DIR(S)>]...
 """
 
 import argparse
@@ -45,10 +46,20 @@ def main() -> None:
     )
     parser.add_argument("--function", required=True, help="Name of the function to verify.")
     parser.add_argument("--file", required=True, help="Path to the C file defining the function.")
+    parser.add_argument(
+        "-I",
+        "--include-dir",
+        action="append",
+        default=[],
+        dest="include_dirs",
+        metavar="DIR",
+        help="Directory to add to the include search path. May be repeated.",
+    )
     args = parser.parse_args()
     response, returncode = run_cbmc(
         function_to_verify=args.function,
         file_containing_function_to_verify=args.file,
+        include_dirs=args.include_dirs,
     )
     print(response)
     sys.exit(returncode)
@@ -57,12 +68,15 @@ def main() -> None:
 def run_cbmc(
     function_to_verify: str,
     file_containing_function_to_verify: str,
+    include_dirs: list[str] | None = None,
 ) -> tuple[str, int]:
     """Run CBMC on the given function with loop unwinding = 5, depth = 100.
 
     Args:
         function_to_verify (str): Name of the function to verify.
         file_containing_function_to_verify (str): Path to the C file defining the function.
+        include_dirs (list[str] | None): Directories to add to the C preprocessor's include
+            search path. Forwarded to `goto-cc` as `-I` flags.
 
     Returns:
         A (response_text, returncode) tuple. The text is a success message or a
@@ -81,6 +95,7 @@ def run_cbmc(
         callees,
         file_containing_function_to_verify,
         stub_paths=stub_paths,
+        include_dirs=include_dirs,
     )
     # Try the simplest verification command.
     result = subprocess.run(cbmc_command, capture_output=True, text=True, shell=True, check=False)
@@ -105,6 +120,7 @@ def run_cbmc(
             callees,
             file_containing_function_to_verify,
             stub_paths=stub_paths,
+            include_dirs=include_dirs,
         )
         result = subprocess.run(
             cbmc_command, capture_output=True, text=True, shell=True, check=False
@@ -125,6 +141,7 @@ def run_cbmc(
             file_containing_function_to_verify,
             prevent_macro_expansion=True,
             stub_paths=stub_paths,
+            include_dirs=include_dirs,
         )
         result = subprocess.run(
             cbmc_command, capture_output=True, text=True, shell=True, check=False
@@ -298,6 +315,7 @@ def get_cbmc_command(
     file_containing_function: str,
     prevent_macro_expansion: bool = False,
     stub_paths: list[str] | None = None,
+    include_dirs: list[str] | None = None,
 ) -> str:
     """Return the command that should be used to verify a function in a C file with CBMC.
 
@@ -326,6 +344,8 @@ def get_cbmc_command(
             source file. Used to provide bodies for external callees that CBMC's bundled
             library does not model (e.g., POSIX terminal-control functions). Defaults to
             None.
+        include_dirs (list[str] | None): Directories to add to the C preprocessor's include
+            search path. Each is forwarded to `goto-cc` as a `-I` flag. Defaults to None.
 
     Returns:
         str: The CBMC command that should be used by Claude.
@@ -336,6 +356,7 @@ def get_cbmc_command(
         f"{' '.join(_DISABLE_MACRO_FLAGS)} " if prevent_macro_expansion else ""
     )
     extra_stub_args = f" {' '.join(shlex.quote(p) for p in stub_paths)}" if stub_paths else ""
+    include_flags = "".join(f" -I {shlex.quote(d)}" for d in include_dirs) if include_dirs else ""
     inject_cbmc_model_command = (
         (
             f"goto-instrument --add-library "
@@ -346,7 +367,8 @@ def get_cbmc_command(
     )
     commands = [
         (
-            f"goto-cc {flags_disabling_macro_expansion}-o {quoted_function_to_verify}.goto "
+            f"goto-cc {flags_disabling_macro_expansion}-o {quoted_function_to_verify}.goto"
+            f"{include_flags} "
             f"{shlex.quote(file_containing_function)}{extra_stub_args} "
             f"--function {quoted_function_to_verify}"
         ),
