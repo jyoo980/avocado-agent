@@ -1,0 +1,3 @@
+[submodule "eval/benchmarks/DARPA-test-corpus"]
+	path = eval/benchmarks/DARPA-test-corpus
+	url = git@github.com:jyoo980/PUBLIC-Test-Corpus.git
