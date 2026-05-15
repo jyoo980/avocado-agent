@@ -49,6 +49,7 @@ def main() -> None:
 
     if not records:
         print("No mutation_summary records found; nothing to plot.", file=sys.stderr)
+        sys.exit(1)
 
     _sort_records_by_kill_score(records)
     if args.png:

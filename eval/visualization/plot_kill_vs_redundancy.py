@@ -59,12 +59,14 @@ def main() -> None:
         grouped_records.get(SpecificationQualitySummary.SUMMARY_FOR_CLAUSE_REDUNDANCY) or []
     )
     y_key = Y_FIELDS[args.y]
-    points = _join(mutation_records, redundancy_records, y_key)
     y_label = f"{args.y}_redundancy_rate"
 
+    points = _join(mutation_records, redundancy_records, y_key)
+    if not points:
+        print("No joinable records; nothing to plot.", file=sys.stderr)
+        sys.exit(1)
+
     if args.png:
-        if not points:
-            print("No joinable records; nothing to plot.", file=sys.stderr)
         _render_png(points, y_label, Path(args.png))
     else:
         _render_ascii(points, y_label)
@@ -74,13 +76,11 @@ def _join(
     mutation: list[dict], redundancy: list[dict], y_key: str
 ) -> list[tuple[str, float, float]]:
     by_key = {(r["file"], r["function"]): r for r in redundancy}
-    points = []
-    for record in mutation:
-        match = by_key.get((record["file"], record["function"]))
-        if match is None:
-            continue
-        points.append((get_label_for_record(record), record["kill_score"], match[y_key]))
-    return points
+    return [
+        (get_label_for_record(record), record["kill_score"], match[y_key])
+        for record in mutation
+        if (match := by_key.get((record["file"], record["function"])))
+    ]
 
 
 def _render_ascii(
