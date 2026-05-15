@@ -3,7 +3,7 @@
 Usage:
     % avocado-run-cbmc --function <FUNCTION_NAME> \
                        --file <PATH_TO_C_FILE> \
-                       [--I <PATH_TO_INCLUDE_DIR(S)>]...
+                       [-I <PATH_TO_INCLUDE_DIR(S)>]...
 """
 
 import argparse
