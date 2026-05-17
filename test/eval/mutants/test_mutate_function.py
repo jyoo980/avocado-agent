@@ -54,3 +54,18 @@ def test_get_mutants_with_cbmc_annotated_function() -> None:
     assert {
         mutant.replacement_operator for mutant in mutants
     } == expected_replacement_operators
+
+
+def test_mutant_get_diff() -> None:
+    mutants = get_mutants("test/data/mutants/mutants.c", "add")
+    assert len(mutants) == 1
+    diff = mutants[0].get_unified_diff()
+
+    assert "--- original" in diff
+    assert "+++ mutant" in diff
+    assert "-    return a + b;" in diff
+    assert "+    return a - b;" in diff
+
+    # No context lines: only the headers, the hunk marker, and one -/+ pair.
+    context_lines = [line for line in diff.splitlines() if line.startswith(" ")]
+    assert context_lines == []

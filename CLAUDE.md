@@ -49,6 +49,15 @@ You should always prefer this project's CLI tools over invoking CBMC by hand.
 If verification succeeds, exits with status 0 and prints a success line to stdout.
 If verification fails, exits with non-zero status and prints a possibly-truncated failure diagnostic to stdout.
 
+  - **To evaluate specifications with mutation testing**, run:
+
+  ```sh
+  avocado-get-mutation-score --function <FUNCTION_NAME> \
+                   --file <PATH_TO_C_FILE> \
+                   [-I <PATH_TO_INCLUDE_DIR(S)>]...
+  ```
+
+
 You must remember the following guidelines:
 - Fall back to directly running CBMC only if necessary.
 - Do not hard-code any values into the specifications that are related to CBMC's command-line
