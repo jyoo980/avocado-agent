@@ -51,6 +51,8 @@ If verification fails, exits with non-zero status and prints a possibly-truncate
 
 You must remember the following guidelines:
 - Fall back to directly running CBMC only if necessary.
+- Do not hard-code any values into the specifications that are related to CBMC's command-line
+  arguments (e.g., `--partial-loops --unwind <N>`).
 - Do not attempt to fix a failing specification for a function more than 5 times.
 - Do not attempt to verify `main` functions.
 - If a function has no side effects on memory beyond local variables or return values,
