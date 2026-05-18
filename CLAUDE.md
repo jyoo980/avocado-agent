@@ -57,6 +57,9 @@ If verification fails, exits with non-zero status and prints a possibly-truncate
                    [-I <PATH_TO_INCLUDE_DIR(S)>]...
   ```
 
+Which prints a summary of mutation testing (including the kill score and any surviving mutants) as
+as JSON-formatted string.
+
 
 You must remember the following guidelines:
 - Fall back to directly running CBMC only if necessary.
@@ -70,6 +73,9 @@ You must remember the following guidelines:
   - You suspect there is a regression.
   - You need information from a callee's verification run to help verify a caller.
   - When you need to report the final verification counts at the end.
+- Run mutation testing via the `avocado-get-mutation-score` script to iteratively improve the
+  quality of your specifications. Do not iterate more than 5 times, or if it is clear that the kill
+  score cannot be improved.
 
 ## Syntax of C function specifications (contracts)
 
