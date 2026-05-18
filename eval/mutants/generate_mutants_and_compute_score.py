@@ -61,19 +61,7 @@ def main() -> None:
         # The function does not verify in the first place.
         sys.exit(1)
 
-    output_lines: list[str] = [
-        json.dumps(
-            {
-                "kind": "mutation_summary",
-                "file": score.file,
-                "function": score.function,
-                "total": score.num_mutants,
-                "killed": score.num_killed,
-                "survived": score.num_survived,
-                "kill_rate": score.kill_score,
-            }
-        )
-    ]
+    output_lines: list[str] = [json.dumps(score.summary())]
     output_lines.extend(
         json.dumps(
             {
