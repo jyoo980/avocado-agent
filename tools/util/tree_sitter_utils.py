@@ -290,11 +290,9 @@ def _iter_function_definitions(root: Node) -> Iterator[tuple[str, Node]]:
     for node in dfs_traversal(root):
         if node.type == "function_definition" and (name := _get_function_definition_name(node)):
             yield name, node
-        elif node.type == "ERROR" and _is_error_node_wrapping_function_definition(node):
-            if declarator := _get_direct_child_of_type(node, "function_declarator"):
-                name = _get_name_from_function_declarator(declarator)
-                if name:
-                    yield name, node
+        elif node.type == "ERROR" and (declarator := _get_error_wrapped_function_declarator(node)):
+            if name := _get_name_from_function_declarator(declarator):
+                yield name, node
 
 
 def _iter_function_descendants(root: Node) -> Iterator[Node]:
@@ -347,6 +345,29 @@ def _is_error_node_wrapping_function_definition(error_node: Node) -> bool:
         if has_declarator and has_compound:
             return True
     return False
+
+
+def _get_error_wrapped_function_declarator(error_node: Node) -> Node | None:
+    """Return the function_declarator if this ERROR node wraps a function definition.
+
+    Args:
+        error_node (Node): The error node in which to look for a function definition.
+
+    Returns:
+        Node | None: The function definition, if found. Otherwise None.
+    """
+    declarator = None
+    has_declarator = False
+    has_compound = False
+    for child in error_node.children:
+        if child.type == "function_declarator":
+            has_declarator = True
+            declarator = child
+        elif child.type == "compound_statement":
+            has_compound = True
+        if has_declarator and has_compound:
+            return declarator
+    return declarator
 
 
 def _get_direct_child_of_type(node: Node, child_type: str) -> Node | None:
