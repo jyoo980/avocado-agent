@@ -1,6 +1,9 @@
 """Tests for mutate.py"""
 
-from eval import get_mutants, MutationClasses 
+from pathlib import Path
+
+from eval import get_mutants, MutationClasses
+from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
 
 
 def test_get_mutants_no_op() -> None:
@@ -69,3 +72,20 @@ def test_mutant_get_diff() -> None:
     # No context lines: only the headers, the hunk marker, and one -/+ pair.
     context_lines = [line for line in diff.splitlines() if line.startswith(" ")]
     assert context_lines == []
+
+def test_get_mutants_recovers_function_after_forall_annotated_neighbor() -> None:
+    # Regression: `quickSort` in eval/benchmarks/quicksort/quicksort.c sits after a `partition`
+    # function whose `__CPROVER_forall { ... }` clauses make tree-sitter mis-parse. Previously
+    # the iterator missed `quickSort` entirely and `get_mutants` raised ValueError.
+    benchmark = "eval/benchmarks/quicksort/quicksort.c"
+    mutants = get_mutants(benchmark, "quickSort")
+    assert mutants, "Expected non-empty mutants for quickSort"
+
+    # Every mutated operator must lie inside the function body, never inside a CBMC clause.
+    source = Path(benchmark).read_bytes()
+    _, spans = strip_cbmc_clauses(source)
+    for m in mutants:
+        for span in spans:
+            assert not (
+                span.start_byte <= m.start_byte and m.end_byte <= span.end_byte
+            ), f"Mutant at byte {m.start_byte} lies inside CBMC clause span {span}"
