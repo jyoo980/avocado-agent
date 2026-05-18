@@ -63,3 +63,29 @@ def test_construct_call_graph_recovers_function_with_cprover_forall_clause() -> 
     assert "partition" not in quicksort_callees.external, (
         "ERROR-wrapped 'partition' must not be mis-classified as external"
     )
+
+
+def test_construct_call_graph_recovers_function_with_cprover_forall_and_subscript_clause() -> None:
+    # Subscript syntax inside a `__CPROVER_forall` clause (e.g., `arr[k]`) nests the real
+    # `function_declarator` under one or more `array_declarator` wrappers inside the ERROR node,
+    # rather than as a direct child. The call-graph build must still recover the function.
+    call_graph = tree_sitter_utils.get_call_graph(
+        "test/data/quicksort_with_forall_subscript.c"
+    )
+    assert call_graph.size() == 3, (
+        f"Expected 3 functions in quicksort_with_forall_subscript.c, but got {call_graph.size()}"
+    )
+
+    partition_callees = call_graph.get_callees("partition")
+    assert partition_callees.internal == ["swap"], (
+        f"Expected 'partition' to have internal callee 'swap', got {partition_callees}"
+    )
+
+    quicksort_callees = call_graph.get_callees("quickSort")
+    for callee in ["quickSort", "partition"]:
+        assert callee in quicksort_callees.internal, (
+            f"Expected '{callee}' to be an internal callee of quickSort, got {quicksort_callees}"
+        )
+    assert "partition" not in quicksort_callees.external, (
+        "ERROR-wrapped 'partition' must not be mis-classified as external"
+    )
