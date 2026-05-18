@@ -164,6 +164,7 @@ def _verify_mutant(
         file_containing_function_to_verify=str(path_to_write_mutant),
         include_dirs=include_dirs,
     )
+    check_expected_cbmc_return_code(returncode)
     return MutantVerificationResult(mutant, killed=returncode != 0, returncode=returncode)
 
 
