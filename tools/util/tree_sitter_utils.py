@@ -322,33 +322,13 @@ def _iter_function_descendants(root: Node) -> Iterator[Node]:
             stack.extend(node.children)
 
 
-def _is_error_node_wrapping_function_definition(error_node: Node) -> bool:
-    """Return True iff this `ERROR` wraps both a `function_declarator` and a `compound_statement`.
-
-    Specifically, return True iff this `ERROR` node wraps both a `function_declarator` and a
-    `compound_statement` direct children — indicating the signature of a function definition that
-    tree-sitter could not parse cleanly.
-
-    Args:
-        error_node (Node): The error node to check.
-
-    Returns:
-        bool: True iff this `ERROR` wraps both a `function_declarator` and a `compound_statement`.
-    """
-    has_declarator = False
-    has_compound = False
-    for child in error_node.children:
-        if child.type == "function_declarator":
-            has_declarator = True
-        elif child.type == "compound_statement":
-            has_compound = True
-        if has_declarator and has_compound:
-            return True
-    return False
-
-
 def _get_error_wrapped_function_declarator(error_node: Node) -> Node | None:
     """Return the function_declarator if this ERROR node wraps a function definition.
+
+    The function_declarator may sit directly under the ERROR, or be nested inside one or more
+    `array_declarator` wrappers when contract clauses use subscript syntax (e.g., `arr[k]`).
+    Nested `function_definition` subtrees are skipped because they belong to sibling functions
+    that tree-sitter happened to nest inside the same ERROR.
 
     Args:
         error_node (Node): The error node in which to look for a function definition.
@@ -360,14 +340,36 @@ def _get_error_wrapped_function_declarator(error_node: Node) -> Node | None:
     has_declarator = False
     has_compound = False
     for child in error_node.children:
-        if child.type == "function_declarator":
+        if child.type == "function_definition":
+            continue
+        if found := _find_function_declarator_in(child):
             has_declarator = True
-            declarator = child
+            declarator = found
         elif child.type == "compound_statement":
             has_compound = True
         if has_declarator and has_compound:
             return declarator
     return declarator
+
+
+def _find_function_declarator_in(node: Node) -> Node | None:
+    """DFS for a `function_declarator` in `node`'s subtree, skipping nested function definitions.
+
+    Args:
+        node (Node): The root of the subtree to search.
+
+    Returns:
+        Node | None: The first `function_declarator` found, or None.
+    """
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if n.type == "function_declarator":
+            return n
+        if n.type == "function_definition" and n is not node:
+            continue
+        stack.extend(n.children)
+    return None
 
 
 def _get_direct_child_of_type(node: Node, child_type: str) -> Node | None:
@@ -420,7 +422,9 @@ def _get_compound_statement_in_error_node(error_node: Node) -> Node | None:
     """
     seen_declarator = False
     for child in error_node.children:
-        if child.type == "function_declarator":
+        if child.type == "function_definition":
+            continue
+        if not seen_declarator and _find_function_declarator_in(child) is not None:
             seen_declarator = True
         elif seen_declarator and child.type == "compound_statement":
             return child
