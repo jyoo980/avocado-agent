@@ -22,12 +22,16 @@ import sys
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING
 
 import tree_sitter_c as tsc
-from tree_sitter import Language, Node, Parser
+from tree_sitter import Language, Parser
 
+from tools.util.cbmc_clause_stripper import CbmcClauseSpan, strip_cbmc_clauses
 from tools.util.tree_sitter_utils import get_function_declarator, get_function_definition
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 _TREE_SITTER_LANG = Language(tsc.language())
 _PARSER = Parser(_TREE_SITTER_LANG)
@@ -40,20 +44,6 @@ class CbmcClause(StrEnum):
     ENSURES = "__CPROVER_ensures"
     ASSIGNS = "__CPROVER_assigns"
     FREES = "__CPROVER_frees"
-
-    @staticmethod
-    def is_clause(value: Any) -> bool:
-        """Return True iff the value is a CBMC clause.
-
-        Args:
-            value (Any): The value to check for a CBMC clause.
-
-        Returns:
-            bool: True iff the value is a CBMC clause.
-        """
-        if clause_str := cast("str", value):
-            return any(clause_str.startswith(clause.value) for clause in CbmcClause)
-        return False
 
 
 @dataclass(frozen=True)
@@ -119,85 +109,71 @@ def get_clause_mutants(file_path: str, function_name: str) -> list[ClauseMutant]
         list[ClauseMutant]: One mutant per removed clause.
     """
     source_code = Path(file_path).read_bytes()
-    tree = _PARSER.parse(source_code)
+    stripped, spans = strip_cbmc_clauses(source_code)
+    tree = _PARSER.parse(stripped)
     fn_def = get_function_definition(tree.root_node, function_name)
     if not fn_def:
         msg = f"Function '{function_name}' missing from file '{file_path}'"
         raise ValueError(msg)
 
     mutants: list[ClauseMutant] = []
-    for clause in _get_cbmc_clause_nodes(fn_def):
-        mutant_bytes = source_code[: clause.start_byte] + source_code[clause.end_byte :]
+    for span in _get_clause_spans_for_function(fn_def, spans):
+        mutant_bytes = source_code[: span.start_byte] + source_code[span.end_byte :]
+        line, column = _byte_offset_to_line_column(source_code, span.start_byte)
         mutants.append(
             ClauseMutant(
                 function=function_name,
-                clause_kind=_get_cbmc_clause_kind(clause),
-                clause_text=source_code[clause.start_byte : clause.end_byte].decode("utf-8"),
-                line=clause.start_point[0] + 1,
-                column=clause.start_point[1],
+                clause_kind=CbmcClause(span.kind),
+                clause_text=source_code[span.start_byte : span.end_byte].decode("utf-8"),
+                line=line,
+                column=column,
                 mutant_source=mutant_bytes.decode("utf-8"),
             )
         )
     return mutants
 
 
-def _get_cbmc_clause_kind(node: Node) -> CbmcClause:
-    """Return the CbmcClause for the given node.
+def _get_clause_spans_for_function(
+    fn_def: Node, spans: list[CbmcClauseSpan]
+) -> list[CbmcClauseSpan]:
+    """Return clause spans that decorate the given function definition, in source order.
+
+    A clause "decorates" `fn_def` when it lies between the end of its `function_declarator` and
+    the start of its body (`compound_statement`). Spans that fall outside this gap belong to a
+    different function in the file.
 
     Args:
-        node (Node): The node for which to return a CbmcClause.
+        fn_def (Node): The `function_definition` node parsed from the clause-stripped source.
+        spans (list[CbmcClauseSpan]): All clause spans in the file, in source order.
 
     Returns:
-        CbmcClause: The CbmcClause for the given node.
-    """
-    if not node.text:
-        msg = f"Expected a candidate CbmcClause node to have a .text attribute, but got: {node}"
-        raise ValueError(msg)
-    node_text = node.text.decode("utf-8").strip()
-    for clause_kind in CbmcClause:
-        if node_text.startswith(clause_kind.value):
-            return clause_kind
-    msg = f"Unable to find a CbmcClause kind for {node}"
-    raise ValueError(msg)
-
-
-def _get_cbmc_clause_nodes(fn_def: Node) -> list[Node]:
-    """Return the contract-clause `call_expression` nodes attached to a function definition.
-
-    Args:
-        fn_def (Node): The `function_definition` AST node.
-
-    Returns:
-        list[Node]: Clause nodes in source order.
+        list[CbmcClauseSpan]: The subset of `spans` attached to `fn_def`.
     """
     declarator = get_function_declarator(fn_def)
-    clause_candidates: list[Node] = []
-    if declarator is not None:
-        clause_candidates.extend(declarator.children)
-
-    for child in fn_def.children:
-        if child.type == "ERROR":
-            # tree-sitter ERROR nodes often represent clauses, since `__CPROVER_` syntax is not
-            # legal C that parses cleanly.
-            clause_candidates.extend(child.children)
-    return [node for node in clause_candidates if _is_cbmc_clause_node(node)]
+    body = fn_def.child_by_field_name("body")
+    if declarator is None or body is None:
+        return []
+    gap_start = declarator.end_byte
+    gap_end = body.start_byte
+    return [span for span in spans if gap_start <= span.start_byte < gap_end]
 
 
-def _is_cbmc_clause_node(node: Node) -> bool:
-    """Return True iff the node represents a CBMC specification clause.
+def _byte_offset_to_line_column(source: bytes, offset: int) -> tuple[int, int]:
+    """Return the 1-based line and 0-based column for a byte offset into `source`.
 
     Args:
-        node (Node): The node to check for a CBMC specification clause.
+        source (bytes): The source bytes the offset refers to.
+        offset (int): The byte offset.
 
     Returns:
-        bool: True iff the node represents a CBMC specification clause.
+        tuple[int, int]: (line, column) where line is 1-based and column is 0-based, matching
+            tree-sitter's `start_point` convention.
     """
-    if node.type != "call_expression":
-        return False
-    fn = node.child_by_field_name("function")
-    if not fn or fn.type != "identifier" or not fn.text:
-        return False
-    return CbmcClause.is_clause(fn.text.decode("utf-8"))
+    prefix = source[:offset]
+    line = prefix.count(b"\n") + 1
+    last_newline = prefix.rfind(b"\n")
+    column = offset - (last_newline + 1) if last_newline >= 0 else offset
+    return line, column
 
 
 def _write_clause_mutants_to_dir(
