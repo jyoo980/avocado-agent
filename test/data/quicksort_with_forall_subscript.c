@@ -36,17 +36,17 @@ __CPROVER_ensures(__CPROVER_forall {
     int i = low - 1;
 
     for (int j = low; j <= high - 1; j++) {
-        
+
         if (arr[j] <= pivot) {
-            
+
             i++;
-            
+
             swap(&arr[i], &arr[j]);
         }
     }
-    
+
     swap(&arr[i + 1], &arr[high]);
-    return i + 1; 
+    return i + 1;
 }
 
 
@@ -57,10 +57,10 @@ __CPROVER_assigns(low < high: __CPROVER_object_whole(arr))
 {
 
     if (low < high) {
-        
+
         int i = partition(arr, low, high);
-        
-        quickSort(arr, low, i - 1); 
-        quickSort(arr, i + 1, high); 
+
+        quickSort(arr, low, i - 1);
+        quickSort(arr, i + 1, high);
     }
 }
