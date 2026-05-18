@@ -43,15 +43,13 @@ def get_call_graph(path_to_file: str) -> CallGraph:
     file_content = Path(path_to_file).read_text(encoding="utf-8")
     tree = _parse_to_ast(file_content)
 
-    function_name_to_node: dict[str, Node] = {
-        function_name: node
-        for node in dfs_traversal(tree.root_node)
-        if node.type == "function_definition"
-        and (function_name := _get_function_definition_name(node))
+    function_name_to_node: dict[str, Node] = {}
+    for function_name, node in _iter_function_definitions(tree.root_node):
         # Sometimes, tree-sitter will parse a __CPROVER_ annotation as a legitimate C function call
         # expression. These should be excluded from the call graph.
-        and not function_name.strip().startswith(_CONTRACT_CLAUSE_PREFIX)
-    }
+        if function_name.strip().startswith(_CONTRACT_CLAUSE_PREFIX):
+            continue
+        function_name_to_node[function_name] = node
     in_file_functions = set(function_name_to_node)
 
     call_graph: dict[str, dict[str, list[str]]] = {}
@@ -81,13 +79,8 @@ def get_functions_with_cprover_annotations(path_to_file: str) -> set[str]:
     file_content = Path(path_to_file).read_text(encoding="utf-8")
     tree = _parse_to_ast(file_content)
     annotated: set[str] = set()
-    for node in dfs_traversal(tree.root_node):
-        if node.type != "function_definition":
-            continue
-        name = _get_function_definition_name(node)
-        if not name:
-            continue
-        for descendant in dfs_traversal(node):
+    for name, node in _iter_function_definitions(tree.root_node):
+        for descendant in _iter_function_descendants(node):
             if descendant.type != "call_expression":
                 continue
             function = descendant.child_by_field_name("function")
@@ -111,37 +104,34 @@ def get_function_body(path_to_file: str, function_name: str) -> Node | None:
     """
     source_code = Path(path_to_file).read_bytes()
     tree = _PARSER.parse(source_code)
-    if (target_function := get_function_definition(tree.root_node, function_name)) and (
-        target_function_body := target_function.child_by_field_name("body")
-    ):
-        return target_function_body
-    return None
+    target_function = get_function_definition(tree.root_node, function_name)
+    if target_function is None:
+        return None
+    if target_function.type == "function_definition":
+        return target_function.child_by_field_name("body")
+    # ERROR-wrapped function: the body is the first top-level `compound_statement` child that
+    # follows the `function_declarator`.
+    return _get_compound_statement_in_error_node(target_function)
 
 
 def get_function_definition(root: Node, name: str) -> Node | None:
-    """DFS for the first `function_definition` whose name matches `name`.
+    """DFS for the first function whose name matches `name`.
+
+    Returns either a well-parsed `function_definition` node or, when tree-sitter misparsed the
+    definition into an `ERROR` wrapper (typically because of `__CPROVER_forall { ... }` contract
+    clauses), the `ERROR` node itself. Downstream callers must handle both shapes — e.g., via
+    `get_function_declarator` (which already has a DFS fallback) and `get_function_body`.
 
     Args:
         root (Node): The AST root to search under.
         name (str): The function name to match.
 
     Returns:
-        Node | None: The matching `function_definition` node, or None if not found.
+        Node | None: The matching function-definition node, or None if not found.
     """
-    for n in dfs_traversal(root):
-        if n.type != "function_definition":
-            continue
-        declarator = get_function_declarator(n)
-        if declarator is None:
-            continue
-        ident = declarator
-        while ident.type != "identifier":
-            inner = ident.child_by_field_name("declarator")
-            if inner is None:
-                break
-            ident = inner
-        if ident.type == "identifier" and ident.text and ident.text.decode("utf-8") == name:
-            return n
+    for fn_name, node in _iter_function_definitions(root):
+        if fn_name == name:
+            return node
     return None
 
 
@@ -265,7 +255,7 @@ def _get_names_of_functions_called_in_node(node: Node) -> set[str]:
         set[str]: The names of functions that appear as call expressions in the given node.
     """
     names: set[str] = set()
-    for descendant in dfs_traversal(node):
+    for descendant in _iter_function_descendants(node):
         if (
             descendant.type == "call_expression"
             and (function := descendant.child_by_field_name("function"))
@@ -277,3 +267,140 @@ def _get_names_of_functions_called_in_node(node: Node) -> set[str]:
                 continue
             names.add(name)
     return names
+
+
+def _iter_function_definitions(root: Node) -> Iterator[tuple[str, Node]]:
+    """Return an iterator yielding (name, definition_node) for every function defined under `root`.
+
+    Yields both well-parsed `function_definition` nodes and `ERROR` nodes that look like
+    misparsed function definitions.
+
+    Tree-sitter wraps a function in an `ERROR` when a function's contract clauses contain
+    `__CPROVER_forall { ... }`; the inner braces close the surrounding `function_declarator` early,
+    the rest of the clauses spill out as siblings, and the next function in the file ends up nested
+    inside the same `ERROR` as a `function_definition` sibling.
+
+    Args:
+        root (Node): The root node.
+
+    Yields:
+        Iterator[tuple[str, Node]]: Return an iterator yielding (name, definition_node) for every
+            function defined under `root`.
+    """
+    for node in dfs_traversal(root):
+        if node.type == "function_definition" and (name := _get_function_definition_name(node)):
+            yield name, node
+        elif node.type == "ERROR" and _is_error_node_wrapping_function_definition(node):
+            if declarator := _get_direct_child_of_type(node, "function_declarator"):
+                name = _get_name_from_function_declarator(declarator)
+                if name:
+                    yield name, node
+
+
+def _iter_function_descendants(root: Node) -> Iterator[Node]:
+    """Return an iterator yielding `root`'s subtree, skipping nested `function_definition` subtrees.
+
+    Yields `root` itself plus every descendant that is not inside a nested
+    `function_definition` collected via DFS.
+
+    For a well-parsed `function_definition` root this is identical to `dfs_traversal`.
+
+    For an `ERROR`-wrapped function definition the skip matters: the next function in the file is
+    nested as a sibling `function_definition` inside the same `ERROR`. Its calls/annotations must
+    not be attributed to the outer node.
+
+    Args:
+        root (Node): The node under which to collect subnodes.
+
+    Yields:
+        Iterator[Node]: Return an iterator yielding `root`'s subtree, skipping nested
+            `function_definition` subtrees.
+    """
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        yield node
+        if node is root or node.type != "function_definition":
+            stack.extend(node.children)
+
+
+def _is_error_node_wrapping_function_definition(error_node: Node) -> bool:
+    """Return True iff this `ERROR` wraps both a `function_declarator` and a `compound_statement`.
+
+    Specifically, return True iff this `ERROR` node wraps both a `function_declarator` and a
+    `compound_statement` direct children — indicating the signature of a function definition that
+    tree-sitter could not parse cleanly.
+
+    Args:
+        error_node (Node): The error node to check.
+
+    Returns:
+        bool: True iff this `ERROR` wraps both a `function_declarator` and a `compound_statement`.
+    """
+    has_declarator = False
+    has_compound = False
+    for child in error_node.children:
+        if child.type == "function_declarator":
+            has_declarator = True
+        elif child.type == "compound_statement":
+            has_compound = True
+        if has_declarator and has_compound:
+            return True
+    return False
+
+
+def _get_direct_child_of_type(node: Node, child_type: str) -> Node | None:
+    """Return the first direct child of `node` with the given type.
+
+    Args:
+        node (Node): The node to check for a child of the given type.
+        child_type (str): The target type.
+
+    Returns:
+        Node | None: The first child node of the given type, else None.
+    """
+    for child in node.children:
+        if child.type == child_type:
+            return child
+    return None
+
+
+def _get_name_from_function_declarator(declarator: Node) -> str | None:
+    """Return the identifier name nested inside a declarator node.
+
+    Args:
+        declarator (Node): The declarator node from which to obtain an identifier.
+
+    Returns:
+        str | None: The identifier name if found, else None.
+    """
+    while declarator.type != "identifier":
+        inner = declarator.child_by_field_name("declarator")
+        if inner is None:
+            return None
+        declarator = inner
+    if not declarator.text:
+        return None
+    return declarator.text.decode("utf-8")
+
+
+def _get_compound_statement_in_error_node(error_node: Node) -> Node | None:
+    """Return the compound_statement body of an ERROR-wrapped function definition.
+
+    The body is the first top-level `compound_statement` child appearing after the
+    `function_declarator`. Earlier `compound_statement` children, if any, would belong to a
+    misparsed contract clause rather than the function body.)
+
+    Args:
+        error_node (Node): The ERROR node.
+
+    Returns:
+        Node | None: The compound_statement body of an ERROR-wrapped function definition.
+    """
+    seen_declarator = False
+    for child in error_node.children:
+        if child.type == "function_declarator":
+            seen_declarator = True
+        elif seen_declarator and child.type == "compound_statement":
+            return child
+    return None
