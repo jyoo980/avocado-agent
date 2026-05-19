@@ -8,6 +8,7 @@ from tree_sitter import Language, Parser
 from tools.util.cbmc_clause_stripper import (
     CBMC_CLAUSE_NAMES,
     CbmcClauseSpan,
+    find_cbmc_annotation_spans,
     strip_cbmc_clauses,
 )
 
@@ -179,3 +180,38 @@ def test_clause_spans_attributable_to_owning_function_by_byte_range() -> None:
         "__CPROVER_assigns",
         "__CPROVER_ensures",
     ]
+
+
+def test_find_cbmc_annotation_spans_covers_in_body_assume_with_forall() -> None:
+    source = (
+        b"void f(int* a)\n"
+        b"__CPROVER_assigns()\n"
+        b"{\n"
+        b"    __CPROVER_assume(\n"
+        b"        __CPROVER_forall { unsigned int i; i < 512 ==> a[i] < 32 });\n"
+        b"    *a = 1;\n"
+        b"}\n"
+    )
+    spans = find_cbmc_annotation_spans(source)
+    kinds = [s.kind for s in spans]
+    assert kinds == ["__CPROVER_assigns", "__CPROVER_assume"]
+
+    assume_span = spans[1]
+    assume_text = source[assume_span.start_byte : assume_span.end_byte].decode()
+    assert assume_text.startswith("__CPROVER_assume(")
+    assert assume_text.endswith("})")
+    assert "i < 512" in assume_text
+
+
+def test_find_cbmc_annotation_spans_skips_identifiers_without_parens() -> None:
+    # `__CPROVER_return_value` has no following `(`, so the scanner must not produce a span for it.
+    source = (
+        b"int f(int* a)\n"
+        b"__CPROVER_ensures(__CPROVER_return_value == 1)\n"
+        b"{\n"
+        b"    return 1;\n"
+        b"}\n"
+    )
+    spans = find_cbmc_annotation_spans(source)
+    kinds = [s.kind for s in spans]
+    assert kinds == ["__CPROVER_ensures"]

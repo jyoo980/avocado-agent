@@ -39,6 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.util.cbmc_clause_stripper import find_cbmc_annotation_spans  # noqa: E402
 from tools.util.tree_sitter_utils import (  # noqa: E402
     dfs_traversal,
     get_function_body,
@@ -190,6 +191,18 @@ def get_mutants(file_path: str, function_name: str) -> list[Mutant]:
         msg = f"Function '{function_name}' missing from file '{file_path}'"
         raise ValueError(msg)
 
+    # In-body CBMC intrinsics (e.g. `__CPROVER_assume(__CPROVER_forall { ... i < 512 ... })`)
+    # survive the top-level clause stripper, so tree-sitter still produces binary-expression nodes
+    # for the operators they contain. Those operators belong to a contract assumption, not the
+    # program under test, and mutating them yields meaningless mutants — filter them out here.
+    body_start = target_function_body.start_byte
+    body_end = target_function_body.end_byte
+    in_body_annotation_spans = [
+        s
+        for s in find_cbmc_annotation_spans(source_code)
+        if body_start <= s.start_byte and s.end_byte <= body_end
+    ]
+
     mutants: list[Mutant] = []
     for op_class, table in _OPERATOR_TO_REPLACEMENTS.items():
         for node in dfs_traversal(target_function_body):
@@ -199,6 +212,11 @@ def get_mutants(file_path: str, function_name: str) -> list[Mutant]:
             if not op_node:
                 msg = f"Expected {node} to be a binary operator"
                 raise ValueError(msg)
+            if any(
+                s.start_byte <= op_node.start_byte and op_node.end_byte <= s.end_byte
+                for s in in_body_annotation_spans
+            ):
+                continue
             # Here, we've found a binary operator node in the target function body.
             original_operator = source_code[op_node.start_byte : op_node.end_byte].decode("utf-8")
             replacement_operators = table.get(original_operator, [])

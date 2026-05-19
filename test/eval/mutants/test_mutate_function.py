@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from eval import get_mutants, MutationClasses
-from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
+from tools.util.cbmc_clause_stripper import find_cbmc_annotation_spans, strip_cbmc_clauses
 
 
 def test_get_mutants_no_op() -> None:
@@ -89,3 +89,23 @@ def test_get_mutants_recovers_function_after_forall_annotated_neighbor() -> None
             assert not (
                 span.start_byte <= m.start_byte and m.end_byte <= span.end_byte
             ), f"Mutant at byte {m.start_byte} lies inside CBMC clause span {span}"
+
+
+def test_get_mutants_skips_operators_inside_in_body_cprover_assume() -> None:
+    # `__CPROVER_assume(a < 50 && b < 50)` in the body would otherwise produce relational and
+    # logical mutants for `a < 50`, `b < 50`, and the `&&`. Only the real `a + b` should be mutated.
+    source_path = "test/data/mutants/mutants.c"
+    mutants = get_mutants(source_path, "with_in_body_assume")
+
+    assert len(mutants) == 1, f"Expected one mutant (for `a + b`), got: {mutants}"
+    assert mutants[0].operator_class == MutationClasses.ARITHMETIC
+    assert mutants[0].original_operator == "+"
+    assert mutants[0].replacement_operator == "-"
+
+    source = Path(source_path).read_bytes()
+    spans = find_cbmc_annotation_spans(source)
+    for m in mutants:
+        for span in spans:
+            assert not (
+                span.start_byte <= m.start_byte and m.end_byte <= span.end_byte
+            ), f"Mutant at byte {m.start_byte} lies inside CBMC annotation span {span}"

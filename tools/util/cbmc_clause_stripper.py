@@ -17,10 +17,20 @@ of identical byte length (newlines preserved). The stripped source parses as
 plain C, and every byte offset / line / column on the resulting tree-sitter AST
 indexes the *original* source verbatim — no offset translation tables, no
 two-buffer bookkeeping.
+
+The same scanner also powers `find_cbmc_annotation_spans`, which locates *any*
+`__CPROVER_*(...)` call — including in-body intrinsics like `__CPROVER_assume`
+and `__CPROVER_assert` — so downstream consumers (e.g. the mutant generator)
+can avoid mutating operators that live inside a CBMC annotation rather than in
+the program under test.
 """
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 from dataclasses import dataclass
 
 CBMC_CLAUSE_NAMES: tuple[str, ...] = (
@@ -64,50 +74,87 @@ def strip_cbmc_clauses(source: bytes) -> tuple[bytes, list[CbmcClauseSpan]]:
     Returns:
         A pair of (stripped bytes, list of CbmcClauseSpan).
     """
-    spans: list[CbmcClauseSpan] = []
+    clause_names = frozenset(CBMC_CLAUSE_NAMES)
+    spans = _find_cbmc_call_spans(source, clause_names.__contains__)
     buffer = bytearray(source)
+    for span in spans:
+        for k in range(span.start_byte, span.end_byte):
+            if buffer[k] != ord("\n"):
+                buffer[k] = ord(" ")
+    return bytes(buffer), spans
+
+
+def find_cbmc_annotation_spans(source: bytes) -> list[CbmcClauseSpan]:
+    """Return spans of every ``__CPROVER_*(...)`` call in ``source``.
+
+    Covers both top-level contract clauses (requires/ensures/assigns/frees) and
+    in-body intrinsics (assume/assert/havoc_object/...). Identifiers without a
+    following ``(`` — e.g. ``__CPROVER_return_value`` — are skipped and do not
+    appear in the result.
+
+    Args:
+        source: The original C source as bytes.
+
+    Returns:
+        Spans of CBMC annotation calls in source order.
+    """
+    return _find_cbmc_call_spans(source, lambda name: name.startswith("__CPROVER_"))
+
+
+def _find_cbmc_call_spans(
+    source: bytes, name_predicate: Callable[[str], bool]
+) -> list[CbmcClauseSpan]:
+    """Locate every ``identifier(...)`` call whose identifier satisfies ``name_predicate``.
+
+    Skips C comments and string/character literals so identifiers inside them
+    are not matched. For each identifier-start boundary in ``source``, the
+    identifier is read in full and passed to ``name_predicate``; on a match,
+    ``_consume_clause`` finds the matching ``)`` (tracking paren and brace
+    depth independently so a ``__CPROVER_forall { ... }`` inside the call
+    doesn't close it early). Identifiers without a following ``(`` are skipped.
+
+    Args:
+        source: The original C source as bytes.
+        name_predicate: Predicate over identifier names.
+
+    Returns:
+        Matching spans in source order.
+    """
+    spans: list[CbmcClauseSpan] = []
     length = len(source)
     i = 0
     while i < length:
         ch = source[i]
-        # Skip line comments.
         if ch == ord("/") and i + 1 < length and source[i + 1] == ord("/"):
             i += 2
             while i < length and source[i] != ord("\n"):
                 i += 1
             continue
-        # Skip block comments.
         if ch == ord("/") and i + 1 < length and source[i + 1] == ord("*"):
             i += 2
             while i + 1 < length and not (source[i] == ord("*") and source[i + 1] == ord("/")):
                 i += 1
             i += 2
             continue
-        # Skip string literals.
         if ch == ord('"'):
             i = _skip_literal(source, i, ord('"'))
             continue
-        # Skip character literals.
         if ch == ord("'"):
             i = _skip_literal(source, i, ord("'"))
             continue
-        if ch == ord("_") and _identifier_starts_at(source, i):
-            for name in CBMC_CLAUSE_NAMES:
-                if _matches_identifier(source, i, name):
-                    span_end = _consume_clause(source, i + len(name))
-                    if span_end is not None:
-                        spans.append(CbmcClauseSpan(kind=name, start_byte=i, end_byte=span_end))
-                        for k in range(i, span_end):
-                            if buffer[k] != ord("\n"):
-                                buffer[k] = ord(" ")
-                        i = span_end
-                        break
-            else:
-                i = _skip_identifier(source, i)
-                continue
+        if _is_identifier_byte(ch) and _identifier_starts_at(source, i):
+            end = _skip_identifier(source, i)
+            name = source[i:end].decode("ascii", errors="replace")
+            if name_predicate(name):
+                span_end = _consume_clause(source, end)
+                if span_end is not None:
+                    spans.append(CbmcClauseSpan(kind=name, start_byte=i, end_byte=span_end))
+                    i = span_end
+                    continue
+            i = end
             continue
         i += 1
-    return bytes(buffer), spans
+    return spans
 
 
 def _is_identifier_byte(b: int) -> bool:
@@ -141,26 +188,6 @@ def _identifier_starts_at(source: bytes, i: int) -> bool:
     if i == 0:
         return True
     return not _is_identifier_byte(source[i - 1])
-
-
-def _matches_identifier(source: bytes, i: int, name: str) -> bool:
-    """Return True iff the identifier at ``i`` is exactly ``name``.
-
-    Args:
-        source: The source bytes.
-        i: Identifier-start offset.
-        name: The identifier to match against.
-
-    Returns:
-        True iff ``source[i:i+len(name)]`` equals ``name`` and is not followed
-        by another identifier byte.
-    """
-    end = i + len(name)
-    if end > len(source):
-        return False
-    if source[i:end].decode("ascii", errors="replace") != name:
-        return False
-    return end == len(source) or not _is_identifier_byte(source[end])
 
 
 def _skip_identifier(source: bytes, i: int) -> int:
