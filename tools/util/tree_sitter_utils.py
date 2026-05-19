@@ -137,6 +137,10 @@ def is_binary_operator_node(node: Node) -> bool:
 def get_function_declarator(fn_def: Node) -> Node | None:
     """Return the `function_declarator` node of a `function_definition`.
 
+    For functions returning a pointer (e.g. `char *foo(...)`), tree-sitter wraps the
+    `function_declarator` in one or more `pointer_declarator` nodes. Descend through any
+    such wrappers to reach the underlying `function_declarator`.
+
     Args:
         fn_def (Node): The `function_definition` node.
 
@@ -144,9 +148,9 @@ def get_function_declarator(fn_def: Node) -> Node | None:
         Node | None: The `function_declarator` child, or None if absent.
     """
     declarator = fn_def.child_by_field_name("declarator")
-    if declarator is not None and declarator.type == "function_declarator":
-        return declarator
-    return None
+    while declarator is not None and declarator.type != "function_declarator":
+        declarator = declarator.child_by_field_name("declarator")
+    return declarator
 
 
 def _parse_to_ast(content: bytes | str, language_extension: str = ".c") -> Tree:

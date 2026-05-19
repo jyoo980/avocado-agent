@@ -65,7 +65,9 @@ def test_construct_call_graph_recovers_function_with_cprover_forall_clause() -> 
     )
 
 
-def test_construct_call_graph_recovers_function_with_cprover_forall_and_subscript_clause() -> None:
+def test_construct_call_graph_recovers_function_with_cprover_forall_and_subscript_clause() -> (
+    None
+):
     # Subscript syntax inside a `__CPROVER_forall` clause (e.g., `arr[k]`) nests the real
     # `function_declarator` under one or more `array_declarator` wrappers inside the ERROR node,
     # rather than as a direct child. The call-graph build must still recover the function.
@@ -88,4 +90,17 @@ def test_construct_call_graph_recovers_function_with_cprover_forall_and_subscrip
         )
     assert "partition" not in quicksort_callees.external, (
         "ERROR-wrapped 'partition' must not be mis-classified as external"
+    )
+
+
+def test_get_functions_with_cprover_annos() -> None:
+    fns_with_annos = tree_sitter_utils.get_functions_with_cprover_annotations(
+        "test/data/pointer_decl_function.c"
+    )
+
+    assert len(fns_with_annos) == 2, (
+        f"Expected two functions with annotations, but got {len(fns_with_annos)}"
+    )
+    assert "swap" in fns_with_annos and "bin2hex" in fns_with_annos, (
+        f"Expected 'swap' and 'bin2hex' in {fns_with_annos}"
     )
