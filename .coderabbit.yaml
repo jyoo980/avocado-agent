@@ -18,6 +18,7 @@ reviews:
     - "!**/test_*.py"
     - "!**/.claude/**"
     - "!eval/benchmarks/**"
+    - "!test/data/**"
   auto_review:
     # Setting this value to 0 means CodeRabbit will review on every single new push, which drives me
     # insane. Stop reviewing after 3 new commits, then re-request review via @coderabbit review.
