@@ -39,6 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.util.cbmc_clause_stripper import CbmcClauseSpan, find_cbmc_annotation_spans  # noqa: E402
 from tools.util.tree_sitter_utils import (  # noqa: E402
     dfs_traversal,
     get_function_body,
@@ -190,6 +191,12 @@ def get_mutants(file_path: str, function_name: str) -> list[Mutant]:
         msg = f"Function '{function_name}' missing from file '{file_path}'"
         raise ValueError(msg)
 
+    # In-body CBMC intrinsics (e.g. `__CPROVER_assume(__CPROVER_forall { ... i < 512 ... })`)
+    # survive the top-level clause stripper, so tree-sitter still produces binary-expression nodes
+    # for the operators they contain. Those operators belong to a contract assumption, not the
+    # program under test, and mutating them yields meaningless mutants — filter them out here.
+    in_body_annotation_spans = _get_in_body_cbmc_annotation_spans(target_function_body, source_code)
+
     mutants: list[Mutant] = []
     for op_class, table in _OPERATOR_TO_REPLACEMENTS.items():
         for node in dfs_traversal(target_function_body):
@@ -199,6 +206,11 @@ def get_mutants(file_path: str, function_name: str) -> list[Mutant]:
             if not op_node:
                 msg = f"Expected {node} to be a binary operator"
                 raise ValueError(msg)
+            if any(
+                s.start_byte <= op_node.start_byte and op_node.end_byte <= s.end_byte
+                for s in in_body_annotation_spans
+            ):
+                continue
             # Here, we've found a binary operator node in the target function body.
             original_operator = source_code[op_node.start_byte : op_node.end_byte].decode("utf-8")
             replacement_operators = table.get(original_operator, [])
@@ -216,6 +228,43 @@ def get_mutants(file_path: str, function_name: str) -> list[Mutant]:
                 ]
             )
     return mutants
+
+
+def _get_in_body_cbmc_annotation_spans(body: Node, source_code: bytes) -> list[CbmcClauseSpan]:
+    """Return the in-body CBMC annotation spans.
+
+    For example, given the following C function:
+
+            uint16_t float2half(float flt)
+                __CPROVER_assigns()
+            {
+                __CPROVER_assume(
+                    __CPROVER_forall { unsigned int i; i < 512 !=> m__shift[i] < 32 });
+                union {
+                    float flt;
+                    uint32_t num;
+                } in;
+                uint32_t n, j;
+                in.flt = flt;
+                n = in.num;
+                j = (n >> 23) & 0x1ff;
+                return (uint16_t)((uint32_t)m__base[j] + ((n & 0x007fffff) >> m__shift[j]));
+            }
+
+    The span for the `__CPROVER_assume` clause is returned.
+
+    Args:
+        body (Node): The body of the function in which to look for CBMC annotation spans.
+        source_code (bytes): The source code of the file in which the function is declared.
+
+    Returns:
+        list[CbmcClauseSpan]: The in-body CBMC annotation spans.
+    """
+    return [
+        s
+        for s in find_cbmc_annotation_spans(source_code)
+        if body.start_byte <= s.start_byte and s.end_byte <= body.end_byte
+    ]
 
 
 def _get_mutant(

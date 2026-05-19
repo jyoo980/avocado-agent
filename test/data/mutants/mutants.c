@@ -41,6 +41,13 @@ __CPROVER_ensures(low <= __CPROVER_return_value && __CPROVER_return_value <= hig
     return i + 1; // Mutants: -
 }
 
+int with_in_body_assume(int a, int b)
+__CPROVER_requires(a < 100)
+{
+    __CPROVER_assume(a < 50 && b < 50);
+    return a + b;
+}
+
 void main()
 {
     printf("Hello, world");
