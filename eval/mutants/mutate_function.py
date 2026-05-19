@@ -23,6 +23,7 @@ summary is emitted to stdout.
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import sys
 from dataclasses import asdict, dataclass
@@ -115,6 +116,29 @@ class Mutant:
     line: int
     column: int
     mutant_source: str
+
+    def get_unified_diff(self) -> str:
+        """Return a unified diff between the original source and this mutant.
+
+        Returns:
+            str: A unified diff between the original source and this mutant.
+        """
+        mutant_bytes = self.mutant_source.encode("utf-8")
+        repl_len = len(self.replacement_operator.encode("utf-8"))
+        original_bytes = (
+            mutant_bytes[: self.start_byte]
+            + self.original_operator.encode("utf-8")
+            + mutant_bytes[self.start_byte + repl_len :]
+        )
+        original_source = original_bytes.decode("utf-8")
+        diff = difflib.unified_diff(
+            original_source.splitlines(keepends=True),
+            self.mutant_source.splitlines(keepends=True),
+            fromfile="original",
+            tofile="mutant",
+            n=0,
+        )
+        return "".join(diff)
 
 
 def main() -> None:
