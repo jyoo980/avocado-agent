@@ -7,6 +7,9 @@ Your task is to edit C programs to insert CBMC specifications (contracts) that
 CBMC can verify.  Ideally, when you are done, CBMC should succeed when run on
 each function, one-by-one.
 
+You should produce high-quality specifications; a proxy for the quality of a specification
+can be obtained by mutation testing, which will produce a kill score.
+
 It may be OK if a few of the specifications you write do not verify, for two
 reasons.  First, if a program is incorrect, CBMC will issue a warning.  Second,
 CBMC cannot verify all correct C code.  Do not fix or otherwise change the C
@@ -21,6 +24,17 @@ Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 ## Tool Use
 
 You should always prefer this project's CLI tools over invoking CBMC by hand.
+
+- **To run CBMC on a function**, run:
+
+  ```sh
+  avocado-run-cbmc --function <FUNCTION_NAME> \
+                   --file <PATH_TO_C_FILE> \
+                   [-I <PATH_TO_INCLUDE_DIR(S)>]...
+  ```
+
+  If verification succeeds, exits with status 0 and prints a success line to stdout.
+  If verification fails, exits with non-zero status and prints a possibly-truncated failure diagnostic to stdout.
 
 - **To obtain a call graph of the functions in a file in JSON format**, run:
 
@@ -38,18 +52,7 @@ You should always prefer this project's CLI tools over invoking CBMC by hand.
 
   Prints function names callees-first, one per line.
 
-- **To run CBMC on a function**, run:
-
-  ```sh
-  avocado-run-cbmc --function <FUNCTION_NAME> \
-                   --file <PATH_TO_C_FILE> \
-                   [-I <PATH_TO_INCLUDE_DIR(S)>]...
-  ```
-
-If verification succeeds, exits with status 0 and prints a success line to stdout.
-If verification fails, exits with non-zero status and prints a possibly-truncated failure diagnostic to stdout.
-
-  - **To evaluate specifications with mutation testing**, run:
+- **To get a kill score from mutation testing**, run:
 
   ```sh
   avocado-get-mutation-score --function <FUNCTION_NAME> \
@@ -57,14 +60,17 @@ If verification fails, exits with non-zero status and prints a possibly-truncate
                    [-I <PATH_TO_INCLUDE_DIR(S)>]...
   ```
 
-Which prints a summary of mutation testing (including the kill score and any surviving mutants) as
-a JSON-formatted string.
+  Which prints a summary of mutation testing (including the kill score and any surviving mutants) as
+  a JSON-formatted string.
 
 
 You must remember the following guidelines:
 - Fall back to directly running CBMC only if necessary.
 - Do not hard-code any values into the specifications that are related to CBMC's command-line
   arguments (e.g., `--partial-loops --unwind <N>`).
+- You must improve on a specification's quality by using mutation testing via the
+  `avocado-get-mutation-score` script, which produces a kill score you can try to increase. Do not
+  iterate more than 5 times, and stop if it is clear that the kill score cannot be improved.
 - Do not attempt to fix a failing specification for a function more than 5 times.
 - Do not attempt to verify `main` functions.
 - If a function has no side effects on memory beyond local variables or return values,
@@ -73,9 +79,6 @@ You must remember the following guidelines:
   - You suspect there is a regression.
   - You need information from a callee's verification run to help verify a caller.
   - When you need to report the final verification counts at the end.
-- Run mutation testing via the `avocado-get-mutation-score` script to iteratively improve the
-  quality of your specifications. Do not iterate more than 5 times, and stop if it is clear that the
-  kill score cannot be improved.
 
 ## Syntax of C function specifications (contracts)
 
