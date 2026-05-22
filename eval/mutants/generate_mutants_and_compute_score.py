@@ -74,6 +74,7 @@ def main() -> None:
                 "line": result.mutant.line,
                 "column": result.mutant.column,
                 "killed": result.killed,
+                "timed_out": result.timed_out,
                 "returncode": result.returncode,
             }
         )

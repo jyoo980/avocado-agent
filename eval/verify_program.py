@@ -18,15 +18,20 @@ from pathlib import Path
 
 from loguru import logger
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from tools.run_cbmc import run_cbmc
 from tools.util import (
     build_stub_index,
     get_call_graph,
     get_functions_with_cprover_annotations,
     get_unstubbed_external_callees_for,
 )
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from tools.run_cbmc import RunCbmcTimeout, run_cbmc
+
+# GNU `timeout(1)` convention, used so per-function timeouts surface in the verification
+# summary without being conflated with a CBMC verification failure.
+_TIMEOUT_RETURNCODE = 124
 
 
 @dataclass(frozen=True)
@@ -240,7 +245,10 @@ def _verify_function(
     Returns:
         VerificationResult: The result of verifying a function.
     """
-    failures, returncode = run_cbmc(function, file, include_dirs=include_dirs)
+    result = run_cbmc(function, file, include_dirs=include_dirs)
+    if isinstance(result, RunCbmcTimeout):
+        return FunctionVerificationResult(file, function, _TIMEOUT_RETURNCODE, [str(result)])
+    failures, returncode = result
     failures = [line.strip() for line in failures.splitlines() if line.strip().endswith("FAILURE")]
     return FunctionVerificationResult(file, function, returncode, failures)
 
