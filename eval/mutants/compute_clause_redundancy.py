@@ -583,15 +583,30 @@ def _verify_callers(
             )
         )
 
-    # A single timed-out caller verification means we can't conclude "all callers still verify",
-    # so the clause-level verdict is indeterminate rather than required-by-callers.
-    if any(caller_vresult.timed_out for caller_vresult in caller_vresults):
+    # First, check for any non-timeout failures, which takes precedence over timeouts.
+    if _is_any_vresult_failure(caller_vresults):
+        verdict = CallerSideVerdict.REQUIRED_BY_CALLERS
+    elif any(caller_vresult.timed_out for caller_vresult in caller_vresults):
+        # Next: check for timeouts.
         verdict = CallerSideVerdict.INDETERMINATE_TIMEOUT
     elif all(caller_vresult.successfully_verified for caller_vresult in caller_vresults):
         verdict = CallerSideVerdict.REDUNDANT_FOR_CALLERS
     else:
-        verdict = CallerSideVerdict.REQUIRED_BY_CALLERS
+        msg = "Unreachable: A verification result is one of success, failure, or timeout."
+        raise RuntimeError(msg)
     return ClauseCallerSideResult(clause_mutant, caller_vresults=caller_vresults, verdict=verdict)
+
+
+def _is_any_vresult_failure(vresults: list[CallerVerificationResult]) -> bool:
+    """Return True iff any verification results are a non-timeout failure.
+
+    Args:
+        vresults (list[CallerVerificationResult]): The vresults to check for a non-timeout failure.
+
+    Returns:
+        bool: True iff any verification results are a non-timeout failure.
+    """
+    return any(not vresult.timed_out and not vresult.successfully_verified for vresult in vresults)
 
 
 if __name__ == "__main__":
