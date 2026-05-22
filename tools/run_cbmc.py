@@ -35,6 +35,9 @@ _DISABLE_MACRO_FLAGS = [
     "-D__NO_CTYPE"  # for ctype.h
 ]
 
+# 5-minute timeout.
+_DEFAULT_RUN_CBMC_TIMEOUT_SEC = 300
+
 
 def main() -> None:
     """Run CBMC on a function."""
@@ -56,13 +59,20 @@ def main() -> None:
         help="Directory to add to the include search path. May be repeated.",
     )
     args = parser.parse_args()
-    response, returncode = run_cbmc(
-        function_to_verify=args.function,
-        file_containing_function_to_verify=args.file,
-        include_dirs=args.include_dirs,
-    )
-    print(response)
-    sys.exit(returncode)
+    try:
+        response, returncode = run_cbmc(
+            function_to_verify=args.function,
+            file_containing_function_to_verify=args.file,
+            include_dirs=args.include_dirs,
+        )
+        print(response)
+        sys.exit(returncode)
+    except TimeoutError:
+        print(
+            f"Running CBMC on the specification for '{args.function}' exceeded a timeout of "
+            f"{_DEFAULT_RUN_CBMC_TIMEOUT_SEC} sec"
+        )
+        sys.exit(1)
 
 
 def run_cbmc(
@@ -98,7 +108,14 @@ def run_cbmc(
         include_dirs=include_dirs,
     )
     # Try the simplest verification command.
-    result = subprocess.run(cbmc_command, capture_output=True, text=True, shell=True, check=False)
+    result = subprocess.run(
+        cbmc_command,
+        capture_output=True,
+        text=True,
+        shell=True,
+        check=False,
+        timeout=_DEFAULT_RUN_CBMC_TIMEOUT_SEC,
+    )
     _log_invocation(
         file_containing_function_to_verify,
         function_to_verify,
@@ -123,7 +140,12 @@ def run_cbmc(
             include_dirs=include_dirs,
         )
         result = subprocess.run(
-            cbmc_command, capture_output=True, text=True, shell=True, check=False
+            cbmc_command,
+            capture_output=True,
+            text=True,
+            shell=True,
+            check=False,
+            timeout=_DEFAULT_RUN_CBMC_TIMEOUT_SEC,
         )
         _log_invocation(
             file_containing_function_to_verify,
@@ -144,7 +166,12 @@ def run_cbmc(
             include_dirs=include_dirs,
         )
         result = subprocess.run(
-            cbmc_command, capture_output=True, text=True, shell=True, check=False
+            cbmc_command,
+            capture_output=True,
+            text=True,
+            shell=True,
+            check=False,
+            timeout=_DEFAULT_RUN_CBMC_TIMEOUT_SEC,
         )
         _log_invocation(
             file_containing_function_to_verify,
