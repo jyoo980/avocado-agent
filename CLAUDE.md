@@ -36,6 +36,17 @@ You should always prefer this project's CLI tools over invoking CBMC by hand.
   If verification succeeds, exits with status 0 and prints a success line to stdout.
   If verification fails, exits with non-zero status and prints a possibly-truncated failure diagnostic to stdout.
 
+- **To get a kill score from mutation testing**, run:
+
+  ```sh
+  avocado-get-mutation-score --function <FUNCTION_NAME> \
+                   --file <PATH_TO_C_FILE> \
+                   [-I <PATH_TO_INCLUDE_DIR(S)>]...
+  ```
+  If mutation testing succeeds, exits with status 0 and prints the kill score and any
+  surviving mutants as a JSON-formatted string.
+  If mutation testing fails, exits with non-zero status and prints an error to stderr.
+
 - **To obtain a call graph of the functions in a file in JSON format**, run:
 
   ```sh
@@ -51,17 +62,6 @@ You should always prefer this project's CLI tools over invoking CBMC by hand.
   ```
 
   Prints function names callees-first, one per line.
-
-- **To get a kill score from mutation testing**, run:
-
-  ```sh
-  avocado-get-mutation-score --function <FUNCTION_NAME> \
-                   --file <PATH_TO_C_FILE> \
-                   [-I <PATH_TO_INCLUDE_DIR(S)>]...
-  ```
-
-  Which prints a summary of mutation testing (including the kill score and any surviving mutants) as
-  a JSON-formatted string.
 
 
 You must remember the following guidelines:
