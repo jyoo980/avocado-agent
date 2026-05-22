@@ -14,7 +14,12 @@ from pathlib import Path
 
 from eval.mutants.mutate_function import Mutant, get_mutants
 from eval.mutants.util import check_expected_cbmc_return_code
-from tools.run_cbmc import run_cbmc
+from tools.run_cbmc import RunCbmcTimeout, run_cbmc
+
+# Matches the GNU `timeout(1)` convention used elsewhere in the codebase; surfaces in
+# MutantVerificationResult.returncode so consumers can distinguish a timed-out run from a
+# real CBMC failure (10) or success (0).
+_TIMEOUT_RETURNCODE = 124
 
 
 @dataclass(frozen=True)
@@ -25,16 +30,25 @@ class MutantVerificationResult:
         mutant (Mutant): The mutant to verify.
         killed (bool): True iff this mutant was killed.
         returncode (int): The return code of the CBMC process used to verify this mutant.
+            For timed-out runs this is the timeout sentinel (124), not a real CBMC exit code.
+        timed_out (bool): True iff CBMC exceeded its per-attempt timeout for this mutant.
+            A timed-out mutant is neither killed nor survived — it is undecided.
     """
 
     mutant: Mutant
     killed: bool
     returncode: int
+    timed_out: bool = False
 
 
 @dataclass(frozen=True)
 class MutationScore:
     """Mutation-testing related statistics for one function.
+
+    `num_survived` and `kill_score` are reported over *decided* mutants only —
+    timed-out mutants are excluded from both the survivor count and the kill-rate
+    denominator. `num_timed_out` is reported separately so consumers can see how
+    much of the mutant space was undecidable.
 
     Attributes
     ----------
@@ -42,8 +56,9 @@ class MutationScore:
         function (str): The name of this function.
         num_mutants (int): The total number of mutants for this function.
         num_killed (int): The number of killed mutants.
-        num_survived (int): The number of surviving mutants.
-        kill_score (float): The kill score (i.e., killed / num_mutants).
+        num_survived (int): The number of surviving (decided, not killed) mutants.
+        num_timed_out (int): The number of mutants for which CBMC exceeded its timeout.
+        kill_score (float): killed / (killed + survived); 0.0 when no mutants were decided.
         results (list[MutantVerificationResult]): The verification result for each mutant.
     """
 
@@ -52,6 +67,7 @@ class MutationScore:
     num_mutants: int
     num_killed: int
     num_survived: int
+    num_timed_out: int
     kill_score: float
     results: list[MutantVerificationResult] = field(default_factory=list)
 
@@ -68,6 +84,7 @@ class MutationScore:
             "total": self.num_mutants,
             "killed": self.num_killed,
             "survived": self.num_survived,
+            "timed_out": self.num_timed_out,
             "kill_score": f"{self.kill_score:.4f}",
         }
 
@@ -105,7 +122,11 @@ def generate_mutants_and_compute_score(
     workspace = workspace or source_path.parent
     workspace.mkdir(parents=True, exist_ok=True)
 
-    _, returncode = run_cbmc(target_function, file_path, include_dirs=include_dirs)
+    result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
+    if isinstance(result, RunCbmcTimeout):
+        # No usable baseline if CBMC can't verify the unmutated function.
+        return None
+    _, returncode = result
     check_expected_cbmc_return_code(returncode)
     if returncode != 0:
         return None
@@ -128,16 +149,40 @@ def generate_mutants_and_compute_score(
             for path in paths_to_mutants:
                 path.unlink(missing_ok=True)
 
+    return _aggregate_mutation_score(mutant_vresults, str(source_path), target_function)
+
+
+def _aggregate_mutation_score(
+    mutant_vresults: list[MutantVerificationResult],
+    file: str,
+    function: str,
+) -> MutationScore:
+    """Aggregate per-mutant results into a MutationScore.
+
+    Timed-out mutants are bucketed separately and excluded from the kill-rate
+    denominator, so `kill_score` reflects only the mutants CBMC could decide.
+
+    Args:
+        mutant_vresults (list[MutantVerificationResult]): The per-mutant results.
+        file (str): The source file containing the function.
+        function (str): The function under test.
+
+    Returns:
+        MutationScore: The aggregated score.
+    """
     total = len(mutant_vresults)
     killed = sum(1 for r in mutant_vresults if r.killed)
-    survived = total - killed
-    kill_rate = (killed / total) if total else 0.0
+    timed_out = sum(1 for r in mutant_vresults if r.timed_out)
+    survived = total - killed - timed_out
+    decided = killed + survived
+    kill_rate = (killed / decided) if decided else 0.0
     return MutationScore(
-        file=str(source_path),
-        function=target_function,
+        file=file,
+        function=function,
         num_mutants=total,
         num_killed=killed,
         num_survived=survived,
+        num_timed_out=timed_out,
         kill_score=round(kill_rate, 4),
         results=mutant_vresults,
     )
@@ -159,11 +204,16 @@ def _verify_mutant(
         MutantVerificationResult: The result of verifying a mutant.
     """
     path_to_write_mutant.write_text(mutant.mutant_source, encoding="utf-8")
-    _, returncode = run_cbmc(
+    result = run_cbmc(
         function_to_verify=mutant.function,
         file_containing_function_to_verify=str(path_to_write_mutant),
         include_dirs=include_dirs,
     )
+    if isinstance(result, RunCbmcTimeout):
+        return MutantVerificationResult(
+            mutant, killed=False, returncode=_TIMEOUT_RETURNCODE, timed_out=True
+        )
+    _, returncode = result
     check_expected_cbmc_return_code(returncode)
     return MutantVerificationResult(mutant, killed=returncode != 0, returncode=returncode)
 

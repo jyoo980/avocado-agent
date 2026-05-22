@@ -11,9 +11,10 @@ import json
 import shlex
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from subprocess import TimeoutExpired
+from subprocess import CompletedProcess, TimeoutExpired
 
 from tools.construct_call_graph import construct_call_graph
 from tools.util import (
@@ -39,6 +40,31 @@ _DISABLE_MACRO_FLAGS = [
 # 5-minute timeout.
 _DEFAULT_RUN_CBMC_TIMEOUT_SEC = 300
 
+# GNU `timeout(1)` convention: distinguishes a timeout from a CBMC verification failure
+# both in the CLI exit code and in the JSONL invocation log.
+_TIMEOUT_RETURNCODE = 124
+
+
+@dataclass(frozen=True)
+class RunCbmcTimeout:
+    """Represent a timeout when running CBMC on a function.
+
+    Attributes:
+        function (str): The function for which verification timed out.
+        timeout_sec (int): The per-attempt timeout that elapsed.
+    """
+
+    function: str
+    timeout_sec: int
+
+    def __str__(self) -> str:
+        """Return the string representation of this timeout, for logging and diagnostics.
+
+        Returns:
+            str: The string representation of this timeout, for logging and diagnostics.
+        """
+        return f"Verification for '{self.function}' timed out after {self.timeout_sec} second(s)"
+
 
 def main() -> None:
     """Run CBMC on a function."""
@@ -60,28 +86,31 @@ def main() -> None:
         help="Directory to add to the include search path. May be repeated.",
     )
     args = parser.parse_args()
-    try:
-        response, returncode = run_cbmc(
-            function_to_verify=args.function,
-            file_containing_function_to_verify=args.file,
-            include_dirs=args.include_dirs,
-        )
-        print(response)
-        sys.exit(returncode)
-    except TimeoutExpired:
-        print(
-            f"Running CBMC on the specification for '{args.function}' exceeded a timeout of "
-            f"{_DEFAULT_RUN_CBMC_TIMEOUT_SEC} sec"
-        )
-        sys.exit(1)
+    result = run_cbmc(
+        function_to_verify=args.function,
+        file_containing_function_to_verify=args.file,
+        include_dirs=args.include_dirs,
+    )
+    if isinstance(result, RunCbmcTimeout):
+        print(str(result))
+        sys.exit(_TIMEOUT_RETURNCODE)
+    response, returncode = result
+    print(response)
+    sys.exit(returncode)
 
 
 def run_cbmc(
     function_to_verify: str,
     file_containing_function_to_verify: str,
     include_dirs: list[str] | None = None,
-) -> tuple[str, int]:
+) -> tuple[str, int] | RunCbmcTimeout:
     """Run CBMC on the given function with loop unwinding = 5, depth = 100.
+
+    The timeout is per CBMC subprocess attempt, not a total budget. Because this
+    function may make up to three attempts (initial run + recursion retry +
+    missing-body retry), worst-case wall-clock time is
+    `3 * _DEFAULT_RUN_CBMC_TIMEOUT_SEC`. A timeout in any single attempt is
+    returned immediately without trying subsequent retries.
 
     Args:
         function_to_verify (str): Name of the function to verify.
@@ -90,8 +119,10 @@ def run_cbmc(
             search path. Forwarded to `goto-cc` as `-I` flags.
 
     Returns:
-        A (response_text, returncode) tuple. The text is a success message or a
-            truncated failure block; the returncode is CBMC's exit code (0 on success).
+        tuple[str, int] | RunCbmcTimeout: On a completed run, a `(response_text, returncode)`
+            tuple — the text is a success message or a truncated failure block, and the
+            returncode is CBMC's exit code (0 on success). On a per-attempt timeout, a
+            `RunCbmcTimeout` describing the function and the elapsed timeout.
     """
     path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)
     call_graph = CallGraph(json.loads(Path(path_to_raw_call_graph).read_text(encoding="utf-8")))
@@ -109,21 +140,15 @@ def run_cbmc(
         include_dirs=include_dirs,
     )
     # Try the simplest verification command.
-    result = subprocess.run(
+    result = _run_attempt(
         cbmc_command,
-        capture_output=True,
-        text=True,
-        shell=True,
-        check=False,
-        timeout=_DEFAULT_RUN_CBMC_TIMEOUT_SEC,
-    )
-    _log_invocation(
-        file_containing_function_to_verify,
         function_to_verify,
-        cbmc_command,
-        result.returncode,
+        file_containing_function_to_verify,
         nondet_callees,
     )
+    if isinstance(result, RunCbmcTimeout):
+        return result
+
     # Check if the failure is related to recursion and retry, if appropriate.
     if result.returncode != 0 and has_recursion_inlining_error_message(
         function_to_verify, result.stdout, result.stderr
@@ -140,21 +165,14 @@ def run_cbmc(
             stub_paths=stub_paths,
             include_dirs=include_dirs,
         )
-        result = subprocess.run(
+        result = _run_attempt(
             cbmc_command,
-            capture_output=True,
-            text=True,
-            shell=True,
-            check=False,
-            timeout=_DEFAULT_RUN_CBMC_TIMEOUT_SEC,
-        )
-        _log_invocation(
-            file_containing_function_to_verify,
             function_to_verify,
-            cbmc_command,
-            result.returncode,
+            file_containing_function_to_verify,
             nondet_callees,
         )
+        if isinstance(result, RunCbmcTimeout):
+            return result
 
     # Check if the failure is related to missing callee bodies and retry, if appropriate.
     if result.returncode != 0 and has_missing_body_for_callee_message(result.stdout, result.stderr):
@@ -166,6 +184,45 @@ def run_cbmc(
             stub_paths=stub_paths,
             include_dirs=include_dirs,
         )
+        result = _run_attempt(
+            cbmc_command,
+            function_to_verify,
+            file_containing_function_to_verify,
+            nondet_callees,
+        )
+        if isinstance(result, RunCbmcTimeout):
+            return result
+
+    if result.returncode == 0:
+        return (f"{function_to_verify} verified successfully", 0)
+    return (
+        _format_failure_response(function_to_verify, result.stdout, result.stderr),
+        result.returncode,
+    )
+
+
+def _run_attempt(
+    cbmc_command: str,
+    function_to_verify: str,
+    file_containing_function_to_verify: str,
+    nondet_callees: list[str],
+) -> CompletedProcess[str] | RunCbmcTimeout:
+    """Run one CBMC command and log the invocation, returning a result or timeout sentinel.
+
+    Args:
+        cbmc_command (str): The shell command to run.
+        function_to_verify (str): The function under verification (used for the timeout
+            sentinel and the JSONL log).
+        file_containing_function_to_verify (str): The file containing the function under
+            verification (used to derive the JSONL log path).
+        nondet_callees (list[str]): Callees treated as non-deterministic by CBMC, recorded
+            in the JSONL log.
+
+    Returns:
+        CompletedProcess[str] | RunCbmcTimeout: The completed CBMC process on success, or
+            a `RunCbmcTimeout` if the per-attempt budget elapsed.
+    """
+    try:
         result = subprocess.run(
             cbmc_command,
             capture_output=True,
@@ -174,19 +231,26 @@ def run_cbmc(
             check=False,
             timeout=_DEFAULT_RUN_CBMC_TIMEOUT_SEC,
         )
+    except TimeoutExpired:
         _log_invocation(
             file_containing_function_to_verify,
             function_to_verify,
             cbmc_command,
-            result.returncode,
+            _TIMEOUT_RETURNCODE,
             nondet_callees,
         )
-    if result.returncode == 0:
-        return (f"{function_to_verify} verified successfully", 0)
-    return (
-        _format_failure_response(function_to_verify, result.stdout, result.stderr),
+        return RunCbmcTimeout(
+            function=function_to_verify,
+            timeout_sec=_DEFAULT_RUN_CBMC_TIMEOUT_SEC,
+        )
+    _log_invocation(
+        file_containing_function_to_verify,
+        function_to_verify,
+        cbmc_command,
         result.returncode,
+        nondet_callees,
     )
+    return result
 
 
 def has_recursion_inlining_error_message(function: str, stdout: str, stderr: str) -> bool:

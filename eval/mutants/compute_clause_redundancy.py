@@ -38,9 +38,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from eval.mutants.mutate_specification import ClauseMutant, get_clause_mutants
 from eval.mutants.util import check_expected_cbmc_return_code
 from tools.construct_call_graph import construct_call_graph
-from tools.run_cbmc import run_cbmc
+from tools.run_cbmc import RunCbmcTimeout, run_cbmc
 from tools.util import get_in_file_callers_of
 from tools.util.callgraph import CallGraph
+
+# Matches the GNU `timeout(1)` convention used elsewhere; surfaces in `returncode` for
+# timed-out CBMC runs so the value is distinguishable from CBMC's real 0/10 exit codes.
+_TIMEOUT_RETURNCODE = 124
 
 
 class CallerSideVerdict(StrEnum):
@@ -48,12 +52,15 @@ class CallerSideVerdict(StrEnum):
 
     A clause is redundant for callers iff all callees of the function with the mutated specification
     still verify. If a function with a mutated spec has no callers, no information can be obtained.
+    `INDETERMINATE_TIMEOUT` is reported when any caller verification timed out — the clause's
+    caller-side status cannot be decided and the clause is excluded from the redundancy rate.
     """
 
     REDUNDANT_FOR_CALLERS = "redundant_for_callers"
     REQUIRED_BY_CALLERS = "required_by_callers"
     UNOBSERVABLE = "unobservable"
     UNVERIFIABLE_BASELINE = "unverifiable_baseline"
+    INDETERMINATE_TIMEOUT = "indeterminate_timeout"
 
 
 @dataclass(frozen=True)
@@ -63,13 +70,17 @@ class ClauseRemovalVerificationResult:
     Attributes:
         clause (ClauseMutant): The clause mutant.
         is_redundant (bool): True iff the clause was redundant (i.e., the function still verified
-            under the mutated spec without the clause).
-        returncode (int): The return code of the CBMC command used to verify the mutant.
+            under the mutated spec without the clause). Always False when `timed_out` is True.
+        returncode (int): The return code of the CBMC command used to verify the mutant. For
+            timed-out runs this is the timeout sentinel (124), not a real CBMC exit code.
+        timed_out (bool): True iff CBMC exceeded its per-attempt timeout for this clause removal.
+            Timed-out runs are excluded from the in-isolation redundancy denominator.
     """
 
     clause: ClauseMutant
     is_redundant: bool
     returncode: int
+    timed_out: bool = False
 
 
 @dataclass(frozen=True)
@@ -79,12 +90,16 @@ class CallerVerificationResult:
     Attributes:
         caller (str): The caller function whose verification was retried.
         returncode (int): CBMC's return code for the caller under the weakened callee contract.
+            For timed-out runs this is the timeout sentinel (124).
         successfully_verified (bool): True iff CBMC verified the caller (returncode == 0).
+            Always False when `timed_out` is True.
+        timed_out (bool): True iff CBMC exceeded its per-attempt timeout for this caller.
     """
 
     caller: str
     returncode: int
     successfully_verified: bool
+    timed_out: bool = False
 
 
 @dataclass(frozen=True)
@@ -110,21 +125,30 @@ class ClauseCallerSideResult:
 class ClauseRedundancyScore:
     """Aggregated clause-removal redundancy statistics for a function.
 
+    Both rates are reported over *decided* clauses — timed-out runs are excluded from
+    their respective denominators so a single slow CBMC run cannot move the rate.
+
     Attributes:
         file (str): The file for the mutant.
         function (str): The name of the function for which the specification was mutated.
         total_clauses (int): The total number of clauses for the function.
         num_redundant_in_isolation (int): The number of in-isolation-redundant clauses.
         num_required_in_isolation (int): The number of in-isolation-required clauses.
-        in_isolation_redundancy_rate (float): num_redundant_in_isolation / total_clauses.
+        num_in_isolation_timed_out (int): In-isolation runs that exceeded the CBMC timeout.
+            Excluded from the in-isolation redundancy denominator.
+        in_isolation_redundancy_rate (float): num_redundant_in_isolation /
+            (total_clauses - num_in_isolation_timed_out); 0.0 when nothing was decided.
         results (list[ClauseRemovalVerificationResult]): In-isolation results per clause.
         num_redundant_for_callers (int): Clauses redundant for all in-file callers.
         num_required_by_callers (int): Clauses on which at least one in-file caller fails.
         num_unobservable (int): Clauses on functions with no in-file callers.
         num_unverifiable_baseline (int): Clauses on functions whose only in-file callers already
             fail to verify on the unmutated source, so caller-side redundancy is not observable.
+        num_indeterminate_timeout (int): Clauses where ≥1 caller verification timed out under
+            the mutated contract. Excluded from the caller-side observable denominator.
         caller_side_redundancy_rate (float): num_redundant_for_callers over observable clauses
-            (total - num_unobservable - num_unverifiable_baseline); 0.0 when nothing is observable.
+            (total - num_unobservable - num_unverifiable_baseline - num_indeterminate_timeout);
+            0.0 when nothing is observable.
         caller_side_results (list[ClauseCallerSideResult]): Caller-side results per clause.
         unverifiable_baseline_callers (list[str]): In-file callers that failed to verify on the
             unmutated source and were therefore excluded from caller-side judgement.
@@ -135,11 +159,13 @@ class ClauseRedundancyScore:
     total_clauses: int
     num_redundant_in_isolation: int
     num_required_in_isolation: int
+    num_in_isolation_timed_out: int
     in_isolation_redundancy_rate: float
     num_redundant_for_callers: int
     num_required_by_callers: int
     num_unobservable: int
     num_unverifiable_baseline: int
+    num_indeterminate_timeout: int
     caller_side_redundancy_rate: float
     results: list[ClauseRemovalVerificationResult] = field(default_factory=list)
     caller_side_results: list[ClauseCallerSideResult] = field(default_factory=list)
@@ -160,6 +186,8 @@ class ClauseRedundancyScore:
             "caller_side_redundancy_rate": self.caller_side_redundancy_rate,
             "num_unobservable": self.num_unobservable,
             "num_unverifiable_baseline": self.num_unverifiable_baseline,
+            "num_in_isolation_timed_out": self.num_in_isolation_timed_out,
+            "num_indeterminate_timeout": self.num_indeterminate_timeout,
             "unverifiable_baseline_callers": self.unverifiable_baseline_callers,
         }
 
@@ -209,6 +237,7 @@ def main() -> None:
                     "line": removed_clause.line,
                     "column": removed_clause.column,
                     "redundant": in_isolation_vresult.is_redundant,
+                    "timed_out": in_isolation_vresult.timed_out,
                     "returncode": in_isolation_vresult.returncode,
                     "caller_side_verdict": removed_clause_to_caller_side_verdict[key],
                 }
@@ -230,6 +259,7 @@ def main() -> None:
                     "caller": caller_vresults.caller,
                     "returncode": caller_vresults.returncode,
                     "still_verifies": caller_vresults.successfully_verified,
+                    "timed_out": caller_vresults.timed_out,
                 }
             )
             for caller_vresults in caller_side_result.caller_vresults
@@ -269,7 +299,11 @@ def compute_clause_redundancy_score(
     workspace.mkdir(parents=True, exist_ok=True)
 
     # Check that the original function verifies in the first place.
-    _, returncode = run_cbmc(function_name, file_path)
+    result = run_cbmc(function_name, file_path)
+    if isinstance(result, RunCbmcTimeout):
+        # No usable baseline; scoring would be meaningless without verifying the unmutated source.
+        return None
+    _, returncode = result
     check_expected_cbmc_return_code(returncode)
     if returncode != 0:
         return None
@@ -303,10 +337,49 @@ def compute_clause_redundancy_score(
             for path in paths_to_removed_clauses:
                 path.unlink(missing_ok=True)
 
+    return _aggregate_clause_redundancy_score(
+        in_isolation_results,
+        caller_side_results,
+        in_file_callers_to_baseline_verification_results,
+        file=str(source_path),
+        function=function_name,
+    )
+
+
+def _aggregate_clause_redundancy_score(
+    in_isolation_results: list[ClauseRemovalVerificationResult],
+    caller_side_results: list[ClauseCallerSideResult],
+    in_file_callers_to_baseline_verification_results: dict[str, bool],
+    *,
+    file: str,
+    function: str,
+) -> ClauseRedundancyScore:
+    """Aggregate per-clause results into a ClauseRedundancyScore.
+
+    Timed-out runs are excluded from both rate denominators (in-isolation excludes
+    `timed_out` results; caller-side excludes `INDETERMINATE_TIMEOUT` in addition to
+    the existing `UNOBSERVABLE` / `UNVERIFIABLE_BASELINE`).
+
+    Args:
+        in_isolation_results (list[ClauseRemovalVerificationResult]): Per-clause in-isolation
+            verification outcomes.
+        caller_side_results (list[ClauseCallerSideResult]): Per-clause caller-side outcomes.
+        in_file_callers_to_baseline_verification_results (dict[str, bool]): Baseline outcome
+            for each in-file caller on the unmutated source.
+        file (str): The source file containing the function.
+        function (str): The function whose clauses were tested.
+
+    Returns:
+        ClauseRedundancyScore: The aggregated score.
+    """
     total = len(in_isolation_results)
+    num_in_isolation_timed_out = sum(1 for r in in_isolation_results if r.timed_out)
     num_redundant_in_isolation = sum(1 for r in in_isolation_results if r.is_redundant)
-    required = total - num_redundant_in_isolation
-    in_isolation_redundancy_rate = (num_redundant_in_isolation / total) if total else 0.0
+    required = total - num_redundant_in_isolation - num_in_isolation_timed_out
+    in_isolation_decided = total - num_in_isolation_timed_out
+    in_isolation_redundancy_rate = (
+        (num_redundant_in_isolation / in_isolation_decided) if in_isolation_decided else 0.0
+    )
 
     verdict_counts: dict[CallerSideVerdict, int] = Counter(
         [result.verdict for result in caller_side_results]
@@ -315,6 +388,7 @@ def compute_clause_redundancy_score(
         total
         - verdict_counts[CallerSideVerdict.UNOBSERVABLE]
         - verdict_counts[CallerSideVerdict.UNVERIFIABLE_BASELINE]
+        - verdict_counts[CallerSideVerdict.INDETERMINATE_TIMEOUT]
     )
     caller_side_rate = (
         (verdict_counts[CallerSideVerdict.REDUNDANT_FOR_CALLERS] / observable)
@@ -323,16 +397,18 @@ def compute_clause_redundancy_score(
     )
 
     return ClauseRedundancyScore(
-        file=str(source_path),
-        function=function_name,
+        file=file,
+        function=function,
         total_clauses=total,
         num_redundant_in_isolation=num_redundant_in_isolation,
         num_required_in_isolation=required,
+        num_in_isolation_timed_out=num_in_isolation_timed_out,
         in_isolation_redundancy_rate=round(in_isolation_redundancy_rate, 4),
         num_redundant_for_callers=verdict_counts[CallerSideVerdict.REDUNDANT_FOR_CALLERS],
         num_required_by_callers=verdict_counts[CallerSideVerdict.REQUIRED_BY_CALLERS],
         num_unobservable=verdict_counts[CallerSideVerdict.UNOBSERVABLE],
         num_unverifiable_baseline=verdict_counts[CallerSideVerdict.UNVERIFIABLE_BASELINE],
+        num_indeterminate_timeout=verdict_counts[CallerSideVerdict.INDETERMINATE_TIMEOUT],
         caller_side_redundancy_rate=round(caller_side_rate, 4),
         results=in_isolation_results,
         caller_side_results=caller_side_results,
@@ -398,10 +474,18 @@ def _verify_removed_clause_source(
     """
     path_to_write_removed_clause_mutant.write_text(clause_mutant.mutant_source, encoding="utf-8")
 
-    _, returncode = run_cbmc(
+    result = run_cbmc(
         function_to_verify=clause_mutant.function,
         file_containing_function_to_verify=str(path_to_write_removed_clause_mutant),
     )
+    if isinstance(result, RunCbmcTimeout):
+        return ClauseRemovalVerificationResult(
+            clause_mutant,
+            is_redundant=False,
+            returncode=_TIMEOUT_RETURNCODE,
+            timed_out=True,
+        )
+    _, returncode = result
     check_expected_cbmc_return_code(returncode)
     return ClauseRemovalVerificationResult(
         clause_mutant, is_redundant=returncode == 0, returncode=returncode
@@ -425,10 +509,16 @@ def _get_baseline_verification_results_for_callers(
     """
     baselines: dict[str, bool] = {}
     for caller in in_file_callers:
-        _, returncode = run_cbmc(
+        result = run_cbmc(
             function_to_verify=caller,
             file_containing_function_to_verify=str(source_path),
         )
+        if isinstance(result, RunCbmcTimeout):
+            # Caller has no usable baseline; falls into the existing "not verifying" bucket
+            # and will be excluded from caller-side judgement via unverifiable_baseline_callers.
+            baselines[caller] = False
+            continue
+        _, returncode = result
         check_expected_cbmc_return_code(returncode)
         baselines[caller] = returncode == 0
     return baselines
@@ -471,10 +561,21 @@ def _verify_callers(
 
     caller_vresults: list[CallerVerificationResult] = []
     for caller in verifying_callers:
-        _, returncode = run_cbmc(
+        result = run_cbmc(
             function_to_verify=caller,
             file_containing_function_to_verify=str(mutant_path),
         )
+        if isinstance(result, RunCbmcTimeout):
+            caller_vresults.append(
+                CallerVerificationResult(
+                    caller=caller,
+                    returncode=_TIMEOUT_RETURNCODE,
+                    successfully_verified=False,
+                    timed_out=True,
+                )
+            )
+            continue
+        _, returncode = result
         check_expected_cbmc_return_code(returncode)
         caller_vresults.append(
             CallerVerificationResult(
@@ -482,11 +583,14 @@ def _verify_callers(
             )
         )
 
-    verdict: CallerSideVerdict = (
-        CallerSideVerdict.REDUNDANT_FOR_CALLERS
-        if all(caller_vresult.successfully_verified for caller_vresult in caller_vresults)
-        else CallerSideVerdict.REQUIRED_BY_CALLERS
-    )
+    # A single timed-out caller verification means we can't conclude "all callers still verify",
+    # so the clause-level verdict is indeterminate rather than required-by-callers.
+    if any(caller_vresult.timed_out for caller_vresult in caller_vresults):
+        verdict = CallerSideVerdict.INDETERMINATE_TIMEOUT
+    elif all(caller_vresult.successfully_verified for caller_vresult in caller_vresults):
+        verdict = CallerSideVerdict.REDUNDANT_FOR_CALLERS
+    else:
+        verdict = CallerSideVerdict.REQUIRED_BY_CALLERS
     return ClauseCallerSideResult(clause_mutant, caller_vresults=caller_vresults, verdict=verdict)
 
 
