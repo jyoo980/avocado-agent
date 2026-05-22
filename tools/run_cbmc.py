@@ -13,6 +13,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from subprocess import TimeoutExpired
 
 from tools.construct_call_graph import construct_call_graph
 from tools.util import (
@@ -67,7 +68,7 @@ def main() -> None:
         )
         print(response)
         sys.exit(returncode)
-    except TimeoutError:
+    except TimeoutExpired:
         print(
             f"Running CBMC on the specification for '{args.function}' exceeded a timeout of "
             f"{_DEFAULT_RUN_CBMC_TIMEOUT_SEC} sec"
