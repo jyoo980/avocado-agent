@@ -8,5 +8,7 @@
   - Currently the treatment with the highest kill score.
 - [x] [Avocado Agent with directive to produce the strongest specification](https://github.com/jyoo980/avocado-agent/tree/9497e441ff5e8bec74c7506d9bebae878a94a931)
   - Treatment with the second-highest kill score.
+- [x] Avocado Agent with directive to focus on generating postconditions.
+  - This did not increase the kill score, and often resulted in postconditions that effectively reproduced the method body verbatim.
 - [ ] Avocado Agent with access to the mutation testing tool *and* directive to produce the strongest specification.
 - [ ] Avocado Agent without *any* tools (e.g., no access to any of the scripts under [`tools`](./../tools).)
