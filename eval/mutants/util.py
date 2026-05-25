@@ -33,7 +33,8 @@ def get_files_with_extension(path_str: str, extension: str) -> list[Path]:
     """
     path = Path(path_str)
     if not path.exists():
-        return []
+        msg = f"{path} does not exist; double-check for full or relative paths"
+        raise RuntimeError(msg)
     if path.is_dir():
         return sorted(path.rglob(f"*{extension}"))
     return [path] if path.suffix == extension else []
