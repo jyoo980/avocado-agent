@@ -57,31 +57,107 @@ def main() -> None:
         print(_format_report(report))
 
 
-def _get_function_key_dict_from_list(records: list[dict]) -> dict[FunctionKey, dict]:
-    """Return a dictionary where records are indexed by `FunctionKey`.
+def _get_specification_quality_comparison(
+    path_to_baseline_records: str, path_to_experimental_records: str
+) -> dict[str, Any]:
+    """Return the specification quality comparison for a baseline and experimental treatment.
 
     Args:
-        records (list[dict]): The items from the JSONL file to index by `FunctionKey`.
+        path_to_baseline_records (str): Path to the baseline records.
+        path_to_experimental_records (str): Path to the experimental records.
 
     Returns:
-        dict[FunctionKey, dict]: A dictionary where records are indexed by `FunctionKey`.
+        dict[str, Any]: The specification quality comparison (comprising kill scores and redundancy
+            scores) between a baseline and experimental treatment.
     """
-    return {(record["file"], record["function"]): record for record in records}
+    baseline_spec_quality_type_to_records = group_by_summary_type(
+        yield_records(path_to_baseline_records)
+    )
+    experimental_spec_quality_type_to_records = group_by_summary_type(
+        yield_records(path_to_experimental_records)
+    )
+
+    baseline_mutation_testing_summaries = _get_function_key_dict_from_list(
+        baseline_spec_quality_type_to_records.get(
+            SpecificationQualitySummary.SUMMARY_FOR_MUTATION_TESTING
+        )
+        or []
+    )
+    experimental_mutation_testing_summaries = _get_function_key_dict_from_list(
+        experimental_spec_quality_type_to_records.get(
+            SpecificationQualitySummary.SUMMARY_FOR_MUTATION_TESTING
+        )
+        or []
+    )
+    baseline_redundancy_summaries = _get_function_key_dict_from_list(
+        baseline_spec_quality_type_to_records.get(
+            SpecificationQualitySummary.SUMMARY_FOR_CLAUSE_REDUNDANCY
+        )
+        or []
+    )
+    experimental_redundancy_summaries = _get_function_key_dict_from_list(
+        experimental_spec_quality_type_to_records.get(
+            SpecificationQualitySummary.SUMMARY_FOR_CLAUSE_REDUNDANCY
+        )
+        or []
+    )
+
+    return {
+        "mutation_summary": _get_baseline_experimental_function_diffs(
+            baseline_mutation_testing_summaries,
+            experimental_mutation_testing_summaries,
+            _get_kill_score_comparison(
+                baseline_mutation_testing_summaries, experimental_mutation_testing_summaries
+            ),
+            "kill_score_delta",
+        ),
+        "clause_redundancy_summary": _get_baseline_experimental_function_diffs(
+            baseline_redundancy_summaries,
+            experimental_redundancy_summaries,
+            _get_redundancy_score_comparison(
+                baseline_redundancy_summaries, experimental_redundancy_summaries
+            ),
+            "in_isolation_redundancy_rate_delta",
+        ),
+    }
 
 
-def _get_kill_score(record: dict) -> float:
-    """Return the kill score obtained from a JSONL record.
+def _get_baseline_experimental_function_diffs(
+    baseline_records: dict[FunctionKey, dict],
+    experimental_records: dict[FunctionKey, dict],
+    per_function: list[dict],
+    headline_delta_key: str,
+) -> dict[str, Any]:
+    """Return the functions exclusive to either the baseline and experimental treatment(s).
+
+    It may be the case that functions may not be present for all experimental treatments (e.g., some
+    functions may time out in one treatment, while successfully verifying in others).
 
     Args:
-        record (dict): The record from which to obtain a kill score.
+        baseline_records (dict[FunctionKey, dict]): The baseline records.
+        experimental_records (dict[FunctionKey, dict]): The experimental treatment records.
+        per_function (list[dict]): Records per function.
+        headline_delta_key (str): The delta key.
 
     Returns:
-        float: The kill score obtained from a JSONL record.
+        dict[str, Any]: The diff between the experimental and the experimental records.
     """
-    if kill_score := record.get("kill_score"):
-        return kill_score
-    msg = f"Expected 'kill_score' in {record}"
-    raise ValueError(msg)
+    baseline_exclusive_functions = sorted(
+        f"{f}#{fn}" for f, fn in baseline_records.keys() - experimental_records.keys()
+    )
+    experimental_exclusive_functions = sorted(
+        f"{f}#{fn}" for f, fn in experimental_records.keys() - baseline_records.keys()
+    )
+    deltas = [row[headline_delta_key] for row in per_function]
+    return {
+        "baseline_count": len(baseline_records),
+        "experimental_count": len(experimental_records),
+        "common_count": len(per_function),
+        "only_in_baseline": baseline_exclusive_functions,
+        "only_in_experimental": experimental_exclusive_functions,
+        f"mean_{headline_delta_key}": round(statistics.fmean(deltas), 4) if deltas else 0.0,
+        "per_function": per_function,
+    }
 
 
 def _get_kill_score_comparison(
@@ -169,97 +245,93 @@ def _get_redundancy_score_comparison(
     return rows
 
 
-def _get_baseline_experimental_function_diffs(
-    baseline_records: dict[FunctionKey, dict],
-    experimental_records: dict[FunctionKey, dict],
-    per_function: list[dict],
-    headline_delta_key: str,
-) -> dict[str, Any]:
-    """Return the functions exclusive to either the baseline and experimental treatment(s).
-
-    It may be the case that functions may not be present for all experimental treatments (e.g., some
-    functions may time out in one treatment, while successfully verifying in others).
+def _get_function_key_dict_from_list(records: list[dict]) -> dict[FunctionKey, dict]:
+    """Return a dictionary where records are indexed by `FunctionKey`.
 
     Args:
-        baseline_records (dict[FunctionKey, dict]): The baseline records.
-        experimental_records (dict[FunctionKey, dict]): The experimental treatment records.
-        per_function (list[dict]): Records per function.
-        headline_delta_key (str): The delta key.
+        records (list[dict]): The items from the JSONL file to index by `FunctionKey`.
 
     Returns:
-        dict[str, Any]: The diff between the experimental and the experimental records.
+        dict[FunctionKey, dict]: A dictionary where records are indexed by `FunctionKey`.
     """
-    baseline_exclusive_functions = sorted(
-        f"{f}#{fn}" for f, fn in baseline_records.keys() - experimental_records.keys()
-    )
-    experimental_exclusive_functions = sorted(
-        f"{f}#{fn}" for f, fn in experimental_records.keys() - baseline_records.keys()
-    )
-    deltas = [row[headline_delta_key] for row in per_function]
-    return {
-        "baseline_count": len(baseline_records),
-        "experimental_count": len(experimental_records),
-        "common_count": len(per_function),
-        "only_in_baseline": baseline_exclusive_functions,
-        "only_in_experimental": experimental_exclusive_functions,
-        f"mean_{headline_delta_key}": round(statistics.fmean(deltas), 4) if deltas else 0.0,
-        "per_function": per_function,
-    }
+    return {(record["file"], record["function"]): record for record in records}
 
 
-def _get_specification_quality_comparison(
-    path_to_baseline_records: str, path_to_experimental_records: str
-) -> dict[str, Any]:
-    baseline_spec_quality_type_to_records = group_by_summary_type(
-        yield_records(path_to_baseline_records)
-    )
-    experimental_spec_quality_type_to_records = group_by_summary_type(
-        yield_records(path_to_experimental_records)
-    )
+def _format_report(report_data: dict[str, Any]) -> str:
+    """Return the formatted report data for a specification quality comparison.
 
-    baseline_mutation_testing_summaries = _get_function_key_dict_from_list(
-        baseline_spec_quality_type_to_records.get(
-            SpecificationQualitySummary.SUMMARY_FOR_MUTATION_TESTING
-        )
-        or []
-    )
-    experimental_mutation_testing_summaries = _get_function_key_dict_from_list(
-        experimental_spec_quality_type_to_records.get(
-            SpecificationQualitySummary.SUMMARY_FOR_MUTATION_TESTING
-        )
-        or []
-    )
-    baseline_redundancy_summaries = _get_function_key_dict_from_list(
-        baseline_spec_quality_type_to_records.get(
-            SpecificationQualitySummary.SUMMARY_FOR_CLAUSE_REDUNDANCY
-        )
-        or []
-    )
-    experimental_redundancy_summaries = _get_function_key_dict_from_list(
-        experimental_spec_quality_type_to_records.get(
-            SpecificationQualitySummary.SUMMARY_FOR_CLAUSE_REDUNDANCY
-        )
-        or []
-    )
+    The formatted report comprises comparisons between a baseline and experimental treatment for
+    specification generation in terms of a difference between kill scores and redundancy scores.
 
-    return {
-        "mutation_summary": _get_baseline_experimental_function_diffs(
-            baseline_mutation_testing_summaries,
-            experimental_mutation_testing_summaries,
-            _get_kill_score_comparison(
-                baseline_mutation_testing_summaries, experimental_mutation_testing_summaries
-            ),
-            "kill_score_delta",
-        ),
-        "clause_redundancy_summary": _get_baseline_experimental_function_diffs(
-            baseline_redundancy_summaries,
-            experimental_redundancy_summaries,
-            _get_redundancy_score_comparison(
-                baseline_redundancy_summaries, experimental_redundancy_summaries
-            ),
-            "in_isolation_redundancy_rate_delta",
-        ),
-    }
+    Args:
+        report_data (dict[str, Any]): The report data to format into a string.
+
+    Returns:
+        str: The formatted report data.
+    """
+    lines = _format_section(
+        "mutation_summary",
+        report_data["mutation_summary"],
+        ["kill_score_delta", "killed_delta", "total_delta"],
+    )
+    lines.append("")
+    lines.extend(
+        _format_section(
+            "clause_redundancy_summary",
+            report_data["clause_redundancy_summary"],
+            [
+                "in_isolation_redundancy_rate_delta",
+                "caller_side_redundancy_rate_delta",
+                "num_unobservable_delta",
+                "num_unverifiable_baseline_delta",
+            ],
+        )
+    )
+    return "\n".join(lines)
+
+
+def _format_section(title: str, section_data: dict[str, Any], delta_keys: list[str]) -> list[str]:
+    """Return the formatted section of a comparison report.
+
+    Args:
+        title (str): The title of a formatted section.
+        section_data (dict[str, Any]): The data to display in the section.
+        delta_keys (list[str]): The delta keys (e.g., for kill scores, redundancy scores).
+
+    Returns:
+        list[str]: The lines of a formatted section of a comparison report.
+    """
+    lines = [title, "=" * len(title)]
+    lines = [
+        *lines,
+        f"  baseline functions:  {section_data['baseline_count']}",
+        f"  experimental functions: {section_data['experimental_count']}",
+        f"  common:              {section_data['common_count']}",
+    ]
+    mean_key = next(k for k in section_data if k.startswith("mean_"))
+    lines.append(f"  {mean_key}: {_format_score(section_data[mean_key])}")
+    if section_data["only_in_baseline"]:
+        lines.append(f"  only in baseline:  {', '.join(section_data['only_in_baseline'])}")
+    if section_data["only_in_experimental"]:
+        lines.append(f"  only in experimental: {', '.join(section_data['only_in_experimental'])}")
+    if not section_data["per_function"]:
+        lines.append("  (no common functions)")
+        return lines
+
+    headers = ["file#function", *delta_keys]
+    rows = [headers]
+    rows.extend(
+        [f"{row['file']}#{row['function']}"] + [_format_score(row[k]) for k in delta_keys]
+        for row in section_data["per_function"]
+    )
+    widths = [max(len(r[i]) for r in rows) for i in range(len(headers))]
+    sep = "  " + "-+-".join("-" * w for w in widths)
+    lines.append("")
+    lines.append("  " + " | ".join(h.ljust(widths[i]) for i, h in enumerate(headers)))
+    lines.append(sep)
+    for row in rows[1:]:
+        lines.append("  " + " | ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)))
+    return lines
 
 
 def _format_score(value: float) -> str:
@@ -276,60 +348,19 @@ def _format_score(value: float) -> str:
     return f"{value:+d}"
 
 
-def _format_section(title: str, section: dict[str, Any], delta_keys: list[str]) -> list[str]:
-    lines = [title, "=" * len(title)]
-    lines = [
-        *lines,
-        f"  baseline functions:  {section['baseline_count']}",
-        f"  experimental functions: {section['experimental_count']}",
-        f"  common:              {section['common_count']}",
-    ]
-    mean_key = next(k for k in section if k.startswith("mean_"))
-    lines.append(f"  {mean_key}: {_format_score(section[mean_key])}")
-    if section["only_in_baseline"]:
-        lines.append(f"  only in baseline:  {', '.join(section['only_in_baseline'])}")
-    if section["only_in_experimental"]:
-        lines.append(f"  only in experimental: {', '.join(section['only_in_experimental'])}")
-    if not section["per_function"]:
-        lines.append("  (no common functions)")
-        return lines
+def _get_kill_score(record: dict) -> float:
+    """Return the kill score obtained from a JSONL record.
 
-    headers = ["file#function", *delta_keys]
-    rows = [headers]
-    rows.extend(
-        [f"{row['file']}#{row['function']}"] + [_format_score(row[k]) for k in delta_keys]
-        for row in section["per_function"]
-    )
-    widths = [max(len(r[i]) for r in rows) for i in range(len(headers))]
-    sep = "  " + "-+-".join("-" * w for w in widths)
-    lines.append("")
-    lines.append("  " + " | ".join(h.ljust(widths[i]) for i, h in enumerate(headers)))
-    lines.append(sep)
-    for row in rows[1:]:
-        lines.append("  " + " | ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)))
-    return lines
+    Args:
+        record (dict): The record from which to obtain a kill score.
 
-
-def _format_report(report: dict[str, Any]) -> str:
-    lines = _format_section(
-        "mutation_summary",
-        report["mutation_summary"],
-        ["kill_score_delta", "killed_delta", "total_delta"],
-    )
-    lines.append("")
-    lines.extend(
-        _format_section(
-            "clause_redundancy_summary",
-            report["clause_redundancy_summary"],
-            [
-                "in_isolation_redundancy_rate_delta",
-                "caller_side_redundancy_rate_delta",
-                "num_unobservable_delta",
-                "num_unverifiable_baseline_delta",
-            ],
-        )
-    )
-    return "\n".join(lines)
+    Returns:
+        float: The kill score obtained from a JSONL record.
+    """
+    if kill_score := record.get("kill_score"):
+        return kill_score
+    msg = f"Expected 'kill_score' in {record}"
+    raise ValueError(msg)
 
 
 if __name__ == "__main__":
