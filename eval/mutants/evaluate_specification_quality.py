@@ -12,6 +12,7 @@ Usage:
     % ./eval/mutants/evaluate_specification_quality.py <PATH_TO_C_FILE_OR_DIR> \
             [--mutation] \
             [--redundancy] \
+            [--keep-artifacts]
             [--jsonl PATH] \
 """
 
@@ -49,6 +50,11 @@ def main() -> None:
         action="store_true",
         help="Run redundant-clause calculations.",
     )
+    parser.add_argument(
+        "--keep-artifacts",
+        action="store_true",
+        help="Retain mutant .c files after evaluation. Defaults to False.",
+    )
     parser.add_argument("--jsonl", default=None, help="Write records to this JSONL file.")
     args = parser.parse_args()
 
@@ -75,6 +81,7 @@ def main() -> None:
                 out=output_stream,
                 run_mutation=args.mutation,
                 run_redundancy=args.redundancy,
+                keep_artifacts=args.keep_artifacts,
             )
     finally:
         if args.jsonl:
@@ -87,6 +94,7 @@ def _process_file(
     out: IO[str],
     run_mutation: bool,
     run_redundancy: bool,
+    keep_artifacts: bool,
 ) -> None:
     """Run all enabled metrics for a single source file and write JSONL records to `out`.
 
@@ -95,19 +103,24 @@ def _process_file(
         out (IO[str]): The output.
         run_mutation (bool): True iff mutation testing should be reported.
         run_redundancy (bool): True iff redundancy scoring should be reported.
+        keep_artifacts (bool): True iff the mutant files should be retained after evaluation.
     """
     logger.info(f"Processing {source}")
     annotated = sorted(get_functions_with_cprover_annotations(str(source)))
 
     for function in annotated:
         if run_mutation:
-            if mutation_score := generate_mutants_and_compute_score(str(source), function):
+            if mutation_score := generate_mutants_and_compute_score(
+                str(source), function, keep_artifacts=keep_artifacts
+            ):
                 out.write(json.dumps(mutation_score.summary()) + "\n")
             else:
                 logger.warning(f"No mutation testing score reported for: '{source!s}#{function}'")
 
         if run_redundancy:
-            if clause_redundancy_score := compute_clause_redundancy_score(str(source), function):
+            if clause_redundancy_score := compute_clause_redundancy_score(
+                str(source), function, keep_artifacts=keep_artifacts
+            ):
                 out.write(json.dumps(clause_redundancy_score.summary()) + "\n")
             else:
                 logger.warning(
