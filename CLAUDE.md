@@ -65,9 +65,9 @@ You should always prefer this project's CLI tools over invoking CBMC by hand.
 
 
 You must remember the following guidelines:
-- Fall back to directly running CBMC only if necessary.
+- Fall back to directly running the `cbmc` program only if necessary (prefer the `avocado-run-cbmc` script).
 - Do not hard-code any values into the specifications that are related to CBMC's command-line
-  arguments (e.g., `--partial-loops --unwind <N>`).
+  arguments (e.g., the `N` in `--partial-loops --unwind <N>`).
 - You must improve on a specification's quality by using mutation testing via the
   `avocado-get-mutation-score` script, which produces a kill score you can try to increase. Do not
   iterate more than 5 times, and stop if it is clear that the kill score cannot be improved.
