@@ -6,7 +6,7 @@ This script consumes the JSONL scripts produced by the `evaluate_specification_q
 for two experimental runs.
 
 Usage:
-    % ./eval/compare_spec_quality.py <BASELINE_JSONL> <experimental_JSONL> [--json]
+    % ./eval/compare_specification_quality.py <BASELINE_JSONL> <experimental_JSONL> [--json]
 """
 
 from __future__ import annotations
