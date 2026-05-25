@@ -97,9 +97,13 @@ def _process_file(
         run_redundancy (bool): True iff redundancy scoring should be reported.
     """
     logger.info(f"Processing {source}")
-    annotated = sorted(get_functions_with_cprover_annotations(str(source)))
+    functions_with_cprover_annotations = sorted(get_functions_with_cprover_annotations(str(source)))
 
-    for function in annotated:
+    if not functions_with_cprover_annotations:
+        logger.warning(f"{source} had no functions with CBMC annotations")
+        return
+
+    for function in functions_with_cprover_annotations:
         if run_mutation:
             if mutation_score := generate_mutants_and_compute_score(str(source), function):
                 out.write(json.dumps(mutation_score.summary()) + "\n")

@@ -358,7 +358,7 @@ def _get_kill_score(record: dict) -> float:
         float: The kill score obtained from a JSONL record.
     """
     if kill_score := record.get("kill_score"):
-        return kill_score
+        return float(kill_score)
     msg = f"Expected 'kill_score' in {record}"
     raise ValueError(msg)
 
