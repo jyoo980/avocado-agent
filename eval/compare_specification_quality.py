@@ -29,6 +29,13 @@ from eval.visualization.util import (
 # Unique key comprising a (file, function) tuple.
 FunctionKey = tuple[str, str]
 _DEFAULT_NUM_DECIMAL_PLACES = 4
+_FIELDS_FOR_KILL_SCORE_COMPARISON = {"kill_score", "killed", "total"}
+_FIELDS_FOR_REDUNDANCY_RATE_COMPARISON = {
+    "in_isolation_redundancy_rate",
+    "caller_side_redundancy_rate",
+    "num_unobservable",
+    "num_unverifiable_baseline",
+}
 
 
 def main() -> None:
@@ -177,6 +184,15 @@ def _get_kill_score_comparison(
     for key in baseline_records.keys() & experimental_records.keys():
         file_name, function = key
         baseline_record, experimental_record = baseline_records[key], experimental_records[key]
+        if not (
+            _is_well_formed_record(baseline_record, _FIELDS_FOR_KILL_SCORE_COMPARISON)
+            and _is_well_formed_record(experimental_record, _FIELDS_FOR_KILL_SCORE_COMPARISON)
+        ):
+            msg = (
+                f"'{baseline_record}' and/or '{experimental_record}' is missing a field "
+                f"from '{_FIELDS_FOR_KILL_SCORE_COMPARISON}'"
+            )
+            raise ValueError(msg)
         rows.append(
             {
                 "file": file_name,
@@ -184,7 +200,7 @@ def _get_kill_score_comparison(
                 "baseline": baseline_record,
                 "experimental": experimental_record,
                 "kill_score_delta": round(
-                    _get_kill_score(experimental_record) - _get_kill_score(baseline_record),
+                    experimental_record["kill_score"] - baseline_record["kill_score"],
                     _DEFAULT_NUM_DECIMAL_PLACES,
                 ),
                 "killed_delta": experimental_record["killed"] - baseline_record["killed"],
@@ -195,6 +211,19 @@ def _get_kill_score_comparison(
         key=lambda kill_score_record: abs(kill_score_record["kill_score_delta"]), reverse=True
     )
     return rows
+
+
+def _is_well_formed_record(record: dict, required_fields: set[str]) -> bool:
+    """Return True iff all fields in the set of required fields appear in the record.
+
+    Args:
+        record (dict): The record to check for well-formedness.
+        required_fields (set[str]): The set of fields to check for membership in the record.
+
+    Returns:
+        bool: True iff all fields in the set of required fields appear in the record.
+    """
+    return all(field in record for field in required_fields)
 
 
 def _get_redundancy_score_comparison(
@@ -214,6 +243,15 @@ def _get_redundancy_score_comparison(
     for key in baseline_records.keys() & experimental_records.keys():
         file_name, function = key
         baseline_record, experimental_record = baseline_records[key], experimental_records[key]
+        if not (
+            _is_well_formed_record(baseline_record, _FIELDS_FOR_REDUNDANCY_RATE_COMPARISON)
+            and _is_well_formed_record(experimental_record, _FIELDS_FOR_REDUNDANCY_RATE_COMPARISON)
+        ):
+            msg = (
+                f"'{baseline_record}' and/or '{experimental_record}' is missing a field "
+                f"from '{_FIELDS_FOR_REDUNDANCY_RATE_COMPARISON}'"
+            )
+            raise ValueError(msg)
         rows.append(
             {
                 "file": file_name,
@@ -230,12 +268,10 @@ def _get_redundancy_score_comparison(
                     - baseline_record["caller_side_redundancy_rate"],
                     _DEFAULT_NUM_DECIMAL_PLACES,
                 ),
-                "num_unobservable_delta": experimental_record.get("num_unobservable", 0)
-                - baseline_record.get("num_unobservable", 0),
-                "num_unverifiable_baseline_delta": experimental_record.get(
-                    "num_unverifiable_baseline", 0
-                )
-                - baseline_record.get("num_unverifiable_baseline", 0),
+                "num_unobservable_delta": experimental_record["num_unobservable"]
+                - baseline_record["num_unobservable"],
+                "num_unverifiable_baseline_delta": experimental_record["num_unverifiable_baseline"]
+                - baseline_record["num_unverifiable_baseline"],
             }
         )
     rows.sort(
@@ -308,7 +344,11 @@ def _format_section(title: str, section_data: dict[str, Any], delta_keys: list[s
         f"  experimental functions: {section_data['experimental_count']}",
         f"  common:              {section_data['common_count']}",
     ]
-    mean_key = next(k for k in section_data if k.startswith("mean_"))
+    mean_key = next((k for k in section_data if k.startswith("mean_")), None)
+    if not mean_key:
+        msg = f"Expected a 'mean_*' key in {section_data} for {title}"
+        raise ValueError(msg)
+
     lines.append(f"  {mean_key}: {_format_score(section_data[mean_key])}")
     if section_data["only_in_baseline"]:
         lines.append(f"  only in baseline:  {', '.join(section_data['only_in_baseline'])}")
