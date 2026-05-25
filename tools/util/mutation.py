@@ -28,6 +28,7 @@ class MutantVerificationResult:
 
     Attributes:
         mutant (Mutant): The mutant to verify.
+        path_to_mutant (str): The path to the file in which the mutant is declared.
         killed (bool): True iff this mutant was killed.
         returncode (int): The return code of the CBMC process used to verify this mutant.
             For timed-out runs this is the timeout sentinel (124), not a real CBMC exit code.
@@ -36,6 +37,7 @@ class MutantVerificationResult:
     """
 
     mutant: Mutant
+    path_to_mutant: str
     killed: bool
     returncode: int
     timed_out: bool = False
@@ -52,7 +54,7 @@ class MutationScore:
 
     Attributes
     ----------
-        file (str): The file in which this function is declared.
+        file (str): The file in which the original function is declared.
         function (str): The name of this function.
         num_mutants (int): The total number of mutants for this function.
         num_killed (int): The number of killed mutants.
@@ -211,11 +213,20 @@ def _verify_mutant(
     )
     if isinstance(result, RunCbmcTimeout):
         return MutantVerificationResult(
-            mutant, killed=False, returncode=_TIMEOUT_RETURNCODE, timed_out=True
+            mutant,
+            path_to_mutant=str(path_to_write_mutant),
+            killed=False,
+            returncode=_TIMEOUT_RETURNCODE,
+            timed_out=True,
         )
     _, returncode = result
     check_expected_cbmc_return_code(returncode)
-    return MutantVerificationResult(mutant, killed=returncode != 0, returncode=returncode)
+    return MutantVerificationResult(
+        mutant,
+        path_to_mutant=str(path_to_write_mutant),
+        killed=returncode != 0,
+        returncode=returncode,
+    )
 
 
 def _get_path_for_mutated_source(

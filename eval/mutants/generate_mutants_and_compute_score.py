@@ -62,24 +62,23 @@ def main() -> None:
         sys.exit(1)
 
     output_lines: list[str] = [json.dumps(score.summary())]
-    output_lines.extend(
-        json.dumps(
-            {
-                "kind": "mutant_result",
-                "file": score.file,
-                "function": score.function,
-                "operator_class": result.mutant.operator_class,
-                "original": result.mutant.original_operator,
-                "replacement": result.mutant.replacement_operator,
-                "line": result.mutant.line,
-                "column": result.mutant.column,
-                "killed": result.killed,
-                "timed_out": result.timed_out,
-                "returncode": result.returncode,
-            }
-        )
-        for result in score.results
-    )
+    for raw_result in score.results:
+        result = {
+            "kind": "mutant_result",
+            "file": score.file,
+            "function": score.function,
+            "operator_class": raw_result.mutant.operator_class,
+            "original": raw_result.mutant.original_operator,
+            "replacement": raw_result.mutant.replacement_operator,
+            "line": raw_result.mutant.line,
+            "column": raw_result.mutant.column,
+            "killed": raw_result.killed,
+            "timed_out": raw_result.timed_out,
+            "returncode": raw_result.returncode,
+        }
+        if args.keep_artifacts:
+            result |= {"path_to_mutant": raw_result.path_to_mutant}
+        output_lines.append(json.dumps(result))
 
     body = "\n".join(output_lines) + "\n"
     if args.jsonl:
