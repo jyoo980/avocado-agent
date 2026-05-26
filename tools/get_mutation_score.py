@@ -10,7 +10,11 @@ import argparse
 import json
 import sys
 
-from tools.util.mutation import MutationScore, generate_mutants_and_compute_score
+from tools.util.mutation import (
+    MutantVerificationResult,
+    MutationScore,
+    generate_mutants_and_compute_score,
+)
 
 
 def main() -> None:
@@ -68,9 +72,22 @@ def _get_mutation_score_summary_with_surviving_mutant_diffs(
     surviving_mutant_diffs = [
         mutant_vresult.mutant.get_unified_diff()
         for mutant_vresult in mutation_score.results
-        if not mutant_vresult.killed and not mutant_vresult.timed_out
+        if not mutant_vresult.killed and _is_valid_mutation_vresult(mutant_vresult)
     ]
     return mutation_score.summary() | {"surviving_mutant_diffs": surviving_mutant_diffs}
+
+
+def _is_valid_mutation_vresult(mutant_vresult: MutantVerificationResult) -> bool:
+    """Return True iff the given mutant vresult has not timed out and has successfully compiled.
+
+    Args:
+        mutant_vresult (MutantVerificationResult): The MutationVerificationResult to check for
+            validity.
+
+    Returns:
+        bool: True iff the given mutant vresult has not timed out and has successfully compiled.
+    """
+    return not mutant_vresult.compile_failed and not mutant_vresult.timed_out
 
 
 if __name__ == "__main__":

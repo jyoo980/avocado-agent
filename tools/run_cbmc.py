@@ -40,6 +40,10 @@ _DISABLE_MACRO_FLAGS = [
 # 5-minute timeout.
 _DEFAULT_RUN_CBMC_TIMEOUT_SEC = 300
 
+# goto-cc is fast; if it hasn't finished in this many seconds, the input is almost
+# certainly pathological and should be treated as uncompilable.
+_GOTO_CC_TIMEOUT_SEC = 30
+
 # GNU `timeout(1)` convention: distinguishes a timeout from a CBMC verification failure
 # both in the CLI exit code and in the JSONL invocation log.
 _TIMEOUT_RETURNCODE = 124
@@ -444,11 +448,6 @@ def get_cbmc_command(
     """
     quoted_function_to_verify = shlex.quote(function_to_verify)
     replace_calls = "".join(f" --replace-call-with-contract {shlex.quote(c)}" for c in callees)
-    flags_disabling_macro_expansion = (
-        f"{' '.join(_DISABLE_MACRO_FLAGS)} " if prevent_macro_expansion else ""
-    )
-    extra_stub_args = f" {' '.join(shlex.quote(p) for p in stub_paths)}" if stub_paths else ""
-    include_flags = "".join(f" -I {shlex.quote(d)}" for d in include_dirs) if include_dirs else ""
     inject_cbmc_model_command = (
         (
             f"goto-instrument --add-library "
@@ -458,11 +457,12 @@ def get_cbmc_command(
         else ""
     )
     commands = [
-        (
-            f"goto-cc {flags_disabling_macro_expansion}-o {quoted_function_to_verify}.goto"
-            f"{include_flags} "
-            f"{shlex.quote(file_containing_function)}{extra_stub_args} "
-            f"--function {quoted_function_to_verify}"
+        _get_goto_cc_command(
+            function_to_verify,
+            file_containing_function,
+            stub_paths=stub_paths,
+            include_dirs=include_dirs,
+            prevent_macro_expansion=prevent_macro_expansion,
         ),
         inject_cbmc_model_command,
         (
@@ -481,6 +481,77 @@ def get_cbmc_command(
         ),
     ]
     return " && ".join(c for c in commands if c)
+
+
+def _get_goto_cc_command(
+    function: str,
+    file_containing_function: str,
+    stub_paths: list[str] | None = None,
+    include_dirs: list[str] | None = None,
+    prevent_macro_expansion: bool = False,
+) -> str:
+    """Return the goto-cc command that compiles `file_containing_function` to a goto-binary.
+
+    This is the first step of `get_cbmc_command`'s pipeline, exposed as a standalone helper so
+    callers can run only the compile phase — useful for cheaply detecting inputs that goto-cc
+    rejects (e.g., a body-mutated source where mutating `p - q` to `p + q` is illegal C).
+
+    Args:
+        function (str): The function used as the goto-binary entry point.
+        file_containing_function (str): Path to the C source file.
+        stub_paths (list[str] | None): Extra `.c` stub files compiled in alongside the source.
+        include_dirs (list[str] | None): Directories forwarded as `-I` flags.
+        prevent_macro_expansion (bool): If True, disable macros that CBMC cannot model.
+
+    Returns:
+        str: A single shell command suitable for `subprocess.run(..., shell=True)`.
+    """
+    quoted_function = shlex.quote(function)
+    flags_disabling_macro_expansion = (
+        f"{' '.join(_DISABLE_MACRO_FLAGS)} " if prevent_macro_expansion else ""
+    )
+    extra_stub_args = f" {' '.join(shlex.quote(p) for p in stub_paths)}" if stub_paths else ""
+    include_flags = "".join(f" -I {shlex.quote(d)}" for d in include_dirs) if include_dirs else ""
+    return (
+        f"goto-cc {flags_disabling_macro_expansion}-o {quoted_function}.goto"
+        f"{include_flags} "
+        f"{shlex.quote(file_containing_function)}{extra_stub_args} "
+        f"--function {quoted_function}"
+    )
+
+
+def compile_with_goto_cc(
+    function: str,
+    file_path: str,
+    include_dirs: list[str] | None = None,
+) -> int:
+    """Run only the goto-cc compile step on a C file and return its exit code.
+
+    A zero exit code means goto-cc accepted the input; non-zero means it rejected it.
+    Mutants that do not compile should be excluded from evaluation and calculations;
+    this is the client's responsibility.
+
+    Args:
+        function (str): The function used as the goto-binary entry point.
+        file_path (str): Path to the C file to compile.
+        include_dirs (list[str] | None): Directories forwarded as `-I` flags.
+
+    Returns:
+        int: goto-cc's exit code (0 == compiled successfully).
+    """
+    compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
+    try:
+        result = subprocess.run(
+            compilation_command,
+            capture_output=True,
+            text=True,
+            shell=True,
+            check=False,
+            timeout=_GOTO_CC_TIMEOUT_SEC,
+        )
+    except TimeoutExpired:
+        return _TIMEOUT_RETURNCODE
+    return result.returncode
 
 
 if __name__ == "__main__":

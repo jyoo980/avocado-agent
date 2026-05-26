@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <stddef.h>
 
 int add(int a, int b)
 {
@@ -46,6 +47,14 @@ __CPROVER_requires(a < 100)
 {
     __CPROVER_assume(a < 50 && b < 50);
     return a + b;
+}
+
+// `-` between two `int*`s is legal; mutating it to `+` yields `p + q`, which goto-cc
+// rejects (pointer addition is not defined in C). Used by mutation tests to confirm
+// invalid mutants are filtered out instead of crashing the run.
+ptrdiff_t ptr_diff(int *p, int *q)
+{
+    return p - q;
 }
 
 void main()
