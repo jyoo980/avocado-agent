@@ -14,7 +14,7 @@ from pathlib import Path
 
 from eval.mutants.mutate_function import Mutant, get_mutants
 from eval.mutants.util import check_expected_cbmc_return_code
-from tools.run_cbmc import RunCbmcTimeout, run_cbmc
+from tools.run_cbmc import RunCbmcTimeout, compile_with_goto_cc, run_cbmc
 
 # Matches the GNU `timeout(1)` convention used elsewhere in the codebase; surfaces in
 # MutantVerificationResult.returncode so consumers can distinguish a timed-out run from a
@@ -30,10 +30,14 @@ class MutantVerificationResult:
         mutant (Mutant): The mutant to verify.
         path_to_mutant (str): The path to the file in which the mutant is declared.
         killed (bool): True iff this mutant was killed.
-        returncode (int): The return code of the CBMC process used to verify this mutant.
-            For timed-out runs this is the timeout sentinel (124), not a real CBMC exit code.
+        returncode (int): The return code of the CBMC (or goto-cc) process used to verify this
+            mutant. For timed-out runs this is the timeout sentinel (124), not a real CBMC exit
+            code. For compile-failed runs this is goto-cc's exit code.
         timed_out (bool): True iff CBMC exceeded its per-attempt timeout for this mutant.
             A timed-out mutant is neither killed nor survived — it is undecided.
+        compile_failed (bool): True iff goto-cc rejected the mutant source (e.g., the mutation
+            produced invalid C such as adding two pointers). Like `timed_out`, a compile-failed
+            mutant is undecided: CBMC never ran, so the spec's strength is not evidenced.
     """
 
     mutant: Mutant
@@ -41,6 +45,7 @@ class MutantVerificationResult:
     killed: bool
     returncode: int
     timed_out: bool = False
+    compile_failed: bool = False
 
 
 @dataclass(frozen=True)
@@ -48,9 +53,10 @@ class MutationScore:
     """Mutation-testing related statistics for one function.
 
     `num_survived` and `kill_score` are reported over *decided* mutants only —
-    timed-out mutants are excluded from both the survivor count and the kill-rate
-    denominator. `num_timed_out` is reported separately so consumers can see how
-    much of the mutant space was undecidable.
+    timed-out and compile-failed mutants are excluded from both the survivor count
+    and the kill-rate denominator. `num_timed_out` and `num_compile_failed` are
+    reported separately so consumers can see how much of the mutant space was
+    undecidable and how much produced invalid C in the first place.
 
     Attributes
     ----------
@@ -60,6 +66,7 @@ class MutationScore:
         num_killed (int): The number of killed mutants.
         num_survived (int): The number of surviving (decided, not killed) mutants.
         num_timed_out (int): The number of mutants for which CBMC exceeded its timeout.
+        num_compile_failed (int): The number of mutants that goto-cc rejected as invalid C.
         kill_score (float): killed / (killed + survived); 0.0 when no mutants were decided.
         results (list[MutantVerificationResult]): The verification result for each mutant.
     """
@@ -70,6 +77,7 @@ class MutationScore:
     num_killed: int
     num_survived: int
     num_timed_out: int
+    num_compile_failed: int
     kill_score: float
     results: list[MutantVerificationResult] = field(default_factory=list)
 
@@ -87,6 +95,7 @@ class MutationScore:
             "killed": self.num_killed,
             "survived": self.num_survived,
             "timed_out": self.num_timed_out,
+            "compile_failed": self.num_compile_failed,
             "kill_score": f"{self.kill_score:.4f}",
         }
 
@@ -161,8 +170,8 @@ def _aggregate_mutation_score(
 ) -> MutationScore:
     """Aggregate per-mutant results into a MutationScore.
 
-    Timed-out mutants are bucketed separately and excluded from the kill-rate
-    denominator, so `kill_score` reflects only the mutants CBMC could decide.
+    Timed-out and compile-failed mutants are bucketed separately and excluded from the
+    kill-rate denominator, so `kill_score` reflects only the mutants CBMC could decide.
 
     Args:
         mutant_vresults (list[MutantVerificationResult]): The per-mutant results.
@@ -175,7 +184,8 @@ def _aggregate_mutation_score(
     total = len(mutant_vresults)
     killed = sum(1 for r in mutant_vresults if r.killed)
     timed_out = sum(1 for r in mutant_vresults if r.timed_out)
-    survived = total - killed - timed_out
+    compile_failed = sum(1 for r in mutant_vresults if r.compile_failed)
+    survived = total - killed - timed_out - compile_failed
     decided = killed + survived
     kill_rate = (killed / decided) if decided else 0.0
     return MutationScore(
@@ -185,6 +195,7 @@ def _aggregate_mutation_score(
         num_killed=killed,
         num_survived=survived,
         num_timed_out=timed_out,
+        num_compile_failed=compile_failed,
         kill_score=round(kill_rate, 4),
         results=mutant_vresults,
     )
@@ -197,15 +208,34 @@ def _verify_mutant(
 ) -> MutantVerificationResult:
     """Return the result of verifying a mutant.
 
+    Mutants that goto-cc rejects (uncompilable C) are short-circuited before CBMC runs and
+    returned with `compile_failed=True`; this prevents `check_expected_cbmc_return_code` from
+    raising on goto-cc's exit code and lets callers exclude these mutants from the kill rate.
+
     Args:
         path_to_write_mutant (Path): The path to which the mutated source is written.
         mutant (Mutant): The mutant.
         include_dirs (list[str] | None): Include directories forwarded to `run_cbmc()`.
 
     Returns:
-        MutantVerificationResult: The result of verifying a mutant.
+        MutantVerificationResult: The result of verifying a mutant. The returned result's
+            `compile_failed` is True iff goto-cc rejected the source, in which case CBMC was
+            not run.
     """
     path_to_write_mutant.write_text(mutant.mutant_source, encoding="utf-8")
+    compilation_returncode = compile_with_goto_cc(
+        function=mutant.function,
+        file_path=str(path_to_write_mutant),
+        include_dirs=include_dirs,
+    )
+    if compilation_returncode != 0:
+        return MutantVerificationResult(
+            mutant,
+            path_to_mutant=str(path_to_write_mutant),
+            killed=False,
+            returncode=compilation_returncode,
+            compile_failed=True,
+        )
     result = run_cbmc(
         function_to_verify=mutant.function,
         file_containing_function_to_verify=str(path_to_write_mutant),

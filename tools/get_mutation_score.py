@@ -68,7 +68,9 @@ def _get_mutation_score_summary_with_surviving_mutant_diffs(
     surviving_mutant_diffs = [
         mutant_vresult.mutant.get_unified_diff()
         for mutant_vresult in mutation_score.results
-        if not mutant_vresult.killed and not mutant_vresult.timed_out
+        if not mutant_vresult.killed
+        and not mutant_vresult.timed_out
+        and not mutant_vresult.compile_failed
     ]
     return mutation_score.summary() | {"surviving_mutant_diffs": surviving_mutant_diffs}
 
