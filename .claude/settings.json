@@ -8,7 +8,10 @@
         "deny": [
             "Read(eval/EXPERIMENTS.md)",
             "Bash(grep eval/EXPERIMENTS.md)",
-            "Bash(cat eval/EXPERIMENTS.md)"
+            "Bash(cat eval/EXPERIMENTS.md)",
+            "Read(eval/README.md)",
+            "Bash(grep eval/README.md)",
+            "Bash(cat eval/README.md)"
         ]
     }
 }
