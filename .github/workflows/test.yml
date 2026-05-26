@@ -19,6 +19,17 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
 
+      - name: Install CBMC
+        env:
+          CBMC_VERSION: '6.9.0'
+        run: |
+          deb="ubuntu-24.04-cbmc-${CBMC_VERSION}-Linux.deb"
+          url="https://github.com/diffblue/cbmc/releases/download/cbmc-${CBMC_VERSION}/${deb}"
+          curl -fsSL -o "/tmp/${deb}" "${url}"
+          sudo apt-get install -y "/tmp/${deb}"
+          goto-cc --version
+          cbmc --version
+
       - name: Install dependencies
         run: uv sync
       - name: Run tests
