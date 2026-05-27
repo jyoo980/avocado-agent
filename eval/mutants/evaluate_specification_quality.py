@@ -118,8 +118,6 @@ def _process_file(
                 str(source), function, keep_artifacts=keep_artifacts
             ):
                 out.write(json.dumps(mutation_score.summary()) + "\n")
-            else:
-                logger.warning(f"No mutation testing score reported for: '{source!s}#{function}'")
 
         if run_redundancy:
             if clause_redundancy_score := compute_clause_redundancy_score(

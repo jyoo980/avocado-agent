@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 from eval.mutants.mutate_specification import ClauseMutant, get_clause_mutants
-from eval.mutants.util import check_expected_cbmc_return_code
+from eval.mutants.util import check_expected_cbmc_return_code, is_valid_mutation_candidate
 from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import run_cbmc
 from tools.util import get_in_file_callers_of
@@ -303,7 +303,7 @@ def compute_clause_redundancy_score(
 
     # Check that the original function verifies in the first place.
     result = run_cbmc(function_name, file_path)
-    if not result.is_function_verified:
+    if not is_valid_mutation_candidate(result):
         # No usable baseline; scoring would be meaningless without verifying the unmutated source.
         return None
     check_expected_cbmc_return_code(result.returncode)

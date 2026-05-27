@@ -2,7 +2,25 @@
 
 from pathlib import Path
 
+from tools.run_cbmc import CbmcStep, RunCbmcResult
+
 _CBMC_RETURN_CODES_FOR_SUCCESS_AND_FAILURE = frozenset({0, 10})
+
+
+def is_valid_mutation_candidate(run_cbmc_result: RunCbmcResult) -> bool:
+    """Return True iff the function in the given CBMC run is a valid mutation candidate.
+
+    A valid mutation candidate must be a function that already successfully verifies.
+
+    Args:
+        run_cbmc_result (RunCbmcResult): The CBMC run result for the function to (possibly) mutate.
+
+    Returns:
+        bool: True iff the function in the given CBMC run is a valid mutation candidate.
+    """
+    if failed_step := run_cbmc_result.failed_step:
+        return failed_step != CbmcStep.CBMC
+    return not run_cbmc_result.timed_out
 
 
 def check_expected_cbmc_return_code(return_code: int):
