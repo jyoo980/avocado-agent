@@ -231,7 +231,17 @@ def _verify_mutant(
         file_containing_function_to_verify=str(path_to_write_mutant),
         include_dirs=include_dirs,
     )
-    if result.failed_step:
+    if failed_step := result.failed_step:
+        if failed_step == CbmcStep:
+            # The `cbmc` command itself could fail with an error unrelated to verification.
+            # Check here for that case.
+            check_expected_cbmc_return_code(result.returncode)
+            return MutantVerificationResult(
+                mutant,
+                path_to_mutant=str(path_to_write_mutant),
+                killed=result.returncode == 10,
+                returncode=result.returncode,
+            )
         return MutantVerificationResult(
             mutant,
             path_to_mutant=str(path_to_write_mutant),
@@ -240,6 +250,7 @@ def _verify_mutant(
             compile_failed=result.failed_step == CbmcStep.GOTO_CC,
             instrumentation_failed=result.failed_step == CbmcStep.GOTO_INSTRUMENT,
         )
+
     if result.returncode == _TIMEOUT_RETURNCODE:
         return MutantVerificationResult(
             mutant,
@@ -252,7 +263,7 @@ def _verify_mutant(
     return MutantVerificationResult(
         mutant,
         path_to_mutant=str(path_to_write_mutant),
-        killed=not result.is_function_verified,
+        killed=result.returncode == 10,
         returncode=result.returncode,
     )
 
