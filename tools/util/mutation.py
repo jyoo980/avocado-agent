@@ -15,7 +15,10 @@ from pathlib import Path
 from loguru import logger
 
 from eval.mutants.mutate_function import Mutant, get_mutants
-from eval.mutants.util import check_expected_cbmc_return_code, is_valid_mutation_candidate
+from eval.mutants.util import (
+    check_expected_cbmc_return_code,
+    is_valid_mutation_candidate,
+)
 from tools.run_cbmc import CbmcStep, run_cbmc
 
 # Matches the GNU `timeout(1)` convention used elsewhere in the codebase; surfaces in
@@ -142,10 +145,7 @@ def generate_mutants_and_compute_score(
     result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
     if not is_valid_mutation_candidate(result):
         # No usable baseline if CBMC can't verify the unmutated function.
-        logger.warning(f"{target_function} does not verify; skipping mutation testing")
-        return None
-    check_expected_cbmc_return_code(result.returncode)
-    if result.returncode != 0:
+        logger.warning(f"could not verify {target_function}; skipping mutation testing")
         return None
 
     mutants = get_mutants(str(source_path), target_function)

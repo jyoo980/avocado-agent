@@ -39,7 +39,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 from eval.mutants.mutate_specification import ClauseMutant, get_clause_mutants
-from eval.mutants.util import check_expected_cbmc_return_code, is_valid_mutation_candidate
+from eval.mutants.util import (
+    check_expected_cbmc_return_code,
+    is_valid_mutation_candidate,
+)
 from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import run_cbmc
 from tools.util import get_in_file_callers_of
@@ -306,9 +309,6 @@ def compute_clause_redundancy_score(
     if not is_valid_mutation_candidate(result):
         # No usable baseline; scoring would be meaningless without verifying the unmutated source.
         return None
-    check_expected_cbmc_return_code(result.returncode)
-    if result.returncode != 0:
-        return None
 
     mutants = get_clause_mutants(str(source_path), function_name)
     paths_to_removed_clauses = {
@@ -489,7 +489,9 @@ def _verify_removed_clause_source(
         )
     check_expected_cbmc_return_code(result.returncode)
     return ClauseRemovalVerificationResult(
-        clause_mutant, is_redundant=result.is_function_verified, returncode=result.returncode
+        clause_mutant,
+        is_redundant=result.is_function_verified,
+        returncode=result.returncode,
     )
 
 
@@ -514,13 +516,9 @@ def _get_baseline_verification_results_for_callers(
             function_to_verify=caller,
             file_containing_function_to_verify=str(source_path),
         )
-        if result.timed_out:
-            # Caller has no usable baseline; falls into the existing "not verifying" bucket
-            # and will be excluded from caller-side judgement via unverifiable_baseline_callers.
-            baselines[caller] = False
-            continue
-        check_expected_cbmc_return_code(result.returncode)
-        baselines[caller] = result.is_function_verified
+        # Callers that don't verify on the unmutated source are excluded from caller-side
+        # judgement via unverifiable_baseline_callers.
+        baselines[caller] = is_valid_mutation_candidate(result)
     return baselines
 
 
