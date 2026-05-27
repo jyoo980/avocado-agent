@@ -48,10 +48,10 @@ class FunctionVerificationResult:
 
     @property
     def is_function_verified(self) -> bool:
-        """Return True iff the function is verified..
+        """Return True iff the function is verified.
 
         Returns:
-            bool: True iff the function is verified..
+            bool: True iff the function is verified.
         """
         return self.run_cbmc_result.is_function_verified
 
@@ -267,7 +267,6 @@ def _print_summary(files_to_results: dict[str, ProgramVerificationResult]) -> No
         if total:
             logger.info(f"Summary ({file!s}): {passed}/{total} functions verified")
         for function_vresult in program_verification_result.vresults:
-            marker = "ok" if function_vresult.is_function_verified else "FAIL"
             marker = str(function_vresult.run_cbmc_result)
             if marker == "PASS":
                 logger.info(f"  [{marker}] {function_vresult.file}::{function_vresult.function}")

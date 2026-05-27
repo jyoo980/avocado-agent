@@ -489,7 +489,7 @@ def _verify_removed_clause_source(
         )
     check_expected_cbmc_return_code(result.returncode)
     return ClauseRemovalVerificationResult(
-        clause_mutant, is_redundant=result.returncode == 0, returncode=result.returncode
+        clause_mutant, is_redundant=result.is_function_verified, returncode=result.returncode
     )
 
 
@@ -520,7 +520,7 @@ def _get_baseline_verification_results_for_callers(
             baselines[caller] = False
             continue
         check_expected_cbmc_return_code(result.returncode)
-        baselines[caller] = result.returncode == 0
+        baselines[caller] = result.is_function_verified
     return baselines
 
 

@@ -252,7 +252,7 @@ def _verify_mutant(
             instrumentation_failed=result.failed_step == CbmcStep.GOTO_INSTRUMENT,
         )
 
-    if result.returncode == _TIMEOUT_RETURNCODE:
+    if result.timed_out:
         return MutantVerificationResult(
             mutant,
             path_to_mutant=str(path_to_write_mutant),
