@@ -20,6 +20,7 @@ from tools.run_cbmc import CbmcStep, run_cbmc
 # MutantVerificationResult.returncode so consumers can distinguish a timed-out run from a
 # real CBMC failure (10) or success (0).
 _TIMEOUT_RETURNCODE = 124
+_VERIFICATION_FAILURE_RETURNCODE = 10
 
 
 @dataclass(frozen=True)
@@ -232,14 +233,14 @@ def _verify_mutant(
         include_dirs=include_dirs,
     )
     if failed_step := result.failed_step:
-        if failed_step == CbmcStep:
+        if failed_step == CbmcStep.CBMC:
             # The `cbmc` command itself could fail with an error unrelated to verification.
             # Check here for that case.
             check_expected_cbmc_return_code(result.returncode)
             return MutantVerificationResult(
                 mutant,
                 path_to_mutant=str(path_to_write_mutant),
-                killed=result.returncode == 10,
+                killed=result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
                 returncode=result.returncode,
             )
         return MutantVerificationResult(
@@ -263,7 +264,7 @@ def _verify_mutant(
     return MutantVerificationResult(
         mutant,
         path_to_mutant=str(path_to_write_mutant),
-        killed=result.returncode == 10,
+        killed=result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
         returncode=result.returncode,
     )
 
