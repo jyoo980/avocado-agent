@@ -174,8 +174,9 @@ def _aggregate_mutation_score(
 ) -> MutationScore:
     """Aggregate per-mutant results into a MutationScore.
 
-    Timed-out and compile-failed mutants are bucketed separately and excluded from the
-    kill-rate denominator, so `kill_score` reflects only the mutants CBMC could decide.
+    Timed-out, compile-failed, and instrumentation-failed mutants are bucketed separately and
+    excluded from the kill-rate denominator, so `kill_score` reflects only the mutants CBMC could
+    decide.
 
     Args:
         mutant_vresults (list[MutantVerificationResult]): The per-mutant results.
@@ -189,7 +190,8 @@ def _aggregate_mutation_score(
     killed = sum(1 for r in mutant_vresults if r.killed)
     timed_out = sum(1 for r in mutant_vresults if r.timed_out)
     compile_failed = sum(1 for r in mutant_vresults if r.compile_failed)
-    survived = total - killed - timed_out - compile_failed
+    instrumentation_failed = sum(1 for r in mutant_vresults if r.instrumentation_failed)
+    survived = total - killed - timed_out - compile_failed - instrumentation_failed
     decided = killed + survived
     kill_rate = (killed / decided) if decided else 0.0
     return MutationScore(

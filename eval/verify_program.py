@@ -37,7 +37,6 @@ class FunctionVerificationResult:
     Attributes:
         file (str): The C file containing the function on which CBMC is run.
         function (str): The name of the function on which CBMC is run.
-        returncode (int): The return code of the verification process.
         failures (list[str]): The lines from the CBMC output that are suffixed with "FAILURE".
     """
 
