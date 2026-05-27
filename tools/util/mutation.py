@@ -14,7 +14,7 @@ from pathlib import Path
 
 from eval.mutants.mutate_function import Mutant, get_mutants
 from eval.mutants.util import check_expected_cbmc_return_code
-from tools.run_cbmc import RunCbmcTimeout, compile_with_goto_cc, run_cbmc
+from tools.run_cbmc import CbmcStep, run_cbmc
 
 # Matches the GNU `timeout(1)` convention used elsewhere in the codebase; surfaces in
 # MutantVerificationResult.returncode so consumers can distinguish a timed-out run from a
@@ -38,6 +38,9 @@ class MutantVerificationResult:
         compile_failed (bool): True iff goto-cc rejected the mutant source (e.g., the mutation
             produced invalid C such as adding two pointers). Like `timed_out`, a compile-failed
             mutant is undecided: CBMC never ran, so the spec's strength is not evidenced.
+        instrumentation_failed (bool): True iff any of the goto-instrument steps failed.
+            These failures are not necessarily indicative of errors with the specification, and
+            should be excluded from evaluation.
     """
 
     mutant: Mutant
@@ -46,6 +49,7 @@ class MutantVerificationResult:
     returncode: int
     timed_out: bool = False
     compile_failed: bool = False
+    instrumentation_failed: bool = False
 
 
 @dataclass(frozen=True)
@@ -134,12 +138,11 @@ def generate_mutants_and_compute_score(
     workspace.mkdir(parents=True, exist_ok=True)
 
     result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
-    if isinstance(result, RunCbmcTimeout):
+    if result.timed_out:
         # No usable baseline if CBMC can't verify the unmutated function.
         return None
-    _, returncode = result
-    check_expected_cbmc_return_code(returncode)
-    if returncode != 0:
+    check_expected_cbmc_return_code(result.returncode)
+    if result.returncode != 0:
         return None
 
     mutants = get_mutants(str(source_path), target_function)
@@ -223,39 +226,34 @@ def _verify_mutant(
             not run.
     """
     path_to_write_mutant.write_text(mutant.mutant_source, encoding="utf-8")
-    compilation_returncode = compile_with_goto_cc(
-        function=mutant.function,
-        file_path=str(path_to_write_mutant),
-        include_dirs=include_dirs,
-    )
-    if compilation_returncode != 0:
-        return MutantVerificationResult(
-            mutant,
-            path_to_mutant=str(path_to_write_mutant),
-            killed=False,
-            returncode=compilation_returncode,
-            compile_failed=True,
-        )
     result = run_cbmc(
         function_to_verify=mutant.function,
         file_containing_function_to_verify=str(path_to_write_mutant),
         include_dirs=include_dirs,
     )
-    if isinstance(result, RunCbmcTimeout):
+    if result.failed_step:
         return MutantVerificationResult(
             mutant,
             path_to_mutant=str(path_to_write_mutant),
             killed=False,
-            returncode=_TIMEOUT_RETURNCODE,
+            returncode=result.returncode,
+            compile_failed=result.failed_step == CbmcStep.GOTO_CC,
+            instrumentation_failed=result.failed_step == CbmcStep.GOTO_INSTRUMENT,
+        )
+    if result.returncode == _TIMEOUT_RETURNCODE:
+        return MutantVerificationResult(
+            mutant,
+            path_to_mutant=str(path_to_write_mutant),
+            killed=False,
+            returncode=result.returncode,
             timed_out=True,
         )
-    _, returncode = result
-    check_expected_cbmc_return_code(returncode)
+    check_expected_cbmc_return_code(result.returncode)
     return MutantVerificationResult(
         mutant,
         path_to_mutant=str(path_to_write_mutant),
-        killed=returncode != 0,
-        returncode=returncode,
+        killed=not result.is_function_verified,
+        returncode=result.returncode,
     )
 
 

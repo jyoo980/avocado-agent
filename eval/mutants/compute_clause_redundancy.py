@@ -41,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from eval.mutants.mutate_specification import ClauseMutant, get_clause_mutants
 from eval.mutants.util import check_expected_cbmc_return_code
 from tools.construct_call_graph import construct_call_graph
-from tools.run_cbmc import RunCbmcTimeout, run_cbmc
+from tools.run_cbmc import run_cbmc
 from tools.util import get_in_file_callers_of
 from tools.util.callgraph import CallGraph
 
@@ -303,12 +303,11 @@ def compute_clause_redundancy_score(
 
     # Check that the original function verifies in the first place.
     result = run_cbmc(function_name, file_path)
-    if isinstance(result, RunCbmcTimeout):
+    if not result.is_function_verified:
         # No usable baseline; scoring would be meaningless without verifying the unmutated source.
         return None
-    _, returncode = result
-    check_expected_cbmc_return_code(returncode)
-    if returncode != 0:
+    check_expected_cbmc_return_code(result.returncode)
+    if result.returncode != 0:
         return None
 
     mutants = get_clause_mutants(str(source_path), function_name)
@@ -481,17 +480,16 @@ def _verify_removed_clause_source(
         function_to_verify=clause_mutant.function,
         file_containing_function_to_verify=str(path_to_write_removed_clause_mutant),
     )
-    if isinstance(result, RunCbmcTimeout):
+    if result.timed_out:
         return ClauseRemovalVerificationResult(
             clause_mutant,
             is_redundant=False,
             returncode=_TIMEOUT_RETURNCODE,
             timed_out=True,
         )
-    _, returncode = result
-    check_expected_cbmc_return_code(returncode)
+    check_expected_cbmc_return_code(result.returncode)
     return ClauseRemovalVerificationResult(
-        clause_mutant, is_redundant=returncode == 0, returncode=returncode
+        clause_mutant, is_redundant=result.returncode == 0, returncode=result.returncode
     )
 
 
@@ -516,14 +514,13 @@ def _get_baseline_verification_results_for_callers(
             function_to_verify=caller,
             file_containing_function_to_verify=str(source_path),
         )
-        if isinstance(result, RunCbmcTimeout):
+        if result.timed_out:
             # Caller has no usable baseline; falls into the existing "not verifying" bucket
             # and will be excluded from caller-side judgement via unverifiable_baseline_callers.
             baselines[caller] = False
             continue
-        _, returncode = result
-        check_expected_cbmc_return_code(returncode)
-        baselines[caller] = returncode == 0
+        check_expected_cbmc_return_code(result.returncode)
+        baselines[caller] = result.returncode == 0
     return baselines
 
 
@@ -559,7 +556,9 @@ def _verify_callers(
     verifying_callers = [caller for caller in in_file_callers if caller_baselines.get(caller)]
     if not verifying_callers:
         return ClauseCallerSideResult(
-            clause_mutant, caller_vresults=[], verdict=CallerSideVerdict.UNVERIFIABLE_BASELINE
+            clause_mutant,
+            caller_vresults=[],
+            verdict=CallerSideVerdict.UNVERIFIABLE_BASELINE,
         )
 
     caller_vresults: list[CallerVerificationResult] = []
@@ -568,7 +567,7 @@ def _verify_callers(
             function_to_verify=caller,
             file_containing_function_to_verify=str(mutant_path),
         )
-        if isinstance(result, RunCbmcTimeout):
+        if result.timed_out:
             caller_vresults.append(
                 CallerVerificationResult(
                     caller=caller,
@@ -578,11 +577,12 @@ def _verify_callers(
                 )
             )
             continue
-        _, returncode = result
-        check_expected_cbmc_return_code(returncode)
+        check_expected_cbmc_return_code(result.returncode)
         caller_vresults.append(
             CallerVerificationResult(
-                caller=caller, returncode=returncode, successfully_verified=returncode == 0
+                caller=caller,
+                returncode=result.returncode,
+                successfully_verified=result.is_function_verified,
             )
         )
 
