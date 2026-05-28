@@ -21,56 +21,9 @@ which includes a [User Guide](https://diffblue.github.io/cbmc/user_guide.html)
 and [The CPROVER
 Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 
-## Tool Use
-
-You should always prefer this project's CLI tools over invoking CBMC by hand.
-
-- **To run CBMC on a function**, run:
-
-  ```sh
-  avocado-run-cbmc --function <FUNCTION_NAME> \
-                   --file <PATH_TO_C_FILE> \
-                   [-I <PATH_TO_INCLUDE_DIR(S)>]...
-  ```
-
-  If verification succeeds, exits with status 0 and prints a success line to stdout.
-  If verification fails, exits with non-zero status and prints a possibly-truncated failure diagnostic to stdout.
-
-- **To get a kill score from mutation testing**, run:
-
-  ```sh
-  avocado-get-mutation-score --function <FUNCTION_NAME> \
-                   --file <PATH_TO_C_FILE> \
-                   [-I <PATH_TO_INCLUDE_DIR(S)>]...
-  ```
-  If mutation testing succeeds, exits with status 0 and prints the kill score and any
-  surviving mutants as a JSON-formatted string.
-  If mutation testing fails, exits with non-zero status and prints an error to stderr.
-
-- **To obtain a call graph of the functions in a file in JSON format**, run:
-
-  ```sh
-  avocado-construct-call-graph <PATH_TO_C_FILE>
-  ```
-
-  Prints the path to a newly written `<stem>-callgraph.json` next to the source file.
-
-- **To obtain a reverse topological ordering of functions in a call graph, with all callees before their callers**:
-
-  ```sh
-  avocado-topological-order <PATH_TO_CALL_GRAPH_JSON>
-  ```
-
-  Prints function names callees-first, one per line.
-
-
 You must remember the following guidelines:
-- Fall back to directly running the `cbmc` program only if necessary (prefer the `avocado-run-cbmc` script).
 - Do not hard-code any values into the specifications that are related to CBMC's command-line
   arguments (e.g., the `N` in `--partial-loops --unwind <N>`).
-- You must improve on a specification's quality by using mutation testing via the
-  `avocado-get-mutation-score` script, which produces a kill score you can try to increase. Do not
-  iterate more than 5 times, and stop if it is clear that the kill score cannot be improved.
 - Do not attempt to fix a failing specification for a function more than 5 times.
 - Do not attempt to verify `main` functions.
 - If a function has no side effects on memory beyond local variables or return values,
@@ -79,68 +32,12 @@ You must remember the following guidelines:
   - You suspect there is a regression.
   - You need information from a callee's verification run to help verify a caller.
   - When you need to report the final verification counts at the end.
+- You must produce a log of each verification command you ran. For example,
+  for a file `test.c` containing the functions `foo`, `bar`, and `baz`, produce
+  `test-log.jsonl` which looks like:
+    ```
+    { "file": "test.c", "function": "foo", "command": "<VERIFICATION COMMAND>" }
+    { "file": "test.c", "function": "bar", "command": "<VERIFICATION COMMAND>" }
+    { "file": "test.c", "function": "baz", "command": "<VERIFICATION COMMAND>" }
+    ```
 
-## Syntax of C function specifications (contracts)
-
-Preconditions and postconditions are written after the function signature and
-before the function body, as shown in files in the `docs/` folder.
-
-The syntax includes:
-
-### Function contracts
-
-* Preconditions and postconditions: `__CPROVER_requires(bool cond)`, `__CPROVER_ensures(bool cond)`.
-  Documented in `docs/contracts-requires-ensures.md`.
-* Preconditions and postconditions about function pointers: `bool __CPROVER_obeys_contract(void (*f)(void), void (*c)(void))`.
-  Documented in `docs/contracts-function-pointer-predicates.md`.
-* Side effects: `__CPROVER_assigns(targets)`.
-  Documented in `docs/contracts-assigns.md`.
-* Memory deallocation: `__CPROVER_frees(targets)`.
-  Documented in `docs/contracts-frees.md`.
-
-### Boolean expressions
-
-Requires and ensures clauses are written as C boolean expressions that may additionally use these expressions:
-
-* Pre-state value of variables: `__CPROVER_old(*identifier*)`.
-  Used only in ensures clauses.
-  Documented in `docs/contracts-history-variables.md`.
-* Pointer properties: `__CPROVER_is_fresh(p, size)`, `__CPROVER_pointer_equals(p, q)`, `__CPROVER_pointer_in_range_dfcc(lb, p, ub)`.
-  Used in requires clauses and ensures clauses.
-  Documented in `docs/contracts-memory-predicates.md`.
-* Quantified predicates: `__CPROVER_forall { *type* *identifier*; *boolean expression* }`, `__CPROVER_exists { *type* *identifier*; *boolean expression* }`.
-  Used in requires clauses and ensures clauses.
-  Documented in `docs/contracts-quantifiers.md`.
-
-## How to run CBMC directly
-
-You should run CBMC via the `avocado-run-cbmc` script.  Here is what it does
-internally.  You can try these commands if the `avocado-run-cbmc` script
-misbehaves.
-
-Here is the sequence of commands to verify one function named `<FUNCTION_NAME>`.
-The function calls two other functions, `<CALLEE1>` and `<CALLEE2>`.
-The function is defined in file `<PATH_TO_C_FILE>`.
-
-```sh
-FUNCTION=<FUNCTION_NAME> \
-goto-cc -o ${FUNCTION}.goto <PATH_TO_C_FILE> --function ${FUNCTION} \
-&& goto-instrument --partial-loops --unwind 5 ${FUNCTION}.goto ${FUNCTION}.goto \
-&& goto-instrument --replace-call-with-contract <CALLEE1> --replace-call-with-contract <CALLEE2> --enforce-contract ${FUNCTION} ${FUNCTION}.goto checking-${FUNCTION}-contracts.goto \
-&& cbmc checking-${FUNCTION}-contracts.goto --function ${FUNCTION} --depth 100
-```
-
-This will produce a log to the standard output.
-
-### Concrete example of how to run CBMC
-
-To verify specifications for function `partition` defined in file `quicksort.c`,
-where `partition`'s body calls function `swap`, run:
-
-```sh
-FUNCTION=partition \
-&& goto-cc -o ${FUNCTION}.goto quicksort.c --function ${FUNCTION} \
-&& goto-instrument --partial-loops --unwind 5 ${FUNCTION}.goto ${FUNCTION}.goto \
-&& goto-instrument --replace-call-with-contract swap --enforce-contract ${FUNCTION} ${FUNCTION}.goto checking-${FUNCTION}-contracts.goto \
-&& cbmc checking-${FUNCTION}-contracts.goto --function ${FUNCTION} --depth 100
-```
