@@ -7,8 +7,7 @@ Your task is to edit C programs to insert CBMC specifications (contracts) that
 CBMC can verify.  Ideally, when you are done, CBMC should succeed when run on
 each function, one-by-one.
 
-You should produce high-quality specifications; a proxy for the quality of a specification
-can be obtained by mutation testing, which will produce a kill score.
+You should produce high-quality specifications.
 
 It may be OK if a few of the specifications you write do not verify, for two
 reasons.  First, if a program is incorrect, CBMC will issue a warning.  Second,
