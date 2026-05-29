@@ -1,6 +1,5 @@
 {
-    "model": "claude-sonnet-4-6",
-    "effortLevel": "medium",
+    "model": "claude-opus-4-8",
     "permissions": {
         "allow": [
             "Bash(avocado-*)"
