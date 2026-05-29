@@ -14,7 +14,7 @@ reasons.  First, if a program is incorrect, CBMC will issue a warning.  Second,
 CBMC cannot verify all correct C code.  Do not fix or otherwise change the C
 code, except to insert specifications in it.
 
-CBMC is documented at https://diffblue.github.io/cbmc/index.html
+You can search the web for CBMC documentation at https://diffblue.github.io/cbmc/index.html,
 which includes a [User Guide](https://diffblue.github.io/cbmc/user_guide.html)
 and [The CPROVER Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 
@@ -23,6 +23,8 @@ You must remember the following guidelines:
   arguments (e.g., the `N` in `--partial-loops --unwind <N>`).
 - Do not attempt to fix a failing specification for a function more than 5 times.
 - Do not attempt to verify `main` functions.
+- Do not attempt to write loop invariants; your task is to write function
+  specifications.
 - If a function has no side effects on memory beyond local variables or return values,
     you must still write a minimal spec (such as an empty assigns clause).
 - You must not run verification on previously-verified functions unless:
