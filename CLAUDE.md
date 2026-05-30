@@ -16,9 +16,8 @@ and [The CPROVER Manual](https://diffblue.github.io/cbmc/cprover-manual/index.ht
 You must produce a log of each verification command you ran. For example,
 for a file `test.c` containing the functions `foo`, `bar`, and `baz`, produce
 `test-log.jsonl` which looks like:
-    ```
+
     { "file": "test.c", "function": "foo", "command": "<VERIFICATION COMMAND>" }
     { "file": "test.c", "function": "bar", "command": "<VERIFICATION COMMAND>" }
     { "file": "test.c", "function": "baz", "command": "<VERIFICATION COMMAND>" }
-    ```
 
