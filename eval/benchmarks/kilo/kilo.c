@@ -201,10 +201,7 @@ struct editorSyntax HLDB[] = {
 
 static struct termios orig_termios; /* In order to restore at exit.*/
 
-void disableRawMode(int fd)
-__CPROVER_assigns(E.rawmode)
-__CPROVER_ensures(E.rawmode == 0)
-{
+void disableRawMode(int fd) {
     /* Don't even check the return value as it's too late. */
     if (E.rawmode) {
         tcsetattr(fd,TCSAFLUSH,&orig_termios);
@@ -213,18 +210,12 @@ __CPROVER_ensures(E.rawmode == 0)
 }
 
 /* Called at exit to avoid remaining in raw mode. */
-void editorAtExit(void)
-__CPROVER_assigns(E.rawmode)
-__CPROVER_ensures(E.rawmode == 0)
-{
+void editorAtExit(void) {
     disableRawMode(STDIN_FILENO);
 }
 
 /* Raw mode: 1960 magic shit. */
-int enableRawMode(int fd)
-__CPROVER_assigns(E.rawmode, orig_termios)
-__CPROVER_ensures(__CPROVER_return_value == 0 || __CPROVER_return_value == -1)
-{
+int enableRawMode(int fd) {
     struct termios raw;
 
     if (E.rawmode) return 0; /* Already enabled. */
@@ -259,9 +250,7 @@ fatal:
 
 /* Read a key from the terminal put in raw mode, trying to handle
  * escape sequences. */
-int editorReadKey(int fd)
-__CPROVER_assigns()
-{
+int editorReadKey(int fd) {
     int nread;
     char c, seq[3];
     while ((nread = read(fd,&c,1)) == 0);
@@ -315,12 +304,7 @@ __CPROVER_assigns()
 /* Use the ESC [6n escape sequence to query the horizontal cursor position
  * and return it. On error -1 is returned, on success the position of the
  * cursor is stored at *rows and *cols and 0 is returned. */
-int getCursorPosition(int ifd, int ofd, int *rows, int *cols)
-__CPROVER_requires(__CPROVER_is_fresh(rows, sizeof(int)))
-__CPROVER_requires(__CPROVER_is_fresh(cols, sizeof(int)))
-__CPROVER_assigns(*rows, *cols)
-__CPROVER_ensures(__CPROVER_return_value == 0 || __CPROVER_return_value == -1)
-{
+int getCursorPosition(int ifd, int ofd, int *rows, int *cols) {
     char buf[32];
     unsigned int i = 0;
 
@@ -344,12 +328,7 @@ __CPROVER_ensures(__CPROVER_return_value == 0 || __CPROVER_return_value == -1)
 /* Try to get the number of columns in the current terminal. If the ioctl()
  * call fails the function will try to query the terminal itself.
  * Returns 0 on success, -1 on error. */
-int getWindowSize(int ifd, int ofd, int *rows, int *cols)
-__CPROVER_requires(__CPROVER_is_fresh(rows, sizeof(int)))
-__CPROVER_requires(__CPROVER_is_fresh(cols, sizeof(int)))
-__CPROVER_assigns(*rows, *cols)
-__CPROVER_ensures(__CPROVER_return_value == 0 || __CPROVER_return_value == -1)
-{
+int getWindowSize(int ifd, int ofd, int *rows, int *cols) {
     struct winsize ws;
 
     if (ioctl(1, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
@@ -384,24 +363,14 @@ failed:
 
 /* ====================== Syntax highlight color scheme  ==================== */
 
-int is_separator(int c)
-__CPROVER_assigns()
-__CPROVER_ensures(__CPROVER_return_value == 0 || __CPROVER_return_value == 1)
-{
+int is_separator(int c) {
     return c == '\0' || isspace(c) || strchr(",.()+-/*=~%[];",c) != NULL;
 }
 
 /* Return true if the specified row last char is part of a multi line comment
  * that starts at this row or at one before, and does not end at the end
  * of the row but spawns to the next row. */
-int editorRowHasOpenComment(erow *row)
-__CPROVER_requires(__CPROVER_is_fresh(row, sizeof(*row)))
-__CPROVER_requires(row->rsize >= 1)
-__CPROVER_requires(row->hl == NULL || __CPROVER_is_fresh(row->hl, (size_t)row->rsize))
-__CPROVER_requires(__CPROVER_is_fresh(row->render, (size_t)row->rsize))
-__CPROVER_assigns()
-__CPROVER_ensures(__CPROVER_return_value == 0 || __CPROVER_return_value == 1)
-{
+int editorRowHasOpenComment(erow *row) {
     if (row->hl && row->rsize && row->hl[row->rsize-1] == HL_MLCOMMENT &&
         (row->rsize < 2 || (row->render[row->rsize-2] != '*' ||
                             row->render[row->rsize-1] != '/'))) return 1;
@@ -410,13 +379,7 @@ __CPROVER_ensures(__CPROVER_return_value == 0 || __CPROVER_return_value == 1)
 
 /* Set every byte of row->hl (that corresponds to every character in the line)
  * to the right syntax highlight type (HL_* defines). */
-void editorUpdateSyntax(erow *row)
-__CPROVER_requires(__CPROVER_is_fresh(row, sizeof(*row)))
-__CPROVER_requires(row->rsize >= 1 && row->size >= 0 && row->size <= row->rsize)
-__CPROVER_requires(row->hl == NULL || __CPROVER_is_fresh(row->hl, (size_t)row->rsize))
-__CPROVER_requires(__CPROVER_is_fresh(row->render, (size_t)row->rsize))
-__CPROVER_assigns(row->hl, row->hl_oc, __CPROVER_object_whole(row->hl))
-{
+void editorUpdateSyntax(erow *row) {
     row->hl = realloc(row->hl,row->rsize);
     memset(row->hl,HL_NORMAL,row->rsize);
 
@@ -554,13 +517,7 @@ __CPROVER_assigns(row->hl, row->hl_oc, __CPROVER_object_whole(row->hl))
 }
 
 /* Maps syntax highlight token types to terminal colors. */
-int editorSyntaxToColor(int hl)
-__CPROVER_assigns()
-__CPROVER_ensures(__CPROVER_return_value == 36 || __CPROVER_return_value == 33 ||
-                  __CPROVER_return_value == 32 || __CPROVER_return_value == 35 ||
-                  __CPROVER_return_value == 31 || __CPROVER_return_value == 34 ||
-                  __CPROVER_return_value == 37)
-{
+int editorSyntaxToColor(int hl) {
     switch(hl) {
     case HL_COMMENT:
     case HL_MLCOMMENT: return 36;     /* cyan */
@@ -575,10 +532,7 @@ __CPROVER_ensures(__CPROVER_return_value == 36 || __CPROVER_return_value == 33 |
 
 /* Select the syntax highlight scheme depending on the filename,
  * setting it in the global state E.syntax. */
-void editorSelectSyntaxHighlight(char *filename)
-__CPROVER_requires(__CPROVER_is_fresh(filename, 1))
-__CPROVER_assigns(E.syntax)
-{
+void editorSelectSyntaxHighlight(char *filename) {
     for (unsigned int j = 0; j < HLDB_ENTRIES; j++) {
         struct editorSyntax *s = HLDB+j;
         unsigned int i = 0;
@@ -599,16 +553,7 @@ __CPROVER_assigns(E.syntax)
 /* ======================= Editor rows implementation ======================= */
 
 /* Update the rendered version and the syntax highlight of a row. */
-void editorUpdateRow(erow *row)
-__CPROVER_requires(__CPROVER_is_fresh(row, sizeof(*row)))
-__CPROVER_requires(row->size >= 0)
-__CPROVER_requires(__CPROVER_is_fresh(row->chars, (size_t)row->size + 1))
-__CPROVER_requires(row->render == NULL || __CPROVER_is_fresh(row->render, 1))
-__CPROVER_requires(row->hl == NULL || __CPROVER_is_fresh(row->hl, 1))
-__CPROVER_assigns(row->render, row->rsize, row->hl, row->hl_oc,
-                  __CPROVER_object_whole(row->render),
-                  __CPROVER_object_whole(row->hl))
-{
+void editorUpdateRow(erow *row) {
     unsigned int tabs = 0, nonprint = 0;
     int j, idx;
 
@@ -644,13 +589,7 @@ __CPROVER_assigns(row->render, row->rsize, row->hl, row->hl_oc,
 
 /* Insert a row at the specified position, shifting the other rows on the bottom
  * if required. */
-void editorInsertRow(int at, char *s, size_t len)
-__CPROVER_requires(E.numrows >= 0)
-__CPROVER_requires(at >= 0 && at <= E.numrows)
-__CPROVER_requires(E.numrows == 0 || __CPROVER_is_fresh(E.row, (size_t)E.numrows * sizeof(erow)))
-__CPROVER_requires(__CPROVER_is_fresh(s, len + 1))
-__CPROVER_assigns(E.row, E.numrows, E.dirty, __CPROVER_object_whole(E.row))
-{
+void editorInsertRow(int at, char *s, size_t len) {
     if (at > E.numrows) return;
     E.row = realloc(E.row,sizeof(erow)*(E.numrows+1));
     if (at != E.numrows) {
@@ -671,15 +610,7 @@ __CPROVER_assigns(E.row, E.numrows, E.dirty, __CPROVER_object_whole(E.row))
 }
 
 /* Free row's heap allocated stuff. */
-void editorFreeRow(erow *row)
-__CPROVER_requires(__CPROVER_is_fresh(row, sizeof(*row)))
-__CPROVER_requires(row->render == NULL || __CPROVER_is_fresh(row->render, 1))
-__CPROVER_requires(row->chars == NULL || __CPROVER_is_fresh(row->chars, 1))
-__CPROVER_requires(row->hl == NULL || __CPROVER_is_fresh(row->hl, 1))
-__CPROVER_assigns(__CPROVER_object_whole(row->render),
-                  __CPROVER_object_whole(row->chars),
-                  __CPROVER_object_whole(row->hl))
-{
+void editorFreeRow(erow *row) {
     free(row->render);
     free(row->chars);
     free(row->hl);
@@ -687,18 +618,7 @@ __CPROVER_assigns(__CPROVER_object_whole(row->render),
 
 /* Remove the row at the specified position, shifting the remainign on the
  * top. */
-void editorDelRow(int at)
-__CPROVER_requires(E.numrows >= 1)
-__CPROVER_requires(at >= 0 && at < E.numrows)
-__CPROVER_requires(__CPROVER_is_fresh(E.row, (size_t)E.numrows * sizeof(erow)))
-__CPROVER_requires(E.row[at].render == NULL || __CPROVER_is_fresh(E.row[at].render, 1))
-__CPROVER_requires(E.row[at].chars  == NULL || __CPROVER_is_fresh(E.row[at].chars, 1))
-__CPROVER_requires(E.row[at].hl     == NULL || __CPROVER_is_fresh(E.row[at].hl, 1))
-__CPROVER_assigns(E.numrows, E.dirty, __CPROVER_object_whole(E.row),
-                  __CPROVER_object_whole(E.row[at].render),
-                  __CPROVER_object_whole(E.row[at].chars),
-                  __CPROVER_object_whole(E.row[at].hl))
-{
+void editorDelRow(int at) {
     erow *row;
 
     if (at >= E.numrows) return;
@@ -714,12 +634,7 @@ __CPROVER_assigns(E.numrows, E.dirty, __CPROVER_object_whole(E.row),
  * Returns the pointer to the heap-allocated string and populate the
  * integer pointed by 'buflen' with the size of the string, escluding
  * the final nulterm. */
-char *editorRowsToString(int *buflen)
-__CPROVER_requires(__CPROVER_is_fresh(buflen, sizeof(int)))
-__CPROVER_requires(E.numrows >= 0)
-__CPROVER_requires(E.numrows == 0 || __CPROVER_is_fresh(E.row, (size_t)E.numrows * sizeof(erow)))
-__CPROVER_assigns(*buflen)
-{
+char *editorRowsToString(int *buflen) {
     char *buf = NULL, *p;
     int totlen = 0;
     int j;
@@ -743,16 +658,7 @@ __CPROVER_assigns(*buflen)
 
 /* Insert a character at the specified position in a row, moving the remaining
  * chars on the right if needed. */
-void editorRowInsertChar(erow *row, int at, int c)
-__CPROVER_requires(__CPROVER_is_fresh(row, sizeof(*row)))
-__CPROVER_requires(row->size >= 0 && at >= 0)
-__CPROVER_requires(__CPROVER_is_fresh(row->chars, (size_t)row->size + 1))
-__CPROVER_requires(row->render == NULL || __CPROVER_is_fresh(row->render, 1))
-__CPROVER_requires(row->hl == NULL || __CPROVER_is_fresh(row->hl, 1))
-__CPROVER_assigns(row->chars, row->size, row->render, row->rsize, row->hl,
-                  row->hl_oc, E.dirty, __CPROVER_object_whole(row->chars),
-                  __CPROVER_object_whole(row->render), __CPROVER_object_whole(row->hl))
-{
+void editorRowInsertChar(erow *row, int at, int c) {
     if (at > row->size) {
         /* Pad the string with spaces if the insert location is outside the
          * current length by more than a single character. */
@@ -775,17 +681,7 @@ __CPROVER_assigns(row->chars, row->size, row->render, row->rsize, row->hl,
 }
 
 /* Append the string 's' at the end of a row */
-void editorRowAppendString(erow *row, char *s, size_t len)
-__CPROVER_requires(__CPROVER_is_fresh(row, sizeof(*row)))
-__CPROVER_requires(row->size >= 0)
-__CPROVER_requires(__CPROVER_is_fresh(row->chars, (size_t)row->size + 1))
-__CPROVER_requires(__CPROVER_is_fresh(s, len))
-__CPROVER_requires(row->render == NULL || __CPROVER_is_fresh(row->render, 1))
-__CPROVER_requires(row->hl == NULL || __CPROVER_is_fresh(row->hl, 1))
-__CPROVER_assigns(row->chars, row->size, row->render, row->rsize, row->hl,
-                  row->hl_oc, E.dirty, __CPROVER_object_whole(row->chars),
-                  __CPROVER_object_whole(row->render), __CPROVER_object_whole(row->hl))
-{
+void editorRowAppendString(erow *row, char *s, size_t len) {
     row->chars = realloc(row->chars,row->size+len+1);
     memcpy(row->chars+row->size,s,len);
     row->size += len;
@@ -795,16 +691,7 @@ __CPROVER_assigns(row->chars, row->size, row->render, row->rsize, row->hl,
 }
 
 /* Delete the character at offset 'at' from the specified row. */
-void editorRowDelChar(erow *row, int at)
-__CPROVER_requires(__CPROVER_is_fresh(row, sizeof(*row)))
-__CPROVER_requires(row->size >= 0 && at >= 0)
-__CPROVER_requires(__CPROVER_is_fresh(row->chars, (size_t)row->size + 1))
-__CPROVER_requires(row->render == NULL || __CPROVER_is_fresh(row->render, 1))
-__CPROVER_requires(row->hl == NULL || __CPROVER_is_fresh(row->hl, 1))
-__CPROVER_assigns(row->chars, row->size, row->render, row->rsize, row->hl,
-                  row->hl_oc, E.dirty, __CPROVER_object_whole(row->chars),
-                  __CPROVER_object_whole(row->render), __CPROVER_object_whole(row->hl))
-{
+void editorRowDelChar(erow *row, int at) {
     if (row->size <= at) return;
     memmove(row->chars+at,row->chars+at+1,row->size-at);
     editorUpdateRow(row);
@@ -813,13 +700,7 @@ __CPROVER_assigns(row->chars, row->size, row->render, row->rsize, row->hl,
 }
 
 /* Insert the specified char at the current prompt position. */
-void editorInsertChar(int c)
-__CPROVER_requires(E.numrows >= 0)
-__CPROVER_requires(E.cx >= 0 && E.cy >= 0 && E.coloff >= 0 && E.rowoff >= 0)
-__CPROVER_requires(E.numrows == 0 || __CPROVER_is_fresh(E.row, (size_t)E.numrows * sizeof(erow)))
-__CPROVER_assigns(E.row, E.numrows, E.dirty, E.cx, E.coloff,
-                  __CPROVER_object_whole(E.row))
-{
+void editorInsertChar(int c) {
     int filerow = E.rowoff+E.cy;
     int filecol = E.coloff+E.cx;
     erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
@@ -841,13 +722,7 @@ __CPROVER_assigns(E.row, E.numrows, E.dirty, E.cx, E.coloff,
 
 /* Inserting a newline is slightly complex as we have to handle inserting a
  * newline in the middle of a line, splitting the line as needed. */
-void editorInsertNewline(void)
-__CPROVER_requires(E.numrows >= 0)
-__CPROVER_requires(E.cx >= 0 && E.cy >= 0 && E.coloff >= 0 && E.rowoff >= 0)
-__CPROVER_requires(E.numrows == 0 || __CPROVER_is_fresh(E.row, (size_t)E.numrows * sizeof(erow)))
-__CPROVER_assigns(E.row, E.numrows, E.dirty, E.cx, E.cy, E.coloff, E.rowoff,
-                  __CPROVER_object_whole(E.row))
-{
+void editorInsertNewline(void) {
     int filerow = E.rowoff+E.cy;
     int filecol = E.coloff+E.cx;
     erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
@@ -883,13 +758,7 @@ fixcursor:
 }
 
 /* Delete the char at the current prompt position. */
-void editorDelChar(void)
-__CPROVER_requires(E.numrows >= 0)
-__CPROVER_requires(E.cx >= 0 && E.cy >= 0 && E.coloff >= 0 && E.rowoff >= 0)
-__CPROVER_requires(E.numrows == 0 || __CPROVER_is_fresh(E.row, (size_t)E.numrows * sizeof(erow)))
-__CPROVER_assigns(E.row, E.numrows, E.dirty, E.cx, E.cy, E.coloff, E.rowoff,
-                  __CPROVER_object_whole(E.row))
-{
+void editorDelChar(void) {
     int filerow = E.rowoff+E.cy;
     int filecol = E.coloff+E.cx;
     erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
@@ -925,13 +794,7 @@ __CPROVER_assigns(E.row, E.numrows, E.dirty, E.cx, E.cy, E.coloff, E.rowoff,
 
 /* Load the specified program in the editor memory and returns 0 on success
  * or 1 on error. */
-int editorOpen(char *filename)
-__CPROVER_requires(__CPROVER_is_fresh(filename, 1))
-__CPROVER_requires(E.filename == NULL || __CPROVER_is_fresh(E.filename, 1))
-__CPROVER_assigns(E.dirty, E.filename, E.row, E.numrows,
-                  __CPROVER_object_whole(E.filename), __CPROVER_object_whole(E.row))
-__CPROVER_ensures(__CPROVER_return_value == 0 || __CPROVER_return_value == 1)
-{
+int editorOpen(char *filename) {
     FILE *fp;
 
     E.dirty = 0;
@@ -964,12 +827,7 @@ __CPROVER_ensures(__CPROVER_return_value == 0 || __CPROVER_return_value == 1)
 }
 
 /* Save the current file on disk. Return 0 on success, 1 on error. */
-int editorSave(void)
-__CPROVER_requires(E.numrows >= 0)
-__CPROVER_requires(E.numrows == 0 || __CPROVER_is_fresh(E.row, (size_t)E.numrows * sizeof(erow)))
-__CPROVER_assigns(E.dirty, E.statusmsg, E.statusmsg_time)
-__CPROVER_ensures(__CPROVER_return_value == 0 || __CPROVER_return_value == 1)
-{
+int editorSave(void) {
     int len;
     char *buf = editorRowsToString(&len);
     int fd = open(E.filename,O_RDWR|O_CREAT,0644);
@@ -1006,14 +864,7 @@ struct abuf {
 
 #define ABUF_INIT {NULL,0}
 
-void abAppend(struct abuf *ab, const char *s, int len)
-__CPROVER_requires(__CPROVER_is_fresh(ab, sizeof(*ab)))
-__CPROVER_requires(ab->len >= 0 && len >= 0)
-__CPROVER_requires(len <= 2147483647 - ab->len)
-__CPROVER_requires(ab->b == NULL || __CPROVER_is_fresh(ab->b, (size_t)ab->len))
-__CPROVER_requires(__CPROVER_is_fresh(s, (size_t)len))
-__CPROVER_assigns(ab->b, ab->len, __CPROVER_object_whole(ab->b))
-{
+void abAppend(struct abuf *ab, const char *s, int len) {
     char *new = realloc(ab->b,ab->len+len);
 
     if (new == NULL) return;
@@ -1022,21 +873,13 @@ __CPROVER_assigns(ab->b, ab->len, __CPROVER_object_whole(ab->b))
     ab->len += len;
 }
 
-void abFree(struct abuf *ab)
-__CPROVER_requires(__CPROVER_is_fresh(ab, sizeof(*ab)))
-__CPROVER_requires(ab->b == NULL || __CPROVER_is_fresh(ab->b, 1))
-__CPROVER_assigns(__CPROVER_object_whole(ab->b))
-{
+void abFree(struct abuf *ab) {
     free(ab->b);
 }
 
 /* This function writes the whole screen using VT100 escape characters
  * starting from the logical state of the editor in the global state 'E'. */
-void editorRefreshScreen(void)
-__CPROVER_requires(E.numrows >= 0)
-__CPROVER_requires(E.numrows == 0 || __CPROVER_is_fresh(E.row, (size_t)E.numrows * sizeof(erow)))
-__CPROVER_assigns()
-{
+void editorRefreshScreen(void) {
     int y;
     erow *r;
     char buf[32];
@@ -1156,10 +999,7 @@ __CPROVER_assigns()
 
 /* Set an editor status message for the second line of the status, at the
  * end of the screen. */
-void editorSetStatusMessage(const char *fmt, ...)
-__CPROVER_requires(__CPROVER_is_fresh(fmt, 1))
-__CPROVER_assigns(E.statusmsg, E.statusmsg_time)
-{
+void editorSetStatusMessage(const char *fmt, ...) {
     va_list ap;
     va_start(ap,fmt);
     vsnprintf(E.statusmsg,sizeof(E.statusmsg),fmt,ap);
@@ -1171,12 +1011,7 @@ __CPROVER_assigns(E.statusmsg, E.statusmsg_time)
 
 #define KILO_QUERY_LEN 256
 
-void editorFind(int fd)
-__CPROVER_requires(E.numrows >= 0)
-__CPROVER_requires(E.numrows == 0 || __CPROVER_is_fresh(E.row, (size_t)E.numrows * sizeof(erow)))
-__CPROVER_assigns(E.cx, E.cy, E.coloff, E.rowoff, E.statusmsg, E.statusmsg_time,
-                  __CPROVER_object_whole(E.row))
-{
+void editorFind(int fd) {
     char query[KILO_QUERY_LEN+1] = {0};
     int qlen = 0;
     int last_match = -1; /* Last line where a match was found. -1 for none. */
@@ -1274,15 +1109,7 @@ __CPROVER_assigns(E.cx, E.cy, E.coloff, E.rowoff, E.statusmsg, E.statusmsg_time,
 /* ========================= Editor events handling  ======================== */
 
 /* Handle cursor position change because arrow keys were pressed. */
-void editorMoveCursor(int key)
-__CPROVER_requires(E.numrows >= 0)
-__CPROVER_requires(E.numrows == 0 || __CPROVER_is_fresh(E.row, (size_t)E.numrows * sizeof(erow)))
-__CPROVER_requires(E.cx >= 0 && E.cy >= 0 && E.coloff >= 0 && E.rowoff >= 0)
-__CPROVER_requires(E.cx <= 30000 && E.cy <= 30000 && E.coloff <= 30000 && E.rowoff <= 30000)
-__CPROVER_requires(E.screencols >= 1 && E.screencols <= 30000)
-__CPROVER_requires(E.screenrows >= 1 && E.screenrows <= 30000)
-__CPROVER_assigns(E.cx, E.cy, E.coloff, E.rowoff)
-{
+void editorMoveCursor(int key) {
     int filerow = E.rowoff+E.cy;
     int filecol = E.coloff+E.cx;
     int rowlen;
@@ -1358,12 +1185,7 @@ __CPROVER_assigns(E.cx, E.cy, E.coloff, E.rowoff)
 /* Process events arriving from the standard input, which is, the user
  * is typing stuff on the terminal. */
 #define KILO_QUIT_TIMES 3
-void editorProcessKeypress(int fd)
-__CPROVER_requires(E.numrows >= 0)
-__CPROVER_requires(E.numrows == 0 || __CPROVER_is_fresh(E.row, (size_t)E.numrows * sizeof(erow)))
-__CPROVER_assigns(E.cx, E.cy, E.coloff, E.rowoff, E.numrows, E.dirty, E.row,
-                  E.statusmsg, E.statusmsg_time, __CPROVER_object_whole(E.row))
-{
+void editorProcessKeypress(int fd) {
     /* When the file is modified, requires Ctrl-q to be pressed N times
      * before actually quitting. */
     static int quit_times = KILO_QUIT_TIMES;
@@ -1432,16 +1254,11 @@ __CPROVER_assigns(E.cx, E.cy, E.coloff, E.rowoff, E.numrows, E.dirty, E.row,
     quit_times = KILO_QUIT_TIMES; /* Reset it to the original value. */
 }
 
-int editorFileWasModified(void)
-__CPROVER_assigns()
-__CPROVER_ensures(__CPROVER_return_value == E.dirty)
-{
+int editorFileWasModified(void) {
     return E.dirty;
 }
 
-void updateWindowSize(void)
-__CPROVER_assigns(E.screenrows, E.screencols)
-{
+void updateWindowSize(void) {
     if (getWindowSize(STDIN_FILENO,STDOUT_FILENO,
                       &E.screenrows,&E.screencols) == -1) {
         perror("Unable to query the screen for size (columns / rows)");
@@ -1450,21 +1267,14 @@ __CPROVER_assigns(E.screenrows, E.screencols)
     E.screenrows -= 2; /* Get room for status bar. */
 }
 
-void handleSigWinCh(int unused __attribute__((unused)))
-__CPROVER_requires(E.numrows >= 0)
-__CPROVER_requires(E.numrows == 0 || __CPROVER_is_fresh(E.row, (size_t)E.numrows * sizeof(erow)))
-__CPROVER_assigns(E.screenrows, E.screencols, E.cy, E.cx)
-{
+void handleSigWinCh(int unused __attribute__((unused))) {
     updateWindowSize();
     if (E.cy > E.screenrows) E.cy = E.screenrows - 1;
     if (E.cx > E.screencols) E.cx = E.screencols - 1;
     editorRefreshScreen();
 }
 
-void initEditor(void)
-__CPROVER_assigns(E.cx, E.cy, E.rowoff, E.coloff, E.numrows, E.row, E.dirty,
-                  E.filename, E.syntax, E.screenrows, E.screencols)
-{
+void initEditor(void) {
     E.cx = 0;
     E.cy = 0;
     E.rowoff = 0;
