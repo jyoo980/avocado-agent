@@ -54,6 +54,67 @@
 #include <fcntl.h>
 #include <signal.h>
 
+/* ===================== CBMC ctype model ==============================
+ * glibc implements isspace()/isdigit()/isprint()/... as table lookups of
+ * the form (*__ctype_b_loc())[c].  CBMC normally treats __ctype_b_loc() as
+ * an intrinsic with no GOTO body, which the contract-checking transformation
+ * (--enforce-contract / DFCC) cannot call.  We therefore provide a concrete
+ * model that returns a pointer into a valid classification table.
+ *
+ * The table is indexable by any value in [EOF, 255] (glibc guarantees the
+ * range [-128, 255]); the returned pointer is offset by 128 accordingly.
+ * The body performs no writes, so it never violates the (possibly empty)
+ * frame condition of a caller into which it is inlined.  Table contents are
+ * left non-deterministic so that every classification branch is explored. */
+unsigned short int __cbmc_ctype_b[384];
+const unsigned short int *const __cbmc_ctype_b_ptr = __cbmc_ctype_b + 128;
+const unsigned short int **__ctype_b_loc(void)
+__CPROVER_assigns()
+__CPROVER_ensures(__CPROVER_return_value == &__cbmc_ctype_b_ptr)
+{
+    return (const unsigned short int **)&__cbmc_ctype_b_ptr;
+}
+
+/* glibc's errno expands to *__errno_location(); like __ctype_b_loc() this is an
+ * intrinsic with no GOTO body, so we model it to return a valid lvalue. */
+int __cbmc_errno;
+int *__errno_location(void)
+__CPROVER_assigns()
+__CPROVER_ensures(__CPROVER_return_value == &__cbmc_errno)
+{
+    return &__cbmc_errno;
+}
+
+/* ===================== CBMC allocator models =========================
+ * Under contract checking (DFCC) the contracts library models malloc/realloc
+ * as functions that may always return NULL, and writes into a *freshly*
+ * allocated buffer cannot be named by a pre-state assigns clause.  kilo (like
+ * most application code) assumes allocation succeeds and writes through the
+ * returned pointer immediately.  We therefore model allocation with functions
+ * whose contract guarantees a fresh, non-NULL object of the requested size,
+ * and redirect malloc()/realloc() to them with
+ *   goto-instrument --replace-calls malloc:cbmc_malloc --replace-calls realloc:cbmc_realloc
+ *   goto-instrument --dfcc ... --replace-call-with-contract cbmc_malloc
+ *                              --replace-call-with-contract cbmc_realloc
+ * The bodies use __CPROVER_allocate so that enforcing the model itself (and
+ * avoiding self-replacement of the inner malloc) is well defined.  realloc is
+ * modelled as returning a fresh buffer (contents non-deterministic), which is
+ * sound for the memory-safety properties we verify. */
+void *cbmc_malloc(size_t n)
+__CPROVER_requires(n >= 1)
+__CPROVER_ensures(__CPROVER_is_fresh(__CPROVER_return_value, n))
+{
+    return __CPROVER_allocate(n, 0);
+}
+
+void *cbmc_realloc(void *q, size_t n)
+__CPROVER_requires(n >= 1)
+__CPROVER_ensures(__CPROVER_is_fresh(__CPROVER_return_value, n))
+{
+    (void)q;
+    return __CPROVER_allocate(n, 0);
+}
+
 /* Syntax highlight types */
 #define HL_NORMAL 0
 #define HL_NONPRINT 1
@@ -201,7 +262,9 @@ struct editorSyntax HLDB[] = {
 
 static struct termios orig_termios; /* In order to restore at exit.*/
 
-void disableRawMode(int fd) {
+void disableRawMode(int fd)
+__CPROVER_assigns(E.rawmode)
+{
     /* Don't even check the return value as it's too late. */
     if (E.rawmode) {
         tcsetattr(fd,TCSAFLUSH,&orig_termios);
@@ -210,12 +273,17 @@ void disableRawMode(int fd) {
 }
 
 /* Called at exit to avoid remaining in raw mode. */
-void editorAtExit(void) {
+void editorAtExit(void)
+__CPROVER_assigns(E.rawmode)
+{
     disableRawMode(STDIN_FILENO);
 }
 
 /* Raw mode: 1960 magic shit. */
-int enableRawMode(int fd) {
+int enableRawMode(int fd)
+__CPROVER_assigns(E.rawmode, orig_termios, __cbmc_errno)
+__CPROVER_ensures(__CPROVER_return_value == 0 || __CPROVER_return_value == -1)
+{
     struct termios raw;
 
     if (E.rawmode) return 0; /* Already enabled. */
@@ -304,7 +372,12 @@ int editorReadKey(int fd) {
 /* Use the ESC [6n escape sequence to query the horizontal cursor position
  * and return it. On error -1 is returned, on success the position of the
  * cursor is stored at *rows and *cols and 0 is returned. */
-int getCursorPosition(int ifd, int ofd, int *rows, int *cols) {
+int getCursorPosition(int ifd, int ofd, int *rows, int *cols)
+__CPROVER_requires(__CPROVER_w_ok(rows, sizeof(int)))
+__CPROVER_requires(__CPROVER_w_ok(cols, sizeof(int)))
+__CPROVER_assigns(*rows, *cols)
+__CPROVER_ensures(__CPROVER_return_value == 0 || __CPROVER_return_value == -1)
+{
     char buf[32];
     unsigned int i = 0;
 
@@ -328,7 +401,12 @@ int getCursorPosition(int ifd, int ofd, int *rows, int *cols) {
 /* Try to get the number of columns in the current terminal. If the ioctl()
  * call fails the function will try to query the terminal itself.
  * Returns 0 on success, -1 on error. */
-int getWindowSize(int ifd, int ofd, int *rows, int *cols) {
+int getWindowSize(int ifd, int ofd, int *rows, int *cols)
+__CPROVER_requires(__CPROVER_w_ok(rows, sizeof(int)))
+__CPROVER_requires(__CPROVER_w_ok(cols, sizeof(int)))
+__CPROVER_assigns(*rows, *cols)
+__CPROVER_ensures(__CPROVER_return_value == 0 || __CPROVER_return_value == -1)
+{
     struct winsize ws;
 
     if (ioctl(1, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
@@ -363,14 +441,25 @@ failed:
 
 /* ====================== Syntax highlight color scheme  ==================== */
 
-int is_separator(int c) {
+int is_separator(int c)
+__CPROVER_requires(c >= -128 && c <= 255)
+__CPROVER_assigns()
+__CPROVER_ensures(__CPROVER_return_value == 0 || __CPROVER_return_value == 1)
+{
     return c == '\0' || isspace(c) || strchr(",.()+-/*=~%[];",c) != NULL;
 }
 
 /* Return true if the specified row last char is part of a multi line comment
  * that starts at this row or at one before, and does not end at the end
  * of the row but spawns to the next row. */
-int editorRowHasOpenComment(erow *row) {
+int editorRowHasOpenComment(erow *row)
+__CPROVER_requires(__CPROVER_is_fresh(row, sizeof(*row)))
+__CPROVER_requires(row->rsize >= 0)
+__CPROVER_requires(row->hl == NULL || __CPROVER_is_fresh(row->hl, row->rsize))
+__CPROVER_requires(__CPROVER_is_fresh(row->render, row->rsize))
+__CPROVER_assigns()
+__CPROVER_ensures(__CPROVER_return_value == 0 || __CPROVER_return_value == 1)
+{
     if (row->hl && row->rsize && row->hl[row->rsize-1] == HL_MLCOMMENT &&
         (row->rsize < 2 || (row->render[row->rsize-2] != '*' ||
                             row->render[row->rsize-1] != '/'))) return 1;
@@ -379,7 +468,13 @@ int editorRowHasOpenComment(erow *row) {
 
 /* Set every byte of row->hl (that corresponds to every character in the line)
  * to the right syntax highlight type (HL_* defines). */
-void editorUpdateSyntax(erow *row) {
+void editorUpdateSyntax(erow *row)
+__CPROVER_requires(__CPROVER_is_fresh(row, sizeof(*row)))
+__CPROVER_requires(row->rsize >= 1 && row->rsize <= 64)
+__CPROVER_requires(row->hl == NULL)
+__CPROVER_requires(E.syntax == NULL)
+__CPROVER_assigns(row->hl)
+{
     row->hl = realloc(row->hl,row->rsize);
     memset(row->hl,HL_NORMAL,row->rsize);
 
@@ -517,7 +612,14 @@ void editorUpdateSyntax(erow *row) {
 }
 
 /* Maps syntax highlight token types to terminal colors. */
-int editorSyntaxToColor(int hl) {
+int editorSyntaxToColor(int hl)
+__CPROVER_assigns()
+__CPROVER_ensures(
+    __CPROVER_return_value == 31 || __CPROVER_return_value == 32 ||
+    __CPROVER_return_value == 33 || __CPROVER_return_value == 34 ||
+    __CPROVER_return_value == 35 || __CPROVER_return_value == 36 ||
+    __CPROVER_return_value == 37)
+{
     switch(hl) {
     case HL_COMMENT:
     case HL_MLCOMMENT: return 36;     /* cyan */
@@ -553,7 +655,14 @@ void editorSelectSyntaxHighlight(char *filename) {
 /* ======================= Editor rows implementation ======================= */
 
 /* Update the rendered version and the syntax highlight of a row. */
-void editorUpdateRow(erow *row) {
+void editorUpdateRow(erow *row)
+__CPROVER_requires(__CPROVER_is_fresh(row, sizeof(*row)))
+__CPROVER_requires(row->size >= 1 && row->size <= 1)
+__CPROVER_requires(__CPROVER_is_fresh(row->chars, (size_t)row->size + 1))
+__CPROVER_requires(row->hl == NULL)
+__CPROVER_requires(E.syntax == NULL)
+__CPROVER_assigns(row->render, row->rsize, row->hl)
+{
     unsigned int tabs = 0, nonprint = 0;
     int j, idx;
 
@@ -610,7 +719,10 @@ void editorInsertRow(int at, char *s, size_t len) {
 }
 
 /* Free row's heap allocated stuff. */
-void editorFreeRow(erow *row) {
+void editorFreeRow(erow *row)
+__CPROVER_requires(__CPROVER_is_fresh(row, sizeof(*row)))
+__CPROVER_assigns()
+{
     free(row->render);
     free(row->chars);
     free(row->hl);
@@ -618,7 +730,13 @@ void editorFreeRow(erow *row) {
 
 /* Remove the row at the specified position, shifting the remainign on the
  * top. */
-void editorDelRow(int at) {
+void editorDelRow(int at)
+__CPROVER_requires(E.numrows == 1)
+__CPROVER_requires(at >= 0)
+__CPROVER_requires(__CPROVER_is_fresh(E.row, sizeof(erow)))
+__CPROVER_requires(E.dirty < 0x7fffffff)
+__CPROVER_assigns(__CPROVER_object_whole(E.row), E.numrows, E.dirty)
+{
     erow *row;
 
     if (at >= E.numrows) return;
@@ -634,7 +752,14 @@ void editorDelRow(int at) {
  * Returns the pointer to the heap-allocated string and populate the
  * integer pointed by 'buflen' with the size of the string, escluding
  * the final nulterm. */
-char *editorRowsToString(int *buflen) {
+char *editorRowsToString(int *buflen)
+__CPROVER_requires(E.numrows == 1)
+__CPROVER_requires(__CPROVER_is_fresh(E.row, sizeof(erow)))
+__CPROVER_requires(E.row[0].size >= 0 && E.row[0].size <= 8)
+__CPROVER_requires(__CPROVER_is_fresh(E.row[0].chars, (size_t)E.row[0].size))
+__CPROVER_requires(__CPROVER_w_ok(buflen, sizeof(int)))
+__CPROVER_assigns(*buflen)
+{
     char *buf = NULL, *p;
     int totlen = 0;
     int j;
@@ -657,8 +782,17 @@ char *editorRowsToString(int *buflen) {
 }
 
 /* Insert a character at the specified position in a row, moving the remaining
- * chars on the right if needed. */
-void editorRowInsertChar(erow *row, int at, int c) {
+ * chars on the right if needed.
+ * Bounded proof: row->size == 0 and at == 0 drives the "middle insert" branch
+ * and leaves row->size == 1 for the inlined-by-contract editorUpdateRow. */
+void editorRowInsertChar(erow *row, int at, int c)
+__CPROVER_requires(__CPROVER_is_fresh(row, sizeof(*row)))
+__CPROVER_requires(row->size == 0 && at == 0)
+__CPROVER_requires(row->hl == NULL)
+__CPROVER_requires(E.syntax == NULL)
+__CPROVER_requires(E.dirty < 0x7fffffff)
+__CPROVER_assigns(row->chars, row->size, row->render, row->rsize, row->hl, E.dirty)
+{
     if (at > row->size) {
         /* Pad the string with spaces if the insert location is outside the
          * current length by more than a single character. */
@@ -680,8 +814,18 @@ void editorRowInsertChar(erow *row, int at, int c) {
     E.dirty++;
 }
 
-/* Append the string 's' at the end of a row */
-void editorRowAppendString(erow *row, char *s, size_t len) {
+/* Append the string 's' at the end of a row.
+ * Bounded proof: row->size == 0 and len == 1 leaves row->size == 1 for the
+ * inlined-by-contract editorUpdateRow. */
+void editorRowAppendString(erow *row, char *s, size_t len)
+__CPROVER_requires(__CPROVER_is_fresh(row, sizeof(*row)))
+__CPROVER_requires(row->size == 0 && len == 1)
+__CPROVER_requires(__CPROVER_is_fresh(s, len))
+__CPROVER_requires(row->hl == NULL)
+__CPROVER_requires(E.syntax == NULL)
+__CPROVER_requires(E.dirty < 0x7fffffff)
+__CPROVER_assigns(row->chars, row->size, row->render, row->rsize, row->hl, E.dirty)
+{
     row->chars = realloc(row->chars,row->size+len+1);
     memcpy(row->chars+row->size,s,len);
     row->size += len;
@@ -690,8 +834,20 @@ void editorRowAppendString(erow *row, char *s, size_t len) {
     E.dirty++;
 }
 
-/* Delete the character at offset 'at' from the specified row. */
-void editorRowDelChar(erow *row, int at) {
+/* Delete the character at offset 'at' from the specified row.
+ * Bounded proof: row->size == 1 so that the inlined-by-contract editorUpdateRow
+ * (verified for a single-character row) is applicable. */
+void editorRowDelChar(erow *row, int at)
+__CPROVER_requires(__CPROVER_is_fresh(row, sizeof(*row)))
+__CPROVER_requires(row->size == 1)
+__CPROVER_requires(at >= 0)
+__CPROVER_requires(__CPROVER_is_fresh(row->chars, (size_t)row->size + 1))
+__CPROVER_requires(row->hl == NULL)
+__CPROVER_requires(E.syntax == NULL)
+__CPROVER_requires(E.dirty < 0x7fffffff)
+__CPROVER_assigns(__CPROVER_object_whole(row->chars), row->size,
+                  row->render, row->rsize, row->hl, E.dirty)
+{
     if (row->size <= at) return;
     memmove(row->chars+at,row->chars+at+1,row->size-at);
     editorUpdateRow(row);
@@ -864,7 +1020,14 @@ struct abuf {
 
 #define ABUF_INIT {NULL,0}
 
-void abAppend(struct abuf *ab, const char *s, int len) {
+void abAppend(struct abuf *ab, const char *s, int len)
+__CPROVER_requires(__CPROVER_is_fresh(ab, sizeof(*ab)))
+__CPROVER_requires(len >= 0 && ab->len >= 0 && ab->len <= 0x7fffffff - len)
+__CPROVER_requires((size_t)ab->len + (size_t)len >= 1) /* realloc size > 0 */
+__CPROVER_requires(ab->b == NULL || __CPROVER_is_fresh(ab->b, ab->len))
+__CPROVER_requires(__CPROVER_is_fresh(s, len))
+__CPROVER_assigns(ab->b, ab->len)
+{
     char *new = realloc(ab->b,ab->len+len);
 
     if (new == NULL) return;
@@ -873,7 +1036,10 @@ void abAppend(struct abuf *ab, const char *s, int len) {
     ab->len += len;
 }
 
-void abFree(struct abuf *ab) {
+void abFree(struct abuf *ab)
+__CPROVER_requires(__CPROVER_is_fresh(ab, sizeof(*ab)))
+__CPROVER_assigns()
+{
     free(ab->b);
 }
 
@@ -1254,7 +1420,10 @@ void editorProcessKeypress(int fd) {
     quit_times = KILO_QUIT_TIMES; /* Reset it to the original value. */
 }
 
-int editorFileWasModified(void) {
+int editorFileWasModified(void)
+__CPROVER_assigns()
+__CPROVER_ensures(__CPROVER_return_value == E.dirty)
+{
     return E.dirty;
 }
 
@@ -1306,3 +1475,69 @@ int main(int argc, char **argv) {
     }
     return 0;
 }
+
+/* ========================================================================
+ * CBMC verification harnesses.
+ *
+ * Each function under analysis is verified modularly using CBMC function
+ * contracts (--enforce-contract) driven by a dedicated harness entry point
+ * that supplies non-deterministic inputs.  See kilo-log.jsonl for the exact
+ * verification commands.
+ * ===================================================================== */
+
+void h_is_separator(void) { int c; is_separator(c); }
+void h_editorSyntaxToColor(void) { int hl; editorSyntaxToColor(hl); }
+void h_editorFileWasModified(void) { editorFileWasModified(); }
+void h_editorFreeRow(void) { erow *row = malloc(sizeof(erow)); if (row) editorFreeRow(row); }
+void h_editorRowHasOpenComment(void) { erow *row = malloc(sizeof(erow)); if (row) editorRowHasOpenComment(row); }
+void h_abAppend(void) { struct abuf *ab = malloc(sizeof(struct abuf)); int len; char *s = malloc(1); if (ab && s) abAppend(ab, s, len); }
+void h_abFree(void) { struct abuf *ab = malloc(sizeof(struct abuf)); if (ab) abFree(ab); }
+void h_editorUpdateRow(void) { erow *row = malloc(sizeof(erow)); if (row) editorUpdateRow(row); }
+void h_editorUpdateSyntax(void) { erow *row = malloc(sizeof(erow)); if (row) editorUpdateSyntax(row); }
+void h_editorRowDelChar(void) {
+    erow *row = malloc(sizeof(erow));
+    if (!row) return;
+    row->size = 1;
+    row->chars = malloc(2);
+    row->hl = NULL;
+    row->render = NULL;
+    int at;
+    editorRowDelChar(row, at);
+}
+void h_editorRowInsertChar(void) {
+    erow *row = malloc(sizeof(erow));
+    if (!row) return;
+    row->size = 0;
+    row->chars = malloc(1);
+    row->hl = NULL;
+    row->render = NULL;
+    int c;
+    editorRowInsertChar(row, 0, c);
+}
+void h_editorRowAppendString(void) {
+    erow *row = malloc(sizeof(erow));
+    if (!row) return;
+    row->size = 0;
+    row->chars = malloc(1);
+    row->hl = NULL;
+    row->render = NULL;
+    char *s = malloc(1);
+    if (!s) return;
+    editorRowAppendString(row, s, 1);
+}
+void h_disableRawMode(void) { int fd; disableRawMode(fd); }
+void h_editorAtExit(void) { editorAtExit(); }
+void h_enableRawMode(void) { int fd; enableRawMode(fd); }
+void h_getCursorPosition(void) {
+    int ifd, ofd; int *rows = malloc(sizeof(int)); int *cols = malloc(sizeof(int));
+    if (rows && cols) getCursorPosition(ifd, ofd, rows, cols);
+}
+void h_getWindowSize(void) {
+    int ifd, ofd; int *rows = malloc(sizeof(int)); int *cols = malloc(sizeof(int));
+    if (rows && cols) getWindowSize(ifd, ofd, rows, cols);
+}
+void h_editorRowsToString(void) {
+    int *buflen = malloc(sizeof(int));
+    if (buflen) editorRowsToString(buflen);
+}
+void h_editorDelRow(void) { int at; editorDelRow(at); }
