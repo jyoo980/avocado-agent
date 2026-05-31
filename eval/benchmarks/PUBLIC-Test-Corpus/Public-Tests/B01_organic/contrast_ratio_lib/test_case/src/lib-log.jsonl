@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "contrast_ratio", "command": "goto-cc -DCBMC_HARNESS -I include --function contrast_ratio_harness -o lib.goto src/lib.c && goto-instrument --dfcc contrast_ratio_harness --enforce-contract contrast_ratio --apply-loop-contracts lib.goto lib.chk.goto && cbmc lib.chk.goto" }

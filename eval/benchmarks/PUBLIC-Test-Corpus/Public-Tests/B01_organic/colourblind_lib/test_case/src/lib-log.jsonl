@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "colourblind", "command": "goto-cc -DCBMC_HARNESS -I include --function colourblind_harness -o lib.goto src/lib.c && goto-instrument --dfcc colourblind_harness --enforce-contract colourblind --apply-loop-contracts lib.goto lib.chk.goto && cbmc lib.chk.goto" }

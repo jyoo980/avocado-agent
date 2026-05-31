@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "md5_digest", "command": "goto-cc -DCBMC_HARNESS -I include --function md5_digest_harness -o lib.goto src/lib.c && goto-instrument --dfcc md5_digest_harness --enforce-contract md5_digest --apply-loop-contracts lib.goto lib.chk.goto && cbmc lib.chk.goto" }

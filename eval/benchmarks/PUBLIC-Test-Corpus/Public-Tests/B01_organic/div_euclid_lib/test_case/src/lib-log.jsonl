@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "div_euclid", "command": "goto-cc -DCBMC_HARNESS -I include --function div_euclid_harness -o lib.goto src/lib.c && goto-instrument --dfcc div_euclid_harness --enforce-contract div_euclid --apply-loop-contracts lib.goto lib.chk.goto && cbmc lib.chk.goto" }

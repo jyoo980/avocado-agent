@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "encode_quant", "command": "goto-cc -DCBMC_HARNESS -I include --function encode_quant_harness -o lib.goto src/lib.c && goto-instrument --dfcc encode_quant_harness --enforce-contract encode_quant --apply-loop-contracts lib.goto lib.chk.goto && cbmc lib.chk.goto" }

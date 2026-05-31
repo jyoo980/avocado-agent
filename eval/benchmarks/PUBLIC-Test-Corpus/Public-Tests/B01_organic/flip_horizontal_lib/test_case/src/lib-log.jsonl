@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "flip_horizontal", "command": "goto-cc -DCBMC_HARNESS -I include --function flip_horizontal_harness -o lib.goto src/lib.c && goto-instrument --dfcc flip_horizontal_harness --enforce-contract flip_horizontal lib.goto lib.chk.goto && cbmc lib.chk.goto --unwind 5" }

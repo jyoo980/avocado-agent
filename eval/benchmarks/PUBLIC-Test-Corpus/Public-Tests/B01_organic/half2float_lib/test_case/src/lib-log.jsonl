@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "half2float", "command": "goto-cc -DCBMC_HARNESS -I include --function half2float_harness -o lib.goto src/lib.c && goto-instrument --dfcc half2float_harness --enforce-contract half2float --apply-loop-contracts lib.goto lib.chk.goto && cbmc lib.chk.goto" }

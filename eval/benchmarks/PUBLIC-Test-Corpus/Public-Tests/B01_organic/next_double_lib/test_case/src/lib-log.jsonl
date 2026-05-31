@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "next_double", "command": "goto-cc -DCBMC_HARNESS -I include --function next_double_harness -o lib.goto src/lib.c && goto-instrument --dfcc next_double_harness --enforce-contract next_double --apply-loop-contracts lib.goto lib.chk.goto && cbmc lib.chk.goto" }

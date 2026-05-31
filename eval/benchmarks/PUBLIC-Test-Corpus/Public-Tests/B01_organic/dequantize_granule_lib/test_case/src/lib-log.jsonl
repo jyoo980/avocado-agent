@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "dequantize_granule", "command": "goto-cc -DCBMC_HARNESS -I include --function dequantize_granule_harness -o lib.goto src/lib.c && goto-instrument --dfcc dequantize_granule_harness --enforce-contract dequantize_granule --replace-call-with-contract get_bits lib.goto lib.chk.goto && cbmc lib.chk.goto --unwind 5 --object-bits 12 --slice-formula" }

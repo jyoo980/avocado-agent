@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "tfm", "command": "goto-cc -DCBMC_HARNESS -I include --function tfm_harness -o lib.goto src/lib.c && goto-instrument --dfcc tfm_harness --enforce-contract tfm lib.goto lib.chk.goto && cbmc lib.chk.goto --unwind 17" }

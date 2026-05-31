@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "rev16", "command": "goto-cc -DCBMC_HARNESS -I include --function rev16_harness -o lib.goto src/lib.c && goto-instrument --dfcc rev16_harness --enforce-contract rev16 --apply-loop-contracts lib.goto lib.chk.goto && cbmc lib.chk.goto" }

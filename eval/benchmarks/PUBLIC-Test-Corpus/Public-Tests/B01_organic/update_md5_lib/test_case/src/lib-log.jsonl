@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "update_md5", "command": "goto-cc -DCBMC_HARNESS -I include --function update_md5_harness -o lib.goto src/lib.c && goto-instrument --dfcc update_md5_harness --enforce-contract update_md5 lib.goto lib.chk.goto && cbmc lib.chk.goto --unwind 9" }

@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "gaussian_kernel", "command": "goto-cc -DCBMC_HARNESS -I include --function gaussian_kernel_harness -o lib.goto src/lib.c && goto-instrument --dfcc gaussian_kernel_harness --enforce-contract gaussian_kernel --replace-call-with-contract expf lib.goto lib.chk.goto && cbmc lib.chk.goto --unwind 18 --object-bits 12" }

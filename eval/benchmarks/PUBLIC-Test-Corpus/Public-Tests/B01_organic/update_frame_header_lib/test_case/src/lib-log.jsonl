@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "update_frame_header", "command": "goto-cc -DCBMC_HARNESS -I include --function update_frame_header_harness -o lib.goto src/lib.c && goto-instrument --dfcc update_frame_header_harness --enforce-contract update_frame_header --apply-loop-contracts lib.goto lib.chk.goto && cbmc lib.chk.goto" }

@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "crc16", "command": "goto-cc -DCBMC_HARNESS -I include --function crc16_harness -o lib.goto src/lib.c && goto-instrument --dfcc crc16_harness --enforce-contract crc16 lib.goto lib.chk.goto && cbmc lib.chk.goto --unwind 17" }

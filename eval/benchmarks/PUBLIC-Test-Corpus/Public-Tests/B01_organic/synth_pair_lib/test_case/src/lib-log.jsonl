@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "synth_pair", "command": "goto-cc -DCBMC_HARNESS -I include --function synth_pair_harness -o lib.goto src/lib.c && goto-instrument --dfcc synth_pair_harness --enforce-contract synth_pair --apply-loop-contracts lib.goto lib.chk.goto && cbmc lib.chk.goto" }

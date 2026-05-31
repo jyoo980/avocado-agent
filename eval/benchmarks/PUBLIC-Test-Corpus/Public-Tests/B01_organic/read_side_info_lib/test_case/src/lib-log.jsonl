@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "read_side_info", "command": "goto-cc -DCBMC_HARNESS -I include --function read_side_info_harness -o lib.goto src/lib.c && goto-instrument --dfcc read_side_info_harness --enforce-contract read_side_info --replace-call-with-contract get_bits lib.goto lib.chk.goto && cbmc lib.chk.goto --unwind 2 --object-bits 12 --slice-formula --sat-solver cadical" }

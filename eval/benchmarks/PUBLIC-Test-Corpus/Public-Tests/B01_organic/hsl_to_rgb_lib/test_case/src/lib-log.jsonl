@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "hsl_to_rgb", "command": "goto-cc -DCBMC_HARNESS -I include --function hsl_to_rgb_harness -o lib.goto src/lib.c && goto-instrument --dfcc hsl_to_rgb_harness --enforce-contract hsl_to_rgb --apply-loop-contracts lib.goto lib.chk.goto && cbmc lib.chk.goto" }

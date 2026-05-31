@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "tritanopia", "command": "goto-cc -DCBMC_HARNESS -I include --function tritanopia_harness -o lib.goto src/lib.c && goto-instrument --dfcc tritanopia_harness --enforce-contract tritanopia --apply-loop-contracts lib.goto lib.chk.goto && cbmc lib.chk.goto" }

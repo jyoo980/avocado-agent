@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "premultiply", "command": "goto-cc -DCBMC_HARNESS -I include --function premultiply_harness -o lib.goto src/lib.c && goto-instrument --dfcc premultiply_harness --enforce-contract premultiply lib.goto lib.chk.goto && cbmc lib.chk.goto --unwind 17" }

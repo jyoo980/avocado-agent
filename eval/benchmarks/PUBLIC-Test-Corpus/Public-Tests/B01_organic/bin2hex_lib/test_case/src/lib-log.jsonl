@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "bin2hex", "command": "goto-cc -DCBMC_HARNESS -I include --function bin2hex_harness -o lib.goto src/lib.c && goto-instrument --dfcc bin2hex_harness --enforce-contract bin2hex --apply-loop-contracts lib.goto lib.chk.goto && cbmc lib.chk.goto" }

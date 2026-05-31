@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "flac_validate", "command": "goto-cc -DCBMC_HARNESS -I include --function flac_validate_harness -o lib.goto src/lib.c && goto-instrument --dfcc flac_validate_harness --enforce-contract flac_validate lib.goto lib.chk.goto && cbmc lib.chk.goto --unwind 17" }

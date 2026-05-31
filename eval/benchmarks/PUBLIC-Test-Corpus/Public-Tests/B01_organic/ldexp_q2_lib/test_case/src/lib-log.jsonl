@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "ldexp_q2", "command": "goto-cc -DCBMC_HARNESS -I include --function ldexp_q2_harness -o lib.goto src/lib.c && goto-instrument --dfcc ldexp_q2_harness --enforce-contract ldexp_q2 lib.goto lib.chk.goto && cbmc lib.chk.goto --unwind 6" }

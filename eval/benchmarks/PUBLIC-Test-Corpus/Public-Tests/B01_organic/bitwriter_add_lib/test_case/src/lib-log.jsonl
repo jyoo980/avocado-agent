@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "bitwriter_add", "command": "goto-cc -DCBMC_HARNESS -I include --function bitwriter_add_harness -o lib.goto src/lib.c && goto-instrument --dfcc bitwriter_add_harness --enforce-contract bitwriter_add lib.goto lib.chk.goto && cbmc lib.chk.goto --unwind 101" }

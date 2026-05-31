@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "hdr_compare", "command": "goto-cc -DCBMC_HARNESS -I include --function hdr_compare_harness -o lib.goto src/lib.c && goto-instrument --dfcc hdr_compare_harness --enforce-contract hdr_compare --apply-loop-contracts lib.goto lib.chk.goto && cbmc lib.chk.goto" }

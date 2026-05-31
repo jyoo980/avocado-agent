@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "normalize", "command": "goto-cc -DCBMC_HARNESS -I include --function normalize_harness -o lib.goto src/lib.c && goto-instrument --dfcc normalize_harness --enforce-contract normalize lib.goto lib.chk.goto && cbmc lib.chk.goto --unwind 17" }

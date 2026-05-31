@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "pow43", "command": "goto-cc -DCBMC_HARNESS -I include --function pow43_harness -o lib.goto src/lib.c && goto-instrument --dfcc pow43_harness --enforce-contract pow43 --apply-loop-contracts lib.goto lib.chk.goto && cbmc lib.chk.goto" }

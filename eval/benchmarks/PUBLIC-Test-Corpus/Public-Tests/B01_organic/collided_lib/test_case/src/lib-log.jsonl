@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "collided", "command": "goto-cc -DCBMC_HARNESS -I include --function collided_harness -o lib.goto src/lib.c && goto-instrument --dfcc collided_harness --enforce-contract collided --apply-loop-contracts lib.goto lib.chk.goto && cbmc lib.chk.goto" }

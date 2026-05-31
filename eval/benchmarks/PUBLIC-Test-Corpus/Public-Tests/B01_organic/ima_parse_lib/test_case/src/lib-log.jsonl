@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "ima_parse", "command": "goto-cc -DCBMC_HARNESS -I include --function ima_parse_harness -o lib.goto src/lib.c && goto-instrument --dfcc ima_parse_harness --enforce-contract ima_parse lib.goto lib.chk.goto && cbmc lib.chk.goto --unwind 4 --object-bits 12 --slice-formula --sat-solver cadical" }

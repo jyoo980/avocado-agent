@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "to_barycentric", "command": "goto-cc -DCBMC_HARNESS -I include --function to_barycentric_harness -o lib.goto src/lib.c && goto-instrument --dfcc to_barycentric_harness --enforce-contract to_barycentric --apply-loop-contracts lib.goto lib.chk.goto && cbmc lib.chk.goto" }

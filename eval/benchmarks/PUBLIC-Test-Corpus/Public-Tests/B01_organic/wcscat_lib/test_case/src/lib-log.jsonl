@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "wcscat", "command": "goto-cc -DCBMC_HARNESS -I include --function wcscat_harness -o lib.goto src/lib.c && goto-instrument --dfcc wcscat_harness --enforce-contract wcscat lib.goto lib.chk.goto && cbmc lib.chk.goto --unwind 9" }

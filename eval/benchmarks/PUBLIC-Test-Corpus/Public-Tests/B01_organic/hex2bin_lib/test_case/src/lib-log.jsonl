@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "hex2bin", "command": "goto-cc -DCBMC_HARNESS -I include --function hex2bin_harness -o lib.goto src/lib.c && goto-instrument --dfcc hex2bin_harness --enforce-contract hex2bin lib.goto lib.chk.goto && cbmc lib.chk.goto --unwind 9" }

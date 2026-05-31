@@ -1,0 +1,1 @@
+{ "file": "lib.c", "function": "merge_sort", "command": "goto-cc -DCBMC_HARNESS -I include --function merge_sort_harness -o lib.goto src/lib.c && goto-instrument --dfcc merge_sort_harness --enforce-contract merge_sort lib.goto lib.chk.goto && cbmc lib.chk.goto --unwind 4 --object-bits 12 --slice-formula --sat-solver cadical" }
