@@ -1,0 +1,15 @@
+# © 2026 Massachusetts Institute of Technology
+# MIT License
+
+[package]
+name = "_colourblind_lib_runner"
+version = "0.1.0"
+edition = "2024"
+
+[lints.rust]
+unexpected_cfgs = "allow"
+non_camel_case_types = "allow"
+non_snake_case = "allow"
+
+[dependencies]
+cando2 = { path = "../../../../tools/cando2" }
