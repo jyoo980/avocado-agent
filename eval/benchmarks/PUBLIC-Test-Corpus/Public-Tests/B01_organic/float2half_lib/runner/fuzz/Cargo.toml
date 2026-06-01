@@ -1,0 +1,25 @@
+# © 2026 Massachusetts Institute of Technology
+# MIT License
+
+[workspace]
+
+[package]
+name = "runner-fuzz"
+version = "0.0.0"
+edition = "2024"
+
+[lints.rust]
+unexpected_cfgs = "allow"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+cando2 = { path = "../../../../../tools/cando2" }
+
+[[bin]]
+name = "harness"
+path = "../src/main.rs"
+test = false
+doc = false

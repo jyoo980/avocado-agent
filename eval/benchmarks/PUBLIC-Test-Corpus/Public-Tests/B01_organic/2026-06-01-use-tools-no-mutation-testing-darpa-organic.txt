@@ -1,0 +1,235 @@
+ ▐▛███▜▌   Claude Code v2.1.141
+▝▜█████▛▘  claude-opus-4-8 · Claude Max
+  ▘▘ ▝▝    /app/eval/benchmarks/PUBLIC-Test-Corpus/Public-Tests/B01_organic
+
+  Using claude-opus-4-8 (from .claude/settings.json) · /model to change
+
+  Opus 4.7 xhigh is now available! · /model to switch
+
+❯ Carefully read @CLAUDE.md                                                     
+  ⎿  Read CLAUDE.md (132 lines)
+
+● I've read CLAUDE.md. I'm set up as a CBMC formal verification engineer for
+  this project. Key points I'll follow:
+
+  - Workflow: Use avocado-construct-call-graph → avocado-topological-order to
+  verify functions callees-first, then avocado-run-cbmc --function <NAME> --file
+   <FILE> [-I <DIR>] per function.
+  - Task: Insert CBMC contracts (__CPROVER_requires, __CPROVER_ensures,
+  __CPROVER_assigns, __CPROVER_frees, etc.) into C programs — never modify the C
+   logic itself.
+  - Constraints: No hard-coded CBMC CLI values (like unwind N) in specs; max 5
+  fix attempts per function; skip main; write minimal specs (e.g. empty assigns)
+   even for side-effect-free functions; don't re-verify already-passing
+  functions except for the listed exceptions.
+  - Docs: Reference docs/ for contract syntax details.
+
+  What C file or function would you like me to specify and verify?
+
+✻ Baked for 6s
+
+❯ Verify the C programs in @eval/benchmarks/PUBLIC-Test-Corpus/Public-Tests/B01 
+  _organic/<LIBRARY_NAME>/test_case/src/lib.c.                                  
+
+● I'll explore the benchmark directory structure to find the libraries to
+  verify.
+
+  Listed 1 directory (ctrl+o to expand)
+
+● Bash(cd /app/eval/benchmarks/PUBLIC-Test-Corpus/Public-Tests/B01_organic/ &&
+      for d in */; do echo "=== $d ==="; ls "${d}test_case/src/" 2>/dev/null;
+      done | head -80)
+  ⎿  === bin2hex_lib/ ===
+     lib.c
+     === bitwriter_add_lib/ ===
+     … +52 lines (ctrl+o to expand)
+
+● Let me examine the structure more closely — checking for headers, include
+  dirs, and the size of a sample lib.c.
+
+● Bash(cd /app/eval/benchmarks/PUBLIC-Test-Corpus/Public-Tests/B01_organic/ &&
+      echo "--- tree of bin2hex_lib ---" && find bin2hex_lib -type f && echo
+      "--- line counts…)
+  ⎿  --- tree of bin2hex_lib ---
+     bin2hex_lib/test_vectors/1.json
+     bin2hex_lib/test_vectors/2.json
+     … +27 lines (ctrl+o to expand)
+
+● Thirty-eight independent libraries, each a single small lib.c with an include/
+   dir. Let me read the docs and a couple of sample files to calibrate before
+  delegating.
+
+● Bash(cd /app && ls docs/ && echo "=== rev16 ===" && cat eval/benchmarks/PUBLIC
+      -Test-Corpus/Public-Tests/B01_organic/rev16_lib/test_case/src/lib.c &&
+      echo "=== rev16…)
+  ⎿  contracts-assigns.md
+     contracts-frees.md
+     contracts-function-pointer-predicates.md
+     … +18 lines (ctrl+o to expand)
+
+● Let me read all the contract docs and a few more representative samples to
+  fully calibrate.
+
+● Bash(cd /app/docs && for f in contracts-requires-ensures.md
+      contracts-assigns.md contracts-memory-predicates.md
+      contracts-history-variables.md contracts-quantifiers.…)
+  ⎿  ############ contracts-requires-ensures.md ############
+
+     # Requires and Ensures Clauses
+     … +347 lines (ctrl+o to expand)
+
+● I now understand the contract syntax. Let me verify the toolchain works on one
+   simple function before scaling out.
+
+● Bash(cd /app && which avocado-run-cbmc avocado-construct-call-graph
+      avocado-topological-order 2>&1; echo "---"; cat
+      eval/benchmarks/PUBLIC-Test-Corpus/Public-Tests/B…)
+  ⎿  /app/.venv/bin/avocado-run-cbmc
+     /app/.venv/bin/avocado-construct-call-graph
+     /app/.venv/bin/avocado-topological-order
+     … +26 lines (ctrl+o to expand)
+
+● Let me test the full workflow on the simplest library (rev16) to confirm the
+  toolchain and contract style.
+
+● Update(rev16_lib/test_case/src/lib.c)
+  ⎿  File must be read first
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(rev16_lib/test_case/src/lib.c)
+  ⎿  Added 3 lines, removed 1 line
+      1  #include "lib.h"
+      2  
+      3 -uint32_t rev16(uint32_t a) {                                    
+      3 +uint32_t rev16(uint32_t a)                                      
+      4 +__CPROVER_assigns()                                             
+      5 +{                                                               
+      6      a = ((a & 0xAAAA) >> 1) | ((a & 0x5555) << 1);
+      7      a = ((a & 0xCCCC) >> 2) | ((a & 0x3333) << 2);
+      8      a = ((a & 0xF0F0) >> 4) | ((a & 0x0F0F) << 4);
+
+● Bash(cd /app/eval/benchmarks/PUBLIC-Test-Corpus/Public-Tests/B01_organic/rev16
+      _lib/test_case && avocado-run-cbmc --function rev16 --file src/lib.c -I
+      include 2>&1 |…)
+  ⎿  rev16 verified successfully
+
+● The workflow works — rev16 verified with an empty __CPROVER_assigns(). Now
+  I'll process the remaining 37 libraries. Since each library is an independent
+  file, I'll parallelize across subagents, each handling a batch and following
+  the full CBMC contract workflow.
+
+  Let me spawn parallel agents to handle the batches.
+● 7 agents finished (ctrl+o to expand)
+   ├ CBMC contracts batch 1 · 44 tool uses · 42.7k tokens
+   │ ⎿  Done
+   ├ CBMC contracts batch 2 · 44 tool uses · 60.3k tokens
+   │ ⎿  Done
+   ├ CBMC contracts batch 3 · 40 tool uses · 40.1k tokens
+   │ ⎿  Done
+   ├ CBMC contracts batch 4 · 56 tool uses · 52.0k tokens
+   │ ⎿  Done
+   ├ CBMC contracts batch 5 · 62 tool uses · 55.6k tokens
+   │ ⎿  Done
+   ├ CBMC contracts batch 6 · 37 tool uses · 39.3k tokens
+   │ ⎿  Done
+   └ CBMC contracts batch 7 · 27 tool uses · 57.5k tokens
+     ⎿  Done
+
+● All 7 batches finished. Let me tally and spot-check — verifying the two
+  reported failures are genuine and confirming a few successes actually hold
+  (trust but verify).
+
+● Bash(cd /app/eval/benchmarks/PUBLIC-Test-Corpus/Public-Tests/B01_organic/ &&
+      echo "=== files missing any __CPROVER contract ===" && for f in
+      */test_case/src/lib.c; d…)
+  ⎿  === files missing any __CPROVER contract ===
+     (done)
+
+● All 38 files have contracts. Now let me spot-check: re-run a few reported
+  successes and both reported failures.
+
+● Bash(cd /app/eval/benchmarks/PUBLIC-Test-Corpus/Public-Tests/B01_organic
+      run() { d=$1; fn=$2; (cd "$d/test_case" && avocado-run-cbmc --function
+      "$fn" --file src/lib.…)
+  ⎿  [0] merge_sort_lib :: merge_sort -> merge_sort verified successfully
+     [0] ima_parse_lib :: ima_parse -> ima_parse verified successfully
+     [0] read_side_info_lib :: read_side_info -> read_side_info verified su
+     … +8 lines (ctrl+o to expand)
+
+● Both failures reproduce; all spot-checked successes hold. Let me look at the
+  two failures to confirm they're genuine CBMC limitations rather than fixable
+  spec issues.
+
+● Bash(cd /app/eval/benchmarks/PUBLIC-Test-Corpus/Public-Tests/B01_organic
+      (cd tritanopia_lib/test_case && avocado-run-cbmc --function tritanopia
+      --file src/lib.c -I i…)
+  ⎿  tritanopia failed to verify with the following errors:
+     line 24 function __CPROVER_replace_ensures_is_fresh: function 'malloc'
+      is not declared
+     … +17 lines (ctrl+o to expand)
+
+● Both failures are genuine CBMC harness limitations, not spec defects:
+  - float2half: DFCC nondeterministically re-initializes the file-scope static
+  lookup table m__shift, so its values become arbitrary uint8_t (0–255) instead
+  of the real max of 24 → spurious "shift distance too large". Can't be
+  constrained via contracts without editing the C.
+  - tritanopia (caller): Tritanopia's __CPROVER_is_fresh postconditions can't be
+   satisfied during contract replacement when the caller passes three adjacent 
+  fields of one struct (&RGBNorm.R/.G/.B) — the freshness/separation requirement
+   is unsatisfiable. The Tritanopia callee itself verifies standalone.
+
+  Let me clean up generated build artifacts the agents left behind.
+
+● Bash(find . \( -name '*.goto' -o -name '*-callgraph.json' \) -print -delete |
+      sed 's#^#removed #' | head; echo "cleanup done")
+  ⎿  removed ./read_side_info_lib/test_case/read_side_info.goto
+     removed ./read_side_info_lib/test_case/checking-read_side_info-contrac
+     ts.goto
+     … +11 lines (ctrl+o to expand)
+
+● All 38 libraries now have CBMC contracts inserted, verified one function at a
+  time callees-first. Build artifacts cleaned up.
+
+  Final results: 75 / 77 functions verified
+
+  ┌───────┬───────────────────────────────────────────────────────┬──────────┐
+  │ Batch │                       Libraries                       │ Verified │
+  ├───────┼───────────────────────────────────────────────────────┼──────────┤
+  │ rev16 │ rev16                                                 │ 1/1      │
+  ├───────┼───────────────────────────────────────────────────────┼──────────┤
+  │ 1     │ max_size_frame, ldexp_q2, hdr_compare, hdr_bitrate,   │ 7/7      │
+  │       │ normalize, flip_horizontal                            │          │
+  ├───────┼───────────────────────────────────────────────────────┼──────────┤
+  │ 2     │ crc16, next_double, premultiply, md5_digest, wcscat,  │ 7/7      │
+  │       │ bitwriter_add                                         │          │
+  ├───────┼───────────────────────────────────────────────────────┼──────────┤
+  │ 3     │ bin2hex, gaussian_kernel, contrast_ratio,             │ 11/11    │
+  │       │ to_barycentric, div_euclid, tfm                       │          │
+  ├───────┼───────────────────────────────────────────────────────┼──────────┤
+  │ 4     │ synth_pair, colourblind, rgb_to_hsv,                  │ 14/14    │
+  │       │ dequantize_granule, merge_sort, hsl_to_rgb            │          │
+  ├───────┼───────────────────────────────────────────────────────┼──────────┤
+  │ 5     │ pow43, update_md5, flac_validate, hex2bin,            │ 13/14    │
+  │       │ hsv_to_rgb, tritanopia                                │          │
+  ├───────┼───────────────────────────────────────────────────────┼──────────┤
+  │ 6     │ encode_quant, collided, float2half, ima_parse         │ 18/19    │
+  ├───────┼───────────────────────────────────────────────────────┼──────────┤
+  │ 7     │ update_frame_header, read_side_info, half2float       │ 4/4      │
+  └───────┴───────────────────────────────────────────────────────┴──────────┘
+
+  Two non-verifying functions (float2half, tritanopia caller), both due to known
+   CBMC/DFCC harness limitations rather than spec errors or C bugs — consistent
+  with CLAUDE.md's note that a few specs may legitimately not verify. I
+  confirmed both failures and a sample of the successes by re-running CBMC
+  directly.
+
+  The contracts are meaningful, not vacuous: pointer freshness/sizing via
+  __CPROVER_is_fresh, real __CPROVER_assigns write-sets (using
+  __CPROVER_object_whole/object_upto for arrays), input-domain
+  __CPROVER_requires to exclude UB (signed overflow, out-of-range
+  shifts/indices), and postconditions on __CPROVER_return_value / mutated
+  fields. No C logic was changed and no CBMC CLI values (e.g. unwind bounds)
+  were hard-coded into any spec.
+
+✻ Brewed for 8m 34s
