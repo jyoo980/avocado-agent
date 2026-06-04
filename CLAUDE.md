@@ -20,6 +20,14 @@ which includes a [User Guide](https://diffblue.github.io/cbmc/user_guide.html)
 and [The CPROVER
 Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 
+You must produce a log of each verification command you ran. For example,
+for a file `test.c` containing the functions `foo`, `bar`, and `baz`, produce
+`test-log.jsonl` which looks like:
+
+    { "file": "test.c", "function": "foo", "command": "<VERIFICATION COMMAND>" }
+    { "file": "test.c", "function": "bar", "command": "<VERIFICATION COMMAND>" }
+    { "file": "test.c", "function": "baz", "command": "<VERIFICATION COMMAND>" }
+
 ## Tool Use
 
 You should always prefer this project's CLI tools over invoking CBMC by hand.
