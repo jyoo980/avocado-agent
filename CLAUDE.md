@@ -33,6 +33,14 @@ You must remember the following guidelines:
   - You need information from a callee's verification run to help verify a caller.
   - When you need to report the final verification counts at the end.
 
+You must produce a log of each verification command you ran. For example,
+for a file `test.c` containing the functions `foo`, `bar`, and `baz`, produce
+`test-log.jsonl` which looks like:
+
+    { "file": "test.c", "function": "foo", "command": "<VERIFICATION COMMAND>" }
+    { "file": "test.c", "function": "bar", "command": "<VERIFICATION COMMAND>" }
+    { "file": "test.c", "function": "baz", "command": "<VERIFICATION COMMAND>" }
+
 ## Syntax of C function specifications (contracts)
 
 Preconditions and postconditions are written after the function signature and
