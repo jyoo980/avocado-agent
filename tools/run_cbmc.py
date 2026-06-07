@@ -229,7 +229,10 @@ def run_cbmc(
     )
     if result.cbmc_ran_successfully or result.timed_out:
         _log_invocation(
-            file_containing_function_to_verify, result, subprocess_results, nondet_callees
+            file_containing_function_to_verify,
+            result,
+            subprocess_results,
+            nondet_callees,
         )
         return result
 
@@ -251,7 +254,10 @@ def run_cbmc(
         )
         if result.cbmc_ran_successfully or result.timed_out:
             _log_invocation(
-                file_containing_function_to_verify, result, subprocess_results, nondet_callees
+                file_containing_function_to_verify,
+                result,
+                subprocess_results,
+                nondet_callees,
             )
             return result
 
@@ -343,7 +349,10 @@ def _run_pipeline(
         if not subprocess_result.succeeded:
             return (
                 _result_from_failure(
-                    function_to_verify, subprocess_result, combined_stdout, combined_stderr
+                    function_to_verify,
+                    subprocess_result,
+                    combined_stdout,
+                    combined_stderr,
                 ),
                 combined_stdout,
                 combined_stderr,
@@ -410,7 +419,10 @@ def _run_command(step: CbmcStep, command: str, subprocess_results) -> _Subproces
 
 
 def _result_from_failure(
-    function: str, subprocess_result: _SubprocessResult, combined_stdout: str, combined_stderr: str
+    function: str,
+    subprocess_result: _SubprocessResult,
+    combined_stdout: str,
+    combined_stderr: str,
 ) -> RunCbmcResult:
     """Build a `RunCbmcResult` for a pipeline that failed at `subprocess_result`.
 
@@ -730,7 +742,8 @@ def compile_with_goto_cc(
         include_dirs (list[str] | None): Directories forwarded as `-I` flags.
 
     Returns:
-        int: goto-cc's exit code (0 == compiled successfully).
+        int: the subprocess result.
+            Its `.returncode` is goto-cc's exit code (0 == compiled successfully).
     """
     compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
     try:
@@ -744,7 +757,7 @@ def compile_with_goto_cc(
         )
     except TimeoutExpired:
         return _TIMEOUT_RETURNCODE
-    return result.returncode
+    return result
 
 
 if __name__ == "__main__":
