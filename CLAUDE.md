@@ -26,4 +26,3 @@ you might produce `myfile-log.jsonl` which looks like:
     { "file": "myfile.c", "function": "bar", "command": "<VERIFICATION COMMAND>" }
     { "file": "myfile.c", "function": "foo", "command": "<VERIFICATION COMMAND>" }
     { "file": "myfile.c", "function": "baz", "command": "<VERIFICATION COMMAND>" }
-
