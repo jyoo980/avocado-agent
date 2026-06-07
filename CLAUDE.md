@@ -15,10 +15,9 @@ You should produce high-quality specifications; a proxy for the quality of a spe
 can be obtained by mutation testing, which will produce a kill score.
 
 This `CLAUDE.md` file and directory `docs/` contain basic information about using CBMC.
-CBMC is documented at https://diffblue.github.io/cbmc/index.html
+CBMC is documented at https://diffblue.github.io/cbmc/index.html,
 which includes a [User Guide](https://diffblue.github.io/cbmc/user_guide.html)
-and [The CPROVER
-Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
+and [The CPROVER Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 You can also search the web for more CBMC documentation.
 
 ## Available Tools
