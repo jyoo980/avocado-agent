@@ -6,24 +6,22 @@ Bounded Model Checker) tool.
 Your task is to edit C programs to insert CBMC specifications (contracts) that
 CBMC can verify.  Ideally, when you are done, CBMC should succeed when run on
 each function, one-by-one.
-
-You should produce high-quality specifications; a proxy for the quality of a specification
-can be obtained by mutation testing, which will produce a kill score.
-
 It may be OK if a few of the specifications you write do not verify, for two
 reasons.  First, if a program is incorrect, CBMC will issue a warning.  Second,
 CBMC cannot verify all correct C code.  Do not fix or otherwise change the C
 code, except to insert specifications in it.
 
-This `CLAUDE.md` file and directory `docs/` contain basic information about
-using CBMC.  CBMC is documented at https://diffblue.github.io/cbmc/index.html
+You should produce high-quality specifications; a proxy for the quality of a specification
+can be obtained by mutation testing, which will produce a kill score.
+
+This `CLAUDE.md` file and directory `docs/` contain basic information about using CBMC.
+CBMC is documented at https://diffblue.github.io/cbmc/index.html
 which includes a [User Guide](https://diffblue.github.io/cbmc/user_guide.html)
 and [The CPROVER
 Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
+You can also search the web for more CBMC documentation.
 
-## Tool Use
-
-You should always prefer this project's CLI tools over invoking CBMC by hand.
+## Available Tools
 
 - **To run CBMC on a function**, run:
 
@@ -35,6 +33,8 @@ You should always prefer this project's CLI tools over invoking CBMC by hand.
 
   If verification succeeds, exits with status 0 and prints a success line to stdout.
   If verification fails, exits with non-zero status and prints a possibly-truncated failure diagnostic to stdout.
+
+  You should always prefer `avocado-run-cbmc` over invoking CBMC directly.
 
 - **To get a kill score from mutation testing**, run:
 
@@ -53,7 +53,7 @@ You should always prefer this project's CLI tools over invoking CBMC by hand.
   avocado-construct-call-graph <PATH_TO_C_FILE>
   ```
 
-  Prints the path to a newly written `<stem>-callgraph.json` next to the source file.
+  This writes file `<stem>-callgraph.json` next to the source file and prints its path to standard output.
 
 - **To obtain a reverse topological ordering of functions in a call graph, with all callees before their callers**:
 
@@ -61,11 +61,11 @@ You should always prefer this project's CLI tools over invoking CBMC by hand.
   avocado-topological-order <PATH_TO_CALL_GRAPH_JSON>
   ```
 
-  Prints function names callees-first, one per line.
+  This prints function names callees-first, one per line.
 
 
 You must remember the following guidelines:
-- Fall back to directly running the `cbmc` program only if necessary (prefer the `avocado-run-cbmc` script).
+- Prefer the `avocado-run-cbmc` script to directly running the `cbmc` program.
 - Do not hard-code any values into the specifications that are related to CBMC's command-line
   arguments (e.g., the `N` in `--partial-loops --unwind <N>`).
 - You must improve on a specification's quality by using mutation testing via the
@@ -126,11 +126,12 @@ The function is defined in file `<PATH_TO_C_FILE>`.
 FUNCTION=<FUNCTION_NAME> \
 goto-cc -o ${FUNCTION}.goto <PATH_TO_C_FILE> --function ${FUNCTION} \
 && goto-instrument --partial-loops --unwind 5 ${FUNCTION}.goto ${FUNCTION}.goto \
-&& goto-instrument --replace-call-with-contract <CALLEE1> --replace-call-with-contract <CALLEE2> --enforce-contract ${FUNCTION} ${FUNCTION}.goto checking-${FUNCTION}-contracts.goto \
+&& goto-instrument --replace-call-with-contract <CALLEE1> --replace-call-with-contract <CALLEE2> \
+    --enforce-contract ${FUNCTION} ${FUNCTION}.goto checking-${FUNCTION}-contracts.goto \
 && cbmc checking-${FUNCTION}-contracts.goto --function ${FUNCTION} --depth 100
 ```
 
-This will produce a log to the standard output.
+This will produce a log to standard output.
 
 ### Concrete example of how to run CBMC
 
@@ -141,6 +142,7 @@ where `partition`'s body calls function `swap`, run:
 FUNCTION=partition \
 && goto-cc -o ${FUNCTION}.goto quicksort.c --function ${FUNCTION} \
 && goto-instrument --partial-loops --unwind 5 ${FUNCTION}.goto ${FUNCTION}.goto \
-&& goto-instrument --replace-call-with-contract swap --enforce-contract ${FUNCTION} ${FUNCTION}.goto checking-${FUNCTION}-contracts.goto \
+&& goto-instrument --replace-call-with-contract swap \
+    --enforce-contract ${FUNCTION} ${FUNCTION}.goto checking-${FUNCTION}-contracts.goto \
 && cbmc checking-${FUNCTION}-contracts.goto --function ${FUNCTION} --depth 100
 ```
