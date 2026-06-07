@@ -26,7 +26,7 @@ from tools.util import (
 )
 from tools.util.callgraph import CallGraph
 
-# Char budget for failure responses, sized to keep CLI output bounded so it
+# Character budget for failure responses, sized to keep CLI output bounded so it
 # doesn't exceed an agent's tool-output limits.
 _MAX_RESPONSE_CHARS = 100_000
 
@@ -478,7 +478,7 @@ def has_missing_body_for_callee_message(stdout: str, stderr: str) -> bool:
 
 
 def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, stderr: str) -> str:
-    """Format a CBMC failure response, truncating only if it exceeds the char budget.
+    """Format a CBMC failure response, truncating only if it exceeds the character budget.
 
     When the combined labeled output fits within `_MAX_RESPONSE_CHARS`, both streams are
     returned in full. Otherwise, FAILURE lines from stdout are preserved and the rest of
@@ -491,7 +491,7 @@ def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, 
         stderr (str): The concatenated stderr across every step that ran.
 
     Returns:
-        str: The formatted CBMC failure response, truncated iff it has exceeded the char budget.
+        str: The formatted CBMC failure response, truncated iff it has exceeded the character budget.
     """
     if failed_step is CbmcStep.CBMC:
         header = f"{function} failed to verify with the following errors:\n\n"
