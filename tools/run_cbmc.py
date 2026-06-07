@@ -757,7 +757,7 @@ def compile_with_goto_cc(
         )
     except TimeoutExpired:
         return _TIMEOUT_RETURNCODE
-    return result
+    return result.returncode
 
 
 if __name__ == "__main__":
