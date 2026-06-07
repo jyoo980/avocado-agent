@@ -15,19 +15,12 @@ reasons.  First, if a program is incorrect, CBMC will issue a warning.  Second,
 CBMC cannot verify all correct C code.  Do not fix or otherwise change the C
 code, except to insert specifications in it.
 
-This `CLAUDE.md` file and directory `docs/` contain basic information about
-using CBMC.  CBMC is documented at https://diffblue.github.io/cbmc/index.html
+This `CLAUDE.md` file and directory `docs/` contain basic information about using CBMC.
+
+You can also search the web for CBMC documentation.
+The main documentation can be found at at https://diffblue.github.io/cbmc/index.html,
 which includes a [User Guide](https://diffblue.github.io/cbmc/user_guide.html)
-and [The CPROVER
-Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
-
-You must produce a log of each verification command you ran. For example,
-for a file `test.c` containing the functions `foo`, `bar`, and `baz`, produce
-`test-log.jsonl` which looks like:
-
-    { "file": "test.c", "function": "foo", "command": "<VERIFICATION COMMAND>" }
-    { "file": "test.c", "function": "bar", "command": "<VERIFICATION COMMAND>" }
-    { "file": "test.c", "function": "baz", "command": "<VERIFICATION COMMAND>" }
+and [The CPROVER Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 
 ## Tool Use
 
@@ -61,7 +54,9 @@ You should always prefer this project's CLI tools over invoking CBMC by hand.
   avocado-construct-call-graph <PATH_TO_C_FILE>
   ```
 
-  Prints the path to a newly written `<stem>-callgraph.json` next to the source file.
+  Prints the path to a newly written `<stem>-callgraph.json` next to the source file,
+  where `stem` is the full path to the file up to (but excluding) the file extension.
+  For example, `/app/a/b/file.c` has the stem `/app/a/b/file`.
 
 - **To obtain a reverse topological ordering of functions in a call graph, with all callees before their callers**:
 
@@ -86,7 +81,15 @@ You must remember the following guidelines:
 - You must not run verification on previously-verified functions unless:
   - You suspect there is a regression.
   - You need information from a callee's verification run to help verify a caller.
-  - When you need to report the final verification counts at the end.
+
+You must produce a log of each verification command you ran. For example,
+for a file `test.c` containing the functions `foo`, `bar`, and `baz`, produce
+`test-log.jsonl` which looks like:
+
+    { "file": "test.c", "function": "foo", "command": "<VERIFICATION COMMAND>" }
+    { "file": "test.c", "function": "bar", "command": "<VERIFICATION COMMAND>" }
+    { "file": "test.c", "function": "baz", "command": "<VERIFICATION COMMAND>" }
+
 
 ## Syntax of C function specifications (contracts)
 
