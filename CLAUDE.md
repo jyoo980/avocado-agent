@@ -19,7 +19,7 @@ and [The CPROVER Manual](https://diffblue.github.io/cbmc/cprover-manual/index.ht
 You can also search the web for more CBMC documentation.
 
 You must produce a log of each verification command you ran. For example,
-for a file `myfile.c` containing the functions `foo`, `bar`, and `baz`, 
+for a file `myfile.c` containing the functions `foo`, `bar`, and `baz`,
 you might produce `myfile-log.jsonl` which looks like:
 
     { "file": "myfile.c", "function": "foo", "command": "<VERIFICATION COMMAND>" }
