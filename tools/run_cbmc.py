@@ -576,7 +576,7 @@ def _log_invocation(
     Args:
         file_under_verification (str): The file that contains the function under verification.
         result (RunCbmcResult): The final outcome of the `run_cbmc` call.
-        subprocess_results (list[dict]): Per-subprocess records (one entry per step invocation
+        subprocess_results (list[dict]): Per-subprocess records (one entry per subprocess invocation
             across every pipeline attempt), each with keys `step`, `command`, `returncode`.
         nondet_callees (list[str]): The list of callees that CBMC treated as non-deterministic
             during verification.
