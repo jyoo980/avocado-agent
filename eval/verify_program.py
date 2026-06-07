@@ -27,11 +27,7 @@ from tools.util import (
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tools.run_cbmc import RunCbmcTimeout, run_cbmc
-
-# GNU `timeout(1)` convention, used so per-function timeouts surface in the verification
-# summary without being conflated with a CBMC verification failure.
-_TIMEOUT_RETURNCODE = 124
+from tools.run_cbmc import RunCbmcResult, run_cbmc
 
 
 @dataclass(frozen=True)
@@ -41,23 +37,22 @@ class FunctionVerificationResult:
     Attributes:
         file (str): The C file containing the function on which CBMC is run.
         function (str): The name of the function on which CBMC is run.
-        returncode (int): The return code of the verification process.
         failures (list[str]): The lines from the CBMC output that are suffixed with "FAILURE".
     """
 
     file: str
     function: str
-    returncode: int
     failures: list[str]
+    run_cbmc_result: RunCbmcResult
 
     @property
-    def passed(self) -> bool:
-        """Return True iff the returncode is 0.
+    def is_function_verified(self) -> bool:
+        """Return True iff the function is verified.
 
         Returns:
-            bool: True iff the returncode is 0.
+            bool: True iff the function is verified.
         """
-        return self.returncode == 0
+        return self.run_cbmc_result.is_function_verified
 
 
 @dataclass(frozen=True)
@@ -82,7 +77,7 @@ class ProgramVerificationResult:
         Returns:
             bool: True iff all verification results are successful.
         """
-        return all(vresult.passed for vresult in self.vresults)
+        return all(vresult.is_function_verified for vresult in self.vresults)
 
 
 def main() -> int:
@@ -196,11 +191,11 @@ def _verify_program(
             + (f"  (nondet: {', '.join(nondet_callees)})" if nondet_callees else "")
         )
         result = _verify_function(function, file, include_dirs=include_dirs)
-        status = "PASS" if result.passed else "FAIL"
+        status = str(result.run_cbmc_result)
         if status == "PASS":
-            logger.debug(f"  -> {status} (returncode={result.returncode})")
+            logger.debug(f"  -> {status} (returncode={result.run_cbmc_result.returncode})")
         else:
-            logger.error(f"  -> {status} (returncode={result.returncode})")
+            logger.error(f"  -> {status} (returncode={result.run_cbmc_result.returncode})")
         for failure in result.failures:
             logger.error(f"     {failure}")
         results.append(result)
@@ -246,11 +241,16 @@ def _verify_function(
         VerificationResult: The result of verifying a function.
     """
     result = run_cbmc(function, file, include_dirs=include_dirs)
-    if isinstance(result, RunCbmcTimeout):
-        return FunctionVerificationResult(file, function, _TIMEOUT_RETURNCODE, [str(result)])
-    failures, returncode = result
-    failures = [line.strip() for line in failures.splitlines() if line.strip().endswith("FAILURE")]
-    return FunctionVerificationResult(file, function, returncode, failures)
+    if result.timed_out:
+        return FunctionVerificationResult(file, function, failures=[], run_cbmc_result=result)
+    if result.cbmc_ran_successfully and not result.is_function_verified:
+        failures = [
+            line.strip()
+            for line in result.response.splitlines()
+            if line.strip().endswith("FAILURE")
+        ]
+        return FunctionVerificationResult(file, function, failures, result)
+    return FunctionVerificationResult(file, function, failures=[], run_cbmc_result=result)
 
 
 def _print_summary(files_to_results: dict[str, ProgramVerificationResult]) -> None:
@@ -261,16 +261,16 @@ def _print_summary(files_to_results: dict[str, ProgramVerificationResult]) -> No
             verification results to summarize.
     """
     for file, program_verification_result in files_to_results.items():
-        passed = sum(1 for r in program_verification_result.vresults if r.passed)
+        passed = sum(1 for r in program_verification_result.vresults if r.is_function_verified)
         total = len(program_verification_result.vresults)
         if total:
             logger.info(f"Summary ({file!s}): {passed}/{total} functions verified")
-        for r in program_verification_result.vresults:
-            marker = "ok" if r.passed else "FAIL"
-            if marker == "ok":
-                logger.info(f"  [{marker}] {r.file}::{r.function}")
+        for function_vresult in program_verification_result.vresults:
+            marker = str(function_vresult.run_cbmc_result)
+            if marker == "PASS":
+                logger.info(f"  [{marker}] {function_vresult.file}::{function_vresult.function}")
             else:
-                logger.error(f"  [{marker}] {r.file}::{r.function}")
+                logger.error(f"  [{marker}] {function_vresult.file}::{function_vresult.function}")
         for skipped_f in program_verification_result.skipped_function_names:
             logger.warning(f"  [skipped, no specs] {program_verification_result.file}::{skipped_f}")
 
