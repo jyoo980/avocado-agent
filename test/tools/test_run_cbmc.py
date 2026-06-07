@@ -90,7 +90,7 @@ def test_compile_with_goto_cc_returns_nonzero_for_invalid_c(tmp_path: Path) -> N
         result = compile_with_goto_cc(function="add_ptrs", file_path=str(bad_src))
     finally:
         os.chdir(original_cwd)
-    assert result.returncode != 0
+    assert result != 0
 
 
 def test_run_cbmc_returns_success_result_for_trivially_verifying_function(
