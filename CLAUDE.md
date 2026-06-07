@@ -6,19 +6,19 @@ Bounded Model Checker) tool.
 Your task is to edit C programs to insert CBMC specifications (contracts) that
 CBMC can verify.  Ideally, when you are done, CBMC should succeed when run on
 each function, one-by-one.
-
-You should produce high-quality specifications.
-
 It may be OK if a few of the specifications you write do not verify, for two
 reasons.  First, if a program is incorrect, CBMC will issue a warning.  Second,
 CBMC cannot verify all correct C code.  Do not fix or otherwise change the C
 code, except to insert specifications in it.
 
-This `CLAUDE.md` file and directory `docs/` contain basic information about
-using CBMC.  CBMC is documented at https://diffblue.github.io/cbmc/index.html
+You should produce high-quality specifications.
+
+This `CLAUDE.md` file and directory `docs/` contain basic information about using CBMC.
+CBMC is documented at https://diffblue.github.io/cbmc/index.html
 which includes a [User Guide](https://diffblue.github.io/cbmc/user_guide.html)
 and [The CPROVER
 Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
+You can also search the web for more CBMC documentation.
 
 
 You must remember the following guidelines:
@@ -34,12 +34,13 @@ You must remember the following guidelines:
   - When you need to report the final verification counts at the end.
 
 You must produce a log of each verification command you ran. For example,
-for a file `test.c` containing the functions `foo`, `bar`, and `baz`, produce
-`test-log.jsonl` which looks like:
+for a file `myfile.c` containing the functions `foo`, `bar`, and `baz`,
+you might produce `myfile-log.jsonl` which looks like:
 
-    { "file": "test.c", "function": "foo", "command": "<VERIFICATION COMMAND>" }
-    { "file": "test.c", "function": "bar", "command": "<VERIFICATION COMMAND>" }
-    { "file": "test.c", "function": "baz", "command": "<VERIFICATION COMMAND>" }
+    { "file": "myfile.c", "function": "foo", "command": "<VERIFICATION COMMAND>" }
+    { "file": "myfile.c", "function": "bar", "command": "<VERIFICATION COMMAND>" }
+    { "file": "myfile.c", "function": "foo", "command": "<VERIFICATION COMMAND>" }
+    { "file": "myfile.c", "function": "baz", "command": "<VERIFICATION COMMAND>" }
 
 ## Syntax of C function specifications (contracts)
 
@@ -83,11 +84,12 @@ The function is defined in file `<PATH_TO_C_FILE>`.
 FUNCTION=<FUNCTION_NAME> \
 goto-cc -o ${FUNCTION}.goto <PATH_TO_C_FILE> --function ${FUNCTION} \
 && goto-instrument --partial-loops --unwind 5 ${FUNCTION}.goto ${FUNCTION}.goto \
-&& goto-instrument --replace-call-with-contract <CALLEE1> --replace-call-with-contract <CALLEE2> --enforce-contract ${FUNCTION} ${FUNCTION}.goto checking-${FUNCTION}-contracts.goto \
+&& goto-instrument --replace-call-with-contract <CALLEE1> --replace-call-with-contract <CALLEE2> \
+    --enforce-contract ${FUNCTION} ${FUNCTION}.goto checking-${FUNCTION}-contracts.goto \
 && cbmc checking-${FUNCTION}-contracts.goto --function ${FUNCTION} --depth 100
 ```
 
-This will produce a log to the standard output.
+This will produce a log to standard output.
 
 ### Concrete example of how to run CBMC
 
@@ -98,6 +100,7 @@ where `partition`'s body calls function `swap`, run:
 FUNCTION=partition \
 && goto-cc -o ${FUNCTION}.goto quicksort.c --function ${FUNCTION} \
 && goto-instrument --partial-loops --unwind 5 ${FUNCTION}.goto ${FUNCTION}.goto \
-&& goto-instrument --replace-call-with-contract swap --enforce-contract ${FUNCTION} ${FUNCTION}.goto checking-${FUNCTION}-contracts.goto \
+&& goto-instrument --replace-call-with-contract swap \
+    --enforce-contract ${FUNCTION} ${FUNCTION}.goto checking-${FUNCTION}-contracts.goto \
 && cbmc checking-${FUNCTION}-contracts.goto --function ${FUNCTION} --depth 100
 ```
