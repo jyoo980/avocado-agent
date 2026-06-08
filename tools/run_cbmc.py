@@ -118,10 +118,10 @@ class RunCbmcResult:
         Returns:
             str: The string representation of this result, used for logging.
         """
-        if self.failed_step:
-            return f"{self.failed_step.value.upper()}_FAILED"
         if self.timed_out:
             return "TIMED_OUT"
+        if self.failed_step:
+            return f"{self.failed_step.value.upper()}_FAILED"
         if self.is_function_verified:
             return "PASS"
         return "FAIL"
