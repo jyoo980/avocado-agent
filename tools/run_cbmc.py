@@ -299,8 +299,9 @@ def _run_pipeline(
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
         prevent_macro_expansion (bool): When True, disable macros CBMC can't model and inject
             the bundled C-library models before contract enforcement.
-        subprocess_results (list[dict]): Mutated in place — one dict per subprocess invocation
-            appended in order. Used by `_log_invocation` to produce the JSONL row.
+        subprocess_results (list[dict]): Mutated in place by callee (_run_command). One dict per
+            subprocess invocation is appended in-order. Used by `_log_invocation` to produce the
+            JSONL row.
 
     Returns:
         tuple[RunCbmcResult, str, str]: The result of the pipeline plus the concatenated
@@ -340,13 +341,15 @@ def _run_pipeline(
         ]
     )
 
-    combined_stdout = ""
-    combined_stderr = ""
+    per_step_stdout = []
+    per_step_stderr = []
     for step, command in commands:
         subprocess_result = _run_command(step, command, subprocess_results)
-        combined_stdout += subprocess_result.stdout
-        combined_stderr += subprocess_result.stderr
+        per_step_stdout.append(subprocess_result.stdout)
+        per_step_stderr.append(subprocess_result.stderr)
         if not subprocess_result.succeeded:
+            combined_stdout = "".join(per_step_stdout)
+            combined_stderr = "".join(per_step_stderr)
             return (
                 _result_from_failure(
                     function_to_verify,
@@ -366,8 +369,8 @@ def _run_pipeline(
             returncode=0,
             response=f"{function_to_verify} verified successfully",
         ),
-        combined_stdout,
-        combined_stderr,
+        "".join(per_step_stdout),
+        "".join(per_step_stderr),
     )
 
 
