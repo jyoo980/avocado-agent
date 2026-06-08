@@ -745,8 +745,8 @@ def compile_with_goto_cc(
         include_dirs (list[str] | None): Directories forwarded as `-I` flags.
 
     Returns:
-        int: the subprocess result.
-            Its `.returncode` is goto-cc's exit code (0 == compiled successfully).
+        int: the return code of the subprocess used to invoke `goto-cc`,
+            (0 == compiled successfully).
     """
     compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
     try:
