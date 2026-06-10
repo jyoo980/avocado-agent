@@ -20,7 +20,7 @@ def test_get_goto_cc_command_no_stubs_no_includes() -> None:
     command = _get_goto_cc_command(
         function="swap", file_containing_function="quicksort.c"
     )
-    assert command == "goto-cc -o swap.goto quicksort.c --function swap"
+    assert command == "goto-cc  -o swap.goto  quicksort.c  --function swap"
 
 
 def test_get_goto_instrument_unwind_command_uses_partial_loops_and_unwind() -> None:
