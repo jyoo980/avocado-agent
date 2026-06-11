@@ -49,6 +49,10 @@ _GOTO_CC_TIMEOUT_SEC = 30
 # both in the CLI exit code and in the JSONL invocation log.
 _TIMEOUT_RETURNCODE = 124
 
+# Fixed values for CBMC's `--depth` and `--unwind` flags.
+_CBMC_UNWIND = 5
+_CBMC_DEPTH = 200
+
 
 class CbmcStep(StrEnum):
     """Logical step in the CBMC verification pipeline.
@@ -149,7 +153,7 @@ def main() -> None:
     """Run CBMC on a function."""
     parser = argparse.ArgumentParser(
         description=(
-            "Run CBMC on a function with loop unwinding = 5, depth = 100. "
+            "Run CBMC on a function with loop unwinding = _CBMC_UNWIND, depth = _CBMC_DEPTH. "
             "Exits with status 0 on verification success."
         )
     )
@@ -219,14 +223,13 @@ def run_cbmc(
         prevent_macro_expansion=False,
         step_records=step_records,
     )
-    if result.timed_out:
+    # First, check if the run was successful or if it timed out.
+    if result.cbmc_ran_successfully or result.timed_out:
         _log_invocation(file_containing_function_to_verify, result, step_records, nondet_callees)
         return result
 
     # Recursion-inlining retry.
-    if not result.cbmc_ran_successfully and has_recursion_inlining_error_message(
-        function_to_verify, combined_stdout, combined_stderr
-    ):
+    if has_recursion_inlining_error_message(function_to_verify, combined_stdout, combined_stderr):
         callees = get_in_file_callees_for(
             function_to_verify,
             call_graph,
@@ -241,11 +244,6 @@ def run_cbmc(
             prevent_macro_expansion=False,
             step_records=step_records,
         )
-        if result.timed_out:
-            _log_invocation(
-                file_containing_function_to_verify, result, step_records, nondet_callees
-            )
-            return result
 
     # Missing-body retry: re-run with macro expansion suppressed.
     if not result.cbmc_ran_successfully and has_missing_body_for_callee_message(
@@ -260,11 +258,6 @@ def run_cbmc(
             prevent_macro_expansion=True,
             step_records=step_records,
         )
-        if result.timed_out:
-            _log_invocation(
-                file_containing_function_to_verify, result, step_records, nondet_callees
-            )
-            return result
 
     _log_invocation(file_containing_function_to_verify, result, step_records, nondet_callees)
     return result
@@ -652,7 +645,7 @@ def _get_goto_instrument_add_library_command(function: str) -> str:
 
 
 def _get_goto_instrument_unwind_command(function: str) -> str:
-    """Return the `goto-instrument --partial-loops --unwind 5` command for `function`.
+    """Return the `goto-instrument --partial-loops --unwind _CBMC_UNWIND` command for `function`.
 
     Args:
         function (str): The function whose goto-binary should be unwound.
@@ -662,7 +655,8 @@ def _get_goto_instrument_unwind_command(function: str) -> str:
     """
     quoted_function = shlex.quote(function)
     return (
-        f"goto-instrument --partial-loops --unwind 5 {quoted_function}.goto {quoted_function}.goto"
+        f"goto-instrument --partial-loops "
+        f"--unwind {_CBMC_UNWIND} {quoted_function}.goto {quoted_function}.goto"
     )
 
 
@@ -698,7 +692,8 @@ def _get_cbmc_check_command(function: str) -> str:
     """
     quoted_function = shlex.quote(function)
     return (
-        f"cbmc checking-{quoted_function}-contracts.goto --function {quoted_function} --depth 100"
+        f"cbmc checking-{quoted_function}-contracts.goto "
+        f"--function {quoted_function} --depth {_CBMC_DEPTH}"
     )
 
 
