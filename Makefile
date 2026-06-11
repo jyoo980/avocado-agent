@@ -3,11 +3,19 @@
 build-image:
 	docker build -t avocado-agent-container .
 
-run:
-	docker run -it --rm -v $(PWD):/app avocado-agent-container
+# Named volumes persist the project venv and uv cache across container runs so
+# `uv sync` does not rebuild the environment from scratch each time.
+DOCKER_RUN_VOLUMES := -v $(PWD):/app \
+	-v avocado-agent-venv:/opt/venv \
+	-v avocado-agent-uv-cache:/root/.cache/uv
 
+run:
+	docker run -it --rm $(DOCKER_RUN_VOLUMES) avocado-agent-container
+
+# Tests exercise the CBMC toolchain, which only exists inside the container, so
+# they must run there rather than on the host.
 test:
-	uv run pytest
+	docker run --rm $(DOCKER_RUN_VOLUMES) avocado-agent-container uv run pytest
 
 # Run all code style checks.
 checks: style-fix style-check

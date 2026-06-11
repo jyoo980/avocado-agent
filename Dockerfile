@@ -20,6 +20,12 @@ RUN npm install -g @anthropic-ai/claude-code
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 
+# Keep the project venv and uv cache at fixed locations off the bind-mounted
+# /app so they can be backed by named Docker volumes (see the Makefile). This
+# turns `uv sync` into a near-instant no-op on repeat runs.
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+ENV UV_CACHE_DIR=/root/.cache/uv
+
 RUN ARCH="$(dpkg --print-architecture)" && \
     if [ "$ARCH" = "arm64" ]; then \
         CBMC_DEB="ubuntu-24.04-arm64-cbmc-${CBMC_VERSION}-Linux.deb"; \
