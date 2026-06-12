@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from subprocess import TimeoutExpired
+from collections import Counter
 
 from tools.construct_call_graph import construct_call_graph
 from tools.util import (
@@ -122,6 +123,46 @@ class RunCbmcResult:
             return "TIMED_OUT"
         return "PASS" if self.is_function_verified else "FAIL"
 
+    def with_mutation_testing_score(self, path_to_file: str, include_dirs: list[str] | None) -> str:
+        """Return this run's success response augmented with a mutation-testing summary.
+
+        Runs body-mutation testing on the (already-verified) function and appends a
+        human-readable kill-score line plus the unified diff of every surviving mutant. The
+        diffs are rendered verbatim (not JSON-escaped) so the consuming agent can read them
+        directly and see which perturbations its spec fails to catch. Returns the plain
+        success response unchanged when no baseline mutation score could be computed (e.g. no
+        mutants were decidable).
+
+        The import of `generate_mutants_and_compute_score` is deliberately local: the
+        mutation module imports `run_cbmc` and `CbmcStep` from this module at load time, so
+        importing it at this module's top level would form an import cycle. Deferring the
+        import to call time breaks the cycle — by the time this method runs, both modules
+        are fully initialized.
+
+        Args:
+            path_to_file (str): Path to the C source defining the verified function.
+            include_dirs (list[str] | None): Include directories forwarded to mutation testing.
+
+        Returns:
+            str: The success response, with a mutation-testing section appended when available.
+        """
+        # ruff: noqa PLC0415
+        from tools.util.mutation import (
+            format_mutation_success_section,
+            generate_mutants_and_compute_score,
+        )
+
+        mutation_score = generate_mutants_and_compute_score(
+            path_to_file, target_function=self.function, include_dirs=include_dirs
+        )
+        if not mutation_score or mutation_score.kill_score == 1:
+            return self.response
+        return (
+            f"{self.response}, "
+            "but the kill might be able to be improved.\n"
+            f"{format_mutation_success_section(mutation_score)}"
+        )
+
 
 @dataclass(frozen=True)
 class _StepRun:
@@ -174,8 +215,13 @@ def main() -> None:
         file_containing_function_to_verify=args.file,
         include_dirs=args.include_dirs,
     )
-    print(result.response)
-    sys.exit(result.returncode)
+    # If the function successfully verifies, run mutation testing.
+    if result.is_function_verified:
+        print(result.with_mutation_testing_score(args.file, args.include_dirs))
+        sys.exit(result.returncode)
+    else:
+        print(result.response)
+        sys.exit(result.returncode)
 
 
 def run_cbmc(

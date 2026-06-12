@@ -8,7 +8,7 @@ CBMC can verify.  Ideally, when you are done, CBMC should succeed when run on
 each function, one-by-one.
 
 You should produce high-quality specifications;
-a proxy for the quality of a specification can be obtained by mutation testing, which will produce a kill score.
+a proxy for the quality of a specification can be obtained by mutation testing.
 
 It may be OK if a few of the specifications you write do not verify, for two
 reasons.  First, if a program is incorrect, CBMC will issue a warning.  Second,
@@ -34,19 +34,8 @@ You should always prefer this project's CLI tools over invoking CBMC by hand.
                    [-I <PATH_TO_INCLUDE_DIR(S)>]...
   ```
 
-  If verification succeeds, exits with status 0 and prints a success line to stdout.
+  If verification succeeds, prints any mutation-testing information (e.g., the kill score, surviving mutants) to stdout, and exits with status zero.
   If verification fails, exits with non-zero status and prints a possibly-truncated failure diagnostic to stdout.
-
-- **To get a kill score from mutation testing**, run:
-
-  ```sh
-  avocado-get-mutation-score --function <FUNCTION_NAME> \
-                   --file <PATH_TO_C_FILE> \
-                   [-I <PATH_TO_INCLUDE_DIR(S)>]...
-  ```
-  If mutation testing succeeds, exits with status 0 and prints the kill score and any
-  surviving mutants as a JSON-formatted string.
-  If mutation testing fails, exits with non-zero status and prints an error to stderr.
 
 - **To obtain a call graph of the functions in a file in JSON format**, run:
 
@@ -66,14 +55,19 @@ You should always prefer this project's CLI tools over invoking CBMC by hand.
 
   Prints function names callees-first, one per line.
 
+## Mutation Testing
+
+You improve on a specification's quality using the mutation testing information that is provided by
+the `avocado-run-cbmc` script. If a function verifies successfully, the script will return a kill
+score and the next steps you should take to increase the kill score.
+
+It might be the case that the kill score cannot be increased; iterate no more than 5 times in your
+attempts to increase the kill score.
 
 You must remember the following guidelines:
 - Fall back to directly running the `cbmc` program only if necessary (prefer the `avocado-run-cbmc` script).
 - Do not hard-code any values into the specifications that are related to CBMC's command-line
   arguments (e.g., the `N` in `--partial-loops --unwind <N>`).
-- You must improve on a specification's quality by using mutation testing via the
-  `avocado-get-mutation-score` script, which produces a kill score you can try to increase. Do not
-  iterate more than 5 times, and stop if it is clear that the kill score cannot be improved.
 - Do not attempt to fix a failing specification for a function more than 5 times.
 - Do not attempt to verify `main` functions.
 - If a function has no side effects on memory beyond local variables or return values,

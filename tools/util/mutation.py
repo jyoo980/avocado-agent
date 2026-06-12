@@ -26,6 +26,11 @@ from tools.run_cbmc import CbmcStep, run_cbmc
 # real CBMC failure (10) or success (0).
 _VERIFICATION_FAILURE_RETURNCODE = 10
 
+# Char budget for the mutation-testing section appended to a *success* response.
+# Surviving-mutant diff volume is unbounded in principle, so cap it the way failure
+# output is capped, dropping trailing survivors behind an explicit omission marker.
+_MAX_MUTATION_SECTION_CHARS = 50_000
+
 
 @dataclass(frozen=True)
 class MutantVerificationResult:
@@ -107,6 +112,75 @@ class MutationScore:
             "compile_failed": self.num_compile_failed,
             "kill_score": f"{self.kill_score:.4f}",
         }
+
+
+def format_mutation_success_section(mutation_score: MutationScore) -> str:
+    """Format the mutation-testing section appended to a successful verification response.
+
+    Renders a scannable kill-score line followed by the unified diff of each surviving
+    mutant — a mutant that compiled and was decided but that the spec failed to kill. Each
+    diff is preceded by a clickable `file:line` reference and the operator swap that produced
+    it. Diffs are emitted verbatim rather than JSON-escaped so the agent can read them
+    directly. The section is bounded by `_MAX_MUTATION_SECTION_CHARS`: once appending the next
+    survivor's block would exceed the budget, the remaining survivors are dropped behind an
+    explicit omission marker.
+
+    Args:
+        mutation_score (MutationScore): The mutation score for the verified function.
+
+    Returns:
+        str: The formatted, size-bounded mutation-testing section.
+    """
+    if not mutation_score.num_mutants:
+        return (
+            f"No mutants generated for '{mutation_score.function}' "
+            "(no mutable operators in the function body)\n"
+            "Next step: continue verifying the rest of the program"
+        )
+    kill_score_line = (
+        f"Mutation kill score: {mutation_score.kill_score:.4f} "
+        f"(killed {mutation_score.num_killed}/{mutation_score.num_mutants}; "
+        f"{mutation_score.num_survived} survived, "
+        f"{mutation_score.num_timed_out} timed out, "
+        f"{mutation_score.num_compile_failed} compile-failed)"
+    )
+    # A surviving mutant is one that compiled and was decided (not timed out) yet the spec
+    # did not kill — mirrors `_is_valid_mutation_vresult` in tools/get_mutation_score.py.
+    survivors = [
+        vresult
+        for vresult in mutation_score.results
+        if not vresult.killed and not vresult.compile_failed and not vresult.timed_out
+    ]
+    if not survivors:
+        return f"{kill_score_line}\nAll decided mutants were killed."
+
+    header = (
+        f"{kill_score_line}\n"
+        f"{len(survivors)} surviving mutant(s) — the spec does not catch these perturbations:"
+    )
+    blocks: list[str] = []
+    used = len(header)
+    for index, vresult in enumerate(survivors, start=1):
+        mutant = vresult.mutant
+        block = (
+            f"\n\n--- surviving mutant {index} — {mutation_score.file}:{mutant.line} "
+            f"({mutant.operator_class}: "
+            f"{mutant.original_operator} -> {mutant.replacement_operator}) ---\n"
+            f"{mutant.get_unified_diff()}"
+        )
+        if used + len(block) > _MAX_MUTATION_SECTION_CHARS:
+            omitted = len(survivors) - index + 1
+            blocks.append(f"\n\n[... {omitted} more surviving mutant(s) omitted ...]")
+            break
+        blocks.append(block)
+        used += len(block)
+
+    return (
+        header
+        + "".join(blocks)
+        + "\nNext step: Try to increase the kill score by strengthening the specification, "
+        + "but don't keep trying if it is obvious the kill score cannot be increased."
+    )
 
 
 def generate_mutants_and_compute_score(
