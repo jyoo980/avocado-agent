@@ -155,7 +155,7 @@ class RunCbmcResult:
         mutation_score = generate_mutants_and_compute_score(
             path_to_file, target_function=self.function, include_dirs=include_dirs
         )
-        if not mutation_score or mutation_score.kill_score == 1:
+        if not mutation_score or mutation_score.kill_score == 1 or mutation_score.num_mutants == 0:
             return self.response
         return (
             f"{self.response}, "

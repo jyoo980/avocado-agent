@@ -5,10 +5,8 @@ from pathlib import Path
 
 from eval.mutants.mutate_function import Mutant
 from tools.run_cbmc import (
-    _MAX_MUTATION_SECTION_CHARS,
     CbmcStep,
     RunCbmcResult,
-    _format_mutation_success_section,
     _get_cbmc_check_command,
     _get_goto_cc_command,
     _get_goto_instrument_add_library_command,
@@ -17,7 +15,7 @@ from tools.run_cbmc import (
     compile_with_goto_cc,
     run_cbmc,
 )
-from tools.util.mutation import MutantVerificationResult, MutationScore
+from tools.util.mutation import MutantVerificationResult, MutationScore, _MAX_MUTATION_SECTION_CHARS, format_mutation_success_section
 
 
 def _make_mutant(
@@ -185,7 +183,7 @@ def test_format_mutation_success_section_renders_kill_score_and_survivor_diff() 
         results=[_vresult(killed, killed=True), _vresult(survivor, killed=False)],
     )
 
-    section = _format_mutation_success_section(score)
+    section = format_mutation_success_section(score)
 
     # Kill-score line, formatted to 4 decimals like summary().
     assert "Mutation kill score: 0.5000 (killed 1/2; 1 survived" in section
@@ -217,7 +215,7 @@ def test_format_mutation_success_section_reports_all_killed() -> None:
         results=[_vresult(killed, killed=True)],
     )
 
-    section = _format_mutation_success_section(score)
+    section = format_mutation_success_section(score)
 
     assert "Mutation kill score: 1.0000" in section
     assert "All decided mutants were killed." in section
@@ -251,7 +249,7 @@ def test_format_mutation_success_section_excludes_undecided_mutants() -> None:
     )
 
     # Neither a timed-out nor a compile-failed mutant counts as a survivor.
-    assert "All decided mutants were killed." in _format_mutation_success_section(score)
+    assert "All decided mutants were killed." in format_mutation_success_section(score)
 
 
 def test_format_mutation_success_section_bounds_size_and_marks_omissions() -> None:
@@ -283,7 +281,7 @@ def test_format_mutation_success_section_bounds_size_and_marks_omissions() -> No
         results=survivors,
     )
 
-    section = _format_mutation_success_section(score)
+    section = format_mutation_success_section(score)
 
     assert "more surviving mutant(s) omitted" in section
     # The section stays bounded (budget plus a small marker overhead).
