@@ -169,8 +169,7 @@ def format_mutation_success_section(mutation_score: MutationScore) -> str:
         )
         if used + len(block) > _MAX_MUTATION_SECTION_CHARS:
             omitted = len(survivors) - index + 1
-            if omitted:
-                blocks.append(f"\n\n[... {omitted} more surviving mutant(s) omitted ...]")
+            blocks.append(f"\n\n[... {omitted} more surviving mutant(s) omitted ...]")
             break
         blocks.append(block)
         used += len(block)
