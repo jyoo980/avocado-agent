@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from subprocess import CompletedProcess
 
 from tools.run_cbmc import (
     CbmcStep,
@@ -53,7 +54,7 @@ def test_get_goto_instrument_add_library_command() -> None:
 
 def test_get_cbmc_check_command() -> None:
     command = _get_cbmc_check_command("swap")
-    assert command == "cbmc checking-swap-contracts.goto --function swap --depth 100"
+    assert command == "cbmc checking-swap-contracts.goto --function swap --depth 200"
 
 
 def test_compile_with_goto_cc_returns_zero_for_valid_c(tmp_path: Path) -> None:
@@ -63,10 +64,16 @@ def test_compile_with_goto_cc_returns_zero_for_valid_c(tmp_path: Path) -> None:
     original_cwd = Path.cwd()
     try:
         os.chdir(tmp_path)
-        returncode = compile_with_goto_cc(function="baz", file_path=str(src))
+        result = compile_with_goto_cc(function="baz", file_path=str(src))
     finally:
         os.chdir(original_cwd)
-    assert returncode == 0
+    if isinstance(result, CompletedProcess):
+        if result.returncode:
+            print(f"Error while compiling function baz in {src}")
+            print(result.stdout)
+            print(result.stderr)
+        result.check_returncode()
+    assert result == 0
 
 
 def test_compile_with_goto_cc_returns_nonzero_for_invalid_c(tmp_path: Path) -> None:
@@ -80,10 +87,10 @@ def test_compile_with_goto_cc_returns_nonzero_for_invalid_c(tmp_path: Path) -> N
     original_cwd = Path.cwd()
     try:
         os.chdir(tmp_path)
-        returncode = compile_with_goto_cc(function="add_ptrs", file_path=str(bad_src))
+        result = compile_with_goto_cc(function="add_ptrs", file_path=str(bad_src))
     finally:
         os.chdir(original_cwd)
-    assert returncode != 0
+    assert result != 0
 
 
 def test_run_cbmc_returns_success_result_for_trivially_verifying_function(

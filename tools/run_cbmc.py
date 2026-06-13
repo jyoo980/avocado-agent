@@ -50,10 +50,10 @@ _GOTO_CC_TIMEOUT_SEC = 30
 _TIMEOUT_RETURNCODE = 124
 
 # `--unwind` argument to CBMC.
-_UNWIND = 5
+_CBMC_UNWIND = 5
 
 # `--depth` argument to CBMC.
-_DEPTH = 100
+_CBMC_DEPTH = 100
 
 
 class CbmcStep(StrEnum):
@@ -121,10 +121,10 @@ class RunCbmcResult:
         Returns:
             str: The string representation of this result, used for logging.
         """
-        if self.failed_step:
-            return f"{self.failed_step.value.upper()}_FAILED"
         if self.timed_out:
             return "TIMED_OUT"
+        if self.failed_step:
+            return f"{self.failed_step.value.upper()}_FAILED"
         if self.is_function_verified:
             return "PASS"
         return "FAIL"
@@ -168,12 +168,16 @@ def main() -> None:
     """Run CBMC on a function."""
     parser = argparse.ArgumentParser(
         description=(
-            f"Run CBMC on a function with loop unwinding = {_UNWIND}, depth = {_DEPTH}. "
+            "Run CBMC on a function with loop unwinding = _CBMC_UNWIND, depth = _CBMC_DEPTH. "
             "Exits with status 0 on verification success."
         )
     )
-    parser.add_argument("--function", required=True, help="Name of the function to verify.")
-    parser.add_argument("--file", required=True, help="Path to the C file defining the function.")
+    parser.add_argument(
+        "--function", required=True, help="Name of the function to verify."
+    )
+    parser.add_argument(
+        "--file", required=True, help="Path to the C file defining the function."
+    )
     parser.add_argument(
         "-I",
         "--include-dir",
@@ -220,13 +224,17 @@ def run_cbmc(
     """
     # MDE: What is a "raw" callgraph?
     path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)
-    call_graph = CallGraph(json.loads(Path(path_to_raw_call_graph).read_text(encoding="utf-8")))
+    call_graph = CallGraph(
+        json.loads(Path(path_to_raw_call_graph).read_text(encoding="utf-8"))
+    )
     callees = get_in_file_callees_for(function_to_verify, call_graph)
     # Building the stub index is inexpensive for now (there is a single file).
     # Re-visit this if/when we have more stub files to parse.
     stub_index = build_stub_index()
     stub_paths = get_stub_paths_for(function_to_verify, call_graph, stub_index)
-    nondet_callees = get_unstubbed_external_callees_for(function_to_verify, call_graph, stub_index)
+    nondet_callees = get_unstubbed_external_callees_for(
+        function_to_verify, call_graph, stub_index
+    )
 
     subprocess_results: list[dict] = []
 
@@ -240,6 +248,7 @@ def run_cbmc(
         prevent_macro_expansion=False,
         subprocess_results=subprocess_results,
     )
+    # First, check if the run was successful or if it timed out.
     if result.cbmc_ran_successfully or result.timed_out:
         _log_invocation(
             file_containing_function_to_verify,
@@ -250,7 +259,9 @@ def run_cbmc(
         return result
 
     # Recursion-inlining retry.
-    if has_recursion_inlining_error_message(function_to_verify, combined_stdout, combined_stderr):
+    if has_recursion_inlining_error_message(
+        function_to_verify, combined_stdout, combined_stderr
+    ):
         callees = get_in_file_callees_for(
             function_to_verify,
             call_graph,
@@ -265,14 +276,6 @@ def run_cbmc(
             prevent_macro_expansion=False,
             subprocess_results=subprocess_results,
         )
-        if result.cbmc_ran_successfully or result.timed_out:
-            _log_invocation(
-                file_containing_function_to_verify,
-                result,
-                subprocess_results,
-                nondet_callees,
-            )
-            return result
 
     # Missing-body retry: re-run with macro expansion suppressed.
     if has_missing_body_for_callee_message(combined_stdout, combined_stderr):
@@ -286,7 +289,9 @@ def run_cbmc(
             subprocess_results=subprocess_results,
         )
 
-    _log_invocation(file_containing_function_to_verify, result, subprocess_results, nondet_callees)
+    _log_invocation(
+        file_containing_function_to_verify, result, subprocess_results, nondet_callees
+    )
     return result
 
 
@@ -312,8 +317,9 @@ def _run_pipeline(
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
         prevent_macro_expansion (bool): When True, disable macros CBMC can't model and inject
             the bundled C-library models before contract enforcement.
-        subprocess_results (list[dict]): Mutated in place — one dict per subprocess invocation
-            appended in order. Used by `_log_invocation` to produce the JSONL row.
+        subprocess_results (list[dict]): Mutated in place by callee (_run_command). One dict per
+            subprocess invocation is appended in-order. Used by `_log_invocation` to produce the
+            JSONL row.
 
     Returns:
         tuple[RunCbmcResult, str, str]: The result of the pipeline plus the concatenated
@@ -356,13 +362,15 @@ def _run_pipeline(
         ]
     )
 
-    combined_stdout = ""
-    combined_stderr = ""
+    per_step_stdout = []
+    per_step_stderr = []
     for step, command in commands:
         subprocess_result = _run_command(step, command, subprocess_results)
-        combined_stdout += subprocess_result.stdout
-        combined_stderr += subprocess_result.stderr
+        per_step_stdout.append(subprocess_result.stdout)
+        per_step_stderr.append(subprocess_result.stderr)
         if not subprocess_result.succeeded:
+            combined_stdout = "".join(per_step_stdout)
+            combined_stderr = "".join(per_step_stderr)
             return (
                 _result_from_failure(
                     function_to_verify,
@@ -384,8 +392,8 @@ def _run_pipeline(
             returncode=0,
             response=f"{function_to_verify} verified successfully",
         ),
-        combined_stdout,
-        combined_stderr,
+        "".join(per_step_stdout),
+        "".join(per_step_stderr),
     )
 
 
@@ -478,7 +486,9 @@ def _result_from_failure(
     )
 
 
-def has_recursion_inlining_error_message(function: str, stdout: str, stderr: str) -> bool:
+def has_recursion_inlining_error_message(
+    function: str, stdout: str, stderr: str
+) -> bool:
     """Return True iff CBMC reports an error with inlining given function, which might be recursive.
 
     Args:
@@ -512,7 +522,9 @@ def has_missing_body_for_callee_message(stdout: str, stderr: str) -> bool:
     return missing_callee_indicator in stdout or missing_callee_indicator in stderr
 
 
-def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, stderr: str) -> str:
+def _format_failure_response(
+    function: str, failed_step: CbmcStep, stdout: str, stderr: str
+) -> str:
     """Format a CBMC failure response, truncating if it exceeds the character budget.
 
     When the combined labeled output fits within `_MAX_RESPONSE_CHARS`, both streams are
@@ -532,7 +544,9 @@ def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, 
     if failed_step is CbmcStep.CBMC:
         header = f"{function} failed to verify with the following errors:\n\n"
     else:
-        header = f"{function} failed at {failed_step.value} with the following errors:\n\n"
+        header = (
+            f"{function} failed at {failed_step.value} with the following errors:\n\n"
+        )
     full = f"{header}--- stderr ---\n{stderr}\n--- stdout ---\n{stdout}"
     if len(full) <= _MAX_RESPONSE_CHARS:
         return full
@@ -625,7 +639,9 @@ def _log_invocation(
         "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "function": result.function,
         "file": file_under_verification,
-        "failed_step": result.failed_step.value if result.failed_step is not None else None,
+        "failed_step": result.failed_step.value
+        if result.failed_step is not None
+        else None,
         "returncode": result.returncode,
         "timed_out": result.timed_out,
         "subprocess_results": subprocess_results,
@@ -667,7 +683,9 @@ def _get_goto_cc_command(
         f"{' '.join(_DISABLE_MACRO_FLAGS)}" if prevent_macro_expansion else ""
     )
     extra_stub_args = " ".join(shlex.quote(p) for p in stub_paths) if stub_paths else ""
-    include_flags = " ".join(f"-I {shlex.quote(d)}" for d in include_dirs) if include_dirs else ""
+    include_flags = (
+        " ".join(f"-I {shlex.quote(d)}" for d in include_dirs) if include_dirs else ""
+    )
     return " ".join(
         (
             f"goto-cc {flags_disabling_macro_expansion}",
@@ -695,11 +713,13 @@ def _get_goto_instrument_add_library_command(function: str) -> str:
         str: A single shell command.
     """
     quoted_function = shlex.quote(function)
-    return f"goto-instrument --add-library {quoted_function}.goto {quoted_function}.goto"
+    return (
+        f"goto-instrument --add-library {quoted_function}.goto {quoted_function}.goto"
+    )
 
 
 def _get_goto_instrument_unwind_command(function: str) -> str:
-    """Return the `goto-instrument --partial-loops --unwind _UNWIND` command for `function`.
+    """Return the `goto-instrument --partial-loops --unwind _CBMC_UNWIND` command for `function`.
 
     Args:
         function (str): The function whose goto-binary should be unwound.
@@ -709,7 +729,7 @@ def _get_goto_instrument_unwind_command(function: str) -> str:
     """
     quoted_function = shlex.quote(function)
     return (
-        f"goto-instrument --partial-loops --unwind {_UNWIND} "
+        f"goto-instrument --partial-loops --unwind {_CBMC_UNWIND} "
         f"{quoted_function}.goto {quoted_function}.goto"
     )
 
@@ -726,7 +746,9 @@ def _get_goto_instrument_contract_command(function: str, callees: list[str]) -> 
         str: A single shell command.
     """
     quoted_function = shlex.quote(function)
-    replace_calls = "".join(f" --replace-call-with-contract {shlex.quote(c)}" for c in callees)
+    replace_calls = "".join(
+        f" --replace-call-with-contract {shlex.quote(c)}" for c in callees
+    )
     return (
         f"goto-instrument{replace_calls} "
         f"--enforce-contract {quoted_function} "
@@ -747,7 +769,7 @@ def _get_cbmc_check_command(function: str) -> str:
     quoted_function = shlex.quote(function)
     return (
         f"cbmc checking-{quoted_function}-contracts.goto "
-        f"--function {quoted_function} --depth {_DEPTH}"
+        f"--function {quoted_function} --depth {_CBMC_DEPTH}"
     )
 
 
@@ -768,9 +790,12 @@ def compile_with_goto_cc(
         include_dirs (list[str] | None): Directories forwarded as `-I` flags.
 
     Returns:
-        int: goto-cc's exit code (0 == compiled successfully).
+        int: the return code of the subprocess used to invoke `goto-cc`,
+            (0 == compiled successfully).
     """
-    compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
+    compilation_command = _get_goto_cc_command(
+        function, file_path, include_dirs=include_dirs
+    )
     try:
         result = subprocess.run(
             compilation_command,
