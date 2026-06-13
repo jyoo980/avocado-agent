@@ -146,7 +146,7 @@ class RunCbmcResult:
         # import to call time breaks the cycle — by the time this method runs, both modules
         # are fully initialized.
         from tools.util.mutation import (
-            format_mutation_success_section,
+            get_mutation_testing_results_for_client,
             generate_mutants_and_compute_score,
         )
 
@@ -166,7 +166,7 @@ class RunCbmcResult:
         return (
             f"{self.response}, "
             "but the kill score might be able to be improved.\n"
-            f"{format_mutation_success_section(mutation_score)}"
+            f"{get_mutation_testing_results_for_client(mutation_score)}"
         )
 
 

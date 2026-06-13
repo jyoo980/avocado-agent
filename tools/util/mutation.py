@@ -78,7 +78,7 @@ class MutationScore:
     Attributes
     ----------
         file (str): The file in which the original function is declared.
-        function (str): The name of this function.
+        target_function (str): The name of this function.
         num_mutants (int): The total number of mutants for this function.
         num_killed (int): The number of killed mutants.
         num_survived (int): The number of surviving (decided, not killed) mutants.
@@ -89,7 +89,7 @@ class MutationScore:
     """
 
     file: str
-    function: str
+    target_function: str
     num_mutants: int
     num_killed: int
     num_survived: int
@@ -107,7 +107,7 @@ class MutationScore:
         return {
             "kind": "mutation_summary",
             "file": self.file,
-            "function": self.function,
+            "function": self.target_function,
             "total": self.num_mutants,
             "killed": self.num_killed,
             "survived": self.num_survived,
@@ -117,7 +117,7 @@ class MutationScore:
         }
 
 
-def format_mutation_success_section(mutation_score: MutationScore) -> str:
+def get_mutation_testing_results_for_client(mutation_score: MutationScore) -> str:
     """Return mutation-testing information that can be used by a client.
 
     Returns a string comprising a summary header followed by the unified diff(s) of each surviving
@@ -134,7 +134,7 @@ def format_mutation_success_section(mutation_score: MutationScore) -> str:
     """
     if not mutation_score.num_mutants:
         return (
-            f"No mutants generated for '{mutation_score.function}' "
+            f"No mutants generated for '{mutation_score.target_function}' "
             "(no mutable operators in the function body)\n"
             "Next step: continue verifying the rest of the program"
         )
@@ -142,6 +142,8 @@ def format_mutation_success_section(mutation_score: MutationScore) -> str:
         f"Mutation kill score: {mutation_score.kill_score:.4f} "
         f"(killed {mutation_score.num_killed}/{mutation_score.num_mutants}; "
         f"{mutation_score.num_survived} survived, "
+        # The values for the number of timed-out/compile-failed mutants are also reported since
+        # the denominator for the kill score includes them.
         f"{mutation_score.num_timed_out} timed out, "
         f"{mutation_score.num_compile_failed} compile-failed)"
     )
@@ -252,7 +254,7 @@ def generate_mutants_and_compute_score(
 def _aggregate_mutation_score(
     mutant_vresults: list[MutantVerificationResult],
     file: str,
-    function: str,
+    target_function: str,
 ) -> MutationScore:
     """Aggregate per-mutant results into a MutationScore.
 
@@ -263,7 +265,7 @@ def _aggregate_mutation_score(
     Args:
         mutant_vresults (list[MutantVerificationResult]): The per-mutant results.
         file (str): The source file containing the function.
-        function (str): The function under test.
+        target_function (str): The function under test.
 
     Returns:
         MutationScore: The aggregated score.
@@ -278,7 +280,7 @@ def _aggregate_mutation_score(
     kill_rate = (killed / decided) if decided else 0.0
     return MutationScore(
         file=file,
-        function=function,
+        target_function=target_function,
         num_mutants=total,
         num_killed=killed,
         num_survived=survived,
