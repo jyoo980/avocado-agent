@@ -15,11 +15,21 @@ from tools.run_cbmc import (
     compile_with_goto_cc,
     run_cbmc,
 )
-from tools.util.mutation import MutantVerificationResult, MutationScore, _MAX_MUTATION_SECTION_CHARS, format_mutation_success_section
+from tools.util.mutation import (
+    MutantVerificationResult,
+    MutationScore,
+    _MAX_MUTATION_SECTION_CHARS,
+    format_mutation_success_section,
+)
 
 
 def _make_mutant(
-    *, source: str, original_operator: str, replacement_operator: str, start_byte: int, line: int
+    *,
+    source: str,
+    original_operator: str,
+    replacement_operator: str,
+    start_byte: int,
+    line: int,
 ) -> Mutant:
     """Build a Mutant whose `get_unified_diff` reconstructs the original via the byte offset."""
     return Mutant(
@@ -37,7 +47,10 @@ def _make_mutant(
 
 def _vresult(mutant: Mutant, *, killed: bool) -> MutantVerificationResult:
     return MutantVerificationResult(
-        mutant=mutant, path_to_mutant="m.c", killed=killed, returncode=0 if killed else 10
+        mutant=mutant,
+        path_to_mutant="m.c",
+        killed=killed,
+        returncode=0 if killed else 10,
     )
 
 
@@ -78,7 +91,7 @@ def test_get_goto_instrument_add_library_command() -> None:
 
 def test_get_cbmc_check_command() -> None:
     command = _get_cbmc_check_command("swap")
-    assert command == "cbmc checking-swap-contracts.goto --function swap --depth 200"
+    assert command == "cbmc checking-swap-contracts.goto --function swap --depth 100"
 
 
 def test_compile_with_goto_cc_returns_zero_for_valid_c(tmp_path: Path) -> None:
@@ -231,10 +244,18 @@ def test_format_mutation_success_section_excludes_undecided_mutants() -> None:
         line=1,
     )
     timed_out = MutantVerificationResult(
-        mutant=survivor, path_to_mutant="m.c", killed=False, returncode=124, timed_out=True
+        mutant=survivor,
+        path_to_mutant="m.c",
+        killed=False,
+        returncode=124,
+        timed_out=True,
     )
     compile_failed = MutantVerificationResult(
-        mutant=survivor, path_to_mutant="m.c", killed=False, returncode=1, compile_failed=True
+        mutant=survivor,
+        path_to_mutant="m.c",
+        killed=False,
+        returncode=1,
+        compile_failed=True,
     )
     score = MutationScore(
         file="quicksort.c",
