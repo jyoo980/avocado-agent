@@ -159,7 +159,7 @@ class RunCbmcResult:
             return self.response
         return (
             f"{self.response}, "
-            "but the kill might be able to be improved.\n"
+            "but the kill score might be able to be improved.\n"
             f"{format_mutation_success_section(mutation_score)}"
         )
 

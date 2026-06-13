@@ -71,8 +71,9 @@ You must remember the following guidelines:
 - Do not attempt to verify `main` functions.
 - If a function has no side effects on memory beyond local variables or return values,
     you must still write a minimal spec (such as an empty assigns clause).
-- You must not run verification on previously-verified functions unless:
-  - You suspect there is a regression.
+- You must not re-run verification on previously-verified functions unless:
+  - The specification has changed, or
+  - The specification of a callee has changed, or
   - You need information from a callee's verification run to help verify a caller.
 
 ## Syntax of C function specifications (contracts)
