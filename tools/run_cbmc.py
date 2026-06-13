@@ -50,10 +50,10 @@ _GOTO_CC_TIMEOUT_SEC = 30
 _TIMEOUT_RETURNCODE = 124
 
 # `--unwind` argument to CBMC.
-_UNWIND = 5
+_CBMC_UNWIND = 5
 
 # `--depth` argument to CBMC.
-_DEPTH = 100
+_CBMC_DEPTH = 100
 
 
 class CbmcStep(StrEnum):
@@ -157,7 +157,7 @@ def main() -> None:
     """Run CBMC on a function."""
     parser = argparse.ArgumentParser(
         description=(
-            f"Run CBMC on a function with loop unwinding = {_UNWIND}, depth = {_DEPTH}. "
+            "Run CBMC on a function with loop unwinding = _CBMC_UNWIND, depth = _CBMC_DEPTH. "
             "Exits with status 0 on verification success."
         )
     )
@@ -227,6 +227,7 @@ def run_cbmc(
         prevent_macro_expansion=False,
         subprocess_results=subprocess_results,
     )
+    # First, check if the run was successful or if it timed out.
     if result.cbmc_ran_successfully or result.timed_out:
         _log_invocation(
             file_containing_function_to_verify,
@@ -252,14 +253,6 @@ def run_cbmc(
             prevent_macro_expansion=False,
             subprocess_results=subprocess_results,
         )
-        if result.cbmc_ran_successfully or result.timed_out:
-            _log_invocation(
-                file_containing_function_to_verify,
-                result,
-                subprocess_results,
-                nondet_callees,
-            )
-            return result
 
     # Missing-body retry: re-run with macro expansion suppressed.
     if has_missing_body_for_callee_message(combined_stdout, combined_stderr):
@@ -676,7 +669,7 @@ def _get_goto_instrument_add_library_command(function: str) -> str:
 
 
 def _get_goto_instrument_unwind_command(function: str) -> str:
-    """Return the `goto-instrument --partial-loops --unwind _UNWIND` command for `function`.
+    """Return the `goto-instrument --partial-loops --unwind _CBMC_UNWIND` command for `function`.
 
     Args:
         function (str): The function whose goto-binary should be unwound.
@@ -686,7 +679,7 @@ def _get_goto_instrument_unwind_command(function: str) -> str:
     """
     quoted_function = shlex.quote(function)
     return (
-        f"goto-instrument --partial-loops --unwind {_UNWIND} "
+        f"goto-instrument --partial-loops --unwind {_CBMC_UNWIND} "
         f"{quoted_function}.goto {quoted_function}.goto"
     )
 
@@ -724,7 +717,7 @@ def _get_cbmc_check_command(function: str) -> str:
     quoted_function = shlex.quote(function)
     return (
         f"cbmc checking-{quoted_function}-contracts.goto "
-        f"--function {quoted_function} --depth {_DEPTH}"
+        f"--function {quoted_function} --depth {_CBMC_DEPTH}"
     )
 
 
