@@ -32,7 +32,7 @@ class MutantVerificationResult:
     """Verification result for a single mutant.
 
     Attributes:
-        mutant (Mutant): The mutant to verify.
+        mutant (Mutant): The mutant that was verified.
         path_to_mutant (str): The path to the file in which the mutant is declared.
         killed (bool): True iff this mutant was killed.
         returncode (int): The return code of the CBMC (or goto-cc) process used to verify this
@@ -44,8 +44,7 @@ class MutantVerificationResult:
             produced invalid C such as adding two pointers). Like `timed_out`, a compile-failed
             mutant is undecided: CBMC never ran, so the spec's strength is not evidenced.
         instrumentation_failed (bool): True iff any of the goto-instrument steps failed.
-            These failures are not necessarily indicative of errors with the specification, and
-            should be excluded from evaluation.
+            These failures are not necessarily indicative of errors with the specification.
     """
 
     mutant: Mutant
@@ -142,8 +141,8 @@ def generate_mutants_and_compute_score(
     workspace = workspace or source_path.parent
     workspace.mkdir(parents=True, exist_ok=True)
 
-    result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
-    if not is_valid_mutation_candidate(result):
+    cbmc_result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
+    if not is_valid_mutation_candidate(cbmc_result):
         # No usable baseline if CBMC can't verify the unmutated function.
         logger.warning(f"could not verify {target_function}; skipping mutation testing")
         return None
@@ -223,7 +222,7 @@ def _verify_mutant(
     Args:
         path_to_write_mutant (Path): The path to which the mutated source is written.
         mutant (Mutant): The mutant.
-        include_dirs (list[str] | None): Include directories forwarded to `run_cbmc()`.
+        include_dirs (list[str] | None): Include directories, which are forwarded to `run_cbmc()`.
 
     Returns:
         MutantVerificationResult: The result of verifying a mutant. The returned result's
@@ -231,45 +230,45 @@ def _verify_mutant(
             not run.
     """
     path_to_write_mutant.write_text(mutant.mutant_source, encoding="utf-8")
-    result = run_cbmc(
+    cbmc_result = run_cbmc(
         function_to_verify=mutant.function,
         file_containing_function_to_verify=str(path_to_write_mutant),
         include_dirs=include_dirs,
     )
-    if failed_step := result.failed_step:
+    if failed_step := cbmc_result.failed_step:
         if failed_step == CbmcStep.CBMC:
             # The `cbmc` command itself could fail with an error unrelated to verification.
             # Check here for that case.
-            check_expected_cbmc_return_code(result.returncode)
+            check_expected_cbmc_return_code(cbmc_result.returncode)
             return MutantVerificationResult(
                 mutant,
                 path_to_mutant=str(path_to_write_mutant),
-                killed=result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
-                returncode=result.returncode,
+                killed=cbmc_result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
+                returncode=cbmc_result.returncode,
             )
         return MutantVerificationResult(
             mutant,
             path_to_mutant=str(path_to_write_mutant),
             killed=False,
-            returncode=result.returncode,
-            compile_failed=result.failed_step == CbmcStep.GOTO_CC,
-            instrumentation_failed=result.failed_step == CbmcStep.GOTO_INSTRUMENT,
+            returncode=cbmc_result.returncode,
+            compile_failed=cbmc_result.failed_step == CbmcStep.GOTO_CC,
+            instrumentation_failed=cbmc_result.failed_step == CbmcStep.GOTO_INSTRUMENT,
         )
 
-    if result.timed_out:
+    if cbmc_result.timed_out:
         return MutantVerificationResult(
             mutant,
             path_to_mutant=str(path_to_write_mutant),
             killed=False,
-            returncode=result.returncode,
+            returncode=cbmc_result.returncode,
             timed_out=True,
         )
-    check_expected_cbmc_return_code(result.returncode)
+    check_expected_cbmc_return_code(cbmc_result.returncode)
     return MutantVerificationResult(
         mutant,
         path_to_mutant=str(path_to_write_mutant),
-        killed=result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
-        returncode=result.returncode,
+        killed=cbmc_result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
+        returncode=cbmc_result.returncode,
     )
 
 

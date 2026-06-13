@@ -16,11 +16,10 @@ CBMC cannot verify all correct C code.  Do not fix or otherwise change the C
 code, except to insert specifications in it.
 
 This `CLAUDE.md` file and directory `docs/` contain basic information about using CBMC.
-
-You can also search the web for CBMC documentation.
 The main documentation can be found at at https://diffblue.github.io/cbmc/index.html,
 which includes a [User Guide](https://diffblue.github.io/cbmc/user_guide.html)
 and [The CPROVER Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
+You can also search the web for more CBMC documentation.
 
 ## Tool Use
 
@@ -78,8 +77,9 @@ You must remember the following guidelines:
 - Do not attempt to verify `main` functions.
 - If a function has no side effects on memory beyond local variables or return values,
     you must still write a minimal spec (such as an empty assigns clause).
-- You must not run verification on previously-verified functions unless:
-  - You suspect there is a regression.
+- You must not re-run verification on previously-verified functions unless:
+  - The specification has changed, or
+  - The specification of a callee has changed, or
   - You need information from a callee's verification run to help verify a caller.
 
 ## Syntax of C function specifications (contracts)
