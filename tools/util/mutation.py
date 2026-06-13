@@ -2,8 +2,9 @@
 
 Given a function with a CBMC contract, generate body mutants (operator swaps via
 `eval.mutants.mutate_function.get_mutants`), run CBMC on each, and report what
-fraction the spec "kills." A mutant is killed iff CBMC fails on it; a surviving
-mutant indicates the spec is too weak to catch that perturbation.
+fraction the spec "kills" along with any survivng mutants.
+A mutant is killed iff CBMC fails on it; a surviving mutant indicates the spec is too weak to catch
+that perturbation.
 """
 
 from __future__ import annotations
@@ -117,14 +118,12 @@ class MutationScore:
 
 
 def format_mutation_success_section(mutation_score: MutationScore) -> str:
-    """Format the mutation-testing section appended to a successful verification response.
+    """Return mutation-testing information that can be used by a client.
 
-    Renders a scannable kill-score line followed by the unified diff of each surviving
-    mutant — a mutant that compiled and was decided but that the spec failed to kill. Each
-    diff is preceded by a clickable `file:line` reference and the operator swap that produced
-    it. Diffs are emitted verbatim rather than JSON-escaped so the agent can read them
-    directly. The section is bounded by `_MAX_MUTATION_SECTION_CHARS`: once appending the next
-    survivor's block would exceed the budget, the remaining survivors are dropped behind an
+    Returns a string comprising a summary header followed by the unified diff(s) of each surviving
+    mutant and the original source. Diffs are emitted verbatim rather than JSON-escaped so the agent
+    can read them directly. The section is bounded by `_MAX_MUTATION_SECTION_CHARS`: once appending
+    the next survivor's block would exceed the budget, the remaining survivors are dropped behind an
     explicit omission marker.
 
     Args:
@@ -151,7 +150,12 @@ def format_mutation_success_section(mutation_score: MutationScore) -> str:
     survivors = [
         vresult
         for vresult in mutation_score.results
-        if not vresult.killed and not vresult.compile_failed and not vresult.timed_out
+        if not (
+            vresult.killed
+            or vresult.compile_failed
+            or vresult.timed_out
+            or vresult.instrumentation_failed
+        )
     ]
     if not survivors:
         return f"{kill_score_line}\nAll decided mutants were killed."

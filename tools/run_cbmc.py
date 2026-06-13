@@ -128,15 +128,6 @@ class RunCbmcResult:
         Runs body-mutation testing on the (already-verified) function and appends a
         human-readable kill-score line plus the unified diff of every surviving mutant. The
         diffs are rendered verbatim (not JSON-escaped) so the consuming agent can read them
-        directly and see which perturbations its spec fails to catch. Returns the plain
-        success response unchanged when no baseline mutation score could be computed (e.g. no
-        mutants were decidable).
-
-        The import of `generate_mutants_and_compute_score` is deliberately local: the
-        mutation module imports `run_cbmc` and `CbmcStep` from this module at load time, so
-        importing it at this module's top level would form an import cycle. Deferring the
-        import to call time breaks the cycle — by the time this method runs, both modules
-        are fully initialized.
 
         Args:
             path_to_file (str): Path to the C source defining the verified function.
@@ -144,8 +135,14 @@ class RunCbmcResult:
 
         Returns:
             str: The success response, with a mutation-testing section appended when available.
+                When a mutation score is unavailable, the plain CBMC result is returned.
         """
         # ruff: noqa PLC0415
+        # The import of `generate_mutants_and_compute_score` is deliberately local: the
+        # mutation module imports `run_cbmc` and `CbmcStep` from this module at load time, so
+        # importing it at this module's top level would form an import cycle. Deferring the
+        # import to call time breaks the cycle — by the time this method runs, both modules
+        # are fully initialized.
         from tools.util.mutation import (
             format_mutation_success_section,
             generate_mutants_and_compute_score,
@@ -163,7 +160,7 @@ class RunCbmcResult:
         ):
             return self.response
         elif mutation_score == 1:
-            return f"{self.response}, (kill score = 1, no further improvements can be made)"
+            return f"{self.response}, (kill score = 1, no further improvements possible)"
         return (
             f"{self.response}, "
             "but the kill score might be able to be improved.\n"
