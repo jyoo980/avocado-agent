@@ -16,7 +16,6 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from subprocess import TimeoutExpired
-from collections import Counter
 
 from tools.construct_call_graph import construct_call_graph
 from tools.util import (
