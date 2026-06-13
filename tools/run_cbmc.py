@@ -154,8 +154,16 @@ class RunCbmcResult:
         mutation_score = generate_mutants_and_compute_score(
             path_to_file, target_function=self.function, include_dirs=include_dirs
         )
-        if not mutation_score or mutation_score.kill_score == 1 or mutation_score.num_mutants == 0:
+        # It is possible that a mutation score's `num_mutants` field is 0 (i.e., when a function
+        # has no valid mutants. Read the docstring for `MutationScore` in `mutation.py`).
+        if (
+            not mutation_score
+            or mutation_score.num_mutants == 0
+            or mutation_score.num_survived == 0
+        ):
             return self.response
+        elif mutation_score == 1:
+            return f"{self.response}, (kill score = 1, no further improvements can be made)"
         return (
             f"{self.response}, "
             "but the kill score might be able to be improved.\n"
@@ -165,10 +173,11 @@ class RunCbmcResult:
 
 @dataclass(frozen=True)
 class _StepRun:
-    """Outcome of running one subprocess step. Internal; collapsed into RunCbmcResult.
+    """Outcome of running one subprocess step.
 
     Attributes:
-        step (CbmcStep): The logical step this subprocess belongs to.
+        step (CbmcStep): The logical step in the CBMC verification pipeline this subprocess belongs
+            to.
         command (str): The shell command that was run.
         returncode (int): The subprocess exit code, or `_TIMEOUT_RETURNCODE` on timeout.
         stdout (str): Captured stdout (empty on timeout).

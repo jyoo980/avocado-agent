@@ -71,6 +71,9 @@ class MutationScore:
     reported separately so consumers can see how much of the mutant space was
     undecidable and how much produced invalid C in the first place.
 
+    Note: A function can have 0 mutants (e.g., a function that solely calls another function
+    will not have any mutants generated).
+
     Attributes
     ----------
         file (str): The file in which the original function is declared.
