@@ -8,7 +8,7 @@ CBMC can verify.  Ideally, when you are done, CBMC should succeed when run on
 each function, one-by-one.
 
 You should produce high-quality specifications;
-a proxy for the quality of a specification can be obtained by mutation testing.
+mutation testing's kill score is a proxy for the quality of a specification.
 
 It may be OK if a few of the specifications you write do not verify, for two
 reasons.  First, if a program is incorrect, CBMC will issue a warning.  Second,
@@ -16,15 +16,12 @@ CBMC cannot verify all correct C code.  Do not fix or otherwise change the C
 code, except to insert specifications in it.
 
 This `CLAUDE.md` file and directory `docs/` contain basic information about using CBMC.
-
-You can also search the web for CBMC documentation.
 The main documentation can be found at at https://diffblue.github.io/cbmc/index.html,
 which includes a [User Guide](https://diffblue.github.io/cbmc/user_guide.html)
 and [The CPROVER Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
+You can also search the web for more CBMC documentation.
 
 ## Tool Use
-
-You should always prefer this project's CLI tools over invoking CBMC by hand.
 
 - **To run CBMC on a function**, run:
 
@@ -36,6 +33,8 @@ You should always prefer this project's CLI tools over invoking CBMC by hand.
 
   If verification succeeds, prints any mutation-testing information (e.g., the kill score, surviving mutants) to stdout, and exits with status zero.
   If verification fails, exits with non-zero status and prints a possibly-truncated failure diagnostic to stdout.
+
+  You should always prefer `avocado-run-cbmc` over invoking CBMC directly.
 
 - **To obtain a call graph of the functions in a file in JSON format**, run:
 
@@ -55,14 +54,14 @@ You should always prefer this project's CLI tools over invoking CBMC by hand.
 
   Prints function names callees-first, one per line.
 
-## Mutation Testing
+## Improving Specification Quality via Mutation Testing
 
-You improve on a specification's quality using the mutation testing information that is provided by
-the `avocado-run-cbmc` script. If a function verifies successfully, the script will return a kill
-score and the next steps you should take to increase the kill score.
+If a function verifies successfully, the `avocado-run-cbmc` script will output a kill score and information about mutants (edits to the program) that also verify.
+You should try to produce a better spec that has a higher kill score.
 
-It might be the case that the kill score cannot be increased; iterate no more than 5 times in your
-attempts to increase the kill score.
+Iterate no more than 5 times in your attempts to increase the kill score.
+
+## Guidelines
 
 You must remember the following guidelines:
 - Fall back to directly running the `cbmc` program only if necessary (prefer the `avocado-run-cbmc` script).
