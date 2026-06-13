@@ -2,7 +2,7 @@
 
 Given a function with a CBMC contract, generate body mutants (operator swaps via
 `eval.mutants.mutate_function.get_mutants`), run CBMC on each, and report what
-fraction the spec "kills" along with any survivng mutants.
+fraction the spec "kills" along with any surviving mutants.
 A mutant is killed iff CBMC fails on it; a surviving mutant indicates the spec is too weak to catch
 that perturbation.
 """

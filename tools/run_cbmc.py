@@ -161,7 +161,7 @@ class RunCbmcResult:
             or mutation_score.num_survived == 0
         ):
             return self.response
-        elif mutation_score == 1:
+        elif mutation_score.kill_score == 1:
             return f"{self.response}, (kill score = 1, no further improvements possible)"
         return (
             f"{self.response}, "

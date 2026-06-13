@@ -62,7 +62,7 @@ Never iterate more than 5 times in your attempts to increase the kill score.
 
 ## Rules
 
-- Only directly run the `cbmc` program directly if the `avocado-run-cbmc` script fails unexpectedly.
+- Only directly run the `cbmc` program if the `avocado-run-cbmc` script fails unexpectedly.
 - Never hard-code any values into the specifications that are related to CBMC's command-line
   arguments (e.g., the `N` in `--partial-loops --unwind <N>`).
 - Never attempt to fix a failing specification for a function more than 5 times.
