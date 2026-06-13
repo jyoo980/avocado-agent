@@ -17,6 +17,8 @@ from enum import StrEnum
 from pathlib import Path
 from subprocess import TimeoutExpired
 
+from loguru import logger
+
 from tools.construct_call_graph import construct_call_graph
 from tools.util import (
     build_stub_index,
@@ -215,6 +217,15 @@ def main() -> None:
         help="Directory to add to the include search path. May be repeated.",
     )
     args = parser.parse_args()
+
+    # Tee mutation-testing compile failures into a file. Leaves loguru's default stderr sink
+    # untouched; the filter keys on the warning emitted by `_verify_mutant` in tools/util/mutation.py.
+    logger.add(
+        "mutation_compile_failures.log",
+        level="WARNING",
+        filter=lambda record: "failed to compile" in record["message"],
+    )
+
     result = run_cbmc(
         function_to_verify=args.function,
         file_containing_function_to_verify=args.file,

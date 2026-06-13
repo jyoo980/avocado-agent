@@ -197,7 +197,7 @@ def generate_mutants_and_compute_score(
     workspace: Path | None = None,
     keep_artifacts: bool = False,
 ) -> MutationScore | None:
-    """Score body-mutation kill rate for `target_function` in `file_path`.
+    """Return the mutation kill score for `target_function` in `file_path`.
 
     Mutant `.c` files are written next to the original source by default to simplify compilation
     and instrumentation with CBMC. Mutants are removed unless keep_artifacts is set to `True`.
@@ -327,12 +327,20 @@ def _verify_mutant(
                 killed=cbmc_result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
                 returncode=cbmc_result.returncode,
             )
+        compile_failed = cbmc_result.failed_step == CbmcStep.GOTO_CC
+        if compile_failed:
+            logger.warning(
+                f"mutant failed to compile: {mutant.function} at "
+                f"{path_to_write_mutant}:{mutant.line}:{mutant.column} "
+                f"({mutant.operator_class}: {mutant.original_operator} -> "
+                f"{mutant.replacement_operator}); goto-cc returncode={cbmc_result.returncode}"
+            )
         return MutantVerificationResult(
             mutant,
             path_to_mutant=str(path_to_write_mutant),
             killed=False,
             returncode=cbmc_result.returncode,
-            compile_failed=cbmc_result.failed_step == CbmcStep.GOTO_CC,
+            compile_failed=compile_failed,
             instrumentation_failed=cbmc_result.failed_step == CbmcStep.GOTO_INSTRUMENT,
         )
 
