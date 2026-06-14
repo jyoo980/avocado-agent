@@ -2,8 +2,9 @@
 
 Given a function with a CBMC contract, generate body mutants (operator swaps via
 `eval.mutants.mutate_function.get_mutants`), run CBMC on each, and report what
-fraction the spec "kills." A mutant is killed iff CBMC fails on it; a surviving
-mutant indicates the spec is too weak to catch that perturbation.
+fraction the spec "kills" along with any surviving mutants.
+A mutant is killed iff CBMC fails on it; a surviving mutant indicates the spec is too weak to catch
+that perturbation.
 """
 
 from __future__ import annotations
@@ -71,10 +72,13 @@ class MutationScore:
     reported separately so consumers can see how much of the mutant space was
     undecidable and how much produced invalid C in the first place.
 
+    Note: A function can have 0 mutants (e.g., a function that solely calls another function
+    will not have any mutants generated).
+
     Attributes
     ----------
         file (str): The file in which the original function is declared.
-        function (str): The name of this function.
+        target_function (str): The name of this function.
         num_mutants (int): The total number of mutants for this function.
         num_killed (int): The number of killed mutants.
         num_survived (int): The number of surviving (decided, not killed) mutants.
@@ -85,7 +89,7 @@ class MutationScore:
     """
 
     file: str
-    function: str
+    target_function: str
     num_mutants: int
     num_killed: int
     num_survived: int
@@ -103,7 +107,7 @@ class MutationScore:
         return {
             "kind": "mutation_summary",
             "file": self.file,
-            "function": self.function,
+            "function": self.target_function,
             "total": self.num_mutants,
             "killed": self.num_killed,
             "survived": self.num_survived,
@@ -113,15 +117,13 @@ class MutationScore:
         }
 
 
-def format_mutation_success_section(mutation_score: MutationScore) -> str:
-    """Format the mutation-testing section appended to a successful verification response.
+def get_mutation_testing_results_for_client(mutation_score: MutationScore) -> str:
+    """Return mutation-testing information that can be used by a client.
 
-    Renders a scannable kill-score line followed by the unified diff of each surviving
-    mutant — a mutant that compiled and was decided but that the spec failed to kill. Each
-    diff is preceded by a clickable `file:line` reference and the operator swap that produced
-    it. Diffs are emitted verbatim rather than JSON-escaped so the agent can read them
-    directly. The section is bounded by `_MAX_MUTATION_SECTION_CHARS`: once appending the next
-    survivor's block would exceed the budget, the remaining survivors are dropped behind an
+    Returns a string comprising a summary header followed by the unified diff(s) of each surviving
+    mutant and the original source. Diffs are emitted verbatim rather than JSON-escaped so the agent
+    can read them directly. The section is bounded by `_MAX_MUTATION_SECTION_CHARS`: once appending
+    the next survivor's block would exceed the budget, the remaining survivors are dropped behind an
     explicit omission marker.
 
     Args:
@@ -132,7 +134,7 @@ def format_mutation_success_section(mutation_score: MutationScore) -> str:
     """
     if not mutation_score.num_mutants:
         return (
-            f"No mutants generated for '{mutation_score.function}' "
+            f"No mutants generated for '{mutation_score.target_function}' "
             "(no mutable operators in the function body)\n"
             "Next step: continue verifying the rest of the program"
         )
@@ -140,6 +142,8 @@ def format_mutation_success_section(mutation_score: MutationScore) -> str:
         f"Mutation kill score: {mutation_score.kill_score:.4f} "
         f"(killed {mutation_score.num_killed}/{mutation_score.num_mutants}; "
         f"{mutation_score.num_survived} survived, "
+        # The values for the number of timed-out/compile-failed mutants are also reported since
+        # the denominator for the kill score includes them.
         f"{mutation_score.num_timed_out} timed out, "
         f"{mutation_score.num_compile_failed} compile-failed)"
     )
@@ -148,7 +152,12 @@ def format_mutation_success_section(mutation_score: MutationScore) -> str:
     survivors = [
         vresult
         for vresult in mutation_score.results
-        if not vresult.killed and not vresult.compile_failed and not vresult.timed_out
+        if not (
+            vresult.killed
+            or vresult.compile_failed
+            or vresult.timed_out
+            or vresult.instrumentation_failed
+        )
     ]
     if not survivors:
         return f"{kill_score_line}\nAll decided mutants were killed."
@@ -190,7 +199,7 @@ def generate_mutants_and_compute_score(
     workspace: Path | None = None,
     keep_artifacts: bool = False,
 ) -> MutationScore | None:
-    """Score body-mutation kill rate for `target_function` in `file_path`.
+    """Return the mutation kill score for `target_function` in `file_path`.
 
     Mutant `.c` files are written next to the original source by default to simplify compilation
     and instrumentation with CBMC. Mutants are removed unless keep_artifacts is set to `True`.
@@ -245,7 +254,7 @@ def generate_mutants_and_compute_score(
 def _aggregate_mutation_score(
     mutant_vresults: list[MutantVerificationResult],
     file: str,
-    function: str,
+    target_function: str,
 ) -> MutationScore:
     """Aggregate per-mutant results into a MutationScore.
 
@@ -256,7 +265,7 @@ def _aggregate_mutation_score(
     Args:
         mutant_vresults (list[MutantVerificationResult]): The per-mutant results.
         file (str): The source file containing the function.
-        function (str): The function under test.
+        target_function (str): The function under test.
 
     Returns:
         MutationScore: The aggregated score.
@@ -271,7 +280,7 @@ def _aggregate_mutation_score(
     kill_rate = (killed / decided) if decided else 0.0
     return MutationScore(
         file=file,
-        function=function,
+        target_function=target_function,
         num_mutants=total,
         num_killed=killed,
         num_survived=survived,
@@ -320,12 +329,20 @@ def _verify_mutant(
                 killed=cbmc_result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
                 returncode=cbmc_result.returncode,
             )
+        compile_failed = cbmc_result.failed_step == CbmcStep.GOTO_CC
+        if compile_failed:
+            logger.warning(
+                f"mutant failed to compile: {mutant.function} at "
+                f"{path_to_write_mutant}:{mutant.line}:{mutant.column} "
+                f"({mutant.operator_class}: {mutant.original_operator} -> "
+                f"{mutant.replacement_operator}); goto-cc returncode={cbmc_result.returncode}"
+            )
         return MutantVerificationResult(
             mutant,
             path_to_mutant=str(path_to_write_mutant),
             killed=False,
             returncode=cbmc_result.returncode,
-            compile_failed=cbmc_result.failed_step == CbmcStep.GOTO_CC,
+            compile_failed=compile_failed,
             instrumentation_failed=cbmc_result.failed_step == CbmcStep.GOTO_INSTRUMENT,
         )
 

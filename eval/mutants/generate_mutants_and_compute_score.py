@@ -66,7 +66,7 @@ def main() -> None:
         result = {
             "kind": "mutant_result",
             "file": score.file,
-            "function": score.function,
+            "function": score.target_function,
             "operator_class": raw_result.mutant.operator_class,
             "original": raw_result.mutant.original_operator,
             "replacement": raw_result.mutant.replacement_operator,

@@ -15,7 +15,7 @@ from tools.run_cbmc import (
     compile_with_goto_cc,
     run_cbmc,
 )
-from tools.util.mutation import MutantVerificationResult, MutationScore, _MAX_MUTATION_SECTION_CHARS, format_mutation_success_section
+from tools.util.mutation import MutantVerificationResult, MutationScore, _MAX_MUTATION_SECTION_CHARS, get_mutation_testing_results_for_client
 
 
 def _make_mutant(
@@ -173,7 +173,7 @@ def test_format_mutation_success_section_renders_kill_score_and_survivor_diff() 
     )
     score = MutationScore(
         file="quicksort.c",
-        function="f",
+        target_function="f",
         num_mutants=2,
         num_killed=1,
         num_survived=1,
@@ -183,7 +183,7 @@ def test_format_mutation_success_section_renders_kill_score_and_survivor_diff() 
         results=[_vresult(killed, killed=True), _vresult(survivor, killed=False)],
     )
 
-    section = format_mutation_success_section(score)
+    section = get_mutation_testing_results_for_client(score)
 
     # Kill-score line, formatted to 4 decimals like summary().
     assert "Mutation kill score: 0.5000 (killed 1/2; 1 survived" in section
@@ -205,7 +205,7 @@ def test_format_mutation_success_section_reports_all_killed() -> None:
     )
     score = MutationScore(
         file="quicksort.c",
-        function="f",
+        target_function="f",
         num_mutants=1,
         num_killed=1,
         num_survived=0,
@@ -215,7 +215,7 @@ def test_format_mutation_success_section_reports_all_killed() -> None:
         results=[_vresult(killed, killed=True)],
     )
 
-    section = format_mutation_success_section(score)
+    section = get_mutation_testing_results_for_client(score)
 
     assert "Mutation kill score: 1.0000" in section
     assert "All decided mutants were killed." in section
@@ -238,7 +238,7 @@ def test_format_mutation_success_section_excludes_undecided_mutants() -> None:
     )
     score = MutationScore(
         file="quicksort.c",
-        function="f",
+        target_function="f",
         num_mutants=2,
         num_killed=0,
         num_survived=0,
@@ -249,7 +249,7 @@ def test_format_mutation_success_section_excludes_undecided_mutants() -> None:
     )
 
     # Neither a timed-out nor a compile-failed mutant counts as a survivor.
-    assert "All decided mutants were killed." in format_mutation_success_section(score)
+    assert "All decided mutants were killed." in get_mutation_testing_results_for_client(score)
 
 
 def test_format_mutation_success_section_bounds_size_and_marks_omissions() -> None:
@@ -271,7 +271,7 @@ def test_format_mutation_success_section_bounds_size_and_marks_omissions() -> No
     ]
     score = MutationScore(
         file="big.c",
-        function="f",
+        target_function="f",
         num_mutants=20,
         num_killed=0,
         num_survived=20,
@@ -281,7 +281,7 @@ def test_format_mutation_success_section_bounds_size_and_marks_omissions() -> No
         results=survivors,
     )
 
-    section = format_mutation_success_section(score)
+    section = get_mutation_testing_results_for_client(score)
 
     assert "more surviving mutant(s) omitted" in section
     # The section stays bounded (budget plus a small marker overhead).

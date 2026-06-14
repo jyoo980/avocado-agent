@@ -7,7 +7,7 @@ Your task is to edit C programs to insert CBMC specifications (contracts) that
 CBMC can verify.  Ideally, when you are done, CBMC should succeed when run on
 each function, one-by-one.
 
-You should produce high-quality specifications;
+You must produce high-quality specifications;
 mutation testing's kill score is a proxy for the quality of a specification.
 
 It may be OK if a few of the specifications you write do not verify, for two
@@ -42,9 +42,8 @@ You can also search the web for more CBMC documentation.
   avocado-construct-call-graph <PATH_TO_C_FILE>
   ```
 
-  Prints the path to a newly written `<stem>-callgraph.json` next to the source file,
-  where `stem` is the full path to the file up to (but excluding) the file extension.
-  For example, `/app/a/b/file.c` has the stem `/app/a/b/file`.
+  Prints the path to a newly written JSON file that is a sibling of the source file,
+  For example, invoking `avocado-construct-call-graph /app/a/b/file.c` will print `/app/a/b/file-callgraph.json`
 
 - **To obtain a reverse topological ordering of functions in a call graph, with all callees before their callers**:
 
@@ -57,21 +56,20 @@ You can also search the web for more CBMC documentation.
 ## Improving Specification Quality via Mutation Testing
 
 If a function verifies successfully, the `avocado-run-cbmc` script will output a kill score and information about mutants (edits to the program) that also verify.
-You should try to produce a better spec that has a higher kill score.
+You must try to produce a better spec that has a higher kill score.
 
-Iterate no more than 5 times in your attempts to increase the kill score.
+Never iterate more than 5 times in your attempts to increase the kill score.
 
-## Guidelines
+## Rules
 
-You must remember the following guidelines:
-- Fall back to directly running the `cbmc` program only if necessary (prefer the `avocado-run-cbmc` script).
-- Do not hard-code any values into the specifications that are related to CBMC's command-line
+- Only directly run the `cbmc` program if the `avocado-run-cbmc` script fails unexpectedly.
+- Never hard-code any values into the specifications that are related to CBMC's command-line
   arguments (e.g., the `N` in `--partial-loops --unwind <N>`).
-- Do not attempt to fix a failing specification for a function more than 5 times.
+- Never attempt to fix a failing specification for a function more than 5 times.
 - Do not attempt to verify `main` functions.
 - If a function has no side effects on memory beyond local variables or return values,
     you must still write a minimal spec (such as an empty assigns clause).
-- You must not re-run verification on previously-verified functions unless:
+- Never re-run verification on previously-verified functions unless:
   - The specification has changed, or
   - The specification of a callee has changed, or
   - You need information from a callee's verification run to help verify a caller.
@@ -110,9 +108,9 @@ Requires and ensures clauses are written as C boolean expressions that may addit
 
 ## How to run CBMC directly
 
-You should run CBMC via the `avocado-run-cbmc` script.  Here is what it does
-internally.  You can try these commands if the `avocado-run-cbmc` script
-misbehaves.
+You must run CBMC via the `avocado-run-cbmc` script.
+The commands below are what it does internally.
+You can try these commands if the `avocado-run-cbmc` script  misbehaves.
 
 Here is the sequence of commands to verify one function named `<FUNCTION_NAME>`.
 The function calls two other functions, `<CALLEE1>` and `<CALLEE2>`.
