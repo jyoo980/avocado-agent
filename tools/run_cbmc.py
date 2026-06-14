@@ -233,8 +233,14 @@ def main() -> None:
     )
     # If the function successfully verifies, run mutation testing.
     if result.is_function_verified:
-        print(result.with_mutation_testing_score(args.file, args.include_dirs))
-        sys.exit(result.returncode)
+        try:
+            result_with_score = result.with_mutation_testing_score(args.file, args.include_dirs)
+            print(result_with_score)
+            sys.exit(result.returncode)
+        except Exception:
+            # Exception during mutation testing should not stop progress.
+            print(result)
+            sys.exit(result.returncode)
     else:
         print(result.response)
         sys.exit(result.returncode)
