@@ -17,6 +17,8 @@ from enum import StrEnum
 from pathlib import Path
 from subprocess import TimeoutExpired
 
+from loguru import logger
+
 from tools.construct_call_graph import construct_call_graph
 from tools.util import (
     build_stub_index,
@@ -122,13 +124,59 @@ class RunCbmcResult:
             return "TIMED_OUT"
         return "PASS" if self.is_function_verified else "FAIL"
 
+    def with_mutation_testing_score(self, path_to_file: str, include_dirs: list[str] | None) -> str:
+        """Return this run's success response augmented with a mutation-testing summary.
+
+        Runs body-mutation testing on the (already-verified) function and appends a
+        human-readable kill-score line plus the unified diff of every surviving mutant. The
+        diffs are rendered verbatim (not JSON-escaped) so the consuming agent can read them
+
+        Args:
+            path_to_file (str): Path to the C source defining the verified function.
+            include_dirs (list[str] | None): Include directories forwarded to mutation testing.
+
+        Returns:
+            str: The success response, with a mutation-testing section appended when available.
+                When a mutation score is unavailable, the plain CBMC result is returned.
+        """
+        # ruff: noqa PLC0415
+        # The import of `generate_mutants_and_compute_score` is deliberately local: the
+        # mutation module imports `run_cbmc` and `CbmcStep` from this module at load time, so
+        # importing it at this module's top level would form an import cycle. Deferring the
+        # import to call time breaks the cycle — by the time this method runs, both modules
+        # are fully initialized.
+        from tools.util.mutation import (
+            get_mutation_testing_results_for_client,
+            generate_mutants_and_compute_score,
+        )
+
+        mutation_score = generate_mutants_and_compute_score(
+            path_to_file, target_function=self.function, include_dirs=include_dirs
+        )
+        # It is possible that a mutation score's `num_mutants` field is 0 (i.e., when a function
+        # has no valid mutants. Read the docstring for `MutationScore` in `mutation.py`).
+        if (
+            not mutation_score
+            or mutation_score.num_mutants == 0
+            or mutation_score.num_survived == 0
+        ):
+            return self.response
+        elif mutation_score.kill_score == 1:
+            return f"{self.response}, (kill score = 1, no further improvements possible)"
+        return (
+            f"{self.response}, "
+            "but the kill score might be able to be improved.\n"
+            f"{get_mutation_testing_results_for_client(mutation_score)}"
+        )
+
 
 @dataclass(frozen=True)
 class _StepRun:
-    """Outcome of running one subprocess step. Internal; collapsed into RunCbmcResult.
+    """Outcome of running one subprocess step.
 
     Attributes:
-        step (CbmcStep): The logical step this subprocess belongs to.
+        step (CbmcStep): The logical step in the CBMC verification pipeline this subprocess belongs
+            to.
         command (str): The shell command that was run.
         returncode (int): The subprocess exit code, or `_TIMEOUT_RETURNCODE` on timeout.
         stdout (str): Captured stdout (empty on timeout).
@@ -169,11 +217,32 @@ def main() -> None:
         help="Directory to add to the include search path. May be repeated.",
     )
     args = parser.parse_args()
+
+    # Tee mutation-testing compile failures into a file. Leaves loguru's default stderr sink
+    # untouched; the filter keys on the warning emitted by `_verify_mutant` in tools/util/mutation.py.
+    logger.add(
+        "mutation_compile_failures.log",
+        level="WARNING",
+        filter=lambda record: "failed to compile" in record["message"],
+    )
+
     result = run_cbmc(
         function_to_verify=args.function,
         file_containing_function_to_verify=args.file,
         include_dirs=args.include_dirs,
     )
+    # If the function successfully verifies, run mutation testing.
+    if result.is_function_verified:
+        try:
+            result_with_score = result.with_mutation_testing_score(args.file, args.include_dirs)
+            print(result_with_score)
+            sys.exit(result.returncode)
+        except Exception:
+            # Exception during mutation testing should not stop progress.
+            print(result.response)
+            sys.exit(result.returncode)
+
+    # Don't bother with mutation testing if the spec is failing.
     print(result.response)
     sys.exit(result.returncode)
 
