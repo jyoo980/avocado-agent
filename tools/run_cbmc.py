@@ -239,11 +239,12 @@ def main() -> None:
             sys.exit(result.returncode)
         except Exception:
             # Exception during mutation testing should not stop progress.
-            print(result)
+            print(result.response)
             sys.exit(result.returncode)
-    else:
-        print(result.response)
-        sys.exit(result.returncode)
+
+    # Don't bother with mutation testing if the spec is failing.
+    print(result.response)
+    sys.exit(result.returncode)
 
 
 def run_cbmc(
