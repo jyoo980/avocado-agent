@@ -26,7 +26,7 @@ from tools.run_cbmc import CbmcStep, run_cbmc
 # real CBMC failure (10) or success (0).
 _VERIFICATION_FAILURE_RETURNCODE = 10
 
-# Char budget for the mutation-testing section appended to a *success* response.
+# Character budget for the mutation-testing section appended to a *success* response.
 # Surviving-mutant diff volume is unbounded in principle, so cap it the way failure
 # output is capped, dropping trailing survivors behind an explicit omission marker.
 _MAX_MUTATION_SECTION_CHARS = 50_000
