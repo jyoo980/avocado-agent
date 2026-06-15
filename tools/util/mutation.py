@@ -9,6 +9,7 @@ that perturbation.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from itertools import starmap
 from pathlib import Path
@@ -235,6 +236,17 @@ def generate_mutants_and_compute_score(
         _get_path_for_mutated_source(workspace, source_path, i): mutant
         for i, mutant in enumerate(mutants)
     }
+    # Heads-up to stderr so an agent polling the run can see the slow phase has begun and is
+    # making progress. Written to stderr (not stdout) so it never contaminates the kill-score
+    # result, and flushed so it is not buffered until the long run completes.
+    if mutants:
+        print(
+            f"Verified {target_function}; now running mutation testing on {len(mutants)} "
+            "mutants (one CBMC run each, up to 10 min per mutant) -- this can take several "
+            "minutes; do not interrupt.",
+            file=sys.stderr,
+            flush=True,
+        )
     mutant_vresults: list[MutantVerificationResult] = []
     try:
         mutant_vresults = list(

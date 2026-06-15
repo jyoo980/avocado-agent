@@ -6,7 +6,7 @@
         ],
         "deny": [
             "Read(eval/EXPERIMENTS.md)",
-            "Read(mutation_compile_failures.log)",
+            "Read(**/*mutation_compile_failures.log)",
             "Bash(grep eval/EXPERIMENTS.md)",
             "Bash(cat eval/EXPERIMENTS.md)",
             "Read(eval/README.md)",

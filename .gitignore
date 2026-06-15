@@ -10,6 +10,9 @@
 **/*goto
 *-cbmc-runs.jsonl
 
+# Mutation-testing related files
+**/*mutation_compile_failures.log
+
 # C files (no top-level C files; create a directory for them.)
 /*.c
 
