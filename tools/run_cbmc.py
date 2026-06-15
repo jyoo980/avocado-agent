@@ -40,8 +40,8 @@ _DISABLE_MACRO_FLAGS = [
     "-D__NO_CTYPE"  # for ctype.h
 ]
 
-# 5-minute timeout.
-_DEFAULT_RUN_CBMC_TIMEOUT_SEC = 300
+# 10-minute timeout.
+_DEFAULT_RUN_CBMC_TIMEOUT_SEC = 600
 
 # goto-cc is fast; if it hasn't finished in this many seconds, the input is almost
 # certainly pathological and should be treated as uncompilable.
@@ -202,7 +202,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Run CBMC on a function with loop unwinding = _CBMC_UNWIND, depth = _CBMC_DEPTH. "
-            "Exits with status 0 on verification success."
+            "Exits with status 0 on verification success. "
+            "On success, additionally runs mutation testing, which re-runs the full CBMC "
+            "pipeline once per mutant (sequentially, up to a 5-minute timeout each); this can "
+            "take several minutes, during which the tool is mostly silent. This is expected, "
+            "not a hang -- do not interrupt the process. Consider running it in the background "
+            "and polling for completion."
         )
     )
     parser.add_argument("--function", required=True, help="Name of the function to verify.")

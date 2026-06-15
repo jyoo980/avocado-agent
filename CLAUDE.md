@@ -36,6 +36,19 @@ You can also search the web for more CBMC documentation.
 
   You should always prefer `avocado-run-cbmc` over invoking CBMC directly.
 
+  **This tool can run for a long time, and that is expected — not a hang.** When a function
+  verifies successfully, the tool then runs *mutation testing*, which re-runs the entire CBMC
+  pipeline once per mutant, sequentially, with up to a 5-minute timeout per mutant. A successful
+  run can therefore take many minutes — far longer than verification alone — and the tool is
+  mostly silent while it works. It prints a one-line heads-up to **stderr** when the
+  mutation-testing phase begins.
+
+  - **Do not kill the process or stop waiting just because it is quiet.** A long, silent run is
+    normal.
+  - **Recommended:** invoke it with `run_in_background` and poll for completion, rather than
+    blocking on a foreground call. A full run can exceed the Bash tool's 10-minute maximum
+    timeout, so a single foreground call may be killed by the harness before it finishes.
+
 - **To obtain a call graph of the functions in a file in JSON format**, run:
 
   ```sh
