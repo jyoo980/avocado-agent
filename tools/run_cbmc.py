@@ -204,7 +204,7 @@ def main() -> None:
             "Run CBMC on a function with loop unwinding = _CBMC_UNWIND, depth = _CBMC_DEPTH. "
             "Exits with status 0 on verification success. "
             "On success, additionally runs mutation testing, which re-runs the full CBMC "
-            "pipeline once per mutant (sequentially, up to a 5-minute timeout each); this can "
+            "pipeline once per mutant (sequentially, up to a 10-minute timeout each); this can "
             "take several minutes, during which the tool is mostly silent. This is expected, "
             "not a hang -- do not interrupt the process. Consider running it in the background "
             "and polling for completion."

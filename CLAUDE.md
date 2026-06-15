@@ -38,7 +38,7 @@ You can also search the web for more CBMC documentation.
 
   **This tool can run for a long time, and that is expected — not a hang.** When a function
   verifies successfully, the tool then runs *mutation testing*, which re-runs the entire CBMC
-  pipeline once per mutant, sequentially, with up to a 5-minute timeout per mutant. A successful
+  pipeline once per mutant, sequentially, with up to a 10-minute timeout per mutant. A successful
   run can therefore take many minutes — far longer than verification alone — and the tool is
   mostly silent while it works. It prints a one-line heads-up to **stderr** when the
   mutation-testing phase begins.
