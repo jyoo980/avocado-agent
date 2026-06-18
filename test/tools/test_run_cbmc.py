@@ -15,7 +15,7 @@ from tools.run_cbmc import (
     compile_with_goto_cc,
     run_cbmc,
 )
-from tools.util.mutation import MutantVerificationResult, MutationScore, _MAX_MUTATION_SECTION_CHARS, get_mutation_testing_results_for_client
+from tools.util.mutation import MutantVerificationResult, MutationScore, _MAX_MUTATION_SECTION_CHARS, _print_mutation_progress, get_mutation_testing_results_for_client
 
 
 def _make_mutant(
@@ -288,3 +288,46 @@ def test_format_mutation_success_section_bounds_size_and_marks_omissions() -> No
     assert len(section) <= _MAX_MUTATION_SECTION_CHARS + 200
     # Not all 20 survivors were rendered.
     assert "surviving mutant 20 —" not in section
+
+
+def test_print_mutation_progress_reports_running_tally_on_stderr(capsys) -> None:
+    mutant = _make_mutant(
+        source="x", original_operator="<", replacement_operator=">", start_byte=0, line=1
+    )
+    # Two killed, one survived so far, out of five total mutants.
+    vresults = [
+        _vresult(mutant, killed=True),
+        _vresult(mutant, killed=True),
+        _vresult(mutant, killed=False),
+    ]
+
+    _print_mutation_progress(done=3, total=5, vresults=vresults)
+
+    captured = capsys.readouterr()
+    # Progress goes to stderr, never stdout, so it cannot contaminate the kill-score result.
+    assert captured.out == ""
+    assert (
+        "[mutation testing] 3/5 done "
+        "(killed=2 survived=1 timed_out=0 compile_failed=0)" in captured.err
+    )
+
+
+def test_print_mutation_progress_buckets_undecided_mutants(capsys) -> None:
+    mutant = _make_mutant(
+        source="x", original_operator="<", replacement_operator=">", start_byte=0, line=1
+    )
+    timed_out = MutantVerificationResult(
+        mutant=mutant, path_to_mutant="m.c", killed=False, returncode=124, timed_out=True
+    )
+    compile_failed = MutantVerificationResult(
+        mutant=mutant, path_to_mutant="m.c", killed=False, returncode=1, compile_failed=True
+    )
+
+    _print_mutation_progress(done=2, total=2, vresults=[timed_out, compile_failed])
+
+    # Timed-out and compile-failed mutants are bucketed separately, not counted as survived,
+    # mirroring `_aggregate_mutation_score`.
+    assert (
+        "[mutation testing] 2/2 done "
+        "(killed=0 survived=0 timed_out=1 compile_failed=1)" in capsys.readouterr().err
+    )

@@ -7,13 +7,13 @@ Usage:
 """
 
 import argparse
-import json
 import sys
 
 from tools.util.mutation import (
     MutantVerificationResult,
     MutationScore,
     generate_mutants_and_compute_score,
+    get_mutation_testing_results_for_client,
 )
 
 
@@ -53,7 +53,7 @@ def main() -> None:
         )
         sys.exit(1)
 
-    print(json.dumps(_get_mutation_score_summary_with_surviving_mutant_diffs(score)))
+    print(get_mutation_testing_results_for_client(score))
     sys.exit(0)
 
 

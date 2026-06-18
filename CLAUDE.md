@@ -7,8 +7,8 @@ Your task is to edit C programs to insert CBMC specifications (contracts) that
 CBMC can verify.  Ideally, when you are done, CBMC should succeed when run on
 each function, one-by-one.
 
-You must produce high-quality specifications;
-mutation testing's kill score is a proxy for the quality of a specification.
+You must produce strong specifications;
+mutation testing's kill score is a proxy for the strength of a specification.
 
 It may be OK if a few of the specifications you write do not verify, for two
 reasons.  First, if a program is incorrect, CBMC will issue a warning.  Second,
@@ -36,18 +36,15 @@ You can also search the web for more CBMC documentation.
 
   You should always prefer `avocado-run-cbmc` over invoking CBMC directly.
 
-  **This tool can run for a long time, and that is expected — not a hang.** When a function
-  verifies successfully, the tool then runs *mutation testing*, which re-runs the entire CBMC
-  pipeline once per mutant, sequentially, with up to a 10-minute timeout per mutant. A successful
-  run can therefore take many minutes — far longer than verification alone — and the tool is
-  mostly silent while it works. It prints a one-line heads-up to **stderr** when the
-  mutation-testing phase begins.
+  **This tool can run for a long time, and that is expected — not a hang.**
 
-  - **Do not kill the process or stop waiting just because it is quiet.** A long, silent run is
-    normal.
-  - **Recommended:** invoke it with `run_in_background` and poll for completion, rather than
-    blocking on a foreground call. A full run can exceed the Bash tool's 10-minute maximum
-    timeout, so a single foreground call may be killed by the harness before it finishes.
+- **To obtain a mutation testing kill score**, run:
+
+```sh
+avocado-get-mutation-testing-kill-score  --function <FUNCTION_NAME> \
+                   --file <PATH_TO_C_FILE> \
+                   [-I <PATH_TO_INCLUDE_DIR(S)>]...
+```
 
 - **To obtain a call graph of the functions in a file in JSON format**, run:
 
@@ -68,10 +65,13 @@ You can also search the web for more CBMC documentation.
 
 ## Improving Specification Quality via Mutation Testing
 
-If a function verifies successfully, the `avocado-run-cbmc` script will output a kill score and information about mutants (edits to the program) that also verify.
-You must try to produce a better spec that has a higher kill score.
+You must work in a two-pass approach:
 
-Never iterate more than 5 times in your attempts to increase the kill score.
+- **Pass 1: Coverage**: For EVERY non-main function, write a spec that verifies. Your goal during
+  this pass is to verify every non-main function.
+- **Pass 2: Quality**: Only after Pass 1 is complete, you MUST go through every verified function
+  and strengthen their specs to raise the kill score (a maximum of 5 iterations each). Spread effort
+  across functions rather than maximizing the kill score for a single function.
 
 ## Rules
 
@@ -86,6 +86,8 @@ Never iterate more than 5 times in your attempts to increase the kill score.
   - The specification has changed, or
   - The specification of a callee has changed, or
   - You need information from a callee's verification run to help verify a caller.
+- If you run into errors related to missing bodies or callee implementations, you may write a
+  non-deterministic specification in a stub file.
 
 ## Syntax of C function specifications (contracts)
 
