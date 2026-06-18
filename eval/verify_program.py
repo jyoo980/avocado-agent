@@ -47,11 +47,7 @@ class FunctionVerificationResult:
 
     @property
     def is_function_verified(self) -> bool:
-        """Return True iff the function is verified.
-
-        Returns:
-            bool: True iff the function is verified.
-        """
+        """True iff the function is verified."""
         return self.run_cbmc_result.is_function_verified
 
 
@@ -72,11 +68,7 @@ class ProgramVerificationResult:
 
     @property
     def passed(self) -> bool:
-        """Return True iff all verification results are successful.
-
-        Returns:
-            bool: True iff all verification results are successful.
-        """
+        """True iff all verification results are successful."""
         return all(vresult.is_function_verified for vresult in self.vresults)
 
 

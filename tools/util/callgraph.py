@@ -27,12 +27,12 @@ class CallGraphCallees(dict):
 
     @property
     def internal(self) -> list[str]:
-        """Return the internal (same-file) callees."""
+        """The internal (same-file) callees."""
         return self["internal"]
 
     @property
     def external(self) -> list[str]:
-        """Return the external (library) callees."""
+        """The external (library) callees."""
         return self["external"]
 
 
