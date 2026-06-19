@@ -308,7 +308,7 @@ def test_print_mutation_progress_reports_running_tally_on_stderr(capsys) -> None
     assert captured.out == ""
     assert (
         "[mutation testing] 3/5 done "
-        "(killed=2 survived=1 timed_out=0 compile_failed=0)" in captured.err
+        "(killed=2 survived=1 timed_out=0 compile_failed=0 instrumentation_failed=0)" in captured.err
     )
 
 
@@ -329,5 +329,5 @@ def test_print_mutation_progress_buckets_undecided_mutants(capsys) -> None:
     # mirroring `_aggregate_mutation_score`.
     assert (
         "[mutation testing] 2/2 done "
-        "(killed=0 survived=0 timed_out=1 compile_failed=1)" in capsys.readouterr().err
+        "(killed=0 survived=0 timed_out=1 compile_failed=1 instrumentation_failed=0)" in capsys.readouterr().err
     )
