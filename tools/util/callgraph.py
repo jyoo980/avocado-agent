@@ -1,4 +1,3 @@
-# Subclassing `dict` enables JSON-serialization;
 # Ignore https://docs.astral.sh/ruff/rules/subclass-builtin/#subclass-builtin-furb189.
 # ruff: noqa : FURB189
 

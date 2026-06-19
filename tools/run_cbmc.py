@@ -28,11 +28,13 @@ from tools.util import (
 )
 from tools.util.callgraph import CallGraph
 
-# Char budget for failure responses, sized to keep CLI output bounded so it
-# doesn't exceed an agent's tool-output limits.
+# Char budget for failure responses. The harness persists full tool output to a file but
+# previews only the head inline, so we keep responses bounded (a pathological CBMC run can
+# emit hundreds of MB) and lead with the FAILURE lines (see `_format_failure_response`) so
+# the verdict survives that head-only preview rather than being buried in the stdout tail.
 _MAX_RESPONSE_CHARS = 100_000
 
-# Of the output size budget left after the header, FAILURE lines, and section labels, this
+# Of the budget left after the header, the leading FAILURE lines, and section labels, this
 # fraction is given to the stdout tail; the remainder goes to the stderr tail.
 _STDOUT_TAIL_SHARE = 0.7
 
@@ -92,7 +94,7 @@ class RunCbmcResult:
 
     @property
     def cbmc_ran_successfully(self) -> bool:
-        """Return True iff the full pipeline ran without any step failing or timing out.
+        """True iff the full pipeline ran without any step failing or timing out.
 
         Note: This is *not* equivalent to a successful verification result. See
         `is_function_verified`.
@@ -102,13 +104,10 @@ class RunCbmcResult:
 
     @property
     def is_function_verified(self) -> bool:
-        """Return True iff the function for this verification run is successfully verified.
+        """True iff the function for this verification run is successfully verified.
 
         A function is successfully verified if all components of the CBMC pipeline ran successfully
         and the return code is 0.
-
-        Returns:
-            bool: True iff the function for this verification result was verified.
         """
         return self.cbmc_ran_successfully and self.returncode == 0
 
@@ -123,51 +122,6 @@ class RunCbmcResult:
         if self.timed_out:
             return "TIMED_OUT"
         return "PASS" if self.is_function_verified else "FAIL"
-
-    def with_mutation_testing_score(self, path_to_file: str, include_dirs: list[str] | None) -> str:
-        """Return this run's success response augmented with a mutation-testing summary.
-
-        Runs body-mutation testing on the (already-verified) function and appends a
-        human-readable kill-score line plus the unified diff of every surviving mutant. The
-        diffs are rendered verbatim (not JSON-escaped) so the consuming agent can read them
-
-        Args:
-            path_to_file (str): Path to the C source defining the verified function.
-            include_dirs (list[str] | None): Include directories forwarded to mutation testing.
-
-        Returns:
-            str: The success response, with a mutation-testing section appended when available.
-                When a mutation score is unavailable, the plain CBMC result is returned.
-        """
-        # ruff: noqa PLC0415
-        # The import of `generate_mutants_and_compute_score` is deliberately local: the
-        # mutation module imports `run_cbmc` and `CbmcStep` from this module at load time, so
-        # importing it at this module's top level would form an import cycle. Deferring the
-        # import to call time breaks the cycle — by the time this method runs, both modules
-        # are fully initialized.
-        from tools.util.mutation import (
-            get_mutation_testing_results_for_client,
-            generate_mutants_and_compute_score,
-        )
-
-        mutation_score = generate_mutants_and_compute_score(
-            path_to_file, target_function=self.function, include_dirs=include_dirs
-        )
-        # It is possible that a mutation score's `num_mutants` field is 0 (i.e., when a function
-        # has no valid mutants. Read the docstring for `MutationScore` in `mutation.py`).
-        if (
-            not mutation_score
-            or mutation_score.num_mutants == 0
-            or mutation_score.num_survived == 0
-        ):
-            return self.response
-        elif mutation_score.kill_score == 1:
-            return f"{self.response}, (kill score = 1, no further improvements possible)"
-        return (
-            f"{self.response}, "
-            "but the kill score might be able to be improved.\n"
-            f"{get_mutation_testing_results_for_client(mutation_score)}"
-        )
 
 
 @dataclass(frozen=True)
@@ -193,7 +147,7 @@ class _StepRun:
 
     @property
     def succeeded(self) -> bool:
-        """Return True iff the subprocess exited zero and did not time out."""
+        """True iff the subprocess exited zero and did not time out."""
         return self.returncode == 0 and not self.timed_out
 
 
@@ -224,7 +178,8 @@ def main() -> None:
     args = parser.parse_args()
 
     # Tee mutation-testing compile failures into a file. Leaves loguru's default stderr sink
-    # untouched; the filter keys on the warning emitted by `_verify_mutant` in tools/util/mutation.py.
+    # untouched; the filter keys on the warning emitted by `_verify_mutant` in
+    # tools/util/mutation.py.
     logger.add(
         "mutation_compile_failures.log",
         level="WARNING",
@@ -236,18 +191,6 @@ def main() -> None:
         file_containing_function_to_verify=args.file,
         include_dirs=args.include_dirs,
     )
-    # If the function successfully verifies, run mutation testing.
-    if result.is_function_verified:
-        try:
-            result_with_score = result.with_mutation_testing_score(args.file, args.include_dirs)
-            print(result_with_score)
-            sys.exit(result.returncode)
-        except Exception:
-            # Exception during mutation testing should not stop progress.
-            print(result.response)
-            sys.exit(result.returncode)
-
-    # Don't bother with mutation testing if the spec is failing.
     print(result.response)
     sys.exit(result.returncode)
 
@@ -545,11 +488,15 @@ def has_missing_body_for_callee_message(stdout: str, stderr: str) -> bool:
 
 
 def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, stderr: str) -> str:
-    """Format a CBMC failure response, truncating only if it exceeds the char budget.
+    """Format a CBMC failure response, leading with the FAILURE lines.
 
-    When the combined labeled output fits within `_MAX_RESPONSE_CHARS`, both streams are
-    returned in full. Otherwise, FAILURE lines from stdout are preserved and the rest of
-    each stream is replaced by its tail, with an explicit truncation marker.
+    After the header, the response always begins with the FAILURE lines extracted from
+    stdout, so the verdict survives the harness's head-only inline preview: CBMC prints its
+    FAILURE lines and verdict at the *tail* of stdout, which a positional truncation would
+    otherwise bury. The full stderr and stdout follow; when the combined output exceeds
+    `_MAX_RESPONSE_CHARS`, each stream is replaced by its tail behind a truncation marker.
+    For `goto-cc`/`goto-instrument` failures stdout has no FAILURE lines, so the response
+    leads with stderr, where those tools print their diagnostics.
 
     Args:
         function (str): The name of the function that failed verification.
@@ -558,20 +505,60 @@ def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, 
         stderr (str): The concatenated stderr across every step that ran.
 
     Returns:
-        str: The formatted CBMC failure response, truncated iff it has exceeded the char budget.
+        str: The formatted CBMC failure response, leading with the FAILURE lines and
+            truncated iff it has exceeded the char budget.
     """
     if failed_step is CbmcStep.CBMC:
         header = f"{function} failed to verify with the following errors:\n\n"
     else:
         header = f"{function} failed at {failed_step.value} with the following errors:\n\n"
-    full = f"{header}--- stderr ---\n{stderr}\n--- stdout ---\n{stdout}"
+
+    failure_section = _failure_lines_section(stdout)
+
+    # Lead with the FAILURE lines, then show both streams in full when everything fits.
+    full = f"{header}{failure_section}--- stderr ---\n{stderr}\n--- stdout ---\n{stdout}"
     if len(full) <= _MAX_RESPONSE_CHARS:
         return full
 
+    # Over budget: keep the leading FAILURE lines and replace each stream with its tail.
+    # The `_MAX_RESPONSE_CHARS`-wide placeholder pads the marker's digit count so the
+    # actual marker (with the real dropped count) cannot push us over budget.
+    digit_pad = str(_MAX_RESPONSE_CHARS)
+    marker = f"[... {digit_pad} characters truncated ...]\n"
+    fixed = (
+        f"{header}{failure_section}--- stderr (tail) ---\n{marker}--- stdout (tail) ---\n{marker}"
+    )
+    remaining = max(_MAX_RESPONSE_CHARS - len(fixed), 0)
+    stdout_budget = int(remaining * _STDOUT_TAIL_SHARE)
+    stderr_budget = remaining - stdout_budget
+
+    stderr_section = _tail_section("stderr (tail)", stderr, stderr_budget)
+    stdout_section = _tail_section("stdout (tail)", stdout, stdout_budget)
+
+    response = f"{header}{failure_section}{stderr_section}{stdout_section}"
+    # Hard clamp: the per-section budget accounting can drift by a few chars
+    # against the `fixed` estimate, so guarantee we never exceed the cap.
+    return response[:_MAX_RESPONSE_CHARS]
+
+
+def _failure_lines_section(stdout: str) -> str:
+    """Render the leading "FAILURE lines" section of a failure response, or "" if none.
+
+    Extracts the FAILURE lines from `stdout` and renders them as a labeled section, capped
+    at half the total budget so a pathological run with tens of thousands of FAILURE lines
+    can't blow past the limit on its own. Returns the empty string when stdout has no
+    FAILURE lines (e.g. a goto-cc compile failure), so callers naturally lead with stderr.
+
+    Args:
+        stdout (str): The concatenated stdout across every step that ran.
+
+    Returns:
+        str: The labeled FAILURE-lines section ending in a newline, or "" if there are none.
+    """
     failure_lines = [line for line in stdout.split("\n") if "FAILURE" in line]
+    if not failure_lines:
+        return ""
     failure_block = "\n".join(failure_lines)
-    # Cap the FAILURE block at half the total budget so a pathological run with
-    # tens of thousands of FAILURE lines can't blow past the limit on its own.
     failure_cap = _MAX_RESPONSE_CHARS // 2
     if len(failure_block) > failure_cap:
         dropped = len(failure_block) - failure_cap
@@ -579,33 +566,7 @@ def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, 
             f"[... {dropped} characters of FAILURE lines truncated ...]\n"
             f"{failure_block[-failure_cap:]}"
         )
-
-    # Reserve space for headers, section labels, and truncation markers. The
-    # `_MAX_RESPONSE_CHARS`-wide placeholder pads the digit count so the actual
-    # marker (with the real dropped count) cannot push us over budget.
-    digit_pad = str(_MAX_RESPONSE_CHARS)
-    fixed = (
-        f"{header}"
-        f"--- stderr (tail) ---\n[... {digit_pad} characters truncated ...]\n\n"
-        f"--- stdout (FAILURE lines) ---\n{failure_block}\n"
-        f"--- stdout (tail) ---\n[... {digit_pad} characters truncated ...]\n"
-    )
-    remaining = max(_MAX_RESPONSE_CHARS - len(fixed), 0)
-    stdout_budget = int(remaining * _STDOUT_TAIL_SHARE)
-    stderr_budget = remaining - stdout_budget
-
-    stderr_section = _tail_section("stderr (tail)", stderr, stderr_budget)
-    stdout_tail_section = _tail_section("stdout (tail)", stdout, stdout_budget)
-
-    response = (
-        f"{header}"
-        f"{stderr_section}\n"
-        f"--- stdout (FAILURE lines) ---\n{failure_block}\n"
-        f"{stdout_tail_section}"
-    )
-    # Hard clamp: the per-section budget accounting can drift by a few chars
-    # against the `fixed` estimate, so guarantee we never exceed the cap.
-    return response[:_MAX_RESPONSE_CHARS]
+    return f"--- FAILURE lines ---\n{failure_block}\n"
 
 
 def _tail_section(label: str, content: str, budget: int) -> str:

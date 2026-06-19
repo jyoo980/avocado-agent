@@ -7,6 +7,8 @@ from eval.mutants.mutate_function import Mutant
 from tools.run_cbmc import (
     CbmcStep,
     RunCbmcResult,
+    _MAX_RESPONSE_CHARS,
+    _format_failure_response,
     _get_cbmc_check_command,
     _get_goto_cc_command,
     _get_goto_instrument_add_library_command,
@@ -15,7 +17,7 @@ from tools.run_cbmc import (
     compile_with_goto_cc,
     run_cbmc,
 )
-from tools.util.mutation import MutantVerificationResult, MutationScore, _MAX_MUTATION_SECTION_CHARS, get_mutation_testing_results_for_client
+from tools.util.mutation import MutantVerificationResult, MutationScore, _MAX_MUTATION_SECTION_CHARS, _print_mutation_progress, get_mutation_testing_results_for_client
 
 
 def _make_mutant(
@@ -155,6 +157,48 @@ def test_run_cbmc_names_failed_step_for_uncompilable_source(tmp_path: Path) -> N
     assert result.returncode != 0
 
 
+def test_format_failure_response_leads_with_failure_lines_for_cbmc_step() -> None:
+    # CBMC prints its FAILURE lines and verdict at the tail of stdout. The response must
+    # hoist them ahead of stderr/stdout so they survive the harness's head-only preview.
+    stdout = (
+        "goto-cc banner\n"
+        + "symex progress\n" * 50
+        + "[f.assertion.1] line 9: FAILURE\n"
+        + "** 1 of 12 failed\nVERIFICATION FAILED\n"
+    )
+    response = _format_failure_response("f", CbmcStep.CBMC, stdout=stdout, stderr="some stderr")
+
+    # FAILURE lines lead, before both stream sections.
+    assert response.index("--- FAILURE lines ---") < response.index("--- stderr ---")
+    assert response.index("--- FAILURE lines ---") < response.index("--- stdout ---")
+    # The hoisted failure line lands in the head, where the inline preview looks.
+    assert "[f.assertion.1] line 9: FAILURE" in response[:2000]
+
+
+def test_format_failure_response_omits_failure_section_for_compile_failure() -> None:
+    # goto-cc emits compiler errors on stderr and has no CBMC-style FAILURE lines, so the
+    # response leads with stderr rather than an empty FAILURE section.
+    response = _format_failure_response(
+        "f", CbmcStep.GOTO_CC, stdout="preprocessing...\n", stderr="error: expected ';'\n"
+    )
+    assert "--- FAILURE lines ---" not in response
+    assert response.index("--- stderr ---") < response.index("--- stdout ---")
+    assert "failed at goto-cc" in response
+
+
+def test_format_failure_response_truncates_but_keeps_failures_leading() -> None:
+    # A pathological stdout far exceeds the budget; the response must stay bounded while
+    # still leading with the (capped) FAILURE lines and switching the streams to tails.
+    stdout = "noise\n" * 50_000 + "[f.assertion.7] line 3: FAILURE\n"
+    response = _format_failure_response("f", CbmcStep.CBMC, stdout=stdout, stderr="e" * 50_000)
+
+    assert len(response) <= _MAX_RESPONSE_CHARS
+    assert response.startswith("f failed to verify with the following errors:")
+    assert "[f.assertion.7] line 3: FAILURE" in response[:2000]
+    assert "--- stderr (tail) ---" in response
+    assert "--- stdout (tail) ---" in response
+
+
 def test_format_mutation_success_section_renders_kill_score_and_survivor_diff() -> None:
     # `<` -> `<=` survived (spec too weak); `<` -> `>` was killed.
     survivor = _make_mutant(
@@ -179,6 +223,7 @@ def test_format_mutation_success_section_renders_kill_score_and_survivor_diff() 
         num_survived=1,
         num_timed_out=0,
         num_compile_failed=0,
+        num_instrumentation_failed=0,
         kill_score=0.5,
         results=[_vresult(killed, killed=True), _vresult(survivor, killed=False)],
     )
@@ -211,6 +256,7 @@ def test_format_mutation_success_section_reports_all_killed() -> None:
         num_survived=0,
         num_timed_out=0,
         num_compile_failed=0,
+        num_instrumentation_failed=0,
         kill_score=1.0,
         results=[_vresult(killed, killed=True)],
     )
@@ -244,6 +290,7 @@ def test_format_mutation_success_section_excludes_undecided_mutants() -> None:
         num_survived=0,
         num_timed_out=1,
         num_compile_failed=1,
+        num_instrumentation_failed=0,
         kill_score=0.0,
         results=[timed_out, compile_failed],
     )
@@ -277,6 +324,7 @@ def test_format_mutation_success_section_bounds_size_and_marks_omissions() -> No
         num_survived=20,
         num_timed_out=0,
         num_compile_failed=0,
+        num_instrumentation_failed=0,
         kill_score=0.0,
         results=survivors,
     )
@@ -288,3 +336,46 @@ def test_format_mutation_success_section_bounds_size_and_marks_omissions() -> No
     assert len(section) <= _MAX_MUTATION_SECTION_CHARS + 200
     # Not all 20 survivors were rendered.
     assert "surviving mutant 20 —" not in section
+
+
+def test_print_mutation_progress_reports_running_tally_on_stderr(capsys) -> None:
+    mutant = _make_mutant(
+        source="x", original_operator="<", replacement_operator=">", start_byte=0, line=1
+    )
+    # Two killed, one survived so far, out of five total mutants.
+    vresults = [
+        _vresult(mutant, killed=True),
+        _vresult(mutant, killed=True),
+        _vresult(mutant, killed=False),
+    ]
+
+    _print_mutation_progress(done=3, total=5, vresults=vresults)
+
+    captured = capsys.readouterr()
+    # Progress goes to stderr, never stdout, so it cannot contaminate the kill-score result.
+    assert captured.out == ""
+    assert (
+        "[mutation testing] 3/5 done "
+        "(killed=2 survived=1 timed_out=0 compile_failed=0 instrumentation_failed=0)" in captured.err
+    )
+
+
+def test_print_mutation_progress_buckets_undecided_mutants(capsys) -> None:
+    mutant = _make_mutant(
+        source="x", original_operator="<", replacement_operator=">", start_byte=0, line=1
+    )
+    timed_out = MutantVerificationResult(
+        mutant=mutant, path_to_mutant="m.c", killed=False, returncode=124, timed_out=True
+    )
+    compile_failed = MutantVerificationResult(
+        mutant=mutant, path_to_mutant="m.c", killed=False, returncode=1, compile_failed=True
+    )
+
+    _print_mutation_progress(done=2, total=2, vresults=[timed_out, compile_failed])
+
+    # Timed-out and compile-failed mutants are bucketed separately, not counted as survived,
+    # mirroring `_aggregate_mutation_score`.
+    assert (
+        "[mutation testing] 2/2 done "
+        "(killed=0 survived=0 timed_out=1 compile_failed=1 instrumentation_failed=0)" in capsys.readouterr().err
+    )

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass, field
-from itertools import starmap
 from pathlib import Path
 
 from loguru import logger
@@ -85,6 +84,7 @@ class MutationScore:
         num_survived (int): The number of surviving (decided, not killed) mutants.
         num_timed_out (int): The number of mutants for which CBMC exceeded its timeout.
         num_compile_failed (int): The number of mutants that goto-cc rejected as invalid C.
+        num_instrumentation_failed (int): The number of mutants that goto-instrument failed on.
         kill_score (float): killed / (killed + survived); 0.0 when no mutants were decided.
         results (list[MutantVerificationResult]): The verification result for each mutant.
     """
@@ -96,6 +96,7 @@ class MutationScore:
     num_survived: int
     num_timed_out: int
     num_compile_failed: int
+    num_instrumentation_failed: int
     kill_score: float
     results: list[MutantVerificationResult] = field(default_factory=list)
 
@@ -114,6 +115,7 @@ class MutationScore:
             "survived": self.num_survived,
             "timed_out": self.num_timed_out,
             "compile_failed": self.num_compile_failed,
+            "instrumentation_failed": self.num_compile_failed,
             "kill_score": f"{self.kill_score:.4f}",
         }
 
@@ -137,7 +139,6 @@ def get_mutation_testing_results_for_client(mutation_score: MutationScore) -> st
         return (
             f"No mutants generated for '{mutation_score.target_function}' "
             "(no mutable operators in the function body)\n"
-            "Next step: continue verifying the rest of the program"
         )
     kill_score_line = (
         f"Mutation kill score: {mutation_score.kill_score:.4f} "
@@ -187,7 +188,7 @@ def get_mutation_testing_results_for_client(mutation_score: MutationScore) -> st
     return (
         header
         + "".join(blocks)
-        + "\nNext step: Try to increase the kill score by strengthening the specification, "
+        + "\nRemember, you MUST try to increase the kill score by strengthening the specification, "
         + "but don't keep trying if it is obvious the kill score cannot be increased."
     )
 
@@ -247,20 +248,56 @@ def generate_mutants_and_compute_score(
             file=sys.stderr,
             flush=True,
         )
+    # Verify mutants one at a time, emitting per-mutant progress to stderr so a consumer
+    # (an agent polling the run, or a human at the terminal) can see forward motion. Each
+    # mutant is a full CBMC run that can take up to 10 minutes, so a "starting" line is
+    # printed before each run and a "done" line with the running tally after it. stderr is
+    # used (not stdout) so progress never contaminates the kill-score result, and each line
+    # is flushed so it appears immediately rather than at the end of the long run.
+    total = len(paths_to_mutants)
     mutant_vresults: list[MutantVerificationResult] = []
     try:
-        mutant_vresults = list(
-            starmap(
-                lambda path, mutant: _verify_mutant(path, mutant, include_dirs),
-                paths_to_mutants.items(),
+        for i, (path, mutant) in enumerate(paths_to_mutants.items(), start=1):
+            print(
+                f"[mutation testing] starting mutant {i}/{total}...",
+                file=sys.stderr,
+                flush=True,
             )
-        )
+            mutant_vresults.append(_verify_mutant(path, mutant, include_dirs))
+            _print_mutation_progress(i, total, mutant_vresults)
     finally:
         if not keep_artifacts:
             for path in paths_to_mutants:
                 path.unlink(missing_ok=True)
 
     return _aggregate_mutation_score(mutant_vresults, str(source_path), target_function)
+
+
+def _print_mutation_progress(
+    done: int, total: int, vresults: list[MutantVerificationResult]
+) -> None:
+    """Print a one-line, flushed mutation-testing progress update to stderr.
+
+    Reports the running tally over the mutants decided so far. The buckets mirror those in
+    `_aggregate_mutation_score` so the live counts agree with the final `MutationScore`.
+
+    Args:
+        done (int): The number of mutants verified so far.
+        total (int): The total number of mutants.
+        vresults (list[MutantVerificationResult]): The per-mutant results accumulated so far.
+    """
+    killed = sum(1 for r in vresults if r.killed)
+    timed_out = sum(1 for r in vresults if r.timed_out)
+    compile_failed = sum(1 for r in vresults if r.compile_failed)
+    instrumentation_failed = sum(1 for r in vresults if r.instrumentation_failed)
+    survived = len(vresults) - killed - timed_out - compile_failed - instrumentation_failed
+    print(
+        f"[mutation testing] {done}/{total} done "
+        f"(killed={killed} survived={survived} timed_out={timed_out} "
+        f"compile_failed={compile_failed} instrumentation_failed={instrumentation_failed})",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _aggregate_mutation_score(
@@ -298,6 +335,7 @@ def _aggregate_mutation_score(
         num_survived=survived,
         num_timed_out=timed_out,
         num_compile_failed=compile_failed,
+        num_instrumentation_failed=instrumentation_failed,
         kill_score=round(kill_rate, 4),
         results=mutant_vresults,
     )
