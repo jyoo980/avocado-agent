@@ -292,7 +292,7 @@ def _print_mutation_progress(
     print(
         f"[mutation testing] {done}/{total} done "
         f"(killed={killed} survived={survived} timed_out={timed_out} "
-        f"compile_failed={compile_failed})",
+        f"compile_failed={compile_failed} instrumentation_failed={instrumentation_failed})",
         file=sys.stderr,
         flush=True,
     )
