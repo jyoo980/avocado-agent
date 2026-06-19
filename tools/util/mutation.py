@@ -84,6 +84,7 @@ class MutationScore:
         num_survived (int): The number of surviving (decided, not killed) mutants.
         num_timed_out (int): The number of mutants for which CBMC exceeded its timeout.
         num_compile_failed (int): The number of mutants that goto-cc rejected as invalid C.
+        num_instrumentation_failed (int): The number of mutants that goto-instrument failed on.
         kill_score (float): killed / (killed + survived); 0.0 when no mutants were decided.
         results (list[MutantVerificationResult]): The verification result for each mutant.
     """
@@ -95,6 +96,7 @@ class MutationScore:
     num_survived: int
     num_timed_out: int
     num_compile_failed: int
+    num_instrumentation_failed: int
     kill_score: float
     results: list[MutantVerificationResult] = field(default_factory=list)
 
@@ -113,6 +115,7 @@ class MutationScore:
             "survived": self.num_survived,
             "timed_out": self.num_timed_out,
             "compile_failed": self.num_compile_failed,
+            "instrumentation_failed": self.num_compile_failed,
             "kill_score": f"{self.kill_score:.4f}",
         }
 
@@ -333,6 +336,7 @@ def _aggregate_mutation_score(
         num_survived=survived,
         num_timed_out=timed_out,
         num_compile_failed=compile_failed,
+        num_instrumentation_failed=instrumentation_failed,
         kill_score=round(kill_rate, 4),
         results=mutant_vresults,
     )

@@ -31,7 +31,7 @@ You can also search the web for more CBMC documentation.
                    [-I <PATH_TO_INCLUDE_DIR(S)>]...
   ```
 
-  If verification succeeds, prints any mutation-testing information (e.g., the kill score, surviving mutants) to stdout, and exits with status zero.
+  If verification succeeds, exits with status 0.
   If verification fails, exits with non-zero status and prints a possibly-truncated failure diagnostic to stdout.
 
   You should always prefer `avocado-run-cbmc` over invoking CBMC directly.
