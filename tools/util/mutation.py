@@ -139,7 +139,6 @@ def get_mutation_testing_results_for_client(mutation_score: MutationScore) -> st
         return (
             f"No mutants generated for '{mutation_score.target_function}' "
             "(no mutable operators in the function body)\n"
-            "Next step: continue verifying the rest of the program"
         )
     kill_score_line = (
         f"Mutation kill score: {mutation_score.kill_score:.4f} "
@@ -189,7 +188,7 @@ def get_mutation_testing_results_for_client(mutation_score: MutationScore) -> st
     return (
         header
         + "".join(blocks)
-        + "\nNext step: Try to increase the kill score by strengthening the specification, "
+        + "\nRemember, you MUST try to increase the kill score by strengthening the specification, "
         + "but don't keep trying if it is obvious the kill score cannot be increased."
     )
 
