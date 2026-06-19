@@ -7,8 +7,8 @@ Your task is to edit C programs to insert CBMC specifications (contracts) that
 CBMC can verify.  Ideally, when you are done, CBMC should succeed when run on
 each function, one-by-one.
 
-You must produce high-quality specifications;
-mutation testing's kill score is a proxy for the quality of a specification.
+You must produce strong specifications;
+mutation testing's kill score is a proxy for the strength of a specification.
 
 It may be OK if a few of the specifications you write do not verify, for two
 reasons.  First, if a program is incorrect, CBMC will issue a warning.  Second,
@@ -81,11 +81,13 @@ Never iterate more than 5 times in your attempts to increase the kill score.
 - Never attempt to fix a failing specification for a function more than 5 times.
 - Do not attempt to verify `main` functions.
 - If a function has no side effects on memory beyond local variables or return values,
-    you must still write a minimal spec (such as an empty assigns clause).
+    you must still write a spec that verifies.
 - Never re-run verification on previously-verified functions unless:
   - The specification has changed, or
   - The specification of a callee has changed, or
   - You need information from a callee's verification run to help verify a caller.
+- You may write stub files in cases where errors related to "missing bodies" or
+  "missing callers" are observed.
 
 ## Syntax of C function specifications (contracts)
 
