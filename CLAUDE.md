@@ -40,11 +40,13 @@ You can also search the web for more CBMC documentation.
 
 - **To obtain a mutation testing kill score**, run:
 
-```sh
-avocado-get-mutation-testing-kill-score  --function <FUNCTION_NAME> \
-                   --file <PATH_TO_C_FILE> \
-                   [-I <PATH_TO_INCLUDE_DIR(S)>]...
-```
+  ```sh
+  avocado-get-mutation-testing-kill-score  --function <FUNCTION_NAME> \
+                     --file <PATH_TO_C_FILE> \
+                     [-I <PATH_TO_INCLUDE_DIR(S)>]...
+  ```
+
+    **This tool can run for a long time, and that is expected — not a hang.**
 
 - **To obtain a call graph of the functions in a file in JSON format**, run:
 
@@ -81,7 +83,7 @@ You must work in a two-pass approach:
 - Never attempt to fix a failing specification for a function more than 5 times.
 - Do not attempt to verify `main` functions.
 - If a function has no side effects on memory beyond local variables or return values,
-    you must still write a minimal spec (such as an empty assigns clause).
+    you must still write a spec that verifies.
 - Never re-run verification on previously-verified functions unless:
   - The specification has changed, or
   - The specification of a callee has changed, or

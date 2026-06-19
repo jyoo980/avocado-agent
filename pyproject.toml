@@ -5,7 +5,7 @@ description = "An agentic approach to automated specification generation for C p
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "claude-agent-sdk>=0.1.71",
+    "claude-agent-sdk==0.2.105",
     "loguru>=0.7.3",
     "pytest>=9.0.3",
     "tree-sitter>=0.25.2",

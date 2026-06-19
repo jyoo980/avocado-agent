@@ -1,20 +1,18 @@
 {
     "model": "claude-opus-4-8",
+    "env": {
+        "API_TIMEOUT_MS": "1200000",
+        "BASH_DEFAULT_TIMEOUT_MS": "600000",
+        "CLAUDE_CODE_EFFORT_LEVEL": "max"
+    },
     "permissions": {
         "allow": [
             "Bash(avocado-*)"
         ],
         "deny": [
-            "Read(eval/EXPERIMENTS.md)",
-            "Read(**/*mutation_compile_failures.log)",
-            "Bash(grep eval/EXPERIMENTS.md)",
-            "Bash(cat eval/EXPERIMENTS.md)",
-            "Read(eval/README.md)",
-            "Bash(grep eval/README.md)",
-            "Bash(cat eval/README.md)"
+            "Bash(*eval*)",
+            "Read(*eval*)",
+            "Read(**/*mutation_compile_failures.log)"
         ]
-    },
-    "env": {
-        "BASH_DEFAULT_TIMEOUT_MS": "600000"
     }
 }
