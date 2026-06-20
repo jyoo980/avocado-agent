@@ -42,7 +42,7 @@ _MAX_MUTATION_SECTION_CHARS = 50_000
 # pipeline (its own subprocesses), which can be memory-heavy, so the effective worker count is
 # min(this cap, os.cpu_count(), number of mutants). The cap bounds peak memory on machines with
 # many cores; lower it if mutation runs exhaust RAM.
-_MAX_MUTATION_WORKERS = 8
+_MAX_MUTATION_WORKERS = 32
 
 
 @dataclass(frozen=True)
