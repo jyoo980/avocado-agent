@@ -244,7 +244,6 @@ def run_cbmc(
 
     step_records: list[dict] = []
 
-    logger.warning("Running initial attempt")
     # Initial attempt.
     result, combined_stdout, combined_stderr = _run_pipeline(
         function_to_verify,
@@ -256,7 +255,6 @@ def run_cbmc(
         step_records=step_records,
         cwd=cwd,
     )
-    logger.warning(f"RESULT = {result}")
     # First, check if the run was successful or if it timed out.
     if result.cbmc_ran_successfully or result.timed_out:
         _log_invocation(file_containing_function_to_verify, result, step_records, nondet_callees)
@@ -264,7 +262,6 @@ def run_cbmc(
 
     # Recursion-inlining retry.
     if has_recursion_inlining_error_message(function_to_verify, combined_stdout, combined_stderr):
-        logger.warning("RECURSION INLINING ERROR MESSAGE")
         callees = get_in_file_callees_for(
             function_to_verify,
             call_graph,
@@ -285,7 +282,6 @@ def run_cbmc(
     if not result.cbmc_ran_successfully and has_missing_body_for_callee_or_function_message(
         combined_stdout, combined_stderr
     ):
-        logger.warning("ERROR WITH MISSING BODY")
         result, combined_stdout, combined_stderr = _run_pipeline(
             function_to_verify,
             callees,
@@ -500,11 +496,11 @@ def has_missing_body_for_callee_or_function_message(stdout: str, stderr: str) ->
     """Return True iff CBMC output indicates a callee or function body is missing.
 
     The CBMC error output contains the string "no body for callee" when a callee of a function under
-    verification is missing its body. 
+    verification is missing its body.
 
     It contains the string "no body for function" in cases where a function body may be missing
     (e.g., when a stub file is not passed in).
-    
+
     In this case, it doesn't hurt to re-run CBMC while suppressing
     macro expansion (e.g., `isspace` in ctype.h expands to `__ctype_loc`, which CBMC lacks a model
     for).
@@ -518,7 +514,12 @@ def has_missing_body_for_callee_or_function_message(stdout: str, stderr: str) ->
     """
     missing_callee_indicator = "no body for callee"
     missing_function_indicator = "no body for function"
-    return missing_callee_indicator in stdout or missing_callee_indicator in stderr or missing_function_indicator in stdout or missing_function_indicator in stderr
+    return (
+        missing_callee_indicator in stdout
+        or missing_callee_indicator in stderr
+        or missing_function_indicator in stdout
+        or missing_function_indicator in stderr
+    )
 
 
 def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, stderr: str) -> str:
