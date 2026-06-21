@@ -199,6 +199,8 @@ def run_cbmc(
     function_to_verify: str,
     file_containing_function_to_verify: str,
     include_dirs: list[str] | None = None,
+    call_graph: CallGraph | None = None,
+    cwd: str | None = None,
 ) -> RunCbmcResult:
     """Run CBMC on the given function with loop unwinding = 5, depth = 100.
 
@@ -214,13 +216,25 @@ def run_cbmc(
         file_containing_function_to_verify (str): Path to the C file defining the function.
         include_dirs (list[str] | None): Directories to add to the C preprocessor's include
             search path. Forwarded to `goto-cc` as `-I` flags.
+        call_graph (CallGraph | None): When provided, this pre-built call graph is used instead
+            of parsing `file_containing_function_to_verify`. Callers that verify many variants of
+            one source (e.g. mutation testing, where every mutant shares the original's call
+            graph) can build it once and pass it in, which both avoids redundant parsing and keeps
+            the non-thread-safe tree-sitter parser out of concurrent code paths. When None, the
+            call graph is constructed from the source file as usual.
+        cwd (str | None): Working directory for every subprocess in the pipeline. The pipeline
+            writes its intermediate `<function>.goto` / `checking-<function>-contracts.goto` files
+            relative to this directory, so concurrent runs of the same function (again, mutation
+            testing) must each pass a distinct `cwd` to avoid clobbering one another. When None,
+            subprocesses inherit the current working directory.
 
     Returns:
         RunCbmcResult: The outcome of the run, naming the failed step (if any) and carrying
             a printable response and the relevant exit code.
     """
-    path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)
-    call_graph = CallGraph(json.loads(Path(path_to_raw_call_graph).read_text(encoding="utf-8")))
+    if call_graph is None:
+        path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)
+        call_graph = CallGraph(json.loads(Path(path_to_raw_call_graph).read_text(encoding="utf-8")))
     callees = get_in_file_callees_for(function_to_verify, call_graph)
     # Building the stub index is inexpensive for now (there is a single file).
     # Re-visit this if/when we have more stub files to parse.
@@ -239,6 +253,7 @@ def run_cbmc(
         include_dirs=include_dirs,
         prevent_macro_expansion=False,
         step_records=step_records,
+        cwd=cwd,
     )
     # First, check if the run was successful or if it timed out.
     if result.cbmc_ran_successfully or result.timed_out:
@@ -260,6 +275,7 @@ def run_cbmc(
             include_dirs=include_dirs,
             prevent_macro_expansion=False,
             step_records=step_records,
+            cwd=cwd,
         )
 
     # Missing-body retry: re-run with macro expansion suppressed.
@@ -274,6 +290,7 @@ def run_cbmc(
             include_dirs=include_dirs,
             prevent_macro_expansion=True,
             step_records=step_records,
+            cwd=cwd,
         )
 
     _log_invocation(file_containing_function_to_verify, result, step_records, nondet_callees)
@@ -288,6 +305,7 @@ def _run_pipeline(
     include_dirs: list[str] | None,
     prevent_macro_expansion: bool,
     step_records: list[dict],
+    cwd: str | None = None,
 ) -> tuple[RunCbmcResult, str, str]:
     """Run the goto-cc → goto-instrument → cbmc pipeline once.
 
@@ -304,6 +322,8 @@ def _run_pipeline(
             the bundled C-library models before contract enforcement.
         step_records (list[dict]): Mutated in place — one record per subprocess invocation
             appended in order. Used by `_log_invocation` to produce the JSONL row.
+        cwd (str | None): Working directory for every subprocess, forwarded to `_run_step`. The
+            pipeline's intermediate `.goto` files are written relative to this directory.
 
     Returns:
         tuple[RunCbmcResult, str, str]: The result of the pipeline plus the concatenated
@@ -346,7 +366,7 @@ def _run_pipeline(
     combined_stdout = ""
     combined_stderr = ""
     for step, command in commands:
-        step_run = _run_step(step, command)
+        step_run = _run_step(step, command, cwd=cwd)
         step_records.append(
             {
                 "step": step.value,
@@ -378,12 +398,15 @@ def _run_pipeline(
     )
 
 
-def _run_step(step: CbmcStep, command: str) -> _StepRun:
+def _run_step(step: CbmcStep, command: str, cwd: str | None = None) -> _StepRun:
     """Run one pipeline step as a subprocess with the per-step timeout.
 
     Args:
         step (CbmcStep): The logical step this subprocess belongs to.
         command (str): The shell command to run.
+        cwd (str | None): Working directory for the subprocess. When None, the subprocess
+            inherits the current working directory. Distinct directories let concurrent
+            pipelines for the same function avoid clobbering each other's `.goto` files.
 
     Returns:
         _StepRun: The captured outcome, including stdout/stderr or the timeout sentinel.
@@ -396,6 +419,7 @@ def _run_step(step: CbmcStep, command: str) -> _StepRun:
             shell=True,
             check=False,
             timeout=_DEFAULT_RUN_CBMC_TIMEOUT_SEC,
+            cwd=cwd,
         )
     except TimeoutExpired:
         return _StepRun(
