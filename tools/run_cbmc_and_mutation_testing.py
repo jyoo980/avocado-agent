@@ -214,7 +214,8 @@ def main() -> None:
             target_function=args.function,
             include_dirs=args.include_dirs,
         )
-        if score is not None:
+        if score:
+            print(result.response)
             print(get_mutation_testing_results_for_client(score))
         sys.exit(0)
     else:
