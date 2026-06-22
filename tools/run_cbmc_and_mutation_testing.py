@@ -227,7 +227,7 @@ def run_cbmc(
     file_containing_function_to_verify: str,
     include_dirs: list[str] | None = None,
 ) -> RunCbmcResult:
-    """Run CBMC on the given function with loop unwinding = 5, depth = 100.
+    """Run CBMC on the given function with loop unwinding = _CBMC_UNWIND, depth = _CBMC_DEPTH.
 
     The pipeline is split into three logical steps — `goto-cc`, `goto-instrument`, and
     `cbmc` — each run as its own subprocess so that failures can be attributed to a
