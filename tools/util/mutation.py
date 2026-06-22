@@ -9,7 +9,11 @@ that perturbation.
 
 from __future__ import annotations
 
+import json
+import os
 import sys
+import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -20,7 +24,9 @@ from eval.mutants.util import (
     check_expected_cbmc_return_code,
     is_valid_mutation_candidate,
 )
+from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import CbmcStep, run_cbmc
+from tools.util.callgraph import CallGraph
 
 # Matches the GNU `timeout(1)` convention used elsewhere in the codebase; surfaces in
 # MutantVerificationResult.returncode so consumers can distinguish a timed-out run from a
@@ -31,6 +37,12 @@ _VERIFICATION_FAILURE_RETURNCODE = 10
 # Surviving-mutant diff volume is unbounded in principle, so cap it the way failure
 # output is capped, dropping trailing survivors behind an explicit omission marker.
 _MAX_MUTATION_SECTION_CHARS = 50_000
+
+# Upper bound on how many mutants are verified concurrently. Each worker drives a full CBMC
+# pipeline (its own subprocesses), which can be memory-heavy, so the effective worker count is
+# min(this cap, os.cpu_count(), number of mutants). The cap bounds peak memory on machines with
+# many cores; lower it if mutation runs exhaust RAM.
+_MAX_MUTATION_WORKERS = 32
 
 
 @dataclass(frozen=True)
@@ -232,6 +244,15 @@ def generate_mutants_and_compute_score(
         logger.warning(f"could not verify {target_function}; skipping mutation testing")
         return None
 
+    # Operator-swap mutations never add or remove calls (or rename functions), so the call graph
+    # is identical for the original and every mutant. Build it once -- cache-hitting the JSON the
+    # baseline run above already wrote -- and pass it into each mutant's run_cbmc below. Besides
+    # avoiding redundant parsing, this keeps the non-thread-safe tree-sitter parser out of the
+    # concurrent section: no call graph is constructed inside the worker threads.
+    call_graph = CallGraph(
+        json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
+    )
+
     mutants = get_mutants(str(source_path), target_function)
     paths_to_mutants = {
         _get_path_for_mutated_source(workspace, source_path, i): mutant
@@ -240,37 +261,65 @@ def generate_mutants_and_compute_score(
     # Heads-up to stderr so an agent polling the run can see the slow phase has begun and is
     # making progress. Written to stderr (not stdout) so it never contaminates the kill-score
     # result, and flushed so it is not buffered until the long run completes.
+    total = len(paths_to_mutants)
+    max_workers = _mutation_worker_count(total)
     if mutants:
         print(
-            f"Verified {target_function}; now running mutation testing on {len(mutants)} "
-            "mutants (one CBMC run each, up to 10 min per mutant) -- this can take several "
-            "minutes; do not interrupt.",
+            f"Verified {target_function}; now running mutation testing on {total} "
+            f"mutants across up to {max_workers} worker(s) (one CBMC run each, up to 10 min "
+            "per mutant) -- this can take several minutes; do not interrupt.",
             file=sys.stderr,
             flush=True,
         )
-    # Verify mutants one at a time, emitting per-mutant progress to stderr so a consumer
-    # (an agent polling the run, or a human at the terminal) can see forward motion. Each
-    # mutant is a full CBMC run that can take up to 10 minutes, so a "starting" line is
-    # printed before each run and a "done" line with the running tally after it. stderr is
-    # used (not stdout) so progress never contaminates the kill-score result, and each line
-    # is flushed so it appears immediately rather than at the end of the long run.
-    total = len(paths_to_mutants)
-    mutant_vresults: list[MutantVerificationResult] = []
+    # Verify mutants concurrently: each mutant is an independent CBMC run, so a bounded thread
+    # pool overlaps their (subprocess-bound, GIL-releasing) work. Results are collected as each
+    # future completes -- emitting a flushed running tally to stderr so a consumer (a polling
+    # agent or a human at the terminal) sees forward motion -- then slotted back into original
+    # mutant order so survivor diffs render deterministically downstream. stderr (not stdout) is
+    # used so progress never contaminates the kill-score result.
+    mutant_vresults: list[MutantVerificationResult | None] = [None] * total
     try:
-        for i, (path, mutant) in enumerate(paths_to_mutants.items(), start=1):
-            print(
-                f"[mutation testing] starting mutant {i}/{total}...",
-                file=sys.stderr,
-                flush=True,
-            )
-            mutant_vresults.append(_verify_mutant(path, mutant, include_dirs))
-            _print_mutation_progress(i, total, mutant_vresults)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_index = {
+                executor.submit(_verify_mutant, path, mutant, include_dirs, call_graph): index
+                for index, (path, mutant) in enumerate(paths_to_mutants.items())
+            }
+            try:
+                for done, future in enumerate(as_completed(future_to_index), start=1):
+                    mutant_vresults[future_to_index[future]] = future.result()
+                    _print_mutation_progress(
+                        done, total, [r for r in mutant_vresults if r is not None]
+                    )
+            finally:
+                # If we exit early (an unexpected error or a Ctrl-C), stop launching mutants that
+                # haven't started yet rather than kicking off more 10-minute CBMC runs; the `with`
+                # block still waits for any in-flight runs to drain.
+                executor.shutdown(cancel_futures=True)
     finally:
         if not keep_artifacts:
             for path in paths_to_mutants:
                 path.unlink(missing_ok=True)
 
-    return _aggregate_mutation_score(mutant_vresults, str(source_path), target_function)
+    # Every future either stored a result above or raised (which would have propagated), so no
+    # None slots remain; the filter just refines the type for the aggregator.
+    results = [vresult for vresult in mutant_vresults if vresult is not None]
+    return _aggregate_mutation_score(results, str(source_path), target_function)
+
+
+def _mutation_worker_count(num_mutants: int) -> int:
+    """Return how many mutants to verify concurrently.
+
+    Bounded by `_MAX_MUTATION_WORKERS`, the machine's CPU count, and the number of mutants, and
+    never below 1 (a `ThreadPoolExecutor` requires a positive worker count, even when there are
+    no mutants to run).
+
+    Args:
+        num_mutants (int): The total number of mutants to verify.
+
+    Returns:
+        int: The number of worker threads to use.
+    """
+    return max(1, min(num_mutants, os.cpu_count() or 1, _MAX_MUTATION_WORKERS))
 
 
 def _print_mutation_progress(
@@ -345,6 +394,7 @@ def _verify_mutant(
     path_to_write_mutant: Path,
     mutant: Mutant,
     include_dirs: list[str] | None,
+    call_graph: CallGraph,
 ) -> MutantVerificationResult:
     """Return the result of verifying a mutant.
 
@@ -352,10 +402,17 @@ def _verify_mutant(
     returned with `compile_failed=True`; this prevents `check_expected_cbmc_return_code` from
     raising on goto-cc's exit code and lets callers exclude these mutants from the kill rate.
 
+    Safe to call concurrently for sibling mutants of one function: the CBMC pipeline runs in a
+    private scratch directory so its function-name-derived `.goto` intermediates never collide,
+    and the shared `call_graph` is read-only.
+
     Args:
         path_to_write_mutant (Path): The path to which the mutated source is written.
         mutant (Mutant): The mutant.
         include_dirs (list[str] | None): Include directories, which are forwarded to `run_cbmc()`.
+        call_graph (CallGraph): The original function's call graph, reused verbatim for this
+            mutant (operator-swap mutants share the original's call graph) and passed to
+            `run_cbmc()` so it skips re-parsing the mutant source.
 
     Returns:
         MutantVerificationResult: The result of verifying a mutant. The returned result's
@@ -363,11 +420,19 @@ def _verify_mutant(
             not run.
     """
     path_to_write_mutant.write_text(mutant.mutant_source, encoding="utf-8")
-    cbmc_result = run_cbmc(
-        function_to_verify=mutant.function,
-        file_containing_function_to_verify=str(path_to_write_mutant),
-        include_dirs=include_dirs,
-    )
+    # The CBMC pipeline writes intermediate `<function>.goto` / `checking-<function>-contracts.goto`
+    # files named only by the function name -- identical across all mutants of one function -- into
+    # its working directory. Give each run a private scratch dir so concurrent mutants don't clobber
+    # one another's goto-binaries (this also keeps the source directory clean). The result is read
+    # entirely from the in-memory `cbmc_result`, so the scratch dir can be torn down immediately.
+    with tempfile.TemporaryDirectory(prefix="avocado-mutant-") as scratch_dir:
+        cbmc_result = run_cbmc(
+            function_to_verify=mutant.function,
+            file_containing_function_to_verify=str(path_to_write_mutant),
+            include_dirs=include_dirs,
+            call_graph=call_graph,
+            cwd=scratch_dir,
+        )
     if cbmc_result.timed_out:
         return MutantVerificationResult(
             mutant,
