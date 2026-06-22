@@ -8,6 +8,8 @@ CBMC can verify.  Ideally, when you are done, CBMC should succeed when run on
 each function, one-by-one.
 
 You must produce strong specifications.
+A kill score from mutation testing is a proxy for the strength of a specification;
+the higher the kill score, the stronger the spec.
 
 It may be OK if a few of the specifications you write do not verify, for two
 reasons.  First, if a program is incorrect, CBMC will issue a warning.  Second,
@@ -30,7 +32,7 @@ You can also search the web for more CBMC documentation.
                    [-I <PATH_TO_INCLUDE_DIR(S)>]...
   ```
 
-  If verification succeeds, exits with status 0.
+  If verification succeeds, exits with status 0 and prints mutation-testing related information to stdout.
   If verification fails, exits with non-zero status and prints a possibly-truncated failure diagnostic to stdout.
 
   You should always prefer `avocado-run-cbmc` over invoking CBMC directly.
@@ -54,20 +56,12 @@ You can also search the web for more CBMC documentation.
 
   Prints function names callees-first, one per line.
 
-## Improving Specification Quality via Mutation Testing
-
-- **Pass 1: Coverage**: For EVERY non-main function, write a spec that verifies. Your goal during
-  this pass is to verify every non-main function.
-- **Pass 2: Quality**: Only after Pass 1 is complete, you must task the [Mutation Tester](./claude/agents/mutation-tester.md) subagent to strengthen their specs.
-
 ## Rules
 
 - Never hard-code any values into the specifications that are related to CBMC's command-line
   arguments (e.g., the `N` in `--partial-loops --unwind <N>`).
 - Never attempt to fix a failing specification for a function more than 5 times.
 - Do not attempt to verify `main` functions.
-- If a function has no side effects on memory beyond local variables or return values,
-    you must still write a spec that verifies.
 - Never re-run verification on previously-verified functions unless:
   - The specification has changed, or
   - The specification of a callee has changed, or
