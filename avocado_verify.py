@@ -1,11 +1,13 @@
 """Generate and verify a program with Avocado.
 
-Drives Claude Code over the functions of a C file in callees-first topological
-order. For each function the harness runs a fresh `claude -p` session to write a
-CBMC specification, then independently re-runs CBMC (via `tools.run_cbmc`) to
-record an objective pass/fail verdict rather than trusting Claude's self-report.
-Verifying callees before their callers means a caller's session sees the
-contracts its callees already wrote into the file.
+Calls Claude Code over the functions of a C file in callee-first topological order.
+
+Verifying callees before their callers means subsequent sessions have access to previously-generated
+specifications (i.e., session to verify callers have access to any callee specs).
+
+For each function the harness runs a fresh `claude -p` session prompting Claude to generate a CBMC
+specification for a function. Once Claude reports it is finished, this harness independently runs
+CBMC to record a ground-truth verification result.
 
 Usage:
     % avocado-verify --file <PATH_TO_C_FILE>
@@ -48,7 +50,7 @@ _MAX_PARSE_SNIPPET_CHARS = 500
 # The loop will not advance to the next function until the agent has *attempted* verification
 # (run `avocado-run-cbmc`) at least this many times for the current function, as counted from the
 # verification-attempts log. This guards against advancing on a session that barely tried.
-_MIN_VERIFICATION_ATTEMPTS = 2
+_MIN_VERIFICATION_ATTEMPTS_PER_SESSION = 2
 
 # Upper bound on how many `claude -p` sessions a single function may receive while trying to reach
 # `_MIN_VERIFICATION_ATTEMPTS`. Prevents an unproductive session from looping forever; once hit,
@@ -56,13 +58,10 @@ _MIN_VERIFICATION_ATTEMPTS = 2
 _MAX_AGENT_SESSIONS_PER_FUNCTION = 3
 
 
-class VerifyOutcome(StrEnum):
-    """Per-function outcome of an avocado-verify run.
+class GroundTruthVerificationResult(StrEnum):
+    """Ground truth verification result, corresponding to an invocation of `tools.run_cbmc.py`.
 
-    The verdict is grounded in the harness's own CBMC re-run, not Claude's self-report:
-    `VERIFIED` means CBMC confirmed the contract. The remaining values describe *why* a
-    function is unverified, preferring to surface a Claude-side problem (a timeout or an
-    error result) over a plain verification failure.
+    Corresponds to this harness's own CBMC re-run, not Claude's self-report.
     """
 
     VERIFIED = "VERIFIED"
@@ -98,7 +97,7 @@ class ClaudeRun:
 
 
 @dataclass(frozen=True)
-class FunctionVerification:
+class FunctionVerificationResult:
     """The combined outcome for one function: a Claude session plus a CBMC re-run.
 
     Attributes:
@@ -114,7 +113,7 @@ class FunctionVerification:
     """
 
     function: str
-    outcome: VerifyOutcome
+    outcome: GroundTruthVerificationResult
     claude: ClaudeRun
     cbmc: RunCbmcResult
     internal_callees: list[str]
@@ -157,11 +156,11 @@ class FunctionVerification:
 
 
 def main() -> None:
-    """Generate and verify CBMC specifications for functions in a C program; callee to caller."""
+    """Generate and verify CBMC specifications for functions in a C program."""
     parser = argparse.ArgumentParser(
         description=(
             "Generate and verify CBMC specifications for a C file with Claude Code, one "
-            "function at a time in callees-first topological order. Each function gets a fresh "
+            "function at a time in callee-first order. Each function gets a fresh "
             "`claude -p` session; the harness then re-runs CBMC to record an objective verdict."
         )
     )
@@ -183,8 +182,7 @@ def main() -> None:
         logger.error(f"No such file: {file_path}")
         sys.exit(1)
 
-    include_dirs = _autodetect_include_dirs(str(file_path))
-    if include_dirs:
+    if include_dirs := _autodetect_include_dirs(str(file_path)):
         logger.info(f"[auto-include] using {include_dirs}")
 
     path_to_call_graph = construct_call_graph(str(file_path))
@@ -206,7 +204,7 @@ def main() -> None:
         f"{', '.join(functions)}"
     )
 
-    results: list[FunctionVerification] = []
+    results: list[FunctionVerificationResult] = []
     for index, function in enumerate(functions, start=1):
         logger.info(f"[{index}/{len(functions)}] {function}: generating spec via claude -p")
         verification_result_from_agent = _verify_via_agent(
@@ -223,7 +221,9 @@ def main() -> None:
         )
 
     _log_summary(results, log_path)
-    verified = sum(1 for result in results if result.outcome is VerifyOutcome.VERIFIED)
+    verified = sum(
+        1 for result in results if result.outcome is GroundTruthVerificationResult.VERIFIED
+    )
     sys.exit(0 if verified == len(results) else 1)
 
 
@@ -234,7 +234,7 @@ def _verify_via_agent(
     call_graph: CallGraph,
     timeout: int,
     include_dirs: list[str],
-) -> FunctionVerification:
+) -> FunctionVerificationResult:
     """Run one or more `claude -p` sessions for `function`, then re-verify it with CBMC.
 
     Re-runs the session until the agent has attempted verification at least
@@ -250,9 +250,8 @@ def _verify_via_agent(
             CBMC's include search path.
 
     Returns:
-        FunctionVerification: The combined Claude/CBMC outcome for the function.
+        FunctionVerificationResult: The combined Claude/CBMC outcome for the function.
     """
-    # Prompt intentionally left blank; populate to drive per-function spec generation.
     prompt = f"Verify {function} in {file_path}"
     command = _build_claude_command(prompt, file_path=file_path, include_dirs=include_dirs)
     attempts_log_path = Path(file_path).with_name(
@@ -261,36 +260,46 @@ def _verify_via_agent(
 
     # Attempts already logged for this function before this turn (e.g. by an earlier function's
     # session that also exercised this one); gate only on attempts made from here forward.
-    attempts_baseline = _count_verification_attempts(attempts_log_path, function)
+    previous_verification_attempts = _count_verification_attempts(attempts_log_path, function)
 
     # Do not advance to the next function until the agent has attempted verification at least
     # `_MIN_VERIFICATION_ATTEMPTS` times, re-running the session up to a capped number of times.
     claude = _run_claude(command, timeout)
     sessions = 1
-    attempts = _count_verification_attempts(attempts_log_path, function) - attempts_baseline
-    while attempts < _MIN_VERIFICATION_ATTEMPTS and sessions < _MAX_AGENT_SESSIONS_PER_FUNCTION:
+    current_verification_attempts = (
+        _count_verification_attempts(attempts_log_path, function) - previous_verification_attempts
+    )
+    while (
+        current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION
+        and sessions < _MAX_AGENT_SESSIONS_PER_FUNCTION
+    ):
         logger.warning(
-            f"{function}: agent attempted verification {attempts}/{_MIN_VERIFICATION_ATTEMPTS} "
-            f"time(s); re-running session ({sessions + 1}/{_MAX_AGENT_SESSIONS_PER_FUNCTION})"
+            f"{function}: agent attempted verification "
+            f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} time(s); "
+            f"re-running session ({sessions + 1}/{_MAX_AGENT_SESSIONS_PER_FUNCTION})"
         )
         claude = _run_claude(command, timeout)
         sessions += 1
-        attempts = _count_verification_attempts(attempts_log_path, function) - attempts_baseline
-    if attempts < _MIN_VERIFICATION_ATTEMPTS:
+        current_verification_attempts = (
+            _count_verification_attempts(attempts_log_path, function)
+            - previous_verification_attempts
+        )
+    if current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION:
         logger.warning(
             f"{function}: proceeding after {sessions} session(s) with only "
-            f"{attempts}/{_MIN_VERIFICATION_ATTEMPTS} verification attempt(s)"
+            f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} "
+            f"verification attempt(s)"
         )
 
-    # Objective verdict: re-run CBMC ourselves rather than trust Claude's self-report.
+    # Objective verdict: re-run CBMC rather than trust Claude's self-report.
     cbmc = run_cbmc(function, file_path, include_dirs=include_dirs)
-    return FunctionVerification(
+    return FunctionVerificationResult(
         function=function,
         outcome=_outcome_for(claude, cbmc),
         claude=claude,
         cbmc=cbmc,
         internal_callees=call_graph.get_callees(function).internal,
-        verification_attempts=attempts,
+        verification_attempts=current_verification_attempts,
         agent_sessions=sessions,
     )
 
@@ -430,7 +439,7 @@ def _parse_claude_output(returncode: int, stdout: str, stderr: str) -> ClaudeRun
     )
 
 
-def _outcome_for(claude: ClaudeRun, cbmc: RunCbmcResult) -> VerifyOutcome:
+def _outcome_for(claude: ClaudeRun, cbmc: RunCbmcResult) -> GroundTruthVerificationResult:
     """Combine the Claude session and CBMC verdict into a single outcome.
 
     A passing CBMC run is authoritative; otherwise a Claude-side timeout or error is
@@ -444,12 +453,12 @@ def _outcome_for(claude: ClaudeRun, cbmc: RunCbmcResult) -> VerifyOutcome:
         VerifyOutcome: The overall per-function verdict.
     """
     if cbmc.is_function_verified:
-        return VerifyOutcome.VERIFIED
+        return GroundTruthVerificationResult.VERIFIED
     if claude.timed_out:
-        return VerifyOutcome.CLAUDE_TIMED_OUT
+        return GroundTruthVerificationResult.CLAUDE_TIMED_OUT
     if claude.is_error:
-        return VerifyOutcome.CLAUDE_ERROR
-    return VerifyOutcome.UNVERIFIED
+        return GroundTruthVerificationResult.CLAUDE_ERROR
+    return GroundTruthVerificationResult.UNVERIFIED
 
 
 def _append_jsonl(path: Path, record: dict) -> None:
@@ -463,7 +472,7 @@ def _append_jsonl(path: Path, record: dict) -> None:
         log_file.write(json.dumps(record) + "\n")
 
 
-def _log_summary(results: list[FunctionVerification], log_path: Path) -> None:
+def _log_summary(results: list[FunctionVerificationResult], log_path: Path) -> None:
     """Log a per-function summary and the location of the run log.
 
     Args:
@@ -473,7 +482,9 @@ def _log_summary(results: list[FunctionVerification], log_path: Path) -> None:
     logger.info("avocado-verify summary:")
     for result in results:
         logger.info(f"  {result.outcome!s:<17} {result.function}")
-    verified = sum(1 for result in results if result.outcome is VerifyOutcome.VERIFIED)
+    verified = sum(
+        1 for result in results if result.outcome is GroundTruthVerificationResult.VERIFIED
+    )
     logger.info(f"{verified}/{len(results)} function(s) verified; log written to {log_path}")
 
 
