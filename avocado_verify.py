@@ -336,6 +336,8 @@ def is_spec_improvable_with_mutation_testing(
         function_has_mutants = bool(get_mutants(source_path, function))
     except Exception:  # noqa: BLE001 - any generation failure should fall back to default behavior.
         logger.error(f"Failure in mutant generation for '{function}' in {source_path}")
+        # Assume mutants exist in the worst-case scenario.
+        function_has_mutants = True
     is_function_successfully_verified = _last_attempt_verified(attempts_log_path, function)
     return function_has_mutants and not is_function_successfully_verified
 
@@ -405,29 +407,6 @@ def _last_attempt_verified(log_path: Path, function: str) -> bool:
         if record.get("function") == function:
             verified = bool(record.get("verified", False))
     return verified
-
-
-def _function_has_mutants(file_path: str, function: str) -> bool:
-    """Return whether `function` in `file_path` has any body mutants.
-
-    Mutant generation is a static operator-swap pass (no CBMC) that depends only on the function
-    body, so this is cheap and stable across specifications. A function with no mutable operators
-    (e.g. one that only forwards to another function) yields zero mutants and thus has no kill score
-    to raise. On any error, return True so callers fall back to the default attempt-floor behavior
-    rather than skipping a re-run they might have needed.
-
-    Args:
-        file_path (str): Absolute path to the C file defining the function.
-        function (str): The function to generate mutants for.
-
-    Returns:
-        bool: True iff at least one mutant was generated (or mutant generation failed).
-    """
-    try:
-        return bool(get_mutants(file_path, function))
-    except Exception:  # noqa: BLE001 - any generation failure should fall back to default behavior.
-        logger.warning(f"{function}: could not generate mutants; assuming mutants exist")
-        return True
 
 
 def _build_claude_command(prompt: str, *, file_path: str, include_dirs: list[str]) -> list[str]:
