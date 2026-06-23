@@ -66,5 +66,6 @@ You can also search the web for more CBMC documentation.
   - The specification has changed, or
   - The specification of a callee has changed, or
   - You need information from a callee's verification run to help verify a caller.
+- You must not delete any scripts if you create and use them to help you.
 - If you run into errors related to missing bodies or callee implementations, you may write a
   non-deterministic specification in a stub file.
