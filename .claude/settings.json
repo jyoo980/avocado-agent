@@ -10,6 +10,9 @@
             "Bash(avocado-*)"
         ],
         "deny": [
+            "Bash(*git*)",
+            "Bash(*.git*)",
+            "Read(*.git*)",
             "Bash(*eval*)",
             "Read(*eval*)",
             "Read(**/*mutation_compile_failures.log)",

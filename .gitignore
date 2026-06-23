@@ -21,3 +21,4 @@
 
 # Other
 avocado-experimental-runs
+*.egg-info/
