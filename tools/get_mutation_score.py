@@ -10,6 +10,7 @@ import argparse
 import sys
 
 from tools.util.mutation import (
+    MutationScore,
     generate_mutants_and_compute_score,
     get_mutation_testing_results_for_client,
 )
@@ -39,20 +40,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    score = generate_mutants_and_compute_score(
+    mutation_testing_result = generate_mutants_and_compute_score(
         file_path=args.file,
         target_function=args.function,
         include_dirs=args.include_dirs,
     )
-    if score is None:
-        print(
-            f"{args.function} did not verify; cannot score mutants",
-            file=sys.stderr,
-        )
-        sys.exit(1)
 
-    print(get_mutation_testing_results_for_client(score))
-    sys.exit(0)
+    if isinstance(mutation_testing_result, MutationScore):
+        print(get_mutation_testing_results_for_client(mutation_testing_result))
+        sys.exit(0)
+
+    print(mutation_testing_result)
+    sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -75,7 +75,15 @@ class MutantVerificationResult:
 
 
 @dataclass(frozen=True)
-class MutationScore:
+class MutationTestingResult:
+    """Base class representing a mutation testing result."""
+
+    file: str
+    target_function: str
+
+
+@dataclass(frozen=True)
+class MutationScore(MutationTestingResult):
     """Mutation-testing related statistics for one function.
 
     `num_survived` and `kill_score` are reported over *decided* mutants only —
@@ -89,8 +97,6 @@ class MutationScore:
 
     Attributes
     ----------
-        file (str): The file in which the original function is declared.
-        target_function (str): The name of this function.
         num_mutants (int): The total number of mutants for this function.
         num_killed (int): The number of killed mutants.
         num_survived (int): The number of surviving (decided, not killed) mutants.
@@ -101,8 +107,6 @@ class MutationScore:
         results (list[MutantVerificationResult]): The verification result for each mutant.
     """
 
-    file: str
-    target_function: str
     num_mutants: int
     num_killed: int
     num_survived: int
@@ -120,6 +124,7 @@ class MutationScore:
         """
         return {
             "kind": "mutation_summary",
+            "was_mutation_tested": True,
             "file": self.file,
             "function": self.target_function,
             "total": self.num_mutants,
@@ -132,7 +137,36 @@ class MutationScore:
         }
 
 
-def get_mutation_testing_results_for_client(mutation_score: MutationScore) -> str:
+@dataclass(frozen=True)
+class NoMutantsGenerated(MutationTestingResult):
+    """Represent a mutation testing result when a function has no mutants."""
+
+    def __str__(self) -> str:
+        """Return the string for a mutation testing result for a function with no mutants.
+
+        Returns:
+            str: Return the string for a mutation testing result for a function with no mutants.
+        """
+        return (
+            f"Mutation testing not possible for '{self.file}#{self.target_function}'; "
+            "no mutable operators"
+        )
+
+
+@dataclass(frozen=True)
+class BaselineFailsVerification(MutationTestingResult):
+    """Represent a mutation testing result when a function fails to verify in the first place."""
+
+    def __str__(self) -> str:
+        """Return the string for a mutation testing result for a non-verifying function.
+
+        Returns:
+            str: Return the string for a mutation testing result for a non-verifying function.
+        """
+        return f"{self.file}#{self.target_function} did not verify; cannot score mutants"
+
+
+def get_mutation_testing_results_for_client(mutation_testing_result: MutationTestingResult) -> str:
     """Return mutation-testing information that can be used by a client.
 
     Returns a string comprising a summary header followed by the unified diff(s) of each surviving
@@ -142,67 +176,81 @@ def get_mutation_testing_results_for_client(mutation_score: MutationScore) -> st
     explicit omission marker.
 
     Args:
-        mutation_score (MutationScore): The mutation score for the verified function.
+        mutation_testing_result (MutationTestingResult): The mutation testing result for the
+            verified function.
 
     Returns:
         str: The formatted, size-bounded mutation-testing section.
     """
-    if not mutation_score.num_mutants:
-        return (
-            f"No mutants generated for '{mutation_score.target_function}' "
-            "(no mutable operators in the function body)\n"
-        )
-    kill_score_line = (
-        f"Mutation kill score: {mutation_score.kill_score:.4f} "
-        f"(killed {mutation_score.num_killed}/{mutation_score.num_mutants}; "
-        f"{mutation_score.num_survived} survived, "
-        # The values for the number of timed-out/compile-failed mutants are also reported since
-        # the denominator for the kill score includes them.
-        f"{mutation_score.num_timed_out} timed out, "
-        f"{mutation_score.num_compile_failed} compile-failed)"
-    )
-    # A surviving mutant is one that compiled and was decided (not timed out) yet the spec
-    # did not kill — mirrors `_is_valid_mutation_vresult` in tools/get_mutation_score.py.
-    survivors = [
-        vresult
-        for vresult in mutation_score.results
-        if not (
-            vresult.killed
-            or vresult.compile_failed
-            or vresult.timed_out
-            or vresult.instrumentation_failed
-        )
-    ]
-    if not survivors:
-        return f"{kill_score_line}\nAll decided mutants were killed."
+    match mutation_testing_result:
+        case MutationScore(
+            file,
+            _,
+            num_mutants,
+            num_killed,
+            num_survived,
+            num_timed_out,
+            num_compile_failed,
+            num_instrumentation_failed,
+            kill_score,
+            results,
+        ):
+            kill_score_line = (
+                f"Mutation kill score: {kill_score:.4f} "
+                f"(killed {num_killed}/{num_mutants}; "
+                f"{num_survived} survived, "
+                # The values for the number of timed-out/compile/instrumentation-failed mutants are
+                # also reported since the denominator for the kill score includes them.
+                f"{num_timed_out} timed out, "
+                f"{num_compile_failed} compile-failed)"
+                f"{num_instrumentation_failed} instrumentation-failed)"
+            )
+            # A surviving mutant is one that compiled and was decided (not timed out),
+            # yet the spec did not kill.
+            survivors = [
+                vresult
+                for vresult in results
+                if not (
+                    vresult.killed
+                    or vresult.compile_failed
+                    or vresult.timed_out
+                    or vresult.instrumentation_failed
+                )
+            ]
+            if not survivors:
+                return f"{kill_score_line}\nAll decided mutants were killed."
 
-    header = (
-        f"{kill_score_line}\n"
-        f"{len(survivors)} surviving mutant(s) — the spec does not catch these perturbations:"
-    )
-    blocks: list[str] = []
-    used = len(header)
-    for index, vresult in enumerate(survivors, start=1):
-        mutant = vresult.mutant
-        block = (
-            f"\n\n--- surviving mutant {index} — {mutation_score.file}:{mutant.line} "
-            f"({mutant.operator_class}: "
-            f"{mutant.original_operator} -> {mutant.replacement_operator}) ---\n"
-            f"{mutant.get_unified_diff()}"
-        )
-        if used + len(block) > _MAX_MUTATION_SECTION_CHARS:
-            omitted = len(survivors) - index + 1
-            blocks.append(f"\n\n[... {omitted} more surviving mutant(s) omitted ...]")
-            break
-        blocks.append(block)
-        used += len(block)
+            header = (
+                f"{kill_score_line}\n"
+                f"{len(survivors)} surviving mutant(s); "
+                "the spec does not catch these mutants:"
+            )
+            blocks: list[str] = []
+            used = len(header)
+            for index, vresult in enumerate(survivors, start=1):
+                mutant = vresult.mutant
+                block = (
+                    f"\n\n--- surviving mutant {index} — {file}:{mutant.line} "
+                    f"({mutant.operator_class}: "
+                    f"{mutant.original_operator} -> {mutant.replacement_operator}) ---\n"
+                    f"{mutant.get_unified_diff()}"
+                )
+                if used + len(block) > _MAX_MUTATION_SECTION_CHARS:
+                    omitted = len(survivors) - index + 1
+                    blocks.append(f"\n\n[... {omitted} more surviving mutant(s) omitted ...]")
+                    break
+                blocks.append(block)
+                used += len(block)
 
-    return (
-        header
-        + "".join(blocks)
-        + "\nRemember, you MUST try to increase the kill score by strengthening the specification, "
-        + "but don't keep trying if it is obvious the kill score cannot be increased."
-    )
+            return (
+                header
+                + "".join(blocks)
+                + "\nRemember, you MUST try to increase the kill score by strengthening the "
+                + "specification, but don't keep trying if it is obvious the kill score cannot be "
+                + "increased."
+            )
+        case _:
+            return str(mutation_testing_result)
 
 
 def generate_mutants_and_compute_score(
@@ -213,14 +261,11 @@ def generate_mutants_and_compute_score(
     workspace: Path | None = None,
     keep_artifacts: bool = False,
     skip_reverification: bool = False,
-) -> MutationScore | None:
-    """Return the mutation kill score for `target_function` in `file_path`.
+) -> MutationTestingResult:
+    """Return the mutation testing result for `target_function` in `file_path`.
 
     Mutant `.c` files are written next to the original source by default to simplify compilation
     and instrumentation with CBMC. Mutants are removed unless keep_artifacts is set to `True`.
-
-    This function returns None if the original, unmutated function does not verify in the first
-    place.
 
     Args:
         file_path (str): Path to the C source defining the function.
@@ -234,25 +279,12 @@ def generate_mutants_and_compute_score(
             the function verifies or not.
 
     Returns:
-        MutationScore | None: Aggregated counts plus per-mutant verification results, or None if
-            the unmutated function does not verify.
+        MutationTestingResult: The result of running mutation testing on the target function.
     """
     source_path = Path(file_path).resolve()
     mutants = get_mutants(str(source_path), target_function)
     if not mutants:
-        logger.info(f"Mutation testing not possible for '{target_function}', no mutable operators")
-        return MutationScore(
-            file=file_path,
-            target_function=target_function,
-            num_mutants=0,
-            num_killed=0,
-            num_survived=0,
-            num_timed_out=0,
-            num_compile_failed=0,
-            num_instrumentation_failed=0,
-            kill_score=0.0,
-            results=[],
-        )
+        return NoMutantsGenerated(file_path, target_function)
 
     workspace = workspace or source_path.parent
     workspace.mkdir(parents=True, exist_ok=True)
@@ -261,8 +293,7 @@ def generate_mutants_and_compute_score(
         cbmc_result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
         if not is_valid_mutation_candidate(cbmc_result):
             # No usable baseline if CBMC can't verify the unmutated function.
-            logger.warning(f"could not verify {target_function}; skipping mutation testing")
-            return None
+            return BaselineFailsVerification(file_path, target_function)
 
     # Operator-swap mutations never add or remove calls (or rename functions), so the call graph
     # is identical for the original and every mutant. Build it once -- cache-hitting the JSON the
