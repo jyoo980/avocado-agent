@@ -195,13 +195,6 @@ def get_mutation_testing_results_for_client(mutation_testing_result: MutationTes
             kill_score,
             results,
         ):
-            kill_score_line = (
-                f"Mutation kill score: {kill_score:.4f} "
-                f"(killed {num_killed}/{num_mutants}; "
-                f"{num_survived} survived, "
-                # The values for the number of timed-out/compile/instrumentation-failed mutants are
-                # also reported since the denominator for the kill score includes them.
-                f"{num_timed_out} timed out, "
              kill_score_line = (
                  f"Mutation kill score: {kill_score:.4f} "
                  f"(killed {num_killed}/{num_mutants}; "
