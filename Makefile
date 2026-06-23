@@ -1,4 +1,4 @@
-.PHONY: build-image run checks test clean
+.PHONY: build-image run
 
 build-image:
 	docker build -t avocado-agent-container .
