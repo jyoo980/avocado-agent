@@ -10,7 +10,6 @@ import argparse
 import sys
 
 from tools.util.mutation import (
-    MutantVerificationResult,
     MutationScore,
     generate_mutants_and_compute_score,
     get_mutation_testing_results_for_client,
@@ -41,53 +40,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    score = generate_mutants_and_compute_score(
+    mutation_testing_result = generate_mutants_and_compute_score(
         file_path=args.file,
         target_function=args.function,
         include_dirs=args.include_dirs,
     )
-    if score is None:
-        print(
-            f"{args.function} did not verify; cannot score mutants",
-            file=sys.stderr,
-        )
-        sys.exit(1)
 
-    print(get_mutation_testing_results_for_client(score))
-    sys.exit(0)
+    if isinstance(mutation_testing_result, MutationScore):
+        print(get_mutation_testing_results_for_client(mutation_testing_result))
+        sys.exit(0)
 
-
-def _get_mutation_score_summary_with_surviving_mutant_diffs(
-    mutation_score: MutationScore,
-) -> dict[str, str | int | float | list[str]]:
-    """Return the mutation score summary with diffs for surviving mutants.
-
-    Args:
-        mutation_score (MutationScore): The mutation score for a function.
-
-    Returns:
-        dict[str, str | int | float | list[str]]: The mutation score summary with diffs for
-            surviving mutants.
-    """
-    surviving_mutant_diffs = [
-        mutant_vresult.mutant.get_unified_diff()
-        for mutant_vresult in mutation_score.results
-        if not mutant_vresult.killed and _is_valid_mutation_vresult(mutant_vresult)
-    ]
-    return mutation_score.summary() | {"surviving_mutant_diffs": surviving_mutant_diffs}
-
-
-def _is_valid_mutation_vresult(mutant_vresult: MutantVerificationResult) -> bool:
-    """Return True iff the given mutant vresult has not timed out and has successfully compiled.
-
-    Args:
-        mutant_vresult (MutantVerificationResult): The MutationVerificationResult to check for
-            validity.
-
-    Returns:
-        bool: True iff the given mutant vresult has not timed out and has successfully compiled.
-    """
-    return not mutant_vresult.compile_failed and not mutant_vresult.timed_out
+    print(mutation_testing_result)
+    sys.exit(1)
 
 
 if __name__ == "__main__":

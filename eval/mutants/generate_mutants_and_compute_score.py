@@ -51,22 +51,22 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    score = generate_mutants_and_compute_score(
+    mutation_testing_result = generate_mutants_and_compute_score(
         file_path=args.file,
         target_function=args.function,
         keep_artifacts=args.keep_artifacts,
     )
 
-    if not score:
-        # The function does not verify in the first place.
+    if not isinstance(mutation_testing_result, MutationScore):
+        # The function does not verify in the first place or has no mutants.
         sys.exit(1)
 
-    output_lines: list[str] = [json.dumps(score.summary())]
-    for raw_result in score.results:
+    output_lines: list[str] = [json.dumps(mutation_testing_result.summary())]
+    for raw_result in mutation_testing_result.results:
         result = {
             "kind": "mutant_result",
-            "file": score.file,
-            "function": score.target_function,
+            "file": mutation_testing_result.file,
+            "function": mutation_testing_result.target_function,
             "operator_class": raw_result.mutant.operator_class,
             "original": raw_result.mutant.original_operator,
             "replacement": raw_result.mutant.replacement_operator,

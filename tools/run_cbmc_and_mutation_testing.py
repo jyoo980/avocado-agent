@@ -206,13 +206,11 @@ def main() -> None:
     if result.is_function_verified:
         # The function verified, so run mutation testing to assess the strength of its
         # specification and report the kill score (plus any surviving mutants) to the client.
-        # `generate_mutants_and_compute_score` re-verifies the unmutated function as its
-        # baseline; it returns None only if that baseline fails to verify, which should not
-        # happen here given `result.is_function_verified`, but we guard against it anyway.
         score = generate_mutants_and_compute_score(
             file_path=args.file,
             target_function=args.function,
             include_dirs=args.include_dirs,
+            skip_reverification=True,
         )
         if score:
             print(result.response)

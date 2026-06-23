@@ -33,6 +33,7 @@ from eval.mutants.compute_clause_redundancy import compute_clause_redundancy_sco
 from eval.mutants.generate_mutants_and_compute_score import generate_mutants_and_compute_score
 from eval.mutants.util import get_files_with_extension
 from tools.util import get_functions_with_cprover_annotations
+from tools.util.mutation import MutationScore
 
 
 def main() -> None:
@@ -132,14 +133,20 @@ def _process_file(
 
     for function in functions_with_cprover_annotations:
         if run_mutation:
-            if mutation_score := generate_mutants_and_compute_score(
-                str(source),
-                function,
-                keep_artifacts=keep_artifacts,
-                include_dirs=include_dirs,
-            ):
-                out.write(json.dumps(mutation_score.summary()) + "\n")
-
+            mutation_testing_result = generate_mutants_and_compute_score(
+                str(source), function, keep_artifacts=keep_artifacts, include_dirs=include_dirs
+            )
+            if isinstance(mutation_testing_result, MutationScore):
+                out.write(json.dumps(mutation_testing_result.summary()) + "\n")
+            else:
+                result = {
+                    "kind": "mutation_summary",
+                    "was_mutation_tested": False,
+                    "file": str(source.resolve()),
+                    "function": function,
+                    "metadata": str(mutation_testing_result),
+                }
+                out.write(json.dumps(result) + "\n")
         if run_redundancy:
             if clause_redundancy_score := compute_clause_redundancy_score(
                 str(source), function, keep_artifacts=keep_artifacts
