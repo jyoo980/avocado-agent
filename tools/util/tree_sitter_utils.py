@@ -13,7 +13,7 @@ import tree_sitter_c as tsc
 from tree_sitter import Language, Node, Parser, Tree
 
 from .callgraph import CallGraph
-from .cbmc_clause_stripper import strip_cbmc_clauses
+from .cbmc_clause_stripper import strip_all_cbmc_annotations, strip_cbmc_clauses
 
 _TREE_SITTER_LANG = Language(tsc.language())
 _PARSER = Parser(_TREE_SITTER_LANG)
@@ -69,10 +69,12 @@ def get_functions_with_cprover_annotations(path_to_file: str) -> set[str]:
         set[str]: Names of functions in the file with at least one CBMC contract clause.
     """
     source = Path(path_to_file).read_bytes()
-    stripped, spans = strip_cbmc_clauses(source)
+    _, spans = strip_cbmc_clauses(source)
     if not spans:
         return set()
-    tree = _PARSER.parse(stripped)
+    # Parse the fully-stripped buffer (see `_parse_to_ast`) so in-body loop contracts don't
+    # corrupt the tree; the gap check below still relies only on the contract-clause `spans`.
+    tree = _PARSER.parse(strip_all_cbmc_annotations(source))
     annotated: set[str] = set()
     for name, node in _iter_function_definitions(tree.root_node):
         declarator = get_function_declarator(node)
@@ -176,8 +178,11 @@ def _parse_to_ast(content: bytes | str, language_extension: str = ".c") -> Tree:
         raise ValueError(msg)
     if isinstance(content, str):
         content = content.encode("utf-8")
-    stripped, _ = strip_cbmc_clauses(content)
-    return _PARSER.parse(stripped)
+    # Blank *all* CBMC annotations, not just the top-level contract clauses: in-body loop
+    # contracts (`__CPROVER_loop_invariant`, `__CPROVER_decreases`) carry `__CPROVER_forall
+    # { ... }` braces that otherwise close their enclosing construct early and make
+    # tree-sitter swallow every following function into one ERROR node.
+    return _PARSER.parse(strip_all_cbmc_annotations(content))
 
 
 def dfs_traversal(root: Node) -> Iterator[Node]:

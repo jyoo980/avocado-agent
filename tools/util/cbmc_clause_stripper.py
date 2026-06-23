@@ -76,12 +76,52 @@ def strip_cbmc_clauses(source: bytes) -> tuple[bytes, list[CbmcClauseSpan]]:
     """
     clause_names = frozenset(CBMC_CLAUSE_NAMES)
     spans = _find_cbmc_call_spans(source, clause_names.__contains__)
+    return _blank_spans(source, spans), spans
+
+
+def strip_all_cbmc_annotations(source: bytes) -> bytes:
+    """Return ``source`` with *every* ``__CPROVER_*(...)`` annotation blanked to whitespace.
+
+    Unlike :func:`strip_cbmc_clauses`, which only erases the four top-level contract
+    clauses, this also erases in-body annotations such as loop contracts
+    (``__CPROVER_loop_invariant``, ``__CPROVER_decreases``) and intrinsics
+    (``__CPROVER_assume``, ``__CPROVER_assert``). Those in-body annotations carry
+    ``__CPROVER_forall { ... }`` braces that close their enclosing construct early and
+    corrupt tree-sitter's parse — swallowing every following function into one ``ERROR``
+    node. Blanking them all yields a buffer that parses as plain C, which is what every
+    parse site (call graph, body extraction, clause enumeration) actually wants.
+
+    Byte length and newlines are preserved exactly as in :func:`strip_cbmc_clauses`, so
+    offsets/lines/columns on the resulting tree still index the *original* source.
+
+    Args:
+        source: The original C source as bytes.
+
+    Returns:
+        The source bytes with every CBMC annotation blanked to spaces.
+    """
+    return _blank_spans(source, find_cbmc_annotation_spans(source))
+
+
+def _blank_spans(source: bytes, spans: list[CbmcClauseSpan]) -> bytes:
+    """Return ``source`` with every byte inside ``spans`` replaced by a space.
+
+    Newline bytes are preserved so line numbers continue to match the original; the
+    returned buffer has the same length as ``source``.
+
+    Args:
+        source: The original C source as bytes.
+        spans: Spans whose bytes should be blanked.
+
+    Returns:
+        The blanked source bytes.
+    """
     buffer = bytearray(source)
     for span in spans:
         for k in range(span.start_byte, span.end_byte):
             if buffer[k] != ord("\n"):
                 buffer[k] = ord(" ")
-    return bytes(buffer), spans
+    return bytes(buffer)
 
 
 def find_cbmc_annotation_spans(source: bytes) -> list[CbmcClauseSpan]:

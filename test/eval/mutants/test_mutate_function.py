@@ -91,6 +91,33 @@ def test_get_mutants_recovers_function_after_forall_annotated_neighbor() -> None
             ), f"Mutant at byte {m.start_byte} lies inside CBMC clause span {span}"
 
 
+def test_get_mutants_with_in_body_loop_contracts_does_not_bleed_into_neighbor() -> None:
+    # Regression: `accumulate` carries in-body loop contracts (`__CPROVER_loop_invariant`
+    # with `__CPROVER_forall { ... }`, `__CPROVER_decreases`). Those were not stripped before
+    # parsing, so their braces corrupted the tree and `accumulate`'s body swallowed the
+    # following `neighbor` function — yielding mutants located inside `neighbor`.
+    source_path = "test/data/mutants/loop_contracts.c"
+    source = Path(source_path).read_bytes()
+
+    mutants = get_mutants(source_path, "accumulate")
+    assert mutants, "Expected non-empty mutants for accumulate"
+
+    # No mutant may fall inside `neighbor` (which begins at the `int neighbor(...)` line).
+    neighbor_start = source.index(b"int neighbor")
+    for m in mutants:
+        assert m.start_byte < neighbor_start, (
+            f"Mutant at byte {m.start_byte} bled past `accumulate` into `neighbor`"
+        )
+
+    # No mutant may lie inside any CBMC annotation (loop invariants, decreases, etc.).
+    spans = find_cbmc_annotation_spans(source)
+    for m in mutants:
+        for span in spans:
+            assert not (
+                span.start_byte <= m.start_byte and m.end_byte <= span.end_byte
+            ), f"Mutant at byte {m.start_byte} lies inside CBMC annotation span {span}"
+
+
 def test_get_mutants_skips_operators_inside_in_body_cprover_assume() -> None:
     # `__CPROVER_assume(a < 50 && b < 50)` in the body would otherwise produce relational and
     # logical mutants for `a < 50`, `b < 50`, and the `&&`. Only the real `a + b` should be mutated.

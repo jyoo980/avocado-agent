@@ -9,6 +9,7 @@ from tools.util.cbmc_clause_stripper import (
     CBMC_CLAUSE_NAMES,
     CbmcClauseSpan,
     find_cbmc_annotation_spans,
+    strip_all_cbmc_annotations,
     strip_cbmc_clauses,
 )
 
@@ -180,6 +181,50 @@ def test_clause_spans_attributable_to_owning_function_by_byte_range() -> None:
         "__CPROVER_assigns",
         "__CPROVER_ensures",
     ]
+
+
+def test_strip_all_cbmc_annotations_blanks_in_body_loop_contracts_for_clean_parse() -> None:
+    # `strip_cbmc_clauses` leaves in-body loop contracts intact, so their `__CPROVER_forall
+    # { ... }` braces corrupt the parse and the first function's body swallows the second.
+    # `strip_all_cbmc_annotations` blanks them, yielding a tree with both functions intact.
+    source = (
+        b"int f(int arr[], int n)\n"
+        b"__CPROVER_requires(0 <= n)\n"
+        b"{\n"
+        b"    for (int i = 0; i < n; i++)\n"
+        b"    __CPROVER_loop_invariant(__CPROVER_forall {\n"
+        b"        int k; (0 <= k && k < i) ==> arr[k] >= 0\n"
+        b"    })\n"
+        b"    __CPROVER_decreases(n - i)\n"
+        b"    { arr[i] = 0; }\n"
+        b"    return 0;\n"
+        b"}\n"
+        b"int g(int a) { return a; }\n"
+    )
+    # The contract-clause stripper alone leaves a corrupted parse...
+    clause_stripped, _ = strip_cbmc_clauses(source)
+    assert _PARSER.parse(clause_stripped).root_node.has_error
+
+    # ...whereas blanking every annotation yields a clean tree with both functions present.
+    fully_stripped = strip_all_cbmc_annotations(source)
+    assert len(fully_stripped) == len(source)
+    assert fully_stripped.count(b"\n") == source.count(b"\n")
+    assert b"__CPROVER_" not in fully_stripped
+    tree = _PARSER.parse(fully_stripped)
+    assert not tree.root_node.has_error
+
+    names: list[str] = []
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "function_definition":
+            decl = node.child_by_field_name("declarator")
+            while decl is not None and decl.type != "identifier":
+                decl = decl.child_by_field_name("declarator")
+            if decl is not None and decl.text is not None:
+                names.append(decl.text.decode())
+        stack.extend(node.children)
+    assert set(names) == {"f", "g"}
 
 
 def test_find_cbmc_annotation_spans_covers_in_body_assume_with_forall() -> None:

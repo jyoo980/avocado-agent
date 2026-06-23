@@ -27,7 +27,11 @@ from typing import TYPE_CHECKING
 import tree_sitter_c as tsc
 from tree_sitter import Language, Parser
 
-from tools.util.cbmc_clause_stripper import CbmcClauseSpan, strip_cbmc_clauses
+from tools.util.cbmc_clause_stripper import (
+    CbmcClauseSpan,
+    strip_all_cbmc_annotations,
+    strip_cbmc_clauses,
+)
 from tools.util.tree_sitter_utils import get_function_declarator, get_function_definition
 
 if TYPE_CHECKING:
@@ -109,8 +113,10 @@ def get_clause_mutants(file_path: str, function_name: str) -> list[ClauseMutant]
         list[ClauseMutant]: One mutant per removed clause.
     """
     source_code = Path(file_path).read_bytes()
-    stripped, spans = strip_cbmc_clauses(source_code)
-    tree = _PARSER.parse(stripped)
+    _, spans = strip_cbmc_clauses(source_code)
+    # Parse the fully-stripped buffer so in-body loop contracts don't corrupt the tree; the
+    # contract-clause `spans` are still what gets mutated below.
+    tree = _PARSER.parse(strip_all_cbmc_annotations(source_code))
     fn_def = get_function_definition(tree.root_node, function_name)
     if not fn_def:
         msg = f"Function '{function_name}' missing from file '{file_path}'"
