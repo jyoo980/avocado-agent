@@ -541,8 +541,12 @@ def _append_jsonl(path: Path, record: dict) -> None:
         path (Path): The JSONL file to append to.
         record (dict): The JSON-serializable record to write.
     """
-    with path.open("a", encoding="utf-8") as log_file:
-        log_file.write(json.dumps(record) + "\n")
+    try:
+        with path.open("a", encoding="utf-8") as log_file:
+            log_file.write(json.dumps(record) + "\n")
+    except OSError:
+        # Never let logging errors crash the tool.
+        pass
 
 
 def _log_summary(results: list[FunctionVerificationResult], log_path: Path) -> None:
