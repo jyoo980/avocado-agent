@@ -10,7 +10,9 @@ specification for a function. Once Claude reports it is finished, this harness i
 CBMC to record a ground-truth verification result.
 
 Usage:
-    % avocado-verify --file <PATH_TO_C_FILE>
+    % avocado-verify --file <PATH_TO_C_FILE> \
+        [--claude-timeout <TIMEOUT>] \
+        [--resume-from <PATH_TO_JSONL_LOG>]
 """
 
 import argparse
@@ -42,11 +44,23 @@ _DEFAULT_CLAUDE_TIMEOUT_SEC = 1800
 # ordinary non-zero exit in both the recorded return code and the run log.
 _TIMEOUT_RETURNCODE = 124
 
+# 0 indicates all functions have been verified, 1 indicates some functions may not be verified.
+_EXIT_ALL_VERIFIED = 0
+_EXIT_SOME_UNVERIFIED = 1
+# 2 indicates an early stop due to a usage limit being hit.
+_EXIT_USAGE_LIMITED = 2
+
 # `main` is never specified (see CLAUDE.md); skip it wherever it appears in the ordering.
 _UNVERIFIABLE_FUNCTIONS = frozenset({"main"})
 
 # Cap on the raw stdout/stderr snippet kept when Claude's JSON output cannot be parsed.
 _MAX_PARSE_SNIPPET_CHARS = 500
+
+# Case-insensitive substrings in claude's `result` text that indicate the session was stopped by a
+# usage/rate limit rather than a genuine task failure. How a usage limit surfaces in
+# `claude -p --output-format json` is not formally documented, so detection is a text match kept in
+# one place; adjust these as the CLI's wording evolves.
+_USAGE_LIMIT_RESULT_PATTERNS = ("usage limit reached", "rate limit", "resets ")
 
 # The loop will not advance to the next function until the agent has *attempted* verification
 # (run `avocado-run-cbmc`) at least this many times for the current function, as counted from the
@@ -69,11 +83,28 @@ class GroundTruthVerificationResult(StrEnum):
     UNVERIFIED = "UNVERIFIED"
     CLAUDE_TIMED_OUT = "CLAUDE_TIMED_OUT"
     CLAUDE_ERROR = "CLAUDE_ERROR"
+    USAGE_LIMITED = "USAGE_LIMITED"
+
+
+# Outcomes that count as "processed" for `--resume-from`, so a resumed run skips them.
+# USAGE_LIMITED is deliberately excluded: that session never got a fair attempt, so it is retried.
+_PROCESSED_FUNCTION_OUTCOMES = frozenset(
+    {
+        GroundTruthVerificationResult.VERIFIED,
+        GroundTruthVerificationResult.UNVERIFIED,
+        GroundTruthVerificationResult.CLAUDE_ERROR,
+        GroundTruthVerificationResult.CLAUDE_TIMED_OUT,
+    }
+)
 
 
 @dataclass(frozen=True)
 class ClaudeRun:
     """The outcome of a single `claude -p` session.
+
+    Note on the confusingly-named `subtype` field: the JSON output of a `claude -p` session contains
+    a `subtype` key that maps to a string. This is used for logging some finer-grained information
+    about the end-result of a session.
 
     Attributes:
         returncode (int): claude's exit code, or `_TIMEOUT_RETURNCODE` on timeout.
@@ -85,6 +116,12 @@ class ClaudeRun:
         total_cost_usd (float | None): session cost in USD, when reported.
         num_turns (int | None): number of turns taken, when reported.
         duration_ms (int | None): wall-clock duration claude reported, when present.
+        subtype (str | None): The subtype of claude's terminal result message from
+            `claude -p --output-format json`: "success" on normal completion, or an error
+            subtype such as "error_max_turns" or "error_during_execution" otherwise. A
+            finer-grained companion to `is_error`. Recorded in the run log for diagnostics
+            only; not consulted by any control flow (usage-limit detection matches on
+            `result_text`, see `_is_usage_limit_hit`).
     """
 
     returncode: int
@@ -95,6 +132,7 @@ class ClaudeRun:
     total_cost_usd: float | None
     num_turns: int | None
     duration_ms: int | None
+    subtype: str | None
 
 
 @dataclass(frozen=True)
@@ -142,6 +180,7 @@ class FunctionVerificationResult:
                 "total_cost_usd": self.claude.total_cost_usd,
                 "num_turns": self.claude.num_turns,
                 "duration_ms": self.claude.duration_ms,
+                "subtype": self.claude.subtype,
                 "result": self.claude.result_text,
             },
             "cbmc": {
@@ -176,6 +215,16 @@ def main() -> None:
             f"(default: {_DEFAULT_CLAUDE_TIMEOUT_SEC})."
         ),
     )
+    parser.add_argument(
+        "--resume-from",
+        required=False,
+        type=str,
+        help=(
+            "Resume from the given avocado-verify.jsonl: skip already-completed functions and "
+            "append to the log instead of truncating it. Use after a run stopped due to a usage "
+            "limit (exit code 2)."
+        ),
+    )
     args = parser.parse_args()
 
     file_path = Path(args.file).resolve()
@@ -188,26 +237,43 @@ def main() -> None:
 
     path_to_call_graph = construct_call_graph(str(file_path))
     call_graph = CallGraph(json.loads(Path(path_to_call_graph).read_text(encoding="utf-8")))
-    functions = [
-        function
-        for function in get_topological_ordering_of_functions(path_to_call_graph)
-        if function not in _UNVERIFIABLE_FUNCTIONS
-    ]
+    functions = _get_functions_to_verify(str(file_path))
     if not functions:
         logger.warning(f"No verifiable functions found in {file_path}")
         sys.exit(0)
 
-    log_path = file_path.with_name(f"{file_path.stem}-avocado-verify.jsonl")
-    log_path.write_text("", encoding="utf-8")  # Truncate any prior run's log.
+    if args.resume_from:
+        log_path = Path(args.resume_from).resolve()
+        if not log_path.is_file():
+            logger.error(f"No resume log at: {log_path}")
+            sys.exit(1)
+        already_done = _get_processed_functions(log_path)
+    else:
+        log_path = file_path.with_name(f"{file_path.stem}-avocado-verify.jsonl")
+        already_done = set()
+        log_path.write_text("", encoding="utf-8")  # Fresh run: truncate any prior log.
+
+    num_functions = len(functions)
+    pending = [function for function in functions if function not in already_done]
+    if args.resume_from and already_done:
+        logger.info(
+            f"Resuming; {len(already_done)}/{num_functions} function(s) already processed, "
+            f"{len(pending)} remaining"
+        )
+
+    if not pending:
+        logger.info(f"Nothing to do; all {num_functions} function(s) already complete.")
+        _finalize_run(
+            log_path, functions=functions, remaining=[], status="completed", stopped_early=False
+        )
 
     logger.info(
-        f"avocado-verify: {len(functions)} function(s) in callees-first order: "
-        f"{', '.join(functions)}"
+        f"{len(pending)} function(s) to verify in callees-first order: {', '.join(pending)}"
     )
 
     results: list[FunctionVerificationResult] = []
-    for index, function in enumerate(functions, start=1):
-        logger.info(f"[{index}/{len(functions)}] {function}: generating spec via claude -p")
+    for index, function in enumerate(pending, start=1):
+        logger.info(f"[{index}/{len(pending)}] {function}: generating spec via claude -p")
         verification_result_from_agent = _verify_via_agent(
             function,
             file_path=str(file_path),
@@ -218,14 +284,71 @@ def main() -> None:
         results.append(verification_result_from_agent)
         _append_jsonl(log_path, verification_result_from_agent.to_record())
         logger.info(
-            f"[{index}/{len(functions)}] {function}: {verification_result_from_agent.outcome}"
+            f"[{index}/{len(pending)}] {function}: {verification_result_from_agent.outcome}"
         )
 
+        if verification_result_from_agent.outcome is GroundTruthVerificationResult.USAGE_LIMITED:
+            remaining = pending[index:]
+            logger.warning(
+                f"{function}: stopped after {index}/{len(pending)} function(s) this run due to a "
+                f"usage limit; {len(remaining)} remaining. Resume with --resume-from."
+            )
+            _log_summary(results, log_path)
+            _finalize_run(
+                log_path,
+                functions=functions,
+                remaining=[function, *remaining],
+                status="usage_limited",
+                stopped_early=True,
+            )
+
     _log_summary(results, log_path)
-    verified = sum(
-        1 for result in results if result.outcome is GroundTruthVerificationResult.VERIFIED
+    _finalize_run(
+        log_path, functions=functions, remaining=[], status="completed", stopped_early=False
     )
-    sys.exit(0 if verified == len(results) else 1)
+
+
+def _get_functions_to_verify(file_path: str) -> list[str]:
+    path_to_call_graph = construct_call_graph(str(file_path))
+    return [
+        function
+        for function in get_topological_ordering_of_functions(path_to_call_graph)
+        if function not in _UNVERIFIABLE_FUNCTIONS
+    ]
+
+
+def _finalize_run(
+    log_path: Path,
+    *,
+    functions: list[str],
+    remaining: list[str],
+    status: str,
+    stopped_early: bool,
+) -> None:
+    """Append the terminal run-summary record and exit with the appropriate code.
+
+    Verification is accounted for across all runs by re-reading the log, so a resumed run reflects
+    functions verified by earlier invocations rather than only this invocation's results.
+
+    Args:
+        log_path (Path): Path to the run log.
+        functions (list[str]): All verifiable functions in the file, in topological order.
+        remaining (list[str]): Functions still pending (empty on normal completion).
+        status (str): "usage_limited" or "completed" for the summary record.
+        stopped_early (bool): True iff the run stopped on a usage limit; selects the exit code.
+    """
+    verified_set = _verified_functions(log_path)
+    verified = sum(1 for function in functions if function in verified_set)
+    done = [function for function in functions if function not in remaining]
+    _append_jsonl(
+        log_path,
+        _run_summary_record(
+            status, done=done, remaining=remaining, verified=verified, total=len(functions)
+        ),
+    )
+    if stopped_early:
+        sys.exit(_EXIT_USAGE_LIMITED)
+    sys.exit(_EXIT_ALL_VERIFIED if verified == len(functions) else _EXIT_SOME_UNVERIFIED)
 
 
 def _verify_via_agent(
@@ -409,6 +532,109 @@ def _last_attempt_verified(log_path: Path, function: str) -> bool:
     return verified
 
 
+def _read_function_outcomes(log_path: Path) -> dict[str, str]:
+    """Return the last recorded outcome for each function in the run log.
+
+    Reads `<stem>-avocado-verify.jsonl`, ignoring blank/malformed lines and the terminal
+    run-summary record (identified by a `"type"` key). Later records win, so the returned outcome
+    reflects each function's most recent attempt. Never raises; a missing log yields an empty map.
+
+    Args:
+        log_path (Path): Path to the `<stem>-avocado-verify.jsonl` run log.
+
+    Returns:
+        dict[str, str]: Map of function name to its last recorded outcome string.
+    """
+    outcomes: dict[str, str] = {}
+    try:
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return outcomes
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            record = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if "type" in record:  # terminal run-summary record, not a per-function result
+            continue
+        function = record.get("function")
+        outcome = record.get("outcome")
+        if function is not None and outcome is not None:
+            outcomes[function] = outcome
+    return outcomes
+
+
+def _get_processed_functions(log_path: Path) -> set[str]:
+    """Return the set of functions already "processed" according to the run log.
+
+    A function is processed iff its most recent outcome is in `_PROCESSED_FUNCTION_OUTCOMES`.
+    USAGE_LIMITED is excluded, so the function that hit a usage limit (and any never reached) is
+    retried on resume.
+
+    Args:
+        log_path (Path): Path to the `avocado-verify.jsonl` run log.
+
+    Returns:
+        set[str]: Functions that should be skipped on resume.
+    """
+    return {
+        function
+        for function, outcome in _read_function_outcomes(log_path).items()
+        if outcome in _PROCESSED_FUNCTION_OUTCOMES
+    }
+
+
+def _verified_functions(log_path: Path) -> set[str]:
+    """Return the set of functions whose most recent recorded outcome is VERIFIED.
+
+    Used for cross-run final accounting on resume, where the in-memory results of a single
+    invocation do not reflect functions verified by earlier runs.
+
+    Args:
+        log_path (Path): Path to the `<stem>-avocado-verify.jsonl` run log.
+
+    Returns:
+        set[str]: Functions recorded as VERIFIED.
+    """
+    return {
+        function
+        for function, outcome in _read_function_outcomes(log_path).items()
+        if outcome == GroundTruthVerificationResult.VERIFIED
+    }
+
+
+def _run_summary_record(
+    status: str, *, done: list[str], remaining: list[str], verified: int, total: int
+) -> dict:
+    """Build the terminal run-summary record appended to the run log.
+
+    Carries a reserved `"type": "run_summary"` key so readers distinguish it from per-function
+    records (which have no `"type"`).
+
+    Args:
+        status (str): "usage_limited" when the run stopped early, "completed" otherwise.
+        done (list[str]): Functions completed (terminal outcome) across all runs of this file.
+        remaining (list[str]): Functions still pending, in topological order.
+        verified (int): Count of functions verified across all runs.
+        total (int): Total verifiable functions in the file.
+
+    Returns:
+        dict: A JSON-serializable terminal run-summary record.
+    """
+    return {
+        "timestamp": datetime.now(UTC).isoformat(),
+        "type": "run_summary",
+        "status": status,
+        "done": done,
+        "remaining": remaining,
+        "verified": verified,
+        "total": total,
+    }
+
+
 def _build_claude_command(prompt: str, *, file_path: str, include_dirs: list[str]) -> list[str]:
     """Build the `claude -p` argument vector for one function.
 
@@ -471,6 +697,7 @@ def _run_claude(command: list[str], timeout: int) -> ClaudeRun:
             total_cost_usd=None,
             num_turns=None,
             duration_ms=None,
+            subtype=None,
         )
     return _parse_claude_output(completed.returncode, completed.stdout, completed.stderr)
 
@@ -499,6 +726,7 @@ def _parse_claude_output(returncode: int, stdout: str, stderr: str) -> ClaudeRun
             total_cost_usd=None,
             num_turns=None,
             duration_ms=None,
+            subtype=None,
         )
     return ClaudeRun(
         returncode=returncode,
@@ -509,13 +737,34 @@ def _parse_claude_output(returncode: int, stdout: str, stderr: str) -> ClaudeRun
         total_cost_usd=payload.get("total_cost_usd"),
         num_turns=payload.get("num_turns"),
         duration_ms=payload.get("duration_ms"),
+        subtype=payload.get("subtype"),
     )
+
+
+def _is_usage_limit_hit(claude: ClaudeRun) -> bool:
+    """Return True iff a `claude -p` session failed because of a usage/rate limit.
+
+    A usage limit is a distinct, recoverable condition from an ordinary CLAUDE_ERROR: the work is
+    not wrong, the account is throttled, and continuing to the next function would only burn more
+    sessions against the same limit. Detection matches `result_text` (case-insensitively) against
+    `_USAGE_LIMIT_RESULT_PATTERNS`; it is only meaningful when the session reported an error.
+
+    Args:
+        claude (ClaudeRun): The parsed session outcome.
+
+    Returns:
+        bool: True iff the session result indicates a usage/rate limit.
+    """
+    if not claude.is_error:
+        return False
+    text = claude.result_text.lower()
+    return any(pattern in text for pattern in _USAGE_LIMIT_RESULT_PATTERNS)
 
 
 def _outcome_for(claude: ClaudeRun, cbmc: RunCbmcResult) -> GroundTruthVerificationResult:
     """Combine the Claude session and CBMC verdict into a single outcome.
 
-    A passing CBMC run is authoritative; otherwise a Claude-side timeout or error is
+    A passing CBMC run is authoritative; otherwise a Claude-side timeout, usage limit, or error is
     surfaced ahead of a plain verification failure.
 
     Args:
@@ -529,6 +778,8 @@ def _outcome_for(claude: ClaudeRun, cbmc: RunCbmcResult) -> GroundTruthVerificat
         return GroundTruthVerificationResult.VERIFIED
     if claude.timed_out:
         return GroundTruthVerificationResult.CLAUDE_TIMED_OUT
+    if _is_usage_limit_hit(claude):
+        return GroundTruthVerificationResult.USAGE_LIMITED
     if claude.is_error:
         return GroundTruthVerificationResult.CLAUDE_ERROR
     return GroundTruthVerificationResult.UNVERIFIED
