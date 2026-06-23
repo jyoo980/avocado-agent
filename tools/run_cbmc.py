@@ -17,8 +17,6 @@ from enum import StrEnum
 from pathlib import Path
 from subprocess import TimeoutExpired
 
-from loguru import logger
-
 from tools.construct_call_graph import construct_call_graph
 from tools.util import (
     build_stub_index,
@@ -156,12 +154,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Run CBMC on a function with loop unwinding = _CBMC_UNWIND, depth = _CBMC_DEPTH. "
-            "Exits with status 0 on verification success. "
-            "On success, additionally runs mutation testing, which re-runs the full CBMC "
-            "pipeline once per mutant (sequentially, up to a 10-minute timeout each); this can "
-            "take several minutes, during which the tool is mostly silent. This is expected, "
-            "not a hang -- do not interrupt the process. Consider running it in the background "
-            "and polling for completion."
+            "Exits with status 0 on verification success."
         )
     )
     parser.add_argument("--function", required=True, help="Name of the function to verify.")
@@ -176,16 +169,6 @@ def main() -> None:
         help="Directory to add to the include search path. May be repeated.",
     )
     args = parser.parse_args()
-
-    # Tee mutation-testing compile failures into a file. Leaves loguru's default stderr sink
-    # untouched; the filter keys on the warning emitted by `_verify_mutant` in
-    # tools/util/mutation.py.
-    logger.add(
-        "mutation_compile_failures.log",
-        level="WARNING",
-        filter=lambda record: "failed to compile" in record["message"],
-    )
-
     result = run_cbmc(
         function_to_verify=args.function,
         file_containing_function_to_verify=args.file,
@@ -217,16 +200,12 @@ def run_cbmc(
         include_dirs (list[str] | None): Directories to add to the C preprocessor's include
             search path. Forwarded to `goto-cc` as `-I` flags.
         call_graph (CallGraph | None): When provided, this pre-built call graph is used instead
-            of parsing `file_containing_function_to_verify`. Callers that verify many variants of
-            one source (e.g. mutation testing, where every mutant shares the original's call
-            graph) can build it once and pass it in, which both avoids redundant parsing and keeps
-            the non-thread-safe tree-sitter parser out of concurrent code paths. When None, the
-            call graph is constructed from the source file as usual.
+            of parsing `file_containing_function_to_verify`.
         cwd (str | None): Working directory for every subprocess in the pipeline. The pipeline
             writes its intermediate `<function>.goto` / `checking-<function>-contracts.goto` files
-            relative to this directory, so concurrent runs of the same function (again, mutation
-            testing) must each pass a distinct `cwd` to avoid clobbering one another. When None,
-            subprocesses inherit the current working directory.
+            relative to this directory, so concurrent runs of the same function must each pass a
+            distinct `cwd` to avoid clobbering one another. When None, subprocesses inherit the
+            current working directory.
 
     Returns:
         RunCbmcResult: The outcome of the run, naming the failed step (if any) and carrying
@@ -775,8 +754,6 @@ def compile_with_goto_cc(
     """Run only the goto-cc compile step on a C file and return its exit code.
 
     A zero exit code means goto-cc accepted the input; non-zero means it rejected it.
-    Mutants that do not compile should be excluded from evaluation and calculations;
-    this is the client's responsibility.
 
     Args:
         function (str): The function used as the goto-binary entry point.

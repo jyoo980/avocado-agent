@@ -28,11 +28,9 @@ from subprocess import TimeoutExpired
 
 from loguru import logger
 
-from eval.mutants.mutate_function import get_mutants
 from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
 from tools.run_cbmc import RunCbmcResult, run_cbmc
-from tools.run_cbmc_and_mutation_testing import VERIFICATION_ATTEMPTS_LOG_SUFFIX
 from tools.util.callgraph import CallGraph
 
 # Per-function wall-clock budget for a single `claude -p` session. A session may run CBMC
@@ -71,6 +69,8 @@ _MIN_VERIFICATION_ATTEMPTS_PER_SESSION = 2
 # `_MIN_VERIFICATION_ATTEMPTS`. Prevents an unproductive session from looping forever; once hit,
 # the harness proceeds anyway and records the shortfall.
 _MAX_AGENT_SESSIONS_PER_FUNCTION = 3
+
+_VERIFICATION_ATTEMPTS_LOG_SUFFIX = "-verification-attempts.jsonl"
 
 
 class GroundTruthVerificationResult(StrEnum):
@@ -379,7 +379,7 @@ def _verify_via_agent(
     prompt = f"Verify {function} in {file_path}"
     command = _build_claude_command(prompt, file_path=file_path, include_dirs=include_dirs)
     attempts_log_path = Path(file_path).with_name(
-        f"{Path(file_path).stem}{VERIFICATION_ATTEMPTS_LOG_SUFFIX}"
+        f"{Path(file_path).stem}{_VERIFICATION_ATTEMPTS_LOG_SUFFIX}"
     )
 
     # Attempts already logged for this function before this turn (e.g. by an earlier function's
@@ -396,7 +396,6 @@ def _verify_via_agent(
     while (
         current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION
         and sessions < _MAX_AGENT_SESSIONS_PER_FUNCTION
-        and is_spec_improvable_with_mutation_testing(function, file_path, attempts_log_path)
     ):
         logger.warning(
             f"{function}: agent attempted verification "
@@ -409,14 +408,8 @@ def _verify_via_agent(
             _count_verification_attempts(attempts_log_path, function)
             - previous_verification_attempts
         )
-    if not is_spec_improvable_with_mutation_testing(function, file_path, attempts_log_path):
-        # Stopped deliberately, not short of the floor: there are no mutants to kill, so further
-        # sessions cannot strengthen the (already verifying) spec.
-        logger.info(
-            f"{function}: verified with no mutants after {sessions} session(s); skipping the "
-            f"attempt-count floor (no kill score to raise)"
-        )
-    elif current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION:
+
+    if current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION:
         logger.warning(
             f"{function}: proceeding after {sessions} session(s) with only "
             f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} "
@@ -434,35 +427,6 @@ def _verify_via_agent(
         verification_attempts=current_verification_attempts,
         agent_sessions=sessions,
     )
-
-
-def is_spec_improvable_with_mutation_testing(
-    function: str, source_path: str, attempts_log_path: Path
-) -> bool:
-    """Return True iff a function's specification can be improved.
-
-    Whether a specification can be improved (via Avocado) depends on the availability of mutants to
-    kill; the kill score is the only metric that is provided to the agent. If no mutants are
-    generated, and the function already verifies, there is no point going further.
-
-    Args:
-        function (str): The function under specification generation.
-        source_path (str): The path to the source file where the function is declared.
-        attempts_log_path (Path): The path to the log of verification attempts.
-
-    Returns:
-        bool: True iff a function's specification can be improved, i.e., it has mutants to kill
-            and it is not successfully verified, yet.
-    """
-    function_has_mutants = False
-    try:
-        function_has_mutants = bool(get_mutants(source_path, function))
-    except Exception:  # noqa: BLE001 - any generation failure should fall back to default behavior.
-        logger.error(f"Failure in mutant generation for '{function}' in {source_path}")
-        # Assume mutants exist in the worst-case scenario.
-        function_has_mutants = True
-    is_function_successfully_verified = _last_attempt_verified(attempts_log_path, function)
-    return function_has_mutants and not is_function_successfully_verified
 
 
 def _count_verification_attempts(log_path: Path, function: str) -> int:
@@ -495,41 +459,6 @@ def _count_verification_attempts(log_path: Path, function: str) -> int:
         if record.get("function") == function:
             count += 1
     return count
-
-
-def _last_attempt_verified(log_path: Path, function: str) -> bool:
-    """Return whether the most recent logged verification attempt for `function` succeeded.
-
-    Reads the verification-attempts JSONL that `avocado-run-cbmc` appends to and returns the
-    `verified` field of the last record naming `function`. That field is the *tool's* own CBMC
-    verdict (`run_cbmc_and_mutation_testing._log_verification_attempt` records
-    `result.is_function_verified`), not Claude's self-report, so it is safe to trust here. A missing
-    log, blank lines, and malformed records are skipped; the function returns False when there is no
-    decided record, so callers never skip work on the basis of a verification that did not happen.
-
-    Args:
-        log_path (Path): Path to the verification-attempts JSONL log.
-        function (str): The function whose latest attempt should be inspected.
-
-    Returns:
-        bool: True iff the most recent attempt record for `function` reports verification success.
-    """
-    try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-    verified = False
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            record = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        if record.get("function") == function:
-            verified = bool(record.get("verified", False))
-    return verified
 
 
 def _read_function_outcomes(log_path: Path) -> dict[str, str]:

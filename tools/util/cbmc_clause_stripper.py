@@ -17,12 +17,6 @@ of identical byte length (newlines preserved). The stripped source parses as
 plain C, and every byte offset / line / column on the resulting tree-sitter AST
 indexes the *original* source verbatim — no offset translation tables, no
 two-buffer bookkeeping.
-
-The same scanner also powers `find_cbmc_annotation_spans`, which locates *any*
-`__CPROVER_*(...)` call — including in-body intrinsics like `__CPROVER_assume`
-and `__CPROVER_assert` — so downstream consumers (e.g. the mutant generator)
-can avoid mutating operators that live inside a CBMC annotation rather than in
-the program under test.
 """
 
 from __future__ import annotations

@@ -1,10 +1,4 @@
-"""Utilities to be used by tools.
-
-Note: `tools.util.mutation` is intentionally not re-exported here. It depends on
-`tools.run_cbmc`, which in turn depends on `tools.util`, so importing it eagerly
-from this package's `__init__` would create a circular import at package load
-time. Consumers should `from tools.util.mutation import ...` directly.
-"""
+"""Utilities to be used by tools."""
 
 from .callgraph import CallGraph, CallGraphCallees
 from .stubs import (
