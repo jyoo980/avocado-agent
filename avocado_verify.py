@@ -103,7 +103,7 @@ class FunctionVerificationResult:
 
     Attributes:
         function (str): The function under verification.
-        outcome (VerifyOutcome): The harness's overall verdict for the function.
+        outcome (GroundTruthVerificationResult): The harness's overall verdict for the function.
         claude (ClaudeRun): The last `claude -p` session that (re)wrote the specification.
         cbmc (RunCbmcResult): The independent CBMC verification the harness ran afterward.
         internal_callees (list[str]): The function's in-file callees, for the run log.
@@ -523,7 +523,7 @@ def _outcome_for(claude: ClaudeRun, cbmc: RunCbmcResult) -> GroundTruthVerificat
         cbmc (RunCbmcResult): The independent CBMC verification result.
 
     Returns:
-        VerifyOutcome: The overall per-function verdict.
+        GroundTruthVerificationResult: The overall per-function verdict.
     """
     if cbmc.is_function_verified:
         return GroundTruthVerificationResult.VERIFIED
@@ -549,7 +549,7 @@ def _log_summary(results: list[FunctionVerificationResult], log_path: Path) -> N
     """Log a per-function summary and the location of the run log.
 
     Args:
-        results (list[FunctionVerification]): The per-function results, in run order.
+        results (list[FunctionVerificationResult]): The per-function results, in run order.
         log_path (Path): Path to the JSONL run log.
     """
     logger.info("avocado-verify summary:")
