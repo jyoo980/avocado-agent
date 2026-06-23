@@ -1,6 +1,0 @@
-extend = .plume-scripts/.ruff.toml
-
-[lint]
-# RUF029 must be ignored; Claude Code tool handlers must be declared `async` regardless of whether
-# their actual implementation is asynchronous or not.
-ignore = ["RUF029"]
