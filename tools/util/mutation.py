@@ -195,16 +195,16 @@ def get_mutation_testing_results_for_client(mutation_testing_result: MutationTes
             kill_score,
             results,
         ):
-             kill_score_line = (
-                 f"Mutation kill score: {kill_score:.4f} "
-                 f"(killed {num_killed}/{num_mutants}; "
-                 f"{num_survived} survived, "
-                 # The values for the number of timed-out/compile/instrumentation-failed mutants are
-                 # also reported since the denominator for the kill score includes them.
-                 f"{num_timed_out} timed out, "
-                 f"{num_compile_failed} compile-failed, "
-                 f"{num_instrumentation_failed} instrumentation-failed)"
-             )
+            kill_score_line = (
+                f"Mutation kill score: {kill_score:.4f} "
+                f"(killed {num_killed}/{num_mutants}; "
+                f"{num_survived} survived, "
+                # The values for the number of timed-out/compile/instrumentation-failed mutants are
+                # also reported since the denominator for the kill score includes them.
+                f"{num_timed_out} timed out, "
+                f"{num_compile_failed} compile-failed, "
+                f"{num_instrumentation_failed} instrumentation-failed)"
+            )
             # A surviving mutant is one that compiled and was decided (not timed out),
             # yet the spec did not kill.
             survivors = [
