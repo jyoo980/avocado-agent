@@ -212,6 +212,7 @@ def generate_mutants_and_compute_score(
     include_dirs: list[str] | None = None,
     workspace: Path | None = None,
     keep_artifacts: bool = False,
+    skip_reverification: bool = False,
 ) -> MutationScore | None:
     """Return the mutation kill score for `target_function` in `file_path`.
 
@@ -229,20 +230,39 @@ def generate_mutants_and_compute_score(
         workspace (Path | None): Directory to write mutant files into. Defaults to the
             source file's directory.
         keep_artifacts (bool): When True, mutant `.c` files are kept for inspection.
+        skip_reverification (bool): When True, proceed with mutation testing regardless of whether
+            the function verifies or not.
 
     Returns:
         MutationScore | None: Aggregated counts plus per-mutant verification results, or None if
             the unmutated function does not verify.
     """
     source_path = Path(file_path).resolve()
+    mutants = get_mutants(str(source_path), target_function)
+    if not mutants:
+        logger.info(f"Mutation testing not possible for '{target_function}', no mutable operators")
+        return MutationScore(
+            file=file_path,
+            target_function=target_function,
+            num_mutants=0,
+            num_killed=0,
+            num_survived=0,
+            num_timed_out=0,
+            num_compile_failed=0,
+            num_instrumentation_failed=0,
+            kill_score=0.0,
+            results=[],
+        )
+
     workspace = workspace or source_path.parent
     workspace.mkdir(parents=True, exist_ok=True)
 
-    cbmc_result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
-    if not is_valid_mutation_candidate(cbmc_result):
-        # No usable baseline if CBMC can't verify the unmutated function.
-        logger.warning(f"could not verify {target_function}; skipping mutation testing")
-        return None
+    if not skip_reverification:
+        cbmc_result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
+        if not is_valid_mutation_candidate(cbmc_result):
+            # No usable baseline if CBMC can't verify the unmutated function.
+            logger.warning(f"could not verify {target_function}; skipping mutation testing")
+            return None
 
     # Operator-swap mutations never add or remove calls (or rename functions), so the call graph
     # is identical for the original and every mutant. Build it once -- cache-hitting the JSON the
@@ -253,7 +273,6 @@ def generate_mutants_and_compute_score(
         json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
     )
 
-    mutants = get_mutants(str(source_path), target_function)
     paths_to_mutants = {
         _get_path_for_mutated_source(workspace, source_path, i): mutant
         for i, mutant in enumerate(mutants)
