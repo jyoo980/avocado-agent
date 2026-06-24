@@ -103,7 +103,7 @@ def test_strip_does_not_match_substring_inside_other_identifier() -> None:
 
 
 def test_stripped_quicksort_benchmark_parses_without_errors() -> None:
-    source = Path("eval/benchmarks/quicksort/quicksort.c").read_bytes()
+    source = Path("test/quicksort/quicksort.c").read_bytes()
     stripped, spans = strip_cbmc_clauses(source)
 
     tree = _PARSER.parse(stripped)
@@ -136,7 +136,7 @@ def test_clause_span_byte_ranges_recover_original_text() -> None:
 def test_clause_spans_attributable_to_owning_function_by_byte_range() -> None:
     # Regression for the quicksort.c bug: clauses for `partition` and `quickSort` must be
     # attributable to their respective functions and not bleed across.
-    source = Path("eval/benchmarks/quicksort/quicksort.c").read_bytes()
+    source = Path("test/quicksort/quicksort.c").read_bytes()
     stripped, spans = strip_cbmc_clauses(source)
 
     tree = _PARSER.parse(stripped)

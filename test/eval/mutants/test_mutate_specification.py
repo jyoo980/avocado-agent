@@ -3,7 +3,7 @@
 from eval.mutants.mutate_specification import CbmcClause, get_clause_mutants
 
 
-_BENCHMARK = "eval/benchmarks/quicksort/quicksort.c"
+_BENCHMARK = "test/quicksort/quicksort.c"
 
 
 def test_partition_clauses_are_attributed_to_partition_not_quicksort() -> None:
