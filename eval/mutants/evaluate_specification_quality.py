@@ -11,6 +11,7 @@ Each metric is a separate flag so the user can specify the ones they want, namel
 Usage:
     % ./eval/mutants/evaluate_specification_quality.py <PATH_TO_C_FILE_OR_DIR> \
             [--auto-include] \
+            [--include-dirs] \
             [--mutation] \
             [--redundancy] \
             [--keep-artifacts]
@@ -52,6 +53,9 @@ def main() -> None:
         action="store_true",
     )
     parser.add_argument(
+        "--include-dirs", action="append", help="Path(s) to stubs to use in verification."
+    )
+    parser.add_argument(
         "--mutation",
         action="store_true",
         help="Run mutation testing on mutated C functions.",
@@ -86,11 +90,13 @@ def main() -> None:
         Path(args.jsonl).open("w", encoding="utf-8") if args.jsonl else sys.stdout  # noqa: SIM115
     )
     try:
+        include_dirs_from_cli = args.include_dirs or []
         for source in input_files:
             _process_file(
                 source=source,
                 out=output_stream,
                 auto_include=args.auto_include,
+                include_dirs=include_dirs_from_cli,
                 run_mutation=args.mutation,
                 run_redundancy=args.redundancy,
                 keep_artifacts=args.keep_artifacts,
@@ -105,6 +111,7 @@ def _process_file(
     source: Path,
     out: IO[str],
     auto_include: bool,
+    include_dirs: list[str],
     run_mutation: bool,
     run_redundancy: bool,
     keep_artifacts: bool,
@@ -116,6 +123,8 @@ def _process_file(
         out (IO[str]): The output.
         auto_include (bool): True iff an `include` dir (i.e., a dir containing headers) should be
             automatically detected.
+        include_dirs (list[str]): List of directories containing files (e.g., headers) that should
+            be included in verification.
         run_mutation (bool): True iff mutation testing should be reported.
         run_redundancy (bool): True iff redundancy scoring should be reported.
         keep_artifacts (bool): True iff the mutant files should be retained after evaluation.
@@ -127,7 +136,9 @@ def _process_file(
         logger.warning(f"{source} had no functions with CBMC annotations")
         return
 
-    include_dirs = _autodetect_include_dirs(str(source)) if auto_include else []
+    include_dirs = (
+        [*_autodetect_include_dirs(str(source)), *include_dirs] if auto_include else include_dirs
+    )
     if include_dirs:
         logger.debug(f"[auto-include] using {include_dirs}")
 
