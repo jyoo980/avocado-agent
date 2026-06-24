@@ -74,10 +74,10 @@ def test_mutant_get_diff() -> None:
     assert context_lines == []
 
 def test_get_mutants_recovers_function_after_forall_annotated_neighbor() -> None:
-    # Regression: `quickSort` in test/quicksort/quicksort.c sits after a `partition`
+    # Regression: `quickSort` in test/data//quicksort.c sits after a `partition`
     # function whose `__CPROVER_forall { ... }` clauses make tree-sitter mis-parse. Previously
     # the iterator missed `quickSort` entirely and `get_mutants` raised ValueError.
-    benchmark = "test/quicksort/quicksort.c"
+    benchmark = "test/data//quicksort.c"
     mutants = get_mutants(benchmark, "quickSort")
     assert mutants, "Expected non-empty mutants for quickSort"
 
