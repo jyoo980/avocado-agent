@@ -2,27 +2,8 @@
 
 from pathlib import Path
 
-from tools.run_cbmc import RunCbmcResult
-
 # 0 indicates success, 10 indicates failure, 124 indicates timeout.
 _CBMC_RETURN_CODES_SUCCESS_FAILURE_TIMEOUT = frozenset({0, 10, 124})
-
-
-def is_valid_mutation_candidate(run_cbmc_result: RunCbmcResult) -> bool:
-    """Return True iff the function under verification can serve as a mutation-testing baseline.
-
-    A valid candidate is one for which CBMC ran end-to-end and verified the function — i.e.,
-    every pipeline step completed without failure or timeout and CBMC reported success.
-    Mutants are scored against this baseline, so anything weaker (compile/instrument failure,
-    timeout, or a real verification failure) makes the candidate unusable.
-
-    Args:
-        run_cbmc_result (RunCbmcResult): The CBMC run result for the candidate function.
-
-    Returns:
-        bool: True iff the candidate verifies successfully.
-    """
-    return run_cbmc_result.is_function_verified
 
 
 def check_expected_cbmc_return_code(return_code: int):

@@ -1,9 +1,5 @@
 ## How to run CBMC directly
 
-You must run CBMC via the `avocado-run-cbmc` script.
-The commands below are what it does internally.
-You can try these commands if the `avocado-run-cbmc` script crashes.
-
 Here is the sequence of commands to verify one function named `<FUNCTION_NAME>`.
 The function calls two other functions, `<CALLEE1>` and `<CALLEE2>`.
 The function is defined in file `<PATH_TO_C_FILE>`.

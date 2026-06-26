@@ -22,14 +22,13 @@ which includes a [User Guide](https://diffblue.github.io/cbmc/user_guide.html)
 and [The CPROVER Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 You can also search the web for more CBMC documentation.
 
-## Tool Use
+## Mutation Testing 
 
-- **To run CBMC on a function**, run:
+- **To get the mutants of a function you must try to kill**, run:
 
   ```sh
-  avocado-run-cbmc --function <FUNCTION_NAME> \
+  avocado-get-mutants --function <FUNCTION_NAME> \
                    --file <PATH_TO_C_FILE> \
-                   [-I <PATH_TO_INCLUDE_DIR(S)>]...
   ```
 
   If verification succeeds, exits with status 0 and prints mutation-testing related information to stdout.
