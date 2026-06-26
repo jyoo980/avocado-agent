@@ -27,10 +27,12 @@ def main() -> None:
     )
 
     if mutants:
+        print("You must try to kill the follow mutant(s):\n")
         for mutant in mutants:
             print(mutant.get_unified_diff())
+    else:
+        print(f"No mutant(s) generated for '{args.function}' (no mutable operators)")
 
-    print(f"No mutant(s) generated for '{args.function}' (no mutable operators)")
     sys.exit(0)
 
 
