@@ -30,30 +30,8 @@ You can also search the web for more CBMC documentation.
   avocado-get-mutants --function <FUNCTION_NAME> \
                    --file <PATH_TO_C_FILE> \
   ```
-
-  If verification succeeds, exits with status 0 and prints mutation-testing related information to stdout.
-  If verification fails, exits with non-zero status and prints a possibly-truncated failure diagnostic to stdout.
-
-  You should always prefer `avocado-run-cbmc` over invoking CBMC directly.
-
-  **This tool can run for a long time, and that is expected — not a hang.**
-
-- **To obtain a call graph of the functions in a file in JSON format**, run:
-
-  ```sh
-  avocado-construct-call-graph <PATH_TO_C_FILE>
-  ```
-
-  Prints the path to a newly written JSON file that is a sibling of the source file,
-  For example, invoking `avocado-construct-call-graph /app/a/b/file.c` will print `/app/a/b/file-callgraph.json`
-
-- **To obtain a reverse topological ordering of functions in a call graph, with all callees before their callers**:
-
-  ```sh
-  avocado-topological-order <PATH_TO_CALL_GRAPH_JSON>
-  ```
-
-  Prints function names callees-first, one per line.
+  If there are mutants for the function, exits with status 0 and prints them to the stdout as unified diffs.
+  If there are no mutants for the function, exits with status 0 and prints "No mutant(s) generated" to stdout.
 
 ## Rules
 
