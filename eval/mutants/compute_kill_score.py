@@ -96,15 +96,20 @@ def _process_file(
 
     functions_to_mutation_testing_results: dict[str, dict] = {}
     for function in functions_in_file:
-        mutation_testing_result_for_function = generate_mutants_and_compute_score(
-            str(source), function, include_dirs=include_dirs
-        )
-        functions_to_mutation_testing_results[function] = {
-            "function": function,
-            "has_annotations": function in functions_in_file_with_cprover_annos,
-            "has_mutants": not isinstance(mutation_testing_result_for_function, BaselineFailsVerification) and not isinstance(mutation_testing_result_for_function, NoMutantsGenerated),
-            "is_verified": not isinstance(mutation_testing_result_for_function, BaselineFailsVerification),
-        } | _mutation_testing_result_to_dict(mutation_testing_result_for_function)
+        try:
+            mutation_testing_result_for_function = generate_mutants_and_compute_score(
+                str(source), function, include_dirs=include_dirs
+            )
+            functions_to_mutation_testing_results[function] = {
+                "function": function,
+                "has_annotations": function in functions_in_file_with_cprover_annos,
+                "has_mutants": not isinstance(mutation_testing_result_for_function, BaselineFailsVerification) and not isinstance(mutation_testing_result_for_function, NoMutantsGenerated),
+                "is_verified": not isinstance(mutation_testing_result_for_function, BaselineFailsVerification),
+            } | _mutation_testing_result_to_dict(mutation_testing_result_for_function)
+        except Exception as e:
+            # Don't let an error ruin a run.
+            logger.warning(f"Error while computing kill-score for: {function};\n{e}")
+            continue
     
     for result in functions_to_mutation_testing_results.values():
         print(result)
