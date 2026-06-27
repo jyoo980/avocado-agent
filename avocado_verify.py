@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 """Generate and verify a program with Avocado.
 
 Calls Claude Code over the functions of a C file in callee-first topological order.
