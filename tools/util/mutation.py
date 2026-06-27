@@ -322,7 +322,7 @@ def generate_mutants_and_compute_score(
         )
     mutant_vresults: list[MutantVerificationResult] = []
     for i, (path, mutant) in enumerate(paths_to_mutants.items()):
-        print(f"[mutation testing: {target_function}] ({i+1}/{len(mutants)})")
+        print(f"[mutation testing: {target_function}] ({i+1}/{len(mutants)})", file=sys.stderr, flush=True)
         mutant_vresult = _verify_mutant(path, mutant, include_dirs, call_graph)
         mutant_vresults.append(mutant_vresult)
 
