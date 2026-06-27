@@ -312,46 +312,20 @@ def generate_mutants_and_compute_score(
     # making progress. Written to stderr (not stdout) so it never contaminates the kill-score
     # result, and flushed so it is not buffered until the long run completes.
     total = len(paths_to_mutants)
-    max_workers = _mutation_worker_count(total)
     if mutants:
         print(
             f"Verified {target_function}; now running mutation testing on {total} "
-            f"mutants across up to {max_workers} worker(s) (one CBMC run each, up to 10 min "
+            f"mutants (one CBMC run each, up to 10 min "
             "per mutant) -- this can take several minutes; do not interrupt.",
             file=sys.stderr,
             flush=True,
         )
-    # Verify mutants concurrently: each mutant is an independent CBMC run, so a bounded thread
-    # pool overlaps their (subprocess-bound, GIL-releasing) work. Results are collected as each
-    # future completes -- emitting a flushed running tally to stderr so a consumer (a polling
-    # agent or a human at the terminal) sees forward motion -- then slotted back into original
-    # mutant order so survivor diffs render deterministically downstream. stderr (not stdout) is
-    # used so progress never contaminates the kill-score result.
-    mutant_vresults: list[MutantVerificationResult | None] = [None] * total
-    try:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_index = {
-                executor.submit(_verify_mutant, path, mutant, include_dirs, call_graph): index
-                for index, (path, mutant) in enumerate(paths_to_mutants.items())
-            }
-            try:
-                for done, future in enumerate(as_completed(future_to_index), start=1):
-                    mutant_vresults[future_to_index[future]] = future.result()
-                    _print_mutation_progress(
-                        done, total, [r for r in mutant_vresults if r is not None]
-                    )
-            finally:
-                # If we exit early (an unexpected error or a Ctrl-C), stop launching mutants that
-                # haven't started yet rather than kicking off more 10-minute CBMC runs; the `with`
-                # block still waits for any in-flight runs to drain.
-                executor.shutdown(cancel_futures=True)
-    finally:
-        if not keep_artifacts:
-            for path in paths_to_mutants:
-                path.unlink(missing_ok=True)
+    mutant_vresults: list[MutantVerificationResult] = []
+    for i, (path, mutant) in enumerate(paths_to_mutants.items()):
+        print(f"[mutation testing: {target_function}] ({i+1}/{len(mutants)})")
+        mutant_vresult = _verify_mutant(path, mutant, include_dirs, call_graph)
+        mutant_vresults.append(mutant_vresult)
 
-    # Every future either stored a result above or raised (which would have propagated), so no
-    # None slots remain; the filter just refines the type for the aggregator.
     results = [vresult for vresult in mutant_vresults if vresult is not None]
     return _aggregate_mutation_score(results, str(source_path), target_function)
 
