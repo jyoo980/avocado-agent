@@ -74,11 +74,10 @@ def _process_file(
     auto_include: bool,
     include_dirs: list[str],
 ) -> None:
-    """Run all enabled metrics for a single source file and write JSONL records to `out`.
+    """Run mutation testing on all functions in the given file.
 
     Arguments:
         source (Path): The path to the file for evaluation.
-        out (IO[str]): The output.
         auto_include (bool): True iff an `include` dir (i.e., a dir containing headers) should be
             automatically detected.
         include_dirs (list[str]): List of directories containing files (e.g., headers) that should
@@ -147,7 +146,6 @@ def get_mutation_testing_result(source_file: Path, function: str, annotated_func
         mutant_vresult = verify_mutant(path, mutant, include_dirs, call_graph)
         if mutant_vresult.killed:
             result["num_killed"] += 1
-    print(result)
     return result
 
 
