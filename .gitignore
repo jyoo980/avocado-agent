@@ -20,5 +20,5 @@
 *.json
 
 # Other
-avocado-experimental-runs
+avocado-experimental-data
 *.egg-info/
