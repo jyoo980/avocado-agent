@@ -26,7 +26,7 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
-    call_graph = construct_call_graph(args.path_to_call_graph)
+    call_graph = construct_call_graph(args.path_to_source_file)
     for function in get_topological_ordering_of_functions(call_graph):
         print(function)
 
