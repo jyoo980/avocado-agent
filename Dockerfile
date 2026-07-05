@@ -1,13 +1,14 @@
 FROM ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG CBMC_VERSION=6.7.1
+ARG CBMC_VERSION=6.9.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     wget \
     jq \
+    tmux \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 

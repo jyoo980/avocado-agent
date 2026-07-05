@@ -4,7 +4,8 @@ from pathlib import Path
 
 from tools.run_cbmc import RunCbmcResult
 
-_CBMC_RETURN_CODES_FOR_SUCCESS_AND_FAILURE = frozenset({0, 10})
+# 0 indicates success, 10 indicates failure, 124 indicates timeout.
+_CBMC_RETURN_CODES_SUCCESS_FAILURE_TIMEOUT = frozenset({0, 10, 124})
 
 
 def is_valid_mutation_candidate(run_cbmc_result: RunCbmcResult) -> bool:
@@ -25,12 +26,12 @@ def is_valid_mutation_candidate(run_cbmc_result: RunCbmcResult) -> bool:
 
 
 def check_expected_cbmc_return_code(return_code: int):
-    """Check whether the return code is indicates either a verification success or failure.
+    """Check whether the return code is indicates a verification success, failure, or timeout.
 
     Args:
-        return_code (int): The return code to check for verification success or failure.
+        return_code (int): The return code to check for verification success, failure, or timeout.
     """
-    if return_code not in _CBMC_RETURN_CODES_FOR_SUCCESS_AND_FAILURE:
+    if return_code not in _CBMC_RETURN_CODES_SUCCESS_FAILURE_TIMEOUT:
         msg = (
             f"Unexpected CBMC return code: {return_code}. "
             "See: https://diffblue.github.io/cbmc/exit__codes_8h.html"
