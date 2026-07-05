@@ -4,7 +4,7 @@ build-image:
 	docker build -t avocado-agent-container .
 
 run:
-	docker run -it --rm -v $(PWD):/app avocado-agent-container
+	docker run -it --rm -v $(PWD):/app -e SUBJECT_PROGRAM_DIR="$SUBJECT_PROGRAM_DIR" -e SUBJECT_PROGRAM_C_FILE="$SUBJECT_PROGRAM_C_FILE" avocado-agent-container
 
 test:
 	uv run pytest
