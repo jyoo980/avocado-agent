@@ -1,4 +1,4 @@
-"""Run CBMC on a function.
+"""Run CBMC on a function and perform mutation testing.
 
 Usage:
     % avocado-run-cbmc --function <FUNCTION_NAME> \
@@ -27,6 +27,10 @@ from tools.util import (
     get_unstubbed_external_callees_for,
 )
 from tools.util.callgraph import CallGraph
+from tools.util.mutation import (
+    generate_mutants_and_compute_score,
+    get_mutation_testing_results_for_client,
+)
 
 # Char budget for failure responses. The harness persists full tool output to a file but
 # previews only the head inline, so we keep responses bounded (a pathological CBMC run can
@@ -56,6 +60,11 @@ _TIMEOUT_RETURNCODE = 124
 # Fixed values for CBMC's `--depth` and `--unwind` flags.
 _CBMC_UNWIND = 5
 _CBMC_DEPTH = 200
+
+# Suffix of the sibling JSONL log in which `main` records one entry per top-level verification
+# attempt (i.e., per `avocado-run-cbmc` invocation). Public because `avocado-verify` reads this
+# log to count how many times the agent attempted to verify a function. Keep the two in sync.
+VERIFICATION_ATTEMPTS_LOG_SUFFIX = "-verification-attempts.jsonl"
 
 
 class CbmcStep(StrEnum):
@@ -191,18 +200,33 @@ def main() -> None:
         file_containing_function_to_verify=args.file,
         include_dirs=args.include_dirs,
     )
-    print(result.response)
-    sys.exit(result.returncode)
+    # Record this top-level verification attempt (pass or fail) so `avocado-verify` can gate its
+    # per-function loop on the agent having actually attempted verification often enough.
+    _log_verification_attempt(args.file, args.function, result)
+    if result.is_function_verified:
+        # The function verified, so run mutation testing to assess the strength of its
+        # specification and report the kill score (plus any surviving mutants) to the client.
+        score = generate_mutants_and_compute_score(
+            file_path=args.file,
+            target_function=args.function,
+            include_dirs=args.include_dirs,
+            skip_reverification=True,
+        )
+        if score:
+            print(result.response)
+            print(get_mutation_testing_results_for_client(score))
+        sys.exit(0)
+    else:
+        print(result.response)
+        sys.exit(result.returncode)
 
 
 def run_cbmc(
     function_to_verify: str,
     file_containing_function_to_verify: str,
     include_dirs: list[str] | None = None,
-    call_graph: CallGraph | None = None,
-    cwd: str | None = None,
 ) -> RunCbmcResult:
-    """Run CBMC on the given function with loop unwinding = 5, depth = 100.
+    """Run CBMC on the given function with loop unwinding = _CBMC_UNWIND, depth = _CBMC_DEPTH.
 
     The pipeline is split into three logical steps — `goto-cc`, `goto-instrument`, and
     `cbmc` — each run as its own subprocess so that failures can be attributed to a
@@ -216,25 +240,13 @@ def run_cbmc(
         file_containing_function_to_verify (str): Path to the C file defining the function.
         include_dirs (list[str] | None): Directories to add to the C preprocessor's include
             search path. Forwarded to `goto-cc` as `-I` flags.
-        call_graph (CallGraph | None): When provided, this pre-built call graph is used instead
-            of parsing `file_containing_function_to_verify`. Callers that verify many variants of
-            one source (e.g. mutation testing, where every mutant shares the original's call
-            graph) can build it once and pass it in, which both avoids redundant parsing and keeps
-            the non-thread-safe tree-sitter parser out of concurrent code paths. When None, the
-            call graph is constructed from the source file as usual.
-        cwd (str | None): Working directory for every subprocess in the pipeline. The pipeline
-            writes its intermediate `<function>.goto` / `checking-<function>-contracts.goto` files
-            relative to this directory, so concurrent runs of the same function (again, mutation
-            testing) must each pass a distinct `cwd` to avoid clobbering one another. When None,
-            subprocesses inherit the current working directory.
 
     Returns:
         RunCbmcResult: The outcome of the run, naming the failed step (if any) and carrying
             a printable response and the relevant exit code.
     """
-    if call_graph is None:
-        path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)
-        call_graph = CallGraph(json.loads(Path(path_to_raw_call_graph).read_text(encoding="utf-8")))
+    path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)
+    call_graph = CallGraph(json.loads(Path(path_to_raw_call_graph).read_text(encoding="utf-8")))
     callees = get_in_file_callees_for(function_to_verify, call_graph)
     # Building the stub index is inexpensive for now (there is a single file).
     # Re-visit this if/when we have more stub files to parse.
@@ -253,7 +265,6 @@ def run_cbmc(
         include_dirs=include_dirs,
         prevent_macro_expansion=False,
         step_records=step_records,
-        cwd=cwd,
     )
     # First, check if the run was successful or if it timed out.
     if result.cbmc_ran_successfully or result.timed_out:
@@ -275,7 +286,6 @@ def run_cbmc(
             include_dirs=include_dirs,
             prevent_macro_expansion=False,
             step_records=step_records,
-            cwd=cwd,
         )
 
     # Missing-body retry: re-run with macro expansion suppressed.
@@ -290,7 +300,6 @@ def run_cbmc(
             include_dirs=include_dirs,
             prevent_macro_expansion=True,
             step_records=step_records,
-            cwd=cwd,
         )
 
     _log_invocation(file_containing_function_to_verify, result, step_records, nondet_callees)
@@ -305,7 +314,6 @@ def _run_pipeline(
     include_dirs: list[str] | None,
     prevent_macro_expansion: bool,
     step_records: list[dict],
-    cwd: str | None = None,
 ) -> tuple[RunCbmcResult, str, str]:
     """Run the goto-cc → goto-instrument → cbmc pipeline once.
 
@@ -322,8 +330,6 @@ def _run_pipeline(
             the bundled C-library models before contract enforcement.
         step_records (list[dict]): Mutated in place — one record per subprocess invocation
             appended in order. Used by `_log_invocation` to produce the JSONL row.
-        cwd (str | None): Working directory for every subprocess, forwarded to `_run_step`. The
-            pipeline's intermediate `.goto` files are written relative to this directory.
 
     Returns:
         tuple[RunCbmcResult, str, str]: The result of the pipeline plus the concatenated
@@ -366,7 +372,7 @@ def _run_pipeline(
     combined_stdout = ""
     combined_stderr = ""
     for step, command in commands:
-        step_run = _run_step(step, command, cwd=cwd)
+        step_run = _run_step(step, command)
         step_records.append(
             {
                 "step": step.value,
@@ -398,15 +404,12 @@ def _run_pipeline(
     )
 
 
-def _run_step(step: CbmcStep, command: str, cwd: str | None = None) -> _StepRun:
+def _run_step(step: CbmcStep, command: str) -> _StepRun:
     """Run one pipeline step as a subprocess with the per-step timeout.
 
     Args:
         step (CbmcStep): The logical step this subprocess belongs to.
         command (str): The shell command to run.
-        cwd (str | None): Working directory for the subprocess. When None, the subprocess
-            inherits the current working directory. Distinct directories let concurrent
-            pipelines for the same function avoid clobbering each other's `.goto` files.
 
     Returns:
         _StepRun: The captured outcome, including stdout/stderr or the timeout sentinel.
@@ -419,7 +422,6 @@ def _run_step(step: CbmcStep, command: str, cwd: str | None = None) -> _StepRun:
             shell=True,
             check=False,
             timeout=_DEFAULT_RUN_CBMC_TIMEOUT_SEC,
-            cwd=cwd,
         )
     except TimeoutExpired:
         return _StepRun(
@@ -656,6 +658,38 @@ def _log_invocation(
             f.write(json.dumps(record) + "\n")
     except OSError:
         # This does fail silently, but it shouldn't stop the tool from making progress.
+        pass
+
+
+def _log_verification_attempt(
+    file_under_verification: str, function: str, result: RunCbmcResult
+) -> None:
+    """Append a record of one top-level verification attempt to a sibling JSONL log.
+
+    Exactly one record is written per `avocado-run-cbmc` invocation, regardless of whether
+    verification succeeded, so a consumer can count how many times verification was *attempted*
+    for a given function (not how many times it passed). `avocado-verify` reads this log to gate
+    its per-function loop. Failures to write are swallowed so attempt logging never breaks a run.
+
+    Args:
+        file_under_verification (str): The file that contains the function under verification.
+        function (str): The function whose verification was attempted.
+        result (RunCbmcResult): The outcome of the verification attempt.
+    """
+    source_path = Path(file_under_verification)
+    log_path = source_path.with_name(f"{source_path.stem}{VERIFICATION_ATTEMPTS_LOG_SUFFIX}")
+    record = {
+        "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "function": function,
+        "file": file_under_verification,
+        "verified": result.is_function_verified,
+        "verdict": str(result),
+    }
+    try:
+        with log_path.open("a") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError:
+        # Best-effort: never let attempt logging stop the tool from making progress.
         pass
 
 

@@ -1,5 +1,39 @@
 # Experiments with Avocado Agent
 
+## Procedure
+
+1. Clone the repository containing the C files you want to generate specs for directly into the
+  `avocado-agent` repository at the top-level.
+2. Ensure you can build + deploy the Docker container in which Avocado does work:
+
+    ```sh
+    % make build-image # Builds the image.
+    ```
+
+    ```sh
+    % make run # Runs the container with the image you built.
+    ```
+
+    **All operations from this point on occur within the container**.
+
+3. Inside the container, run the following to enable Claude to run with `--dangerously-skip-permissions` enabled:
+
+    ```sh
+    export IS_SANDBOX=1
+    ```
+
+    Then, run the following command to kick off specification generation and capture output:
+
+    ```sh
+    % claude "Carefully read @CLAUDE.md. Then, verify the C source files in <REPO_PATH>" --dangerously-skip-permissions --print --output-format json > claude-output-<REPO_PATH>.json
+    ```
+
+4. Save the output and metadata with the `save-session-metadata` script (inside the container):
+
+    ```sh
+    % save-session-metadata claude-output-<REPO_PATH>.json <REPO_PATH>
+    ```
+
 ## Treatments
 
 - [x] [Baseline Avocado Agent](https://github.com/jyoo980/avocado-agent/tree/24e1aacefab0845e79b3c638e428de7463a1e2ae)

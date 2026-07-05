@@ -3,6 +3,7 @@
 """Run CBMC on every function in a C file or directory of C files and report pass/fail.
 
 Usage: ./eval/verify_program.py <PATH_TO_C_FILE_OR_DIRECTORY> \
+                                [--include-dirs] \
                                 [--auto-include] \
                                 [--v] \
                                 [--skip-unannotated-functions]
@@ -47,11 +48,7 @@ class FunctionVerificationResult:
 
     @property
     def is_function_verified(self) -> bool:
-        """Return True iff the function is verified.
-
-        Returns:
-            bool: True iff the function is verified.
-        """
+        """True iff the function is verified."""
         return self.run_cbmc_result.is_function_verified
 
 
@@ -72,11 +69,7 @@ class ProgramVerificationResult:
 
     @property
     def passed(self) -> bool:
-        """Return True iff all verification results are successful.
-
-        Returns:
-            bool: True iff all verification results are successful.
-        """
+        """True iff all verification results are successful."""
         return all(vresult.is_function_verified for vresult in self.vresults)
 
 
@@ -105,6 +98,9 @@ def main() -> int:
         ),
         action="store_true",
     )
+    parser.add_argument(
+        "--include-dirs", action="append", help="Path(s) to stubs to use in verification."
+    )
     args = parser.parse_args()
 
     logger.remove()
@@ -119,9 +115,11 @@ def main() -> int:
     files_to_program_verification_results: dict[str, ProgramVerificationResult] = {}
     for file in files:
         logger.info(f"=== {file} ===")
+        include_dirs_from_cli = args.include_dirs or []
         results_for_file = _verify_program(
             str(file),
             skip_unannotated_functions=args.skip_unannotated_functions,
+            include_dirs=include_dirs_from_cli,
             auto_include=args.auto_include,
         )
         if not results_for_file.vresults:
@@ -156,6 +154,7 @@ def _get_files_for_verification(path_str: str) -> list[Path]:
 def _verify_program(
     file: str,
     skip_unannotated_functions: bool,
+    include_dirs: list[str],
     auto_include: bool = False,
 ) -> ProgramVerificationResult:
     """Return the verification result for the given file.
@@ -164,6 +163,8 @@ def _verify_program(
         file (str): The C file to verify.
         skip_unannotated_functions (bool): True iff unannotated functions should be skipped
             (i.e., CBMC should not be run on them).
+        include_dirs (list[str]): List of directories containing files (e.g., headers) that should
+            be included in verification.
         auto_include (bool): True iff `<file>/../include` should be added to CBMC's include
             search path when that directory exists. Defaults to False.
 
@@ -179,7 +180,9 @@ def _verify_program(
         names_of_functions_to_verify = get_functions_with_cprover_annotations(file)
         skipped_functions = set(call_graph.keys()).difference(names_of_functions_to_verify)
 
-    include_dirs = _autodetect_include_dirs(file) if auto_include else []
+    include_dirs = (
+        [*_autodetect_include_dirs(file), *include_dirs] if auto_include else include_dirs
+    )
     if include_dirs:
         logger.debug(f"[auto-include] using {include_dirs}")
 
