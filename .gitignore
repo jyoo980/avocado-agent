@@ -10,8 +10,15 @@
 **/*goto
 *-cbmc-runs.jsonl
 
+# Mutation-testing related files
+**/*mutation_compile_failures.log
+
 # C files (no top-level C files; create a directory for them.)
 /*.c
 
 # JSON files.
 *.json
+
+# Other
+avocado-experimental-data
+*.egg-info/

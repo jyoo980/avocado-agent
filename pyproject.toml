@@ -5,7 +5,7 @@ description = "An agentic approach to automated specification generation for C p
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "claude-agent-sdk>=0.1.71",
+    "claude-agent-sdk==0.2.105",
     "loguru>=0.7.3",
     "pytest>=9.0.3",
     "tree-sitter>=0.25.2",
@@ -18,17 +18,18 @@ dev = [
 ]
 
 [project.scripts]
+avocado-verify = "avocado_verify:main"
 avocado-construct-call-graph = "tools.construct_call_graph:main"
 avocado-topological-order = "tools.get_topological_ordering_of_functions:main"
-avocado-run-cbmc = "tools.run_cbmc:main"
-avocado-get-mutation-score = "tools.get_mutation_score:main"
+avocado-run-cbmc = "tools.run_cbmc_and_mutation_testing:main"
+save-session-metadata = "scripts.save_session_metadata:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["tools"]
+packages = ["tools", "scripts"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
