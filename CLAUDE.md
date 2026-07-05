@@ -48,10 +48,10 @@ You can also search the web for more CBMC documentation.
   Prints the path to a newly written JSON file that is a sibling of the source file,
   For example, invoking `avocado-construct-call-graph /app/a/b/file.c` will print `/app/a/b/file-callgraph.json`
 
-- **To obtain a reverse topological ordering of functions in a call graph, with all callees before their callers**:
+- **To obtain a reverse topological ordering of functions in a file, with all callees before their callers**:
 
   ```sh
-  avocado-topological-order <PATH_TO_CALL_GRAPH_JSON>
+  avocado-topological-order <PATH_TO_C_FILE>
   ```
 
   Prints function names callees-first, one per line.
