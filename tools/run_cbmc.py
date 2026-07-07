@@ -28,7 +28,7 @@ from tools.util import (
 )
 from tools.util.callgraph import CallGraph
 
-# Charactor budget for failure responses. The harness persists full tool output to a file but
+# Character budget for failure responses. The harness persists full tool output to a file but
 # previews only the head inline, so we keep responses bounded (a pathological CBMC run can
 # emit hundreds of MB) and lead with the FAILURE lines (see `_format_failure_response`) so
 # the verdict survives that head-only preview rather than being buried in the stdout tail.
@@ -57,7 +57,7 @@ _TIMEOUT_RETURNCODE = 124
 _CBMC_UNWIND = 5
 
 # `--depth` argument to CBMC.
-_CBMC_DEPTH = 100
+_CBMC_DEPTH = 200
 
 
 class CbmcStep(StrEnum):
@@ -300,8 +300,12 @@ def run_cbmc(
             cwd=cwd,
         )
 
-    # Missing-body retry: re-run with macro expansion suppressed.
-    if has_missing_body_for_callee_or_function_message(combined_stdout, combined_stderr):
+    # Missing-body retry if unsuccessful: re-run with macro expansion suppressed.
+    if (
+        not result.cbmc_ran_successfully
+        and not result.timed_out
+        and has_missing_body_for_callee_or_function_message(combined_stdout, combined_stderr)
+    ):
         result, combined_stdout, combined_stderr = _run_pipeline(
             function_to_verify,
             callees,
