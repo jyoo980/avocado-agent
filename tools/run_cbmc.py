@@ -28,7 +28,7 @@ from tools.util import (
 )
 from tools.util.callgraph import CallGraph
 
-# Char budget for failure responses. The harness persists full tool output to a file but
+# Character budget for failure responses. The harness persists full tool output to a file but
 # previews only the head inline, so we keep responses bounded (a pathological CBMC run can
 # emit hundreds of MB) and lead with the FAILURE lines (see `_format_failure_response`) so
 # the verdict survives that head-only preview rather than being buried in the stdout tail.
@@ -53,8 +53,10 @@ _GOTO_CC_TIMEOUT_SEC = 30
 # both in the CLI exit code and in the JSONL invocation log.
 _TIMEOUT_RETURNCODE = 124
 
-# Fixed values for CBMC's `--depth` and `--unwind` flags.
+# `--unwind` argument to CBMC.
 _CBMC_UNWIND = 5
+
+# `--depth` argument to CBMC.
 _CBMC_DEPTH = 200
 
 
@@ -117,15 +119,17 @@ class RunCbmcResult:
         Returns:
             str: The string representation of this result, used for logging.
         """
-        if failed_step := self.failed_step:
-            return f"{failed_step.value.upper()}_FAILED"
         if self.timed_out:
             return "TIMED_OUT"
-        return "PASS" if self.is_function_verified else "FAIL"
+        if self.failed_step:
+            return f"{self.failed_step.value.upper()}_FAILED"
+        if self.is_function_verified:
+            return "PASS"
+        return "FAIL"
 
 
 @dataclass(frozen=True)
-class _StepRun:
+class _SubprocessResult:
     """Outcome of running one subprocess step.
 
     Attributes:
@@ -202,7 +206,7 @@ def run_cbmc(
     call_graph: CallGraph | None = None,
     cwd: str | None = None,
 ) -> RunCbmcResult:
-    """Run CBMC on the given function with loop unwinding = 5, depth = 100.
+    """Run CBMC on the given function with loop unwinding = `_UNWIND`, depth = `_DEPTH`.
 
     The pipeline is split into three logical steps — `goto-cc`, `goto-instrument`, and
     `cbmc` — each run as its own subprocess so that failures can be attributed to a
@@ -242,7 +246,7 @@ def run_cbmc(
     stub_paths = get_stub_paths_for(function_to_verify, call_graph, stub_index)
     nondet_callees = get_unstubbed_external_callees_for(function_to_verify, call_graph, stub_index)
 
-    step_records: list[dict] = []
+    subprocess_results: list[dict] = []
 
     # Initial attempt.
     result, combined_stdout, combined_stderr = _run_pipeline(
@@ -252,12 +256,17 @@ def run_cbmc(
         stub_paths=stub_paths,
         include_dirs=include_dirs,
         prevent_macro_expansion=False,
-        step_records=step_records,
+        subprocess_results=subprocess_results,
         cwd=cwd,
     )
     # First, check if the run was successful or if it timed out.
     if result.cbmc_ran_successfully or result.timed_out:
-        _log_invocation(file_containing_function_to_verify, result, step_records, nondet_callees)
+        _log_invocation(
+            file_containing_function_to_verify,
+            result,
+            subprocess_results,
+            nondet_callees,
+        )
         return result
 
     # Recursion-inlining retry.
@@ -274,13 +283,15 @@ def run_cbmc(
             stub_paths=stub_paths,
             include_dirs=include_dirs,
             prevent_macro_expansion=False,
-            step_records=step_records,
+            subprocess_results=subprocess_results,
             cwd=cwd,
         )
 
-    # Missing-body retry: re-run with macro expansion suppressed.
-    if not result.cbmc_ran_successfully and has_missing_body_for_callee_or_function_message(
-        combined_stdout, combined_stderr
+    # Missing-body retry if unsuccessful: re-run with macro expansion suppressed.
+    if (
+        not result.cbmc_ran_successfully
+        and not result.timed_out
+        and has_missing_body_for_callee_or_function_message(combined_stdout, combined_stderr)
     ):
         result, combined_stdout, combined_stderr = _run_pipeline(
             function_to_verify,
@@ -289,11 +300,11 @@ def run_cbmc(
             stub_paths=stub_paths,
             include_dirs=include_dirs,
             prevent_macro_expansion=True,
-            step_records=step_records,
+            subprocess_results=subprocess_results,
             cwd=cwd,
         )
 
-    _log_invocation(file_containing_function_to_verify, result, step_records, nondet_callees)
+    _log_invocation(file_containing_function_to_verify, result, subprocess_results, nondet_callees)
     return result
 
 
@@ -304,13 +315,13 @@ def _run_pipeline(
     stub_paths: list[str] | None,
     include_dirs: list[str] | None,
     prevent_macro_expansion: bool,
-    step_records: list[dict],
+    subprocess_results: list[dict],
     cwd: str | None = None,
 ) -> tuple[RunCbmcResult, str, str]:
     """Run the goto-cc → goto-instrument → cbmc pipeline once.
 
     Each subprocess is run separately so the first failure (or timeout) can be attributed
-    to its logical step. Step records are appended to `step_records` for the JSONL log.
+    to its logical step. Subprocess results are appended to `subprocess_results` for the JSONL log.
 
     Args:
         function_to_verify (str): The function under verification.
@@ -320,14 +331,15 @@ def _run_pipeline(
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
         prevent_macro_expansion (bool): When True, disable macros CBMC can't model and inject
             the bundled C-library models before contract enforcement.
-        step_records (list[dict]): Mutated in place — one record per subprocess invocation
-            appended in order. Used by `_log_invocation` to produce the JSONL row.
+        subprocess_results (list[dict]): Mutated in place by callee (_run_command). One dict per
+            subprocess invocation is appended in-order. Used by `_log_invocation` to produce the
+            JSONL row.
         cwd (str | None): Working directory for every subprocess, forwarded to `_run_step`. The
             pipeline's intermediate `.goto` files are written relative to this directory.
 
     Returns:
         tuple[RunCbmcResult, str, str]: The result of the pipeline plus the concatenated
-            stdout and stderr across every step that ran. The concatenated output is used by
+            stdout and stderr across every subprocess that ran. The concatenated output is used by
             the retry triggers in `run_cbmc`.
     """
     commands: list[tuple[CbmcStep, str]] = [
@@ -363,23 +375,21 @@ def _run_pipeline(
         ]
     )
 
-    combined_stdout = ""
-    combined_stderr = ""
+    per_step_stdout = []
+    per_step_stderr = []
     for step, command in commands:
-        step_run = _run_step(step, command, cwd=cwd)
-        step_records.append(
-            {
-                "step": step.value,
-                "command": step_run.command,
-                "returncode": step_run.returncode,
-            }
-        )
-        combined_stdout += step_run.stdout
-        combined_stderr += step_run.stderr
-        if not step_run.succeeded:
+        subprocess_result = _run_command(step, command, subprocess_results, cwd=cwd)
+        per_step_stdout.append(subprocess_result.stdout)
+        per_step_stderr.append(subprocess_result.stderr)
+        if not subprocess_result.succeeded:
+            combined_stdout = "".join(per_step_stdout)
+            combined_stderr = "".join(per_step_stderr)
             return (
                 _result_from_failure(
-                    function_to_verify, step_run, combined_stdout, combined_stderr
+                    function_to_verify,
+                    subprocess_result,
+                    combined_stdout,
+                    combined_stderr,
                 ),
                 combined_stdout,
                 combined_stderr,
@@ -393,23 +403,26 @@ def _run_pipeline(
             returncode=0,
             response=f"{function_to_verify} verified successfully",
         ),
-        combined_stdout,
-        combined_stderr,
+        "".join(per_step_stdout),
+        "".join(per_step_stderr),
     )
 
 
-def _run_step(step: CbmcStep, command: str, cwd: str | None = None) -> _StepRun:
+def _run_command(
+    step: CbmcStep, command: str, subprocess_results, cwd: str | None = None
+) -> _SubprocessResult:
     """Run one pipeline step as a subprocess with the per-step timeout.
 
     Args:
         step (CbmcStep): The logical step this subprocess belongs to.
         command (str): The shell command to run.
+        subprocess_results: List of subprocess results; is side-effected.
         cwd (str | None): Working directory for the subprocess. When None, the subprocess
             inherits the current working directory. Distinct directories let concurrent
             pipelines for the same function avoid clobbering each other's `.goto` files.
 
     Returns:
-        _StepRun: The captured outcome, including stdout/stderr or the timeout sentinel.
+        _SubprocessResult: The captured outcome, including stdout/stderr or the timeout sentinel.
     """
     try:
         completed = subprocess.run(
@@ -421,58 +434,71 @@ def _run_step(step: CbmcStep, command: str, cwd: str | None = None) -> _StepRun:
             timeout=_DEFAULT_RUN_CBMC_TIMEOUT_SEC,
             cwd=cwd,
         )
+        returncode = completed.returncode
+        stdout = completed.stdout
+        stderr = completed.stderr
+        timed_out = False
     except TimeoutExpired:
-        return _StepRun(
-            step=step,
-            command=command,
-            returncode=_TIMEOUT_RETURNCODE,
-            stdout="",
-            stderr="",
-            timed_out=True,
-        )
-    return _StepRun(
+        returncode = _TIMEOUT_RETURNCODE
+        stdout = ""
+        stderr = ""
+        timed_out = True
+
+    subprocess_results.append(
+        {
+            "step": step.value,
+            "command": command,
+            "returncode": returncode,
+        }
+    )
+    return _SubprocessResult(
         step=step,
         command=command,
-        returncode=completed.returncode,
-        stdout=completed.stdout,
-        stderr=completed.stderr,
-        timed_out=False,
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
+        timed_out=timed_out,
     )
 
 
 def _result_from_failure(
-    function: str, step_run: _StepRun, combined_stdout: str, combined_stderr: str
+    function: str,
+    subprocess_result: _SubprocessResult,
+    combined_stdout: str,
+    combined_stderr: str,
 ) -> RunCbmcResult:
-    """Build a `RunCbmcResult` for a pipeline that failed at `step_run`.
+    """Build a `RunCbmcResult` for a pipeline that failed at `subprocess_result`.
 
     Args:
         function (str): The function under verification.
-        step_run (_StepRun): The step that failed or timed out.
-        combined_stdout (str): Concatenated stdout across every step that ran (including
+        subprocess_result (_SubprocessResult): The subprocess that failed or timed out.
+        combined_stdout (str): Concatenated stdout across every subprocess that ran (including
             the failing one). Used to render the failure response.
-        combined_stderr (str): Concatenated stderr across every step that ran.
+        combined_stderr (str): Concatenated stderr across every subprocess that ran.
 
     Returns:
         RunCbmcResult: A failure result whose `response` is a formatted, truncated block.
     """
-    if step_run.timed_out:
+    if subprocess_result.timed_out:
         response = (
             f"Verification for '{function}' timed out after "
-            f"{_DEFAULT_RUN_CBMC_TIMEOUT_SEC} second(s) during {step_run.step.value}"
+            f"{_DEFAULT_RUN_CBMC_TIMEOUT_SEC} second(s) during {subprocess_result.step.value}"
         )
         return RunCbmcResult(
             function=function,
-            failed_step=step_run.step,
+            failed_step=subprocess_result.step,
             timed_out=True,
             returncode=_TIMEOUT_RETURNCODE,
             response=response,
         )
-    response = _format_failure_response(function, step_run.step, combined_stdout, combined_stderr)
+    response = _format_failure_response(
+        function, subprocess_result.step, combined_stdout, combined_stderr
+    )
     return RunCbmcResult(
         function=function,
-        failed_step=step_run.step,
+        failed_step=subprocess_result.step,
         timed_out=False,
-        returncode=step_run.returncode,
+        returncode=subprocess_result.returncode,
         response=response,
     )
 
@@ -523,7 +549,7 @@ def has_missing_body_for_callee_or_function_message(stdout: str, stderr: str) ->
 
 
 def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, stderr: str) -> str:
-    """Format a CBMC failure response, leading with the FAILURE lines.
+    """Format a CBMC failure response, leading with the FAILURE lines, possibly truncated.
 
     After the header, the response always begins with the FAILURE lines extracted from
     stdout, so the verdict survives the harness's head-only inline preview: CBMC prints its
@@ -536,8 +562,8 @@ def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, 
     Args:
         function (str): The name of the function that failed verification.
         failed_step (CbmcStep): The pipeline step that failed.
-        stdout (str): The concatenated stdout across every step that ran.
-        stderr (str): The concatenated stderr across every step that ran.
+        stdout (str): The concatenated stdout across every subprocess that ran.
+        stderr (str): The concatenated stderr across every subprocess that ran.
 
     Returns:
         str: The formatted CBMC failure response, leading with the FAILURE lines and
@@ -626,7 +652,7 @@ def _tail_section(label: str, content: str, budget: int) -> str:
 def _log_invocation(
     file_under_verification: str,
     result: RunCbmcResult,
-    step_records: list[dict],
+    subprocess_results: list[dict],
     nondet_callees: list[str],
 ) -> None:
     """Log a CBMC invocation with the given arguments.
@@ -634,8 +660,8 @@ def _log_invocation(
     Args:
         file_under_verification (str): The file that contains the function under verification.
         result (RunCbmcResult): The final outcome of the `run_cbmc` call.
-        step_records (list[dict]): Per-subprocess records (one entry per step invocation across
-            every pipeline attempt), each with keys `step`, `command`, `returncode`.
+        subprocess_results (list[dict]): Per-subprocess records (one entry per subprocess invocation
+            across every pipeline attempt), each with keys `step`, `command`, `returncode`.
         nondet_callees (list[str]): The list of callees that CBMC treated as non-deterministic
             during verification.
     """
@@ -648,7 +674,7 @@ def _log_invocation(
         "failed_step": result.failed_step.value if result.failed_step is not None else None,
         "returncode": result.returncode,
         "timed_out": result.timed_out,
-        "steps": step_records,
+        "subprocess_results": subprocess_results,
         "nondet_callees": nondet_callees,
     }
     try:
@@ -684,15 +710,19 @@ def _get_goto_cc_command(
     """
     quoted_function = shlex.quote(function)
     flags_disabling_macro_expansion = (
-        f"{' '.join(_DISABLE_MACRO_FLAGS)} " if prevent_macro_expansion else ""
+        f"{' '.join(_DISABLE_MACRO_FLAGS)}" if prevent_macro_expansion else ""
     )
-    extra_stub_args = f" {' '.join(shlex.quote(p) for p in stub_paths)}" if stub_paths else ""
-    include_flags = "".join(f" -I {shlex.quote(d)}" for d in include_dirs) if include_dirs else ""
-    return (
-        f"goto-cc {flags_disabling_macro_expansion}-o {quoted_function}.goto"
-        f"{include_flags} "
-        f"{shlex.quote(file_containing_function)}{extra_stub_args} "
-        f"--function {quoted_function}"
+    extra_stub_args = " ".join(shlex.quote(p) for p in stub_paths) if stub_paths else ""
+    include_flags = " ".join(f"-I {shlex.quote(d)}" for d in include_dirs) if include_dirs else ""
+    return " ".join(
+        (
+            f"goto-cc {flags_disabling_macro_expansion}",
+            f"-o {quoted_function}.goto",
+            include_flags,
+            shlex.quote(file_containing_function),
+            extra_stub_args,
+            f"--function {quoted_function}",
+        )
     )
 
 
@@ -725,8 +755,8 @@ def _get_goto_instrument_unwind_command(function: str) -> str:
     """
     quoted_function = shlex.quote(function)
     return (
-        f"goto-instrument --partial-loops "
-        f"--unwind {_CBMC_UNWIND} {quoted_function}.goto {quoted_function}.goto"
+        f"goto-instrument --partial-loops --unwind {_CBMC_UNWIND} "
+        f"{quoted_function}.goto {quoted_function}.goto"
     )
 
 
@@ -772,7 +802,7 @@ def compile_with_goto_cc(
     file_path: str,
     include_dirs: list[str] | None = None,
 ) -> int:
-    """Run only the goto-cc compile step on a C file and return its exit code.
+    """Run only the goto-cc compile command on a C file and return its exit code.
 
     A zero exit code means goto-cc accepted the input; non-zero means it rejected it.
     Mutants that do not compile should be excluded from evaluation and calculations;
@@ -784,7 +814,8 @@ def compile_with_goto_cc(
         include_dirs (list[str] | None): Directories forwarded as `-I` flags.
 
     Returns:
-        int: goto-cc's exit code (0 == compiled successfully).
+        int: the return code of the subprocess used to invoke `goto-cc`,
+            (0 == compiled successfully).
     """
     compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
     try:

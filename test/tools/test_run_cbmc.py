@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from subprocess import CompletedProcess
 
 from eval.mutants.mutate_function import Mutant
 from tools.run_cbmc import (
@@ -47,7 +48,7 @@ def test_get_goto_cc_command_no_stubs_no_includes() -> None:
     command = _get_goto_cc_command(
         function="swap", file_containing_function="quicksort.c"
     )
-    assert command == "goto-cc -o swap.goto quicksort.c --function swap"
+    assert command == "goto-cc  -o swap.goto  quicksort.c  --function swap"
 
 
 def test_get_goto_instrument_unwind_command_uses_partial_loops_and_unwind() -> None:
@@ -90,10 +91,16 @@ def test_compile_with_goto_cc_returns_zero_for_valid_c(tmp_path: Path) -> None:
     original_cwd = Path.cwd()
     try:
         os.chdir(tmp_path)
-        returncode = compile_with_goto_cc(function="baz", file_path=str(src))
+        result = compile_with_goto_cc(function="baz", file_path=str(src))
     finally:
         os.chdir(original_cwd)
-    assert returncode == 0
+    if isinstance(result, CompletedProcess):
+        if result.returncode:
+            print(f"Error while compiling function baz in {src}")
+            print(result.stdout)
+            print(result.stderr)
+        result.check_returncode()
+    assert result == 0
 
 
 def test_compile_with_goto_cc_returns_nonzero_for_invalid_c(tmp_path: Path) -> None:
@@ -107,10 +114,10 @@ def test_compile_with_goto_cc_returns_nonzero_for_invalid_c(tmp_path: Path) -> N
     original_cwd = Path.cwd()
     try:
         os.chdir(tmp_path)
-        returncode = compile_with_goto_cc(function="add_ptrs", file_path=str(bad_src))
+        result = compile_with_goto_cc(function="add_ptrs", file_path=str(bad_src))
     finally:
         os.chdir(original_cwd)
-    assert returncode != 0
+    assert result != 0
 
 
 def test_run_cbmc_returns_success_result_for_trivially_verifying_function(
