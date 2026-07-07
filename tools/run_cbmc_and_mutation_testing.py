@@ -88,7 +88,6 @@ class RunCbmcResult:
     Attributes:
         function (str): The function under verification.
         failed_step (CbmcStep | None): The pipeline step that failed, or None on success.
-        timed_out (bool): True iff any step hit the per-attempt timeout.
         returncode (int): 0 on success, `_TIMEOUT_RETURNCODE` on timeout, otherwise the
             exit code of the failing subprocess (cbmc's verification exit code when
             `failed_step` is CBMC).
@@ -97,7 +96,6 @@ class RunCbmcResult:
 
     function: str
     failed_step: CbmcStep | None
-    timed_out: bool
     returncode: int
     response: str
 
@@ -109,7 +107,7 @@ class RunCbmcResult:
         `is_function_verified`.
 
         """
-        return self.failed_step is None and not self.timed_out
+        return self.failed_step is None
 
     @property
     def is_function_verified(self) -> bool:
@@ -120,6 +118,11 @@ class RunCbmcResult:
         """
         return self.cbmc_ran_successfully and self.returncode == 0
 
+    @property
+    def timed_out(self) -> bool:
+        """True iff any subprocesses comprising this CBMC pipeline timed out."""
+        return self.returncode == _TIMEOUT_RETURNCODE
+
     def __str__(self) -> str:
         """Return the string representation of this result, used for logging.
 
@@ -128,7 +131,7 @@ class RunCbmcResult:
         """
         if failed_step := self.failed_step:
             return f"{failed_step.value.upper()}_FAILED"
-        if self.timed_out:
+        if self.returncode == _TIMEOUT_RETURNCODE:
             return "TIMED_OUT"
         return "PASS" if self.is_function_verified else "FAIL"
 
@@ -395,7 +398,6 @@ def _run_pipeline(
         RunCbmcResult(
             function=function_to_verify,
             failed_step=None,
-            timed_out=False,
             returncode=0,
             response=f"{function_to_verify} verified successfully",
         ),
@@ -465,7 +467,6 @@ def _result_from_failure(
         return RunCbmcResult(
             function=function,
             failed_step=step_run.step,
-            timed_out=True,
             returncode=_TIMEOUT_RETURNCODE,
             response=response,
         )
@@ -473,7 +474,6 @@ def _result_from_failure(
     return RunCbmcResult(
         function=function,
         failed_step=step_run.step,
-        timed_out=False,
         returncode=step_run.returncode,
         response=response,
     )

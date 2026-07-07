@@ -82,7 +82,6 @@ class RunCbmcResult:
         function (str): The function under verification.
         failed_step (CbmcStep | None): The pipeline step that failed or timed out,
             or None on success.
-        timed_out (bool): True iff any step hit the per-attempt timeout.
         returncode (int): 0 on success, `_TIMEOUT_RETURNCODE` on timeout, otherwise the
             exit code of the failing subprocess (cbmc's verification exit code when
             `failed_step` is CBMC).
@@ -91,7 +90,6 @@ class RunCbmcResult:
 
     function: str
     failed_step: CbmcStep | None
-    timed_out: bool
     returncode: int
     response: str
 
@@ -103,9 +101,7 @@ class RunCbmcResult:
         `is_function_verified`.
 
         """
-        return self.failed_step is None and not self.timed_out
-        # MDE: I think that `and not self.timed_out` is not necessary because if there was a
-        # timeout, `self.failed_step` will be non-None.
+        return self.failed_step is None
 
     @property
     def is_function_verified(self) -> bool:
@@ -115,6 +111,11 @@ class RunCbmcResult:
         and the return code is 0.
         """
         return self.cbmc_ran_successfully and self.returncode == 0
+
+    @property
+    def timed_out(self) -> bool:
+        """True iff any step in the `run_cbmc` pipeline timed out."""
+        return self.returncode == _TIMEOUT_RETURNCODE
 
     def __str__(self) -> str:
         """Return the string representation of this result, used for logging.
@@ -135,18 +136,15 @@ class RunCbmcResult:
 class _SubprocessResult:
     """Outcome of running one subprocess step.
 
-    MDE: What does "collapsed" mean?
-
     Attributes:
-        step (CbmcStep): The logical step in the CBMC verification pipeline this subprocess belongs
-            to.
-        command (str): The shell command that was run.
-        returncode (int): The subprocess exit code, or `_TIMEOUT_RETURNCODE` on timeout.
-            # MDE: The documentation says "The subprocess code", but elsewhere the documentation
-            # says there might be multiple subprocess commands.
-        stdout (str): Captured stdout (empty on timeout).
-        stderr (str): Captured stderr (empty on timeout).
-        timed_out (bool): True iff the subprocess hit the per-step timeout.
+         step (CbmcStep): The logical step in the CBMC verification pipeline this subprocess belongs
+             to.
+         command (str): The shell command that was run.
+         returncode (int): The subprocess exit code, or `_TIMEOUT_RETURNCODE` on timeout.
+             # MDE: The documentation says "The subprocess code", but elsewhere the documentation
+             # says there might be multiple subprocess commands.
+         stdout (str): Captured stdout (empty on timeout).
+         stderr (str): Captured stderr (empty on timeout).
     """
 
     step: CbmcStep
@@ -154,16 +152,15 @@ class _SubprocessResult:
     returncode: int
     stdout: str
     stderr: str
-    # MDE: I don't think that the `timed_out` field is necessary.  A `timed_out()` method would be
-    # useful, but it can be computed from other data.
-    timed_out: bool
 
     @property
     def succeeded(self) -> bool:
         """True iff the subprocess exited zero and did not time out."""
-        return self.returncode == 0 and not self.timed_out
-        # MDE: I think that `and not self.timed_out` is not necessary because if there was a
-        # timeout, `self.returncode` will be non-zero (it will be 124).
+        return self.returncode == 0
+
+    @property
+    def timed_out(self) -> bool:
+        return self.returncode == _TIMEOUT_RETURNCODE
 
 
 def main() -> None:
@@ -248,10 +245,11 @@ def run_cbmc(
         RunCbmcResult: The outcome of the run, naming the failed step (if any) and carrying
             a printable response and the relevant exit code.
     """
-    # MDE: What is a "raw" callgraph?
     if call_graph is None:
-        path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)
-        call_graph = CallGraph(json.loads(Path(path_to_raw_call_graph).read_text(encoding="utf-8")))
+        path_to_call_graph_json = construct_call_graph(file_containing_function_to_verify)
+        call_graph = CallGraph(
+            json.loads(Path(path_to_call_graph_json).read_text(encoding="utf-8"))
+        )
     callees = get_in_file_callees_for(function_to_verify, call_graph)
     # Building the stub index is inexpensive for now (there is a single file).
     # Re-visit this if/when we have more stub files to parse.
@@ -415,9 +413,6 @@ def _run_pipeline(
         RunCbmcResult(
             function=function_to_verify,
             failed_step=None,
-            # MDE: `timed_out` and `returncode` appear in the opposite order in
-            # _StepRun.  Please be consistent.
-            timed_out=False,
             returncode=0,
             response=f"{function_to_verify} verified successfully",
         ),
@@ -455,12 +450,10 @@ def _run_command(
         returncode = completed.returncode
         stdout = completed.stdout
         stderr = completed.stderr
-        timed_out = False
     except TimeoutExpired:
         returncode = _TIMEOUT_RETURNCODE
         stdout = ""
         stderr = ""
-        timed_out = True
 
     subprocess_results.append(
         {
@@ -475,7 +468,6 @@ def _run_command(
         returncode=returncode,
         stdout=stdout,
         stderr=stderr,
-        timed_out=timed_out,
     )
 
 
@@ -505,7 +497,6 @@ def _result_from_failure(
         return RunCbmcResult(
             function=function,
             failed_step=subprocess_result.step,
-            timed_out=True,
             returncode=_TIMEOUT_RETURNCODE,
             response=response,
         )
@@ -515,7 +506,6 @@ def _result_from_failure(
     return RunCbmcResult(
         function=function,
         failed_step=subprocess_result.step,
-        timed_out=False,
         returncode=subprocess_result.returncode,
         response=response,
     )
