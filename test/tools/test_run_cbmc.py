@@ -81,7 +81,7 @@ def test_get_goto_instrument_add_library_command() -> None:
 
 def test_get_cbmc_check_command() -> None:
     command = _get_cbmc_check_command("swap")
-    assert command == "cbmc checking-swap-contracts.goto --function swap --depth 100"
+    assert command == "cbmc checking-swap-contracts.goto --function swap --depth 200"
 
 
 def test_compile_with_goto_cc_returns_zero_for_valid_c(tmp_path: Path) -> None:
