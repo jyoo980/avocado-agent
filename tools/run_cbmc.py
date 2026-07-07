@@ -287,8 +287,12 @@ def run_cbmc(
             cwd=cwd,
         )
 
-    # Missing-body retry: re-run with macro expansion suppressed.
-    if has_missing_body_for_callee_or_function_message(combined_stdout, combined_stderr):
+    # Missing-body retry if unsuccessful: re-run with macro expansion suppressed.
+    if (
+        not result.cbmc_ran_successfully
+        and not result.timed_out
+        and has_missing_body_for_callee_or_function_message(combined_stdout, combined_stderr)
+    ):
         result, combined_stdout, combined_stderr = _run_pipeline(
             function_to_verify,
             callees,
