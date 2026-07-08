@@ -318,7 +318,7 @@ def run_cbmc(
             file_containing_function_to_verify,
             prevent_macro_expansion=True,
             stub_paths=stub_paths,
-
+            include_dirs=include_dirs or [],
         )
         result, combined_stdout, combined_stderr = _run_pipeline(
             function_to_verify,
