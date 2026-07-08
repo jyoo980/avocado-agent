@@ -393,6 +393,20 @@ def _run_pipeline(
     subprocess_results: list[dict],
     cwd: str | None,
 ) -> tuple[RunCbmcResult, str, str]:
+    """Run the CBMC verification pipeline for the given function.
+
+    Args:
+        function_to_verify (str): The name of the function to verify.
+        cbmc_commands (list[tuple[CbmcStep, str]]): The CBMC commands used to verify the function.
+        subprocess_results (list[dict]): Subprocess result(s) collected from running each CBMC
+            command, mutated in-place by `_run_command`.
+        cwd (str | None): The working directory in which this pipeline is executed.
+
+
+    Returns:
+        tuple[RunCbmcResult, str, str]: The result of running CBMC on the given function, along
+            with per-command stdout and stderr collected from running the pipeline.
+    """
     per_command_stdout = []
     per_command_stderr = []
     for cbmc_step, command in cbmc_commands:
@@ -430,7 +444,6 @@ def _run_command(
 ) -> _SubprocessResult:
     """Run one pipeline step as a subprocess with the per-step timeout.
 
-    Args:
         step (CbmcStep): The logical step this subprocess belongs to.
         command (str): The shell command to run.
         subprocess_results: List of subprocess results; is side-effected.
