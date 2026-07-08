@@ -134,15 +134,17 @@ class RunCbmcResult:
 
 @dataclass(frozen=True)
 class _SubprocessResult:
-    """Outcome of running one subprocess step.
+    """Outcome of a single subprocess invocation (one command).
+
+    A `CbmcStep` may comprise several subprocess invocations (e.g. `goto-instrument` runs
+    more than once); this object captures exactly one of them, so it has exactly one exit
+    code.
 
     Attributes:
-         step (CbmcStep): The logical step in the CBMC verification pipeline this subprocess belongs
-             to.
+         step (CbmcStep): The logical pipeline step this single subprocess belongs to. The
+             step may span several subprocesses; this is one of them.
          command (str): The shell command that was run.
-         returncode (int): The subprocess exit code, or `_TIMEOUT_RETURNCODE` on timeout.
-             # MDE: The documentation says "The subprocess code", but elsewhere the documentation
-             # says there might be multiple subprocess commands.
+         returncode (int): This subprocess's exit code, or `_TIMEOUT_RETURNCODE` on timeout.
          stdout (str): Captured stdout (empty on timeout).
          stderr (str): Captured stderr (empty on timeout).
     """
@@ -217,8 +219,7 @@ def run_cbmc(
     """Run CBMC on the given function with loop unwinding = `_UNWIND`, depth = `_DEPTH`.
 
     The pipeline is split into three logical steps — `goto-cc`, `goto-instrument`, and
-    `cbmc` — each run as its own subprocess so that failures can be attributed to a
-    # MDE: "its own subprocess": there may be multiple subprocesses.
+    `cbmc` — each run as one or more subprocesses so that failures can be attributed to a
     specific step. Up to three pipeline attempts are made: an initial run, a retry
     when an apparent recursive-inlining error is detected, and a retry when a missing
     callee body is detected. The timeout is per subprocess, not a total
@@ -611,11 +612,12 @@ def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, 
     # actual marker (with the real dropped count) cannot push us over budget.
     digit_pad = str(_MAX_RESPONSE_CHARS)
     marker = f"[... {digit_pad} characters truncated ...]\n"
-    # MDE: Please document.  Does "fixed" mean "unchanging", or "corrected", or something else?
-    fixed = (
+    # The constant-length parts of the response (header, FAILURE section, section labels, and
+    # both truncation markers), used to size the budget left for the stream tails.
+    scaffold = (
         f"{header}{failure_section}--- stderr (tail) ---\n{marker}--- stdout (tail) ---\n{marker}"
     )
-    remaining = max(_MAX_RESPONSE_CHARS - len(fixed), 0)
+    remaining = max(_MAX_RESPONSE_CHARS - len(scaffold), 0)
     stdout_budget = int(remaining * _STDOUT_TAIL_SHARE)
     stderr_budget = remaining - stdout_budget
 
@@ -623,9 +625,9 @@ def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, 
     stdout_section = _tail_section("stdout (tail)", stdout, stdout_budget)
 
     response = f"{header}{failure_section}{stderr_section}{stdout_section}"
-    # MDE: Would it be better to assert instead?
-    # Hard clamp: the per-section budget accounting can drift by a few chars
-    # against the `fixed` estimate, so guarantee we never exceed the cap.
+    # Hard clamp: the per-section budget accounting can drift by a few chars against the
+    # `scaffold` estimate, so guarantee we never exceed the cap.
+    # Avoid asserts to mitigate any crashes during running CBMC; crashes are expensive.
     return response[:_MAX_RESPONSE_CHARS]
 
 
@@ -648,16 +650,36 @@ def _failure_lines_section(stdout: str) -> str:
         return ""
     failure_block = "\n".join(failure_lines)
     failure_cap = _MAX_RESPONSE_CHARS // 2
-    if len(failure_block) > failure_cap:
-        dropped = len(failure_block) - failure_cap
-        failure_block = (
-            f"[... {dropped} characters of FAILURE lines truncated ...]\n"
-            # MDE: I suggest creatinga function that does truncation.  And I
-            # suggest that that function should avoid partial lines.  It can
-            # discard any partial line.
-            f"{failure_block[-failure_cap:]}"
-        )
+    tail, dropped = _get_tail_within_budget(failure_block, failure_cap)
+    if dropped:
+        failure_block = f"[... {dropped} characters of FAILURE lines truncated ...]\n{tail}"
     return f"--- FAILURE lines ---\n{failure_block}\n"
+
+
+def _get_tail_within_budget(content: str, budget: int) -> tuple[str, int]:
+    """Return the last `budget` chars of `content`, trimmed to a line boundary.
+
+    The tail is advanced past its first newline so it never begins with a partial line; a
+    truncated mid-line fragment is discarded rather than emitted. When `content` has no
+    newline within the kept window, the whole tail is returned unchanged (there is no
+    boundary to trim to).
+
+    Args:
+        content (str): The content to truncate to its tail.
+        budget (int): The maximum number of characters to keep.
+
+    Returns:
+        tuple[str, int]: The kept tail and the number of characters dropped from the front
+            (0 when `content` already fits within `budget`). Because a partial leading line
+            may be discarded, the kept tail can be shorter than `budget`.
+    """
+    if len(content) <= budget:
+        return content, 0
+    tail = content[-budget:]
+    newline_index = tail.find("\n")
+    if newline_index != -1:
+        tail = tail[newline_index + 1 :]
+    return tail, len(content) - len(tail)
 
 
 def _tail_section(label: str, content: str, budget: int) -> str:
@@ -671,11 +693,11 @@ def _tail_section(label: str, content: str, budget: int) -> str:
     Returns:
         str: The labeled section containing the tail of content within budget chars.
     """
-    if len(content) <= budget:
-        body = content
+    tail, dropped = _get_tail_within_budget(content, budget)
+    if dropped:
+        body = f"[... {dropped} characters truncated ...]\n{tail}"
     else:
-        dropped = len(content) - budget
-        body = f"[... {dropped} characters truncated ...]\n{content[-budget:]}"
+        body = tail
     return f"--- {label} ---\n{body}\n"
 
 
