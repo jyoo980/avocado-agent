@@ -22,7 +22,7 @@ def build_stub_index(stubs_dir: Path = _STUBS_DIR) -> dict[str, Path]:
     """Return a mapping from modeled function name to the stub file defining it.
 
     Symbol names are read from `/* FUNCTION: <name> */` markers. If a name appears in more than
-    one stub file, the first one encountered (in sorted-path order) wins.
+    one stub file, a `ValueError` is raised.
 
     Args:
         stubs_dir (Path): The directory containing CBMC stub `.c` files.
@@ -35,8 +35,10 @@ def build_stub_index(stubs_dir: Path = _STUBS_DIR) -> dict[str, Path]:
     paths = sorted(stubs_dir.glob("*.c"))
     for stub_path in paths:
         for name in _FUNCTION_MARKER.findall(stub_path.read_text(encoding="utf-8")):
+            if name in index:
+                msg = f"Stub definition for '{name}' already exists in the stub index"
+                raise ValueError(msg)
             index.setdefault(name, stub_path)
-            # [[MDE: I think it be an error if a function name appears more than once.]]
     return index
 
 
