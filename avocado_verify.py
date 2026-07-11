@@ -22,7 +22,7 @@ import json
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -115,7 +115,7 @@ class ClaudeRun:
             not be parsed as JSON.
         session_id (str | None): claude's session id, when reported.
         result_text (str): claude's final message (or a diagnostic on failure).
-        total_cost_usd (float | None): session cost in USD, when reported.
+        total_cost_usd (float | None): Per-session cost in USD, when reported.
         num_turns (int | None): number of turns taken, when reported.
         duration_ms (int | None): wall-clock duration claude reported, when present.
         subtype (str | None): The subtype of claude's terminal result message from
@@ -167,20 +167,10 @@ class FunctionVerificationResult:
         Returns:
             dict: A timestamped record capturing the Claude session and CBMC verdict.
         """
-        claude_session_records = [
-            {
-                "returncode": session.returncode,
-                "timed_out": session.timed_out,
-                "is_error": session.is_error,
-                "session_id": session.session_id,
-                "total_cost_usd": session.total_cost_usd,
-                "num_turns": session.num_turns,
-                "duration_ms": session.duration_ms,
-                "subtype": session.subtype,
-                "result": session.result_text,
-            }
-            for session in self.claude_sessions
-        ]
+        claude_session_records = [asdict(session) for session in self.claude_sessions]
+        total_cost_to_verify_usd: float = sum(
+            session.total_cost_usd or 0 for session in self.claude_sessions
+        )
         return {
             "timestamp": datetime.now(UTC).isoformat(),
             "function": self.function,
@@ -198,6 +188,7 @@ class FunctionVerificationResult:
                 if self.cbmc.failed_step is None
                 else self.cbmc.failed_step.value,
             },
+            "total_cost_to_verify_usd": total_cost_to_verify_usd,
         }
 
 
