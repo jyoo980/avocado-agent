@@ -144,7 +144,7 @@ class FunctionVerificationResult:
     Attributes:
         function (str): The function under verification.
         outcome (GroundTruthVerificationResult): The harness's overall verdict for the function.
-        claude (ClaudeRun): The last `claude -p` session that (re)wrote the specification.
+        claude_sessions (list[ClaudeRun]): The `claude -p` sessions that resulted in the spec.
         cbmc (RunCbmcResult): The independent CBMC verification the harness ran afterward.
         internal_callees (list[str]): The function's in-file callees, for the run log.
         verification_attempts (int): How many times the agent attempted verification (ran
@@ -155,7 +155,7 @@ class FunctionVerificationResult:
 
     function: str
     outcome: GroundTruthVerificationResult
-    claude: ClaudeRun
+    claude_sessions: list[ClaudeRun]
     cbmc: RunCbmcResult
     internal_callees: list[str]
     verification_attempts: int
@@ -167,6 +167,20 @@ class FunctionVerificationResult:
         Returns:
             dict: A timestamped record capturing the Claude session and CBMC verdict.
         """
+        claude_session_records = [
+            {
+                "returncode": session.returncode,
+                "timed_out": session.timed_out,
+                "is_error": session.is_error,
+                "session_id": session.session_id,
+                "total_cost_usd": session.total_cost_usd,
+                "num_turns": session.num_turns,
+                "duration_ms": session.duration_ms,
+                "subtype": session.subtype,
+                "result": session.result_text,
+            }
+            for session in self.claude_sessions
+        ]
         return {
             "timestamp": datetime.now(UTC).isoformat(),
             "function": self.function,
@@ -174,17 +188,7 @@ class FunctionVerificationResult:
             "internal_callees": self.internal_callees,
             "verification_attempts": self.verification_attempts,
             "agent_sessions": self.agent_sessions,
-            "claude": {
-                "returncode": self.claude.returncode,
-                "timed_out": self.claude.timed_out,
-                "is_error": self.claude.is_error,
-                "session_id": self.claude.session_id,
-                "total_cost_usd": self.claude.total_cost_usd,
-                "num_turns": self.claude.num_turns,
-                "duration_ms": self.claude.duration_ms,
-                "subtype": self.claude.subtype,
-                "result": self.claude.result_text,
-            },
+            "claude": claude_session_records,
             "cbmc": {
                 "verdict": str(self.cbmc),
                 "is_function_verified": self.cbmc.is_function_verified,
@@ -390,8 +394,8 @@ def _verify_via_agent(
 
     # Do not advance to the next function until the agent has attempted verification at least
     # `_MIN_VERIFICATION_ATTEMPTS` times, re-running the session up to a capped number of times.
-    claude = _run_claude(command, timeout)
-    sessions = 1
+    claude_sessions_for_function = [_run_claude(command, timeout)]
+    sessions = len(claude_sessions_for_function)
     current_verification_attempts = (
         _count_verification_attempts(attempts_log_path, function) - previous_verification_attempts
     )
@@ -405,8 +409,8 @@ def _verify_via_agent(
             f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} time(s); "
             f"re-running session ({sessions + 1}/{_MAX_AGENT_SESSIONS_PER_FUNCTION})"
         )
-        claude = _run_claude(command, timeout)
-        sessions += 1
+        claude_sessions_for_function.append(_run_claude(command, timeout))
+        sessions = len(claude_sessions_for_function)
         current_verification_attempts = (
             _count_verification_attempts(attempts_log_path, function)
             - previous_verification_attempts
@@ -429,8 +433,8 @@ def _verify_via_agent(
     cbmc = run_cbmc(function, file_path, include_dirs=include_dirs)
     return FunctionVerificationResult(
         function=function,
-        outcome=_outcome_for(claude, cbmc),
-        claude=claude,
+        outcome=_outcome_for(claude_sessions_for_function[-1], cbmc),
+        claude_sessions=claude_sessions_for_function,
         cbmc=cbmc,
         internal_callees=call_graph.get_callees(function).internal,
         verification_attempts=current_verification_attempts,
