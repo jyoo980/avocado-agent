@@ -17,7 +17,7 @@ CBMC cannot verify all correct C code.  Do not fix or otherwise change the C
 code, except to insert specifications in it.
 
 This `CLAUDE.md` file and directory `docs/` contain basic information about using CBMC.
-The main documentation can be found at at https://diffblue.github.io/cbmc/index.html,
+The main documentation can be found at https://diffblue.github.io/cbmc/index.html,
 which includes a [User Guide](https://diffblue.github.io/cbmc/user_guide.html)
 and [The CPROVER Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 You can also search the web for more CBMC documentation.
