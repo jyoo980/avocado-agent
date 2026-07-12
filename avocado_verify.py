@@ -685,6 +685,8 @@ def _run_claude(command: list[str], timeout: int) -> ClaudeRun:
             stdin=subprocess.DEVNULL,
         )
     except TimeoutExpired:
+        # It isn't possible to calculate some of the fields below when the timeout for a `claude -p`
+        # command is reached.
         return ClaudeRun(
             returncode=_TIMEOUT_RETURNCODE,
             timed_out=True,
