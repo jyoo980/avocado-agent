@@ -87,7 +87,8 @@ class RunCbmcResult:
 
     Attributes:
         function (str): The function under verification.
-        failed_step (CbmcStep | None): The pipeline step that failed, or None on success.
+        failed_step (CbmcStep | None): The pipeline step that failed or timed out,
+            or None on success.
         returncode (int): 0 on success, `_TIMEOUT_RETURNCODE` on timeout, otherwise the
             exit code of the failing subprocess (cbmc's verification exit code when
             `failed_step` is CBMC).
@@ -129,10 +130,10 @@ class RunCbmcResult:
         Returns:
             str: The string representation of this result, used for logging.
         """
-        if failed_step := self.failed_step:
-            return f"{failed_step.value.upper()}_FAILED"
         if self.returncode == _TIMEOUT_RETURNCODE:
             return "TIMED_OUT"
+        if failed_step := self.failed_step:
+            return f"{failed_step.value.upper()}_FAILED"
         return "PASS" if self.is_function_verified else "FAIL"
 
 
