@@ -141,12 +141,12 @@ class _SubprocessResult:
     code.
 
     Attributes:
-         step (CbmcStep): The logical pipeline step this single subprocess belongs to. The
-             step may span several subprocesses; this is one of them.
-         command (str): The shell command that was run.
-         returncode (int): This subprocess's exit code, or `_TIMEOUT_RETURNCODE` on timeout.
-         stdout (str): Captured stdout (empty on timeout).
-         stderr (str): Captured stderr (empty on timeout).
+        step (CbmcStep): The logical pipeline step this single subprocess belongs to. The
+            step may span several subprocesses; this is one of them.
+        command (str): The shell command that was run.
+        returncode (int): This subprocess's exit code, or `_TIMEOUT_RETURNCODE` on timeout.
+        stdout (str): Captured stdout (empty on timeout).
+        stderr (str): Captured stderr (empty on timeout).
     """
 
     step: CbmcStep
