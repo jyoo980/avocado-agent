@@ -1,5 +1,5 @@
 # Ignore https://docs.astral.sh/ruff/rules/subclass-builtin/#subclass-builtin-furb189.
-# ruff: noqa : FURB189
+# ruff: file-ignore[subclass-builtin]
 
 """Class to represent a call graph."""
 

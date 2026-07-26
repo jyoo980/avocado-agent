@@ -87,7 +87,7 @@ def main() -> None:
 
     # This stream is closed in a `finally` block.
     output_stream: IO[str] = (
-        Path(args.jsonl).open("w", encoding="utf-8") if args.jsonl else sys.stdout  # noqa: SIM115
+        Path(args.jsonl).open("w", encoding="utf-8") if args.jsonl else sys.stdout  # ruff: ignore[open-file-with-context-handler]
     )
     try:
         include_dirs_from_cli = args.include_dirs or []

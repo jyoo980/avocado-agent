@@ -454,7 +454,7 @@ def is_spec_improvable_with_mutation_testing(
     function_has_mutants = False
     try:
         function_has_mutants = bool(get_mutants(source_path, function))
-    except Exception:  # noqa: BLE001 - any generation failure should fall back to default behavior.
+    except Exception:  # ruff: ignore[blind-except] - any generation failure should fall back to default behavior.
         logger.error(f"Failure in mutant generation for '{function}' in {source_path}")
         # Assume mutants exist in the worst-case scenario.
         function_has_mutants = True

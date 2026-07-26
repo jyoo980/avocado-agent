@@ -39,8 +39,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.util.cbmc_clause_stripper import CbmcClauseSpan, find_cbmc_annotation_spans  # noqa: E402
-from tools.util.tree_sitter_utils import (  # noqa: E402
+from tools.util.cbmc_clause_stripper import (  # ruff: ignore[module-import-not-at-top-of-file]
+    CbmcClauseSpan,
+    find_cbmc_annotation_spans,
+)
+from tools.util.tree_sitter_utils import (  # ruff: ignore[module-import-not-at-top-of-file]
     dfs_traversal,
     get_function_body,
     is_binary_operator_node,
