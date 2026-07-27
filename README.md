@@ -31,6 +31,31 @@ the shell. Validate that `cbmc` and `claude` are also on `PATH`.
 Running outside Docker still requires manually invoking `uv sync` and
 either activating the venv or prefixing tool calls with `uv run`.
 
+### Container Configuration
+
+There may be instances where the container requires additional memory or swap (e.g.,
+    for a long-running `goto-instrument` or `cbmc` process).
+Get started by obtaining the container id;
+    Assuming you have a single container deployed from the Avocado Agent image,
+    run:
+    ```sh
+    % docker ps -qf "ancestor=avocado-agent-container"
+    ```
+
+Check the memory and/or CPU limits for the container by running:
+
+```sh
+% docker stats <CONTAINER_ID>
+```
+
+he limits,
+    by default,
+    should match the maximum amount of CPU cores or RAM on the machine on which the container is
+    running.
+If this is not the case (e.g., for macOS),
+    you can manually set the global VM limits via Docker Desktop by selecting `Settings -> Resources`.
+Re-run the `docker stats` command afterwards to validate your changes have taken place.
+
 ## Requirements
 
 - An active [Claude Pro or Max](https://support.claude.com/en/articles/11049762-choosing-a-claude-plan)
@@ -69,3 +94,8 @@ And then run:
 ```sh
 % claude --dangerously-skip-permissions
 ```
+
+> My CBMC processes (e.g., `goto-instrument`, `cbmc`) keep erroring out with the error messsage "Killed"
+
+This is most likely due to an OOM error.
+See [the container configuration section](#container-configuration) for details.
