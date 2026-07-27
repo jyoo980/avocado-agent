@@ -14,9 +14,9 @@ reviews:
   in_progress_fortune: false
   poem: false
   path_filters:
+    - "!**/.claude/**"
     - "!**/__init__.py"
     - "!**/test_*.py"
-    - "!**/.claude/**"
     - "!eval/benchmarks/**"
     - "!test/data/**"
   auto_review:
