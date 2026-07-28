@@ -27,6 +27,7 @@ reviews:
       - "wip"
       - "draft"
     ignore_usernames:
+      - "app/renovate"
       - "dependabot"
       - "dependabot[bot]"
       - "mend"
