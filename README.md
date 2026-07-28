@@ -20,7 +20,15 @@ Once the container is successfully built,
   run:
 
 ```sh
-% make run
+% make run # Deploys a container named `avocado-agent`
+```
+
+Or,
+    to deploy a container with a custom name (useful for running multiple instances),
+    run:
+
+```sh
+% make run CONTAINER_NAME=<CUSTOM_NAME>
 ```
 
 The container entrypoint runs `uv sync --frozen` and prepends `.venv/bin` to

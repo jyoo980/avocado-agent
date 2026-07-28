@@ -36,6 +36,9 @@ RUN ARCH="$(dpkg --print-architecture)" && \
 
 WORKDIR /app
 
+ENV VIRTUAL_ENV="/app/.venv"
+ENV PATH="/app/.venv/bin:$PATH"
+
 VOLUME ["/app"]
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
