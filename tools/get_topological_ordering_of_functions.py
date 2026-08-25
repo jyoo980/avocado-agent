@@ -1,5 +1,13 @@
 """Print a reverse topological ordering of functions in a file to stdout.
 
+The topological ordering is only computed over the functions that are immediately accessible
+in a file (i.e., #include directives are not followed).
+
+A workaround to compute a topological ordering across all functions (including those that might
+be declared in other files) is to construct a single source file with all definitions inlined
+(i.e., replace all #include directives with the contents of the file they are including),
+and run this script on that file.
+
 Usage:
     % avocado-topological-order <PATH_TO_SOURCE_FILE>
 """
