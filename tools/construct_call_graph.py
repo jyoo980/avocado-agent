@@ -1,10 +1,12 @@
 """Saves a call graph to a file and prints the file name.
 
 This script expects a single C source file as input, and computes a call graph based on the
-functions that are immediately available in the file. For example, if a function `a` calls `b` and
-`c`, where `b` is defined in the same file but `c` is not (i.e., it is defined elsewhere), the call
-graph will map `b` to `a`'s list of internal callees and `c` to a list of external callees.
-See utils/callgraph.py for more information about the structure of the call graph.
+functions that are immediately available in the file. For example, assume a function `a` calls `b`
+and `c`, where `b` is defined in the same file but `c` is not (e.g., a library function, an
+unresolved external function, etc). The entry for `a` in the call graph will list `b` as an
+`internal` callee and `c` as an external callee. 
+
+See util/callgraph.py for more information about the structure of the call graph.
 
 Usage:
     % avocado-construct-call-graph <PATH_TO_C_FILE>
