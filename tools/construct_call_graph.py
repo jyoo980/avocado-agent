@@ -4,7 +4,7 @@ This script expects a single C source file as input, and computes a call graph b
 functions that are immediately available in the file. For example, assume a function `a` calls `b`
 and `c`, where `b` is defined in the same file but `c` is not (e.g., a library function, an
 unresolved external function, etc). The entry for `a` in the call graph will list `b` as an
-`internal` callee and `c` as an external callee. 
+`internal` callee and `c` as an external callee.
 
 See util/callgraph.py for more information about the structure of the call graph.
 
