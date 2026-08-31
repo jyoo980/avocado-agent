@@ -54,13 +54,13 @@ Once the Avocado Agent container is running, use the following command (from ins
 ```
 
 For example, to generate and verify specifications for a file `test.c` located in
-    eval/benchmarks/, you would run:
+    eval/benchmarks/ (this is an example), you would run:
 
 ```sh
 % avocado-verify --file eval/benchmarks/test.c
 ```
 
-from the root of the container.
+from the application root of the container (i.e., `/app`)
 
 ### Container Configuration
 
@@ -91,6 +91,8 @@ Re-run the `docker stats` command afterwards to validate your changes have taken
 
 - An active [Claude Pro or Max](https://support.claude.com/en/articles/11049762-choosing-a-claude-plan)
   subscription (required to run Claude Code).
+- [Docker](https://www.docker.com): Avocado Agent and its dependencies (e.g., CBMC) are packaged and
+  run inside a Docker container.
 - [uv](https://docs.astral.sh/uv/)
   - Used to manage packages,
     dependencies,
