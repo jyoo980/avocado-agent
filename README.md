@@ -4,6 +4,11 @@ This contains the top-level prompt,
     context,
     and dependencies used in an agentic approach for CBMC specification generation and verification.
 
+The base requirements for running Avocado Agent is documented in the [requirements](#requirements)
+    section.
+Once the dependencies described there are installed,
+    you can run Avocado Agent (see [running Avocado Agent](#running-avocado-agent)).
+
 ## Running Avocado Agent
 
 All required dependencies (i.e., an installation of CBMC,
@@ -38,6 +43,24 @@ the shell. Validate that `cbmc` and `claude` are also on `PATH`.
 
 Running outside Docker still requires manually invoking `uv sync` and
 either activating the venv or prefixing tool calls with `uv run`.
+
+### Generating Specifications with Avocado Agent
+
+Once the Avocado Agent container is running, use the following command (from inside the
+    running container) to generate specifications for functions in a C file:
+
+```sh
+% avocado-verify --file <PATH_TO_C_FILE>
+```
+
+For example, to generate and verify specifications for a file `test.c` located in
+    eval/benchmarks/, you would run:
+
+```sh
+% avocado-verify --file eval/benchmarks/test.c
+```
+
+from the root of the container.
 
 ### Container Configuration
 
