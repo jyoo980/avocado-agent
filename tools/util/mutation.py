@@ -563,7 +563,7 @@ def _load_cache_context(
         entries = cache.entries_for(target_function, body_digest)
     # Deliberately broad: the cache is an optimization, so any failure to build its keys must
     # degrade to a full run rather than propagate out of a verification.
-    except Exception as error:
+    except Exception as error:  # ruff: ignore[blind-except]
         logger.warning(f"{target_function}: mutation cache unavailable ({error}); running in full")
         return None, disabled
     return cache, _CacheContext(
@@ -609,7 +609,7 @@ def _remember_verdicts(
         cache.save()
     # Deliberately broad: failing to persist verdicts costs future time, never correctness, so it
     # must not turn a completed mutation run into an error.
-    except Exception as error:
+    except Exception as error:  # ruff: ignore[blind-except]
         logger.warning(f"{target_function}: could not record mutant verdicts ({error})")
 
 

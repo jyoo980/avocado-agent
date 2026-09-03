@@ -534,8 +534,9 @@ def _should_grant_another_session(
         # below cannot apply because there is no kill score yet.
         if _is_plateaued(attempts_this_turn, plateau_limit):
             return _SessionDecision(
-                False, f"{function} still unverified and the last {plateau_limit} attempts changed "
-                "neither the specification nor the outcome"
+                False,
+                f"{function} still unverified and the last {plateau_limit} attempts changed "
+                "neither the specification nor the outcome",
             )
         return _SessionDecision(True, f"{function} does not verify yet")
 
