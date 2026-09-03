@@ -19,7 +19,7 @@ checks: style-fix style-check
 
 # Delete artifacts from CBMC runs.
 clean:
-	find . \( -name '*.goto' -o -name '*callgraph.json' -o -name '*.jsonl' \) -delete
+	find . \( -name '*.goto' -o -name '*callgraph.json' -o -name '*-mutation-cache.json' -o -name '*.jsonl' \) -delete
 	find . -type d -name '__pycache__' -exec rm -rf {} +
 
 # Delete artifacts from mutation testing runs.
