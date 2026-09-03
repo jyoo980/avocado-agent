@@ -15,6 +15,7 @@
             "Read(*.git*)",
             "Bash(*eval*)",
             "Read(*eval*)",
+            "Read(DEVELOPMENT.md)",
             "Read(**/*mutation_compile_failures.log)",
             "Bash(**/*mutation_compile_failures.log)"
         ]
