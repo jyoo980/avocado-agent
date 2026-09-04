@@ -37,6 +37,9 @@ packages = ["tools", "scripts"]
 pythonpath = ["."]
 testpaths = ["test"]
 
+[tool.ty.src]
+exclude = ["test/"]
+
 [dependency-groups]
 dev = [
     "matplotlib>=3.10.9",

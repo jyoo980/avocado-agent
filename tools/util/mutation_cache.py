@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from loguru import logger
 
@@ -523,7 +523,9 @@ class MutationCache:
         if not isinstance(entry, dict):
             return []
         mutants = entry.get("mutants")
-        return list(mutants) if isinstance(mutants, dict) else []
+        if not isinstance(mutants, dict):
+            return []
+        return cast("list[str]", list(mutants))
 
     def save(self) -> None:
         """Write the cache to disk, swallowing any I/O error.

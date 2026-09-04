@@ -17,7 +17,6 @@ from avocado_verify import (
     _read_attempts,
     _should_grant_another_session,
 )
-
 from tools.run_cbmc import RunCbmcResult
 from tools.util.callgraph import CallGraph
 
