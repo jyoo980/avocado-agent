@@ -11,11 +11,13 @@ build-image:
 run:
 	docker run -it --rm --name $(CONTAINER_NAME) -v $(PWD):/app $(IMAGE_NAME)
 
+all: build-image test checks
 test:
 	uv run pytest
 
 # Run all code style checks.
-checks: style-fix style-check
+checks:
+	prek -q run --all-files
 
 # Delete artifacts from CBMC runs.
 clean:
