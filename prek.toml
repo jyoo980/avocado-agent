@@ -32,7 +32,6 @@ exclude = { glob = [
   "README.md",
   "avocado-experimental-data/*",
   ".coderabbit.yaml",
-  ".github/*",
 ] }
 
 [[repos]]
