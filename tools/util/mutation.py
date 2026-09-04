@@ -17,13 +17,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from loguru import logger
-
 from eval.mutants.mutate_function import Mutant, get_mutants
 from eval.mutants.util import (
     check_expected_cbmc_return_code,
     is_valid_mutation_candidate,
 )
+from loguru import logger
+
 from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import CbmcStep, run_cbmc
 from tools.util.callgraph import CallGraph

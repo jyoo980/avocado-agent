@@ -28,9 +28,8 @@ from enum import StrEnum
 from pathlib import Path
 from subprocess import TimeoutExpired
 
-from loguru import logger
-
 from eval.mutants.mutate_function import get_mutants
+from loguru import logger
 from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
 from tools.run_cbmc import RunCbmcResult, run_cbmc
