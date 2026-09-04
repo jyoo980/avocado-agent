@@ -32,7 +32,9 @@ exclude = { glob = [
   "data/*",
   "docs/*",
   "eval/*",
-  "test/*",
+  "test/data/*",
+  "test/eval/*",
+  "test/tools/*",
 ] }
 
 [[repos]]
