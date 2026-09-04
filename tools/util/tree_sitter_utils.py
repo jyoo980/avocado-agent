@@ -86,6 +86,47 @@ def get_functions_with_cprover_annotations(path_to_file: str) -> set[str]:
     return annotated
 
 
+def get_cbmc_contract_text(path_to_file: str, function_name: str) -> str:
+    """Return the CBMC contract clauses attached to a function, as a normalized string.
+
+    A function's contract is the set of `__CPROVER_requires` / `__CPROVER_ensures` /
+    `__CPROVER_assigns` / `__CPROVER_frees` clauses sitting between its `function_declarator` and
+    its body — the same gap `get_functions_with_cprover_annotations` keys on. Clause text is read
+    from the *original* source (the spans returned by `strip_cbmc_clauses` index it verbatim) and
+    joined with runs of whitespace collapsed to a single space, so re-indenting or re-wrapping a
+    clause yields the same string. In-body intrinsics (`__CPROVER_assume`, `__CPROVER_assert`) are
+    deliberately excluded: they are part of the body, not the contract.
+
+    Callers use this to fingerprint a specification — see `tools.util.mutation_cache`.
+
+    Args:
+        path_to_file (str): The path to the C file to scan.
+        function_name (str): The function whose contract clauses to return.
+
+    Returns:
+        str: The function's contract clauses, whitespace-normalized and concatenated in source
+            order. Empty when the function is absent or carries no contract.
+    """
+    source = Path(path_to_file).read_bytes()
+    stripped, spans = strip_cbmc_clauses(source)
+    if not spans:
+        return ""
+    tree = _PARSER.parse(stripped)
+    function_definition = get_function_definition(tree.root_node, function_name)
+    if function_definition is None:
+        return ""
+    declarator = get_function_declarator(function_definition)
+    body = function_definition.child_by_field_name("body")
+    if declarator is None or body is None:
+        return ""
+    clauses = [
+        source[span.start_byte : span.end_byte].decode("utf-8", errors="replace")
+        for span in spans
+        if declarator.end_byte <= span.start_byte < body.start_byte
+    ]
+    return " ".join(" ".join(clause.split()) for clause in clauses)
+
+
 def get_function_body(path_to_file: str, function_name: str) -> Node | None:
     """Return the function body (i.e., everything between the braces, exclusive) of a function.
 

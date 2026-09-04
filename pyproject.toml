@@ -22,6 +22,8 @@ avocado-verify = "avocado_verify:main"
 avocado-construct-call-graph = "tools.construct_call_graph:main"
 avocado-topological-order = "tools.get_topological_ordering_of_functions:main"
 avocado-run-cbmc = "tools.run_cbmc_and_mutation_testing:main"
+avocado-get-mutation-score = "tools.get_mutation_score:main"
+avocado-mark-equivalent = "tools.mark_equivalent:main"
 save-session-metadata = "scripts.save_session_metadata:main"
 
 [build-system]
@@ -34,6 +36,9 @@ packages = ["tools", "scripts"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["test"]
+
+[tool.ty.src]
+exclude = ["test/"]
 
 [dependency-groups]
 dev = [

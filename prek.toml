@@ -33,6 +33,7 @@ exclude = { glob = [
   "docs/*",
   "eval/*",
   "test/data/*",
+  "test/*.py",
   "test/eval/*",
   "test/tools/*",
 ] }
