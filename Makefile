@@ -1,4 +1,4 @@
-.PHONY: build-image run checks test clean clean-mutants
+.PHONY: build-image run checks all test clean clean-mutants
 
 IMAGE_NAME ?= avocado-agent-container
 # Name of the container started by `make run`.
