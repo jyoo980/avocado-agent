@@ -1,8 +1,6 @@
 {
-    "model": "claude-opus-4-8",
+    "model": "claude-fable-5-1",
     "env": {
-        "API_TIMEOUT_MS": "1200000",
-        "BASH_DEFAULT_TIMEOUT_MS": "600000",
         "CLAUDE_CODE_EFFORT_LEVEL": "high"
     },
     "permissions": {
@@ -11,13 +9,8 @@
         ],
         "deny": [
             "Bash(*git*)",
-            "Bash(*.git*)",
             "Read(*.git*)",
-            "Bash(*eval*)",
-            "Read(*eval*)",
-            "Read(DEVELOPMENT.md)",
-            "Read(**/*mutation_compile_failures.log)",
-            "Bash(**/*mutation_compile_failures.log)"
+            "Read(DEVELOPMENT.md)"
         ]
     }
 }
