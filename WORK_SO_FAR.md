@@ -283,10 +283,11 @@ scripts/experiments/measure_quality.sh head eval/benchmarks/quicksort eval/bench
     eval/benchmarks/mkey
 ```
 
-Every `mutation_summary` record matches the baseline exactly: 3 of 3 records on quicksort, 5 of 5
-on csv_parser, 46 of 46 on mkey, zero score differences. Wall-clock was 2.96 s, 3.66 s and 7.23 s
-(mkey ran while two agent sessions were competing for the machine, which is why it is above the
-5.17 s measured on an idle machine). Files: `avocado-experimental-data/head-*.jsonl`.
+Kilo was re-taken the same way. Every `mutation_summary` record matches the baseline exactly: 3 of
+3 records on quicksort, 5 of 5 on csv_parser, 46 of 46 on mkey, 35 of 35 on kilo, zero score
+differences anywhere. Wall-clock was 2.96 s, 3.66 s, 7.23 s and 452.03 s; all four ran while two
+agent sessions were competing for the machine, which is why mkey and kilo sit above the 5.17 s and
+414.40 s measured on an idle machine. Files: `avocado-experimental-data/head-*.jsonl`.
 
 ## Confirmation tier: paired agent runs on mkey
 
