@@ -56,6 +56,37 @@ You can also search the web for more CBMC documentation.
 
   Prints function names callees-first, one per line.
 
+## Workflow
+
+Work in this order, and do not skip the first CBMC run:
+
+1. Read the function, the contracts already written for its in-file callees (they are replaced by
+   their contracts during verification, so what they promise is all you get), and any callers in
+   the same file, so your preconditions are satisfiable at every call site.
+2. Write the contract, then run `avocado-run-cbmc` right away. Do not run CBMC by hand, do not
+   run the tool in the background, and do not read the harness's `*.jsonl` logs: the tool's own
+   output is the source of truth and already includes the diff of every surviving mutant.
+3. Strengthen the contract using the surviving-mutant diffs and re-run. Stop as soon as every
+   decided mutant is killed, or when two consecutive runs leave the kill score unchanged.
+
+## Writing contracts that verify and kill mutants
+
+- `__CPROVER_is_fresh(p, n)` demands a *separate* object for every such pointer at each call
+  site. A helper that callers invoke with two pointers into the same array (e.g.
+  `swap(&arr[i], &arr[j])`) must use `__CPROVER_w_ok(p, n)` / `__CPROVER_r_ok(p, n)` instead,
+  or its callers can never verify.
+- A mutant survives when no clause distinguishes the mutated behaviour. Postconditions that state
+  the exact result -- `__CPROVER_return_value == <expression over the inputs>`, `*out ==
+  __CPROVER_old(...)`-based equalities, and `__CPROVER_forall` over the whole affected range --
+  kill far more mutants than bounds or one-directional implications. Cover error and early-return
+  paths explicitly (`cond ==> __CPROVER_return_value == -1`, and the converse).
+- Bound sizes and counts in preconditions (a small constant such as 8 or 16 elements) so that
+  CBMC decides every mutant quickly; an unbounded precondition makes mutants time out instead of
+  being killed, which does not raise the kill score.
+- `__CPROVER_assigns` must list everything the function writes (use `__CPROVER_object_whole` /
+  `__CPROVER_object_upto` for buffers); a missing target fails verification, an over-broad one
+  weakens callers.
+
 ## Rules
 
 - Never hard-code any values into the specifications that are related to CBMC's command-line

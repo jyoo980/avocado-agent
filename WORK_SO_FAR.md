@@ -144,3 +144,28 @@ vs `avocado-experimental-data/par-eval-*.jsonl`.
 
 Agent time: the 120 s mutant budget only affects agent sessions; it is measured together with the
 other agent-facing changes in the "Treatment T1" agent entry below (3 runs vs. 3 baseline runs).
+
+## Treatment T2: workflow guidance and a per-function prompt
+
+Findings: "Give the inner agent a richer per-function prompt", "Guide callee contracts away from
+`__CPROVER_is_fresh` on possibly-aliasing pointers", "Tell the agent what kind of postcondition
+kills mutants" in `FINDINGS.md`.
+
+Commit: T2_COMMIT_PLACEHOLDER. Status: **measurement pending** (to be run after the T1 agent
+runs; see the "Agent measurements" entry below).
+
+### What changed and why
+
+- `CLAUDE.md` gained two short sections. "Workflow" tells the agent to read callee contracts and
+  callers first, run `avocado-run-cbmc` immediately (never CBMC by hand, never in the background,
+  never the harness's JSONL logs), and stop once every decided mutant is killed or two consecutive
+  runs leave the score unchanged. "Writing contracts that verify and kill mutants" explains the
+  `is_fresh`-vs-`w_ok`/`r_ok` trap at call sites, that exact-value postconditions kill mutants
+  where bounds do not, that bounded sizes keep mutants decidable, and what `__CPROVER_assigns`
+  must cover.
+- `avocado_verify.py` builds a per-function prompt (`_build_prompt`) that includes the exact
+  `avocado-run-cbmc` command with the include directories the harness detected (previously the
+  agent had to guess `-I` flags), the in-file callees whose contracts replace their bodies, and
+  the in-file callers whose call sites must satisfy the new preconditions.
+
+Nothing about CBMC's checks or the metric changed.

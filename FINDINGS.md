@@ -36,9 +36,9 @@ entries. Terminal states: confirmed, refuted, noise.
   and a direct instruction to run it first into the prompt should cut turns (agent time and cost)
   without lowering quality.
 - **Axis:** agent time
-- **Status:** open
-- **Evidence:**
-- **Commit:**
+- **Status:** in progress (treatment T2, measured after T1)
+- **Evidence:** WORK_SO_FAR.md entry "Treatment T2: workflow guidance and a per-function prompt".
+- **Commit:** T2_COMMIT_PLACEHOLDER
 
 ## Guide callee contracts away from `__CPROVER_is_fresh` on possibly-aliasing pointers
 
@@ -52,7 +52,8 @@ entries. Terminal states: confirmed, refuted, noise.
 - **Status:** open
 - **Evidence:** `avocado-run-cbmc --function partition --file eval/benchmarks/quicksort/quicksort.c`
   fails on `swap.precondition.*` at the committed specs.
-- **Commit:**
+- **Status update:** folded into treatment T2 (a "Writing contracts" section in `CLAUDE.md`).
+- **Commit:** T2_COMMIT_PLACEHOLDER
 
 ## Tell the agent what kind of postcondition kills mutants
 
@@ -64,7 +65,8 @@ entries. Terminal states: confirmed, refuted, noise.
 - **Axis:** quality
 - **Status:** open
 - **Evidence:** `avocado-experimental-data/baseline-{csv_parser,mkey}.jsonl`.
-- **Commit:**
+- **Status update:** folded into treatment T2 (a "Writing contracts" section in `CLAUDE.md`).
+- **Commit:** T2_COMMIT_PLACEHOLDER
 
 ## Shorter per-mutant CBMC budget for the agent-facing tool
 

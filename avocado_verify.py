@@ -35,6 +35,7 @@ from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
 from tools.run_cbmc import RunCbmcResult
 from tools.run_cbmc_and_mutation_testing import VERIFICATION_ATTEMPTS_LOG_SUFFIX, verify_function
+from tools.util import get_in_file_callees_for, get_in_file_callers_of
 from tools.util.callgraph import CallGraph
 
 # Per-function wall-clock budget for a single `claude -p` session. A session may run CBMC
@@ -373,7 +374,9 @@ def _verify_via_agent(
     Returns:
         FunctionVerificationResult: The combined Claude/CBMC outcome for the function.
     """
-    prompt = f"Verify {function} in {file_path}"
+    prompt = _build_prompt(
+        function, file_path=file_path, call_graph=call_graph, include_dirs=include_dirs
+    )
     command = _build_claude_command(prompt, file_path=file_path, include_dirs=include_dirs)
     attempts_log_path = Path(file_path).with_name(
         f"{Path(file_path).stem}{VERIFICATION_ATTEMPTS_LOG_SUFFIX}"
@@ -634,6 +637,48 @@ def _run_summary_record(
     }
 
 
+def _build_prompt(
+    function: str, *, file_path: str, call_graph: CallGraph, include_dirs: list[str]
+) -> str:
+    """Build the per-function prompt for a `claude -p` session.
+
+    Besides naming the function and file, the prompt hands the agent what it would otherwise
+    spend its first turns discovering: the exact `avocado-run-cbmc` command (with the include
+    directories the harness detected, which the agent cannot guess), the in-file callees whose
+    contracts will replace their bodies, and the in-file callers whose call sites must satisfy the
+    preconditions being written.
+
+    Args:
+        function (str): The function to specify and verify.
+        file_path (str): Absolute path to the C file defining the function.
+        call_graph (CallGraph): Call graph of the file.
+        include_dirs (list[str]): Include directories forwarded to `avocado-run-cbmc` as `-I`.
+
+    Returns:
+        str: The prompt text.
+    """
+    command = ["avocado-run-cbmc", "--function", function, "--file", file_path]
+    for include_dir in include_dirs:
+        command += ["-I", include_dir]
+    callees = get_in_file_callees_for(function, call_graph)
+    callers = get_in_file_callers_of(function, call_graph)
+    callees_text = ", ".join(callees) if callees else "none"
+    callers_text = ", ".join(callers) if callers else "none"
+    return (
+        f"Verify {function} in {file_path}.\n"
+        "\n"
+        "Run exactly this command to verify it; on success it also reports the mutation kill "
+        "score and the diff of every surviving mutant:\n"
+        "\n"
+        f"    {shlex.join(command)}\n"
+        "\n"
+        "In-file callees (verified earlier; their contracts replace their bodies while this "
+        f"function is verified): {callees_text}\n"
+        "In-file callers (their call sites must satisfy the preconditions you write): "
+        f"{callers_text}"
+    )
+
+
 def _build_claude_command(prompt: str, *, file_path: str, include_dirs: list[str]) -> list[str]:
     """Build the `claude -p` argument vector for one function.
 
@@ -644,7 +689,7 @@ def _build_claude_command(prompt: str, *, file_path: str, include_dirs: list[str
     agent can read headers it needs.
 
     Args:
-        prompt (str): The prompt to send (currently blank).
+        prompt (str): The prompt to send (see `_build_prompt`).
         file_path (str): Absolute path to the C file being verified.
         include_dirs (list[str]): Extra include directories to expose via `--add-dir`.
 
