@@ -79,13 +79,6 @@ not yours to tune. Spend your turns on the contract itself.
   site. A helper that callers invoke with two pointers into the same array (e.g.
   `swap(&arr[i], &arr[j])`) must use `__CPROVER_w_ok(p, n)` / `__CPROVER_r_ok(p, n)` instead,
   or its callers can never verify.
-- A postcondition guarded by a narrow antecedent (for example
-  `line[0] == '"' && line[3] == '\0' ==> ...`) is vacuously true on almost every input the
-  precondition allows, so it kills no mutants no matter how many cases you enumerate. Prefer one
-  clause that constrains the result on *every* input the precondition allows. When you can only
-  state the exact result for a restricted class of inputs, restrict the **precondition** to that
-  class instead of guarding the postcondition: a narrow precondition with a total postcondition
-  kills mutants, a wide precondition with case-split postconditions does not.
 - A mutant survives when no clause distinguishes the mutated behaviour. Postconditions that state
   the exact result -- `__CPROVER_return_value == <expression over the inputs>`, `*out ==
   __CPROVER_old(...)`-based equalities, and `__CPROVER_forall` over the whole affected range --
