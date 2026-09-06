@@ -11,10 +11,11 @@ entries. Terminal states: confirmed, refuted, noise.
   concurrently (each in its own scratch workspace so mutant file names cannot collide) should cut
   harness time for the evaluation pass by a large factor without changing any score.
 - **Axis:** harness time
-- **Status:** open
-- **Evidence:** kilo's committed-spec evaluation is dominated by a handful of multi-minute CBMC
-  runs that execute back-to-back (see baseline `.time` logs).
-- **Commit:**
+- **Status:** confirmed
+- **Evidence:** WORK_SO_FAR.md entry "Parallel evaluation, scratch directories, per-mutant
+  feedback budget". Identical scores on every tier; wall-clock 5.5→2.9 s (quicksort), 6.9→3.7 s
+  (csv_parser), 29.7→5.2 s (mkey), 1103→414 s (kilo).
+- **Commit:** T1_COMMIT_PLACEHOLDER
 
 ## Raise the mutant worker cap
 
@@ -22,9 +23,10 @@ entries. Terminal states: confirmed, refuted, noise.
   function with >32 mutants (e.g. `hexdump`: 42, `mkey_generate_v3_v4`: 33) waits on a second wave.
   Bounding by `os.cpu_count()` alone is a free speedup on big machines and a no-op elsewhere.
 - **Axis:** harness time
-- **Status:** open
-- **Evidence:**
-- **Commit:**
+- **Status:** confirmed (folded into the parallel-evaluation change; a process-wide subprocess
+  semaphore in `tools/run_cbmc.py` now bounds machine-wide load instead of the fixed 32 cap)
+- **Evidence:** same entry as above.
+- **Commit:** T1_COMMIT_PLACEHOLDER
 
 ## Give the inner agent a richer per-function prompt
 
@@ -63,6 +65,22 @@ entries. Terminal states: confirmed, refuted, noise.
 - **Status:** open
 - **Evidence:** `avocado-experimental-data/baseline-{csv_parser,mkey}.jsonl`.
 - **Commit:**
+
+## Shorter per-mutant CBMC budget for the agent-facing tool
+
+- **Hypothesis:** `avocado-run-cbmc` verifies every mutant under the full 600 s timeout. In the
+  first baseline agent run, 13 of `partition`'s 14 mutants were decided within 95 s while one ran
+  the full 600 s and was reported as timed out (undecided) anyway; the agent's Bash call then hit
+  Claude Code's own 600 s limit, was backgrounded, and the agent spent several extra turns probing
+  CBMC by hand. Giving mutants a 120 s budget in the agent-facing tool only (the evaluation metric
+  keeps 600 s, and a timed-out mutant is never counted as killed) should cut agent wall-clock and
+  cost on such functions with no effect on the score of the specs it produces.
+- **Axis:** agent time
+- **Status:** in progress
+- **Evidence:** transcript of the baseline run-1 `partition` session (session
+  c58d4aa0-24c6-435d-abf1-78dea9e6cf7f); per-mutant completion times in
+  `avocado-experimental-data/runs/baseline/1/quicksort/quicksort__mutant_*-cbmc-runs.jsonl`.
+- **Commit:** T1_COMMIT_PLACEHOLDER
 
 ## Cache mutant verdicts inside one agent session
 

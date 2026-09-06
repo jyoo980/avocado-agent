@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+import threading
 from pathlib import Path
 
 import tree_sitter_c as tsc
@@ -17,6 +18,10 @@ from .cbmc_clause_stripper import strip_cbmc_clauses
 
 _TREE_SITTER_LANG = Language(tsc.language())
 _PARSER = Parser(_TREE_SITTER_LANG)
+# A tree-sitter `Parser` is not thread-safe, and this module's single shared instance is reached
+# from concurrent code paths (e.g. the evaluation driver scoring several functions at once). Every
+# parse goes through `_parse_to_ast`, which takes this lock around the call.
+_PARSER_LOCK = threading.Lock()
 
 # Names that tree-sitter parses as `call_expression` but are not real function calls in the
 # CBMC sense: the `sizeof` operator. Contract macros (`__CPROVER_requires`, ...) are erased by
@@ -177,7 +182,8 @@ def _parse_to_ast(content: bytes | str, language_extension: str = ".c") -> Tree:
     if isinstance(content, str):
         content = content.encode("utf-8")
     stripped, _ = strip_cbmc_clauses(content)
-    return _PARSER.parse(stripped)
+    with _PARSER_LOCK:
+        return _PARSER.parse(stripped)
 
 
 def dfs_traversal(root: Node) -> Iterator[Node]:

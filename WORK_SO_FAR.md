@@ -82,3 +82,65 @@ scripts/experiments/summarize_quality.py avocado-experimental-data/baseline-{1,2
 
 Three independent runs over the iteration tier are in progress at the time of this entry; their
 numbers are recorded in the "Agent baseline" entry below once complete.
+
+## Parallel evaluation, scratch directories, per-mutant feedback budget
+
+Findings: "Parallelize evaluation across functions (and files)", "Raise the mutant worker cap",
+"Shorter per-mutant CBMC budget for the agent-facing tool" in `FINDINGS.md`.
+
+Commit: T1_COMMIT_PLACEHOLDER. **Kept.**
+
+### What changed and why
+
+Harness (deterministic, measured with one run per tier, scores compared record-by-record):
+
+- `eval/mutants/evaluate_specification_quality.py` gained `--jobs N` (default: CPU count). Every
+  annotated function of every file is submitted to one thread pool up front; records are still
+  written in the original file/function order so the JSONL is identical to a sequential run. The
+  clause-redundancy metric is unchanged and still sequential.
+- `tools/run_cbmc.py`: a process-wide `BoundedSemaphore` (`AVOCADO_MAX_CONCURRENT_CBMC`, default
+  CPU count) gates every pipeline subprocess so nested fan-out (functions × mutants) cannot
+  oversubscribe the machine and turn decidable mutants into timeouts. `run_cbmc` takes an
+  optional `timeout_sec` (default unchanged, 600 s). Each subprocess record in
+  `<stem>-cbmc-runs.jsonl` now carries its wall-clock `seconds`.
+- `tools/util/mutation.py`: mutant files are named `<stem>__mutant_<function>_<i>.c` so functions
+  of one file can be scored concurrently; the baseline verification runs in a private scratch
+  directory (like mutants already did); the fixed 32-worker cap is gone (the semaphore bounds
+  load instead); each `MutantVerificationResult` records `seconds`; per-mutant
+  `*-cbmc-runs.jsonl` logs are deleted together with the mutant files.
+- `tools/util/tree_sitter_utils.py` and `tools/construct_call_graph.py`: a lock around the shared
+  tree-sitter parser and around the call-graph cache write, both now reached from several threads.
+- `tools/run_cbmc_and_mutation_testing.py` (`avocado-run-cbmc`) no longer carries its own copy of
+  the pipeline; it calls `tools.run_cbmc.run_cbmc` in a temporary directory (no `.goto` files in
+  the agent's working directory; concurrent tool invocations cannot clobber each other) and
+  verifies mutants with a 120 s budget (`_AGENT_MUTANT_TIMEOUT_SEC`). `avocado_verify.py`'s
+  ground-truth re-verification uses the same scratch-directory helper and keeps the full 600 s.
+
+Soundness: no CBMC check, `--unwind`, or `--depth` changed; the evaluation metric's mutant
+generation, scoring, and 600 s timeout are untouched; a timed-out mutant is still undecided and
+never killed, under either budget.
+
+### Measurements
+
+Command (worktree at the treatment commit, scoring the untouched committed benchmarks):
+
+```sh
+scripts/experiments/measure_quality.sh par-eval /app/eval/benchmarks/quicksort \
+    /app/eval/benchmarks/csv_parser /app/eval/benchmarks/mkey /app/eval/benchmarks/kilo
+```
+
+| Benchmark | Baseline real / user / sys (s) | Treatment real / user / sys (s) | Scores |
+| --- | ---: | ---: | --- |
+| quicksort | 5.48 / 8.97 / 3.34 | 2.94 / 8.48 / 2.94 | identical (3 records) |
+| csv_parser | 6.94 / 32.99 / 10.73 | 3.69 / 32.77 / 10.26 | identical (5 records) |
+| mkey | 29.73 / 84.36 / 36.15 | 5.17 / 107.02 / 67.54 | identical (46 records) |
+| kilo | 1103.17 / 619.97 / 123.40 | 414.40 / 1125.25 / 206.50 | identical (35 records) |
+
+"Identical" means every `mutation_summary` record (killed, survived, timed out, compile failed,
+kill score) is equal to the baseline's; the only textual difference is that the treatment was
+invoked with absolute benchmark paths, which appear verbatim in the free-text `metadata` of
+records that were not mutation tested. JSONL files: `avocado-experimental-data/baseline-*.jsonl`
+vs `avocado-experimental-data/par-eval-*.jsonl`.
+
+Agent time: the 120 s mutant budget only affects agent sessions; it is measured together with the
+other agent-facing changes in the "Treatment T1" agent entry below (3 runs vs. 3 baseline runs).

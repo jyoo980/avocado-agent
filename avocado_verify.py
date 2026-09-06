@@ -33,8 +33,8 @@ from loguru import logger
 from eval.mutants.mutate_function import get_mutants
 from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
-from tools.run_cbmc import RunCbmcResult, run_cbmc
-from tools.run_cbmc_and_mutation_testing import VERIFICATION_ATTEMPTS_LOG_SUFFIX
+from tools.run_cbmc import RunCbmcResult
+from tools.run_cbmc_and_mutation_testing import VERIFICATION_ATTEMPTS_LOG_SUFFIX, verify_function
 from tools.util.callgraph import CallGraph
 
 # Per-function wall-clock budget for a single `claude -p` session. A session may run CBMC
@@ -420,8 +420,10 @@ def _verify_via_agent(
             f"verification attempt(s)"
         )
 
-    # Objective verdict: re-run CBMC rather than trust Claude's self-report.
-    cbmc = run_cbmc(function, file_path, include_dirs=include_dirs)
+    # Objective verdict: re-run CBMC rather than trust Claude's self-report. `verify_function`
+    # runs the pipeline in a private scratch directory so no `.goto` intermediates land in the
+    # harness's working directory.
+    cbmc = verify_function(function, file_path, include_dirs=include_dirs)
     return FunctionVerificationResult(
         function=function,
         outcome=_outcome_for(claude_sessions_for_function[-1], cbmc),
