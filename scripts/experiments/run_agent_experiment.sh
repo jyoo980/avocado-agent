@@ -28,6 +28,11 @@
 #                       sharing a working directory.
 #   AVOCADO_DATA_DIR    Where run directories and result files go. Defaults to
 #                       `<AVOCADO_REPO_ROOT>/avocado-experimental-data`.
+#   AVOCADO_SCORER_ROOT Checkout whose `evaluate_specification_quality.py` scores the resulting
+#                       specifications. Defaults to `AVOCADO_REPO_ROOT`. Set it to one checkout for
+#                       every arm of an experiment so both arms are scored by the same code: the
+#                       metric is identical either way, but a checkout with the parallel scorer
+#                       finishes in a fraction of the time.
 set -euo pipefail
 
 if [ "$#" -lt 3 ]; then
@@ -42,6 +47,7 @@ shift 2
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="${AVOCADO_REPO_ROOT:-$(cd "${script_dir}/../.." && pwd)}"
 data_dir="${AVOCADO_DATA_DIR:-${repo_root}/avocado-experimental-data}"
+scorer_root="${AVOCADO_SCORER_ROOT:-${repo_root}}"
 run_root="${data_dir}/runs/${label}/${run_id}"
 mkdir -p "${run_root}"
 
@@ -79,7 +85,7 @@ for benchmark_dir in "$@"; do
   echo "== ${label}/${run_id}/${benchmark}: scoring $(date -u +%FT%TZ)" | tee -a "${time_log}"
   find "${work_dir}" \( -name '*.goto' -o -name '*-callgraph.json' -o -name '*__mutant_*.c' \) -delete
   {
-    time -p "${repo_root}/eval/mutants/evaluate_specification_quality.py" "${work_dir}" \
+    time -p "${scorer_root}/eval/mutants/evaluate_specification_quality.py" "${work_dir}" \
       --auto-include --mutation --jsonl "${data_dir}/${label}-${run_id}-${benchmark}.jsonl"
   } 2>>"${time_log}"
   tail -n 3 "${time_log}"
