@@ -287,3 +287,40 @@ Every `mutation_summary` record matches the baseline exactly: 3 of 3 records on 
 on csv_parser, 46 of 46 on mkey, zero score differences. Wall-clock was 2.96 s, 3.66 s and 7.23 s
 (mkey ran while two agent sessions were competing for the machine, which is why it is above the
 5.17 s measured on an idle machine). Files: `avocado-experimental-data/head-*.jsonl`.
+
+## Confirmation tier: paired agent runs on mkey
+
+The iteration tier cannot show a quality difference (its kill score is pinned by two libc-heavy
+csv_parser functions, see `FINDINGS.md`), so the kept changes were re-measured on mkey, where the
+committed specifications leave plenty of headroom. mkey vendors polarssl, whose 77 functions carry
+no committed specifications and would dominate the run, so those sources are excluded with
+`AVOCADO_SKIP_GLOB='*/polarssl/*'`; the remaining four files hold the 49 functions the deterministic
+mkey baseline scores.
+
+```sh
+AVOCADO_SKIP_GLOB='*/polarssl/*' AVOCADO_SCORER_ROOT=/app \
+  scripts/experiments/run_agent_experiment.sh <base|final> <run-id> eval/benchmarks/mkey
+scripts/experiments/compare_arms.py --baseline base --treatment final --runs <ids> --benchmarks mkey
+```
+
+MKEY_TABLE_PLACEHOLDER
+
+Both arms verify all 49 functions and annotate all 49; neither loses a session to the harness
+timeout. The difference is in what the contracts are worth. The treatment writes contracts that
+verify *and* have mutants to kill on 21 functions against the baseline's 17, and leaves only one
+function with a contract that does not verify against the baseline's five. On the pooled measure
+(every decided mutant in the benchmark, which cannot be gamed by specifying fewer functions) it
+kills 62 of 249 against 52 of 217.
+
+For scale, the committed specifications in `eval/benchmarks/mkey` score a mean of 0.1937 and a
+pooled 0.1111 (17 of 153 decided mutants, 14 functions tested). Both agent arms beat the checked-in
+specifications comfortably; the treatment beats the baseline arm.
+
+**Measurement artifact worth recording.** The first scoring pass for the `base` arm of run 14
+crashed with a `JSONDecodeError` reading a half-written call-graph JSON. The cause was in the
+experiment harness, not in either arm: `AVOCADO_SCORER_ROOT=/app` makes the *script* come from this
+checkout while `uv` still resolves the *modules* from the arm's checkout, so the baseline arm ran
+this checkout's parallel evaluation driver against its own unlocked `construct_call_graph`. That is
+precisely the race the `_CALL_GRAPH_LOCK` in commit a0620ca removes. The run was re-scored entirely
+within this checkout using `scripts/experiments/rescore_run.sh base 14 mkey`, and the table uses
+that result.
