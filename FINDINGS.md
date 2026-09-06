@@ -106,10 +106,16 @@ entries. Terminal states: confirmed, refuted, noise.
   precondition when that is what it takes -- should raise kill scores on the parser-shaped
   functions where the current guidance produces case-split specs.
 - **Axis:** quality
-- **Status:** open
-- **Evidence:** `avocado-experimental-data/t2-2-csv_parser.jsonl` (`parse_csv` 0/10 decided);
-  the spec is in `avocado-experimental-data/runs/t2/2/csv_parser/csv.c`.
-- **Commit:**
+- **Status:** refuted (no effect; kept in history as commit `fcba9af`, reverted by `00c1264`)
+- **Evidence:** Treatment T3 added exactly this paragraph to `CLAUDE.md` and was measured over
+  three paired runs against the treatment without it (`compare_arms.py --baseline final
+  --treatment t3 --runs 7 8 9 --benchmarks quicksort csv_parser`). Every run of both arms produced
+  the identical score: mean kill score 0.5000, pooled 0.4000, 22/55 decided mutants killed, 8/8
+  functions verified. Agent-time deltas were -41 s, +7 s, +19 s -- noise. The functions that score
+  zero (`parse_csv` 0/10, `fread_csv_line` 0/23) do so for a structural reason, not because the
+  agent chose guarded postconditions: see "csv_parser's libc-heavy functions are the quality
+  ceiling".
+- **Commit:** `fcba9af`, reverted by `00c1264`
 
 ## Re-run a session when the function verifies but mutants survive
 
@@ -146,3 +152,34 @@ entries. Terminal states: confirmed, refuted, noise.
   happened: modelled libc is stricter, and the specs written against nondeterministic libc do not
   survive it. Compare `avocado-experimental-data/addlib-*.jsonl` with `baseline-*.jsonl`.
 - **Commit:** not merged; the branch is kept for reference.
+
+## csv_parser's libc-heavy functions are the quality ceiling
+
+- **Hypothesis:** `parse_csv` and `fread_csv_line` score 0 in every arm and every run measured so
+  far, while the libc-free quicksort functions score 1.0 in every run. Their bodies are driven by
+  unstubbed external calls (`malloc`, `strdup`, `free`, and a `getc` macro), which CBMC treats as
+  nondeterministic, so no postcondition over the returned buffer can distinguish a mutated body.
+  Until those calls are modelled or stubbed, no prompt change can raise csv_parser's kill score,
+  and the iteration tier's kill score is therefore insensitive to prompt work.
+- **Axis:** quality
+- **Status:** confirmed (as a diagnosis; no fix found -- the obvious one is refuted above)
+- **Evidence:** identical 22/55 pooled kills in all 12 agent runs across four arms
+  (`avocado-experimental-data/{base,final,t3}-*-{quicksort,csv_parser}.jsonl`); the one attempted
+  fix, always injecting CBMC's library models, is refuted in its own entry.
+- **Commit:**
+
+## The inner agent edits the benchmark body, not just its contract
+
+- **Hypothesis:** `CLAUDE.md` tells the agent not to change the C code, but nothing enforces it.
+  In the run-7 `fread_csv_line` spec the agent added a static helper function (legitimate: CBMC
+  allows deterministic helpers in clauses) *and* a dozen `__CPROVER_assert` statements inside the
+  function body. In-body assertions are checked by CBMC and can kill mutants that the contract
+  alone would not, so the kill score stops being a measure of the contract's strength. A harness
+  check that the function body is byte-identical to the original would keep the metric honest.
+  Counter-consideration: such a check can only lower measured scores, and the tie-break rule
+  treats quality as a hard floor, so it must be introduced as a metric change with its own
+  re-measurement rather than as an improvement.
+- **Axis:** quality (metric validity)
+- **Status:** open
+- **Evidence:** `avocado-experimental-data/runs/final/7/csv_parser/fread_csv_line.c` lines 125-176.
+- **Commit:**
