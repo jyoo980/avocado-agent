@@ -28,6 +28,11 @@
 #                       sharing a working directory.
 #   AVOCADO_DATA_DIR    Where run directories and result files go. Defaults to
 #                       `<AVOCADO_REPO_ROOT>/avocado-experimental-data`.
+#   AVOCADO_SKIP_GLOB   Shell pattern; any `.c` file whose path matches it is removed from the
+#                       working copy, so neither the agent pass nor the scoring pass sees it. Use
+#                       it to keep a benchmark's vendored third-party sources out of a run, e.g.
+#                       `*/polarssl/*` for mkey, whose committed specifications cover only its own
+#                       three source files.
 #   AVOCADO_SCORER_ROOT Checkout whose `evaluate_specification_quality.py` scores the resulting
 #                       specifications. Defaults to `AVOCADO_REPO_ROOT`. Set it to one checkout for
 #                       every arm of an experiment so both arms are scored by the same code: the
@@ -74,6 +79,9 @@ for benchmark_dir in "$@"; do
   work_dir="${run_root}/${benchmark}"
   time_log="${data_dir}/${label}-${run_id}-${benchmark}.time"
   "${script_dir}/strip_specs.py" "${benchmark_dir}" "${work_dir}"
+  if [ -n "${AVOCADO_SKIP_GLOB:-}" ]; then
+    find "${work_dir}" -name '*.c' -path "${AVOCADO_SKIP_GLOB}" -delete
+  fi
   echo "== ${label}/${run_id}/${benchmark}: agent pass $(date -u +%FT%TZ) commit=$(git -C "${repo_root}" rev-parse --short HEAD)" | tee "${time_log}"
   {
     time -p (
