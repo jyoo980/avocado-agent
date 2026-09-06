@@ -124,3 +124,25 @@ entries. Terminal states: confirmed, refuted, noise.
 - **Evidence:** `avocado_verify.py:436`; several T2 functions verified at kill score 0.0 and
   received exactly one session.
 - **Commit:**
+
+## Always inject CBMC's C-library models
+
+- **Hypothesis:** `tools/run_cbmc.py` runs `goto-instrument --add-library` only on the
+  macro-suppression retry. Without it, unstubbed libc calls (`strlen`, `strncpy`, `memcpy`,
+  `malloc`) are nondeterministic, so a caller's result is unconstrained and no postcondition can
+  distinguish a mutated body: `parse_csv` (0/10) and `fread_csv_line` (0/23) score zero in *both*
+  arms of the agent experiment while the libc-free quicksort functions score 1.0. Injecting the
+  models on every run should make those functions' behaviour observable and their mutants
+  killable. Risk: modelled libc is stricter than nondeterministic libc, so specs that verified
+  before may stop verifying, which would lower the score instead.
+- **Axis:** quality
+- **Status:** refuted
+- **Evidence:** Adding `goto-instrument --add-library` to every pipeline run (worktree
+  `/root/avocado-addlib`, branch `addlib`, measured with
+  `scripts/experiments/measure_quality.sh addlib <benchmark>`) raised no function's kill score and
+  cost four functions their verification: `fread_csv_line` (csv_parser) and `mkey_read_aes_key`,
+  `mkey_read_hmac_key`, `mkey_read_mkey_file` (mkey) went from "verified, kill score 0.0000" to
+  "did not verify". Every other function scored identically. The risk in the hypothesis is what
+  happened: modelled libc is stricter, and the specs written against nondeterministic libc do not
+  survive it. Compare `avocado-experimental-data/addlib-*.jsonl` with `baseline-*.jsonl`.
+- **Commit:** not merged; the branch is kept for reference.

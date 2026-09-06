@@ -22,3 +22,6 @@
 # Other
 avocado-experimental-data
 *.egg-info/
+
+# Validation-tier benchmark, cloned in locally; must never be committed (see GOAL.md).
+lz4_lib/
