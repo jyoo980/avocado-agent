@@ -80,8 +80,17 @@ scripts/experiments/summarize_quality.py avocado-experimental-data/baseline-{1,2
 scripts/experiments/summarize_quality.py avocado-experimental-data/baseline-{1,2,3}-csv_parser.jsonl
 ```
 
-Three independent runs over the iteration tier are in progress at the time of this entry; their
-numbers are recorded in the "Agent baseline" entry below once complete.
+The agent baseline is measured together with each treatment, in paired batches: one baseline run
+and one treatment run start at the same moment on the same machine, and the next pair starts only
+when both finish. Pairing matters because a run's wall-clock depends heavily on how much CBMC work
+is competing with it. The numbers are in the treatment entries below.
+
+An earlier attempt ran nine agent runs concurrently (labels `baseline`, `t1`, `t2`, run ids 1-3).
+All nine hit the account's usage limit part-way through `csv_parser`, so every arm stopped at a
+different function. Those results are kept in `avocado-experimental-data/` for reference but are
+**not** used for any conclusion: an arm that stops earlier specifies fewer functions, and the mean
+kill score is taken over specified functions only, so truncated runs are not comparable. Every
+number below comes from the paired batches (run ids 4-9), which completed in full.
 
 ## Parallel evaluation, scratch directories, per-mutant feedback budget
 
@@ -142,8 +151,8 @@ invoked with absolute benchmark paths, which appear verbatim in the free-text `m
 records that were not mutation tested. JSONL files: `avocado-experimental-data/baseline-*.jsonl`
 vs `avocado-experimental-data/par-eval-*.jsonl`.
 
-Agent time: the 120 s mutant budget only affects agent sessions; it is measured together with the
-other agent-facing changes in the "Treatment T1" agent entry below (3 runs vs. 3 baseline runs).
+Agent time: the 120 s mutant budget only affects agent sessions, so it is measured together with
+the prompt changes in the combined agent measurement below.
 
 ## Treatment T2: workflow guidance and a per-function prompt
 
@@ -151,8 +160,7 @@ Findings: "Give the inner agent a richer per-function prompt", "Guide callee con
 `__CPROVER_is_fresh` on possibly-aliasing pointers", "Tell the agent what kind of postcondition
 kills mutants" in `FINDINGS.md`.
 
-Commit: cc8f99d. Status: **measurement pending** (to be run after the T1 agent
-runs; see the "Agent measurements" entry below).
+Commits: cc8f99d and 51e6e98. **Kept** (see the agent measurement below).
 
 ### What changed and why
 
@@ -169,3 +177,97 @@ runs; see the "Agent measurements" entry below).
   the in-file callers whose call sites must satisfy the new preconditions.
 
 Nothing about CBMC's checks or the metric changed.
+
+## Agent measurement: baseline (94a0f38) versus the kept changes (51e6e98)
+
+This is the measurement that decides whether everything above is kept. It compares the untouched
+harness against the harness with both the parallel-evaluation change and the prompt/`CLAUDE.md`
+change, over three paired runs on the iteration tier (quicksort and csv_parser, eight functions).
+
+Both arms start from a copy of the benchmarks with every contract clause removed, so each run
+writes its specifications from scratch; the committed benchmark files are never touched.
+
+```sh
+# One paired batch per run id: a `base` run (94a0f38) and a `final` run (51e6e98) start together.
+/root/avocado-runner/batches.sh 4 5 6          # wraps scripts/experiments/run_agent_experiment.sh
+scripts/experiments/compare_arms.py --baseline base --treatment final --runs 4 5 6 \
+    --benchmarks quicksort csv_parser
+```
+
+| Metric (mean over 3 runs [min..max]) | base (94a0f38) | final (51e6e98) |
+| --- | --- | --- |
+| mean kill score | 0.500 [0.500..0.500] | 0.500 [0.500..0.500] |
+| pooled kill score | 0.402 [0.400..0.407] | 0.400 [0.400..0.400] |
+| mutants killed / decided | 22 / 54.7 | 22 / 55.0 |
+| functions verified (of 8) | 8 | 8 |
+| agent time (s, inside `claude -p`) | 2070.9 [265.9..5679.4] | 580.8 [245.4..1151.2] |
+| agent-pass wall-clock (s) | 2100.7 [297.0..5707.2] | 611.4 [277.0..1180.4] |
+| sessions killed by the 1800 s timeout | 1.0 [0..3] | 0 [0..0] |
+| reported cost (USD) | 3.48 [3.17..3.67] | 5.51 [3.29..9.11] |
+
+**Quality is unchanged.** The mean kill score is 0.5000 in all six runs. The pooled score differs
+by 0.002 in one run (one extra decided mutant), far inside the run-to-run spread. Both arms verify
+all eight functions in every run. Per the tie-break rule this clears the quality floor.
+
+**Agent time falls by 3.6x on the mean**, but the mean hides the shape of the win: two of the three
+paired runs are a wash (+80 s and -22 s), and the whole difference comes from run 4, where the
+baseline spent 5679 s against the treatment's 1151 s. In that run three baseline sessions were
+killed by the harness's 1800 s per-function timeout: one on `fread_csv_line` and two of the three
+allowed sessions on `split_on_unescaped_newlines`, which alone consumed about 90 minutes. The
+transcripts show why. The baseline agent runs CBMC by hand, backgrounds the tool, reads the
+harness's Python sources, and in one session downloaded CBMC's own C++ source from GitHub to study
+the inliner. The treatment's `CLAUDE.md` forbids exactly that, and no treatment session was killed
+by the timeout in any run. So the change does not make a typical session faster; it removes the
+tail where a session burns its entire budget without ever running the verifier.
+
+**Cost.** The recorded costs are not directly comparable: a session killed by the timeout reports
+neither a duration nor a cost, so the baseline's $3.48 excludes its three killed sessions
+altogether (the comparison script charges them 1800 s of time but cannot invent a price). The
+treatment's higher recorded cost is real but is measured against an unknown, larger baseline.
+
+**Threats to validity.**
+
+- `CLAUDE.md` lets the agent add stub files to the harness checkout, and `build_stub_index` then
+  applies them to every later verification in that checkout. During these runs the baseline arm's
+  checkout accumulated `stubs/stdlib.c` and `stubs/string.c`, so its runs 5 and 6 were not
+  independent of run 4. `run_agent_experiment.sh` now resets `stubs/` and `scripts/` before each
+  run (commit a39214c); that reset was added after these runs and is not reflected in them.
+- Scoring for the `base` arm runs the arm's own checkout (the venv resolves the project at the
+  checkout root regardless of which copy of the script is invoked), so the two arms are scored by
+  different code. That code produces identical scores by construction -- the parallel scorer was
+  validated record-for-record against the sequential one on all four benchmark tiers -- but it is
+  a difference worth naming.
+- One scoring pass (`base` run 6, csv_parser) crashed because a `make clean-mutants` run in this
+  repository deleted its in-flight artifacts. It was re-scored from the specifications the run left
+  on disk with `scripts/experiments/rescore_run.sh base 6 csv_parser`; the table uses that result.
+
+## Treatment T3: prefer total postconditions over guarded ones (reverted)
+
+Finding: "Guarded postconditions kill nothing; prefer total ones over a narrower precondition".
+
+Commit: fcba9af, reverted by 00c1264. **Reverted.**
+
+`CLAUDE.md` gained a paragraph telling the agent that a postcondition guarded by a narrow
+antecedent is vacuous on almost every input the precondition allows, and that narrowing the
+precondition is the way to make a clause bite. It was measured over three paired runs against the
+kept treatment:
+
+```sh
+/root/avocado-runner/batches_t3.sh 7 8 9
+scripts/experiments/compare_arms.py --baseline final --treatment t3 --runs 7 8 9 \
+    --benchmarks quicksort csv_parser
+```
+
+| Metric (mean over 3 runs [min..max]) | final | t3 |
+| --- | --- | --- |
+| mean kill score | 0.500 [0.500..0.500] | 0.500 [0.500..0.500] |
+| pooled kill score | 0.400 [0.400..0.400] | 0.400 [0.400..0.400] |
+| functions verified (of 8) | 8 | 8 |
+| agent time (s) | 513.3 [249.0..1007.0] | 508.3 [267.7..965.8] |
+| reported cost (USD) | 5.14 [3.59..8.07] | 5.44 [3.72..8.42] |
+
+Every run of both arms produced exactly 22 killed of 55 decided mutants. The per-run agent-time
+deltas were -41 s, +7 s and +19 s, which is noise. The paragraph was reverted rather than kept: it
+lengthens the prompt for no measured gain. The reason it cannot help is recorded as its own
+finding -- the two functions that score zero do so because their bodies are driven by unstubbed
+libc calls that CBMC treats as nondeterministic, not because of how the postconditions are shaped.
