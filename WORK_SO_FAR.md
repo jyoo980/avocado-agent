@@ -151,7 +151,7 @@ Findings: "Give the inner agent a richer per-function prompt", "Guide callee con
 `__CPROVER_is_fresh` on possibly-aliasing pointers", "Tell the agent what kind of postcondition
 kills mutants" in `FINDINGS.md`.
 
-Commit: T2_COMMIT_PLACEHOLDER. Status: **measurement pending** (to be run after the T1 agent
+Commit: cc8f99d. Status: **measurement pending** (to be run after the T1 agent
 runs; see the "Agent measurements" entry below).
 
 ### What changed and why
