@@ -69,6 +69,10 @@ Work in this order, and do not skip the first CBMC run:
 3. Strengthen the contract using the surviving-mutant diffs and re-run. Stop as soon as every
    decided mutant is killed, or when two consecutive runs leave the kill score unchanged.
 
+Do not read the harness's Python sources, and do not experiment with CBMC's `--depth` or
+`--unwind` bounds or probe whether a proof is vacuous: the bounds are fixed by the harness and are
+not yours to tune. Spend your turns on the contract itself.
+
 ## Writing contracts that verify and kill mutants
 
 - `__CPROVER_is_fresh(p, n)` demands a *separate* object for every such pointer at each call
