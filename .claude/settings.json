@@ -8,9 +8,14 @@
             "Bash(avocado-*)"
         ],
         "deny": [
-            "Bash(*git*)",
-            "Read(*.git*)",
-            "Read(DEVELOPMENT.md)"
+            "Bash(git push * main)",
+            "Bash(git push * main:*)",
+            "Bash(git push * HEAD:main)",
+            "Bash(git push * :main)",
+            "Bash(git push --force*)",
+            "Bash(git push -f *)",
+            "Bash(git switch main)",
+            "Bash(git checkout main)"
         ]
     }
 }
