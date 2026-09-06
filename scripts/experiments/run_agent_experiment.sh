@@ -60,6 +60,15 @@ cd "${repo_root}"
 # `claude -p --dangerously-skip-permissions` refuses to run as root unless this is set (README).
 export IS_SANDBOX=1
 
+# CLAUDE.md lets the inner agent add CBMC stub files to the harness checkout, and `build_stub_index`
+# picks up every `stubs/*.c` for *all* later verifications. Left in place, one run's stubs would
+# change what the next run of the same arm verifies, so runs would not be independent. Restore the
+# harness's tracked state and drop the files an earlier run's agent added before starting this one.
+# Only `stubs/` and `scripts/` are cleaned -- never the whole checkout, whose untracked `.venv/`
+# the run needs.
+git -C "${repo_root}" checkout -- stubs scripts 2>/dev/null || true
+git -C "${repo_root}" clean -qfd stubs scripts 2>/dev/null || true
+
 for benchmark_dir in "$@"; do
   benchmark="$(basename "${benchmark_dir}")"
   work_dir="${run_root}/${benchmark}"
