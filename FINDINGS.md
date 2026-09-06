@@ -53,10 +53,9 @@ entries. Terminal states: confirmed, refuted, noise.
   `__CPROVER_r_ok`/`__CPROVER_w_ok` when callers pass pointers into one object) should raise the
   number of verified callers and thus aggregate kill score.
 - **Axis:** quality
-- **Status:** open
+- **Status:** confirmed
 - **Evidence:** `avocado-run-cbmc --function partition --file eval/benchmarks/quicksort/quicksort.c`
   fails on `swap.precondition.*` at the committed specs.
-- **Status:** confirmed
 - **Status update:** folded into treatment T2 (a "Writing contracts" section in `CLAUDE.md`).
   With it, every agent run of both arms verified `partition` and `quickSort` and scored 1.0000 on
   quicksort (21/21 mutants), against the committed specifications' 0.7143 with `partition`
@@ -72,9 +71,8 @@ entries. Terminal states: confirmed, refuted, noise.
   scores. The committed specs score 0.0 on most csv_parser and mkey functions, which suggests the
   current prompt does not push hard enough in this direction.
 - **Axis:** quality
-- **Status:** open
-- **Evidence:** `avocado-experimental-data/baseline-{csv_parser,mkey}.jsonl`.
 - **Status:** noise on the iteration tier
+- **Evidence:** `avocado-experimental-data/baseline-{csv_parser,mkey}.jsonl`.
 - **Status update:** folded into treatment T2 (a "Writing contracts" section in `CLAUDE.md`) and
   sharpened further in T3. Neither moved the iteration tier's kill score: all twelve completed
   agent runs killed exactly 22 of 55 decided mutants. The tier cannot show a difference here --
