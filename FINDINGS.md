@@ -36,8 +36,12 @@ entries. Terminal states: confirmed, refuted, noise.
   and a direct instruction to run it first into the prompt should cut turns (agent time and cost)
   without lowering quality.
 - **Axis:** agent time
-- **Status:** in progress (treatment T2, measured after T1)
-- **Evidence:** WORK_SO_FAR.md entry "Treatment T2: workflow guidance and a per-function prompt".
+- **Status:** confirmed
+- **Evidence:** Measured as part of treatment T2 over three paired runs against the baseline
+  (WORK_SO_FAR.md, "Agent measurement"). Mean agent time fell from 2070.9 s to 580.8 s with the
+  kill score unchanged at 0.500 in every run. The prompt is not the whole of that win -- the
+  `CLAUDE.md` workflow section is in the same treatment -- but the prompt is what removes the
+  turns the baseline spent locating the file, its callees and the tool command.
 - **Commit:** cc8f99d
 
 ## Guide callee contracts away from `__CPROVER_is_fresh` on possibly-aliasing pointers
@@ -52,7 +56,12 @@ entries. Terminal states: confirmed, refuted, noise.
 - **Status:** open
 - **Evidence:** `avocado-run-cbmc --function partition --file eval/benchmarks/quicksort/quicksort.c`
   fails on `swap.precondition.*` at the committed specs.
+- **Status:** confirmed
 - **Status update:** folded into treatment T2 (a "Writing contracts" section in `CLAUDE.md`).
+  With it, every agent run of both arms verified `partition` and `quickSort` and scored 1.0000 on
+  quicksort (21/21 mutants), against the committed specifications' 0.7143 with `partition`
+  unverifiable. The baseline arm reaches 1.0000 too, so this is not attributable to the guidance
+  alone; what is attributable is that no run of either arm reproduced the committed specs' failure.
 - **Commit:** cc8f99d
 
 ## Tell the agent what kind of postcondition kills mutants
@@ -65,7 +74,12 @@ entries. Terminal states: confirmed, refuted, noise.
 - **Axis:** quality
 - **Status:** open
 - **Evidence:** `avocado-experimental-data/baseline-{csv_parser,mkey}.jsonl`.
-- **Status update:** folded into treatment T2 (a "Writing contracts" section in `CLAUDE.md`).
+- **Status:** noise on the iteration tier
+- **Status update:** folded into treatment T2 (a "Writing contracts" section in `CLAUDE.md`) and
+  sharpened further in T3. Neither moved the iteration tier's kill score: all twelve completed
+  agent runs killed exactly 22 of 55 decided mutants. The tier cannot show a difference here --
+  see "csv_parser's libc-heavy functions are the quality ceiling" -- so this hypothesis is
+  untested rather than wrong, and would need a benchmark with headroom to decide.
 - **Commit:** cc8f99d
 
 ## Shorter per-mutant CBMC budget for the agent-facing tool
@@ -78,8 +92,12 @@ entries. Terminal states: confirmed, refuted, noise.
   keeps 600 s, and a timed-out mutant is never counted as killed) should cut agent wall-clock and
   cost on such functions with no effect on the score of the specs it produces.
 - **Axis:** agent time
-- **Status:** in progress
-- **Evidence:** transcript of the baseline run-1 `partition` session (session
+- **Status:** confirmed
+- **Evidence:** Kept as part of the change measured in WORK_SO_FAR.md, "Agent measurement": no
+  treatment session was killed by the harness timeout in any of the three paired runs, against a
+  mean of one per baseline run. The budget is not separable from the `CLAUDE.md` guidance in that
+  measurement; both target the same failure. Original observation: transcript of the baseline
+  run-1 `partition` session (session
   c58d4aa0-24c6-435d-abf1-78dea9e6cf7f); per-mutant completion times in
   `avocado-experimental-data/runs/baseline/1/quicksort/quicksort__mutant_*-cbmc-runs.jsonl`.
 - **Commit:** a0620ca
@@ -92,8 +110,12 @@ entries. Terminal states: confirmed, refuted, noise.
   between calls, and killed/survived is not monotone in spec strength, so nothing can be reused
   across spec edits.
 - **Axis:** harness time
-- **Status:** open
-- **Evidence:**
+- **Status:** open, not pursued
+- **Evidence:** Deciding it needs a hash of the specification at each `avocado-run-cbmc` call, which
+  the harness does not record, so it cannot be settled from the logs already collected. The prior
+  is poor: the agent edits the contract between calls in nearly every transcript read, and a cache
+  keyed on the mutant source (which embeds the contract) would then never hit. It is recorded here
+  so it is not re-investigated without first adding that instrumentation.
 - **Commit:**
 
 ## Guarded postconditions kill nothing; prefer total ones over a narrower precondition
