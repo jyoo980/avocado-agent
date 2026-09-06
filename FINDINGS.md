@@ -15,7 +15,7 @@ entries. Terminal states: confirmed, refuted, noise.
 - **Evidence:** WORK_SO_FAR.md entry "Parallel evaluation, scratch directories, per-mutant
   feedback budget". Identical scores on every tier; wall-clock 5.5→2.9 s (quicksort), 6.9→3.7 s
   (csv_parser), 29.7→5.2 s (mkey), 1103→414 s (kilo).
-- **Commit:** T1_COMMIT_PLACEHOLDER
+- **Commit:** a0620ca
 
 ## Raise the mutant worker cap
 
@@ -26,7 +26,7 @@ entries. Terminal states: confirmed, refuted, noise.
 - **Status:** confirmed (folded into the parallel-evaluation change; a process-wide subprocess
   semaphore in `tools/run_cbmc.py` now bounds machine-wide load instead of the fixed 32 cap)
 - **Evidence:** same entry as above.
-- **Commit:** T1_COMMIT_PLACEHOLDER
+- **Commit:** a0620ca
 
 ## Give the inner agent a richer per-function prompt
 
@@ -80,7 +80,7 @@ entries. Terminal states: confirmed, refuted, noise.
 - **Evidence:** transcript of the baseline run-1 `partition` session (session
   c58d4aa0-24c6-435d-abf1-78dea9e6cf7f); per-mutant completion times in
   `avocado-experimental-data/runs/baseline/1/quicksort/quicksort__mutant_*-cbmc-runs.jsonl`.
-- **Commit:** T1_COMMIT_PLACEHOLDER
+- **Commit:** a0620ca
 
 ## Cache mutant verdicts inside one agent session
 

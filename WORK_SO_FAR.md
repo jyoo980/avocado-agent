@@ -88,7 +88,7 @@ numbers are recorded in the "Agent baseline" entry below once complete.
 Findings: "Parallelize evaluation across functions (and files)", "Raise the mutant worker cap",
 "Shorter per-mutant CBMC budget for the agent-facing tool" in `FINDINGS.md`.
 
-Commit: T1_COMMIT_PLACEHOLDER. **Kept.**
+Commit: a0620ca. **Kept.**
 
 ### What changed and why
 
