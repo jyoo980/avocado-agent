@@ -7,7 +7,10 @@ Given a baseline label and a treatment label plus the run ids they share, report
 - the mean and spread of the per-run mean kill score and pooled kill score, over the benchmarks
   named on the command line;
 - how many functions each run verified, and how many were left unverified or unspecified;
-- agent time (seconds inside `claude -p`) and cost.
+- agent time (seconds inside `claude -p`) and cost. A session killed by the harness's
+  `--claude-timeout` reports neither duration nor cost, so it is charged `--timeout-seconds`
+  (default 1800, the harness default) and counted in `timed_out`; the arm's cost is then a lower
+  bound.
 
 A run's benchmarks are read from `<data-dir>/<label>-<run-id>-<benchmark>.jsonl` (scores) and
 `<data-dir>/runs/<label>/<run-id>/` (agent logs), the layout `run_agent_experiment.sh` produces.
@@ -38,13 +41,20 @@ def main() -> None:
     parser.add_argument(
         "--data-dir", default="avocado-experimental-data", help="Directory holding the results."
     )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=1800,
+        help="Seconds charged for a session the harness killed on timeout (default: 1800).",
+    )
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
     rows: dict[str, list[dict[str, float]]] = {}
     for label in (args.baseline, args.treatment):
         rows[label] = [
-            _run_metrics(data_dir, label, run_id, args.benchmarks) for run_id in args.runs
+            _run_metrics(data_dir, label, run_id, args.benchmarks, args.timeout_seconds)
+            for run_id in args.runs
         ]
 
     keys = (
@@ -56,6 +66,7 @@ def main() -> None:
         "unscored",
         "verified",
         "functions",
+        "timed_out_sessions",
         "agent_seconds",
         "cost_usd",
     )
@@ -99,7 +110,7 @@ def _cell(values: list[float], mean: float) -> str:
 
 
 def _run_metrics(
-    data_dir: Path, label: str, run_id: str, benchmarks: list[str]
+    data_dir: Path, label: str, run_id: str, benchmarks: list[str], timeout_seconds: int
 ) -> dict[str, float]:
     """Return one run's pooled quality metrics and agent cost.
 
@@ -112,6 +123,8 @@ def _run_metrics(
         label (str): The arm's label.
         run_id (str): The run id.
         benchmarks (list[str]): Benchmark names to pool.
+        timeout_seconds (int): Seconds charged for a session the harness killed on timeout, which
+            reports no duration of its own.
 
     Returns:
         dict[str, float]: The run's metrics.
@@ -139,7 +152,7 @@ def _run_metrics(
                 scores.append(0.0)
                 unscored += 1
 
-    functions = verified = 0
+    functions = verified = timed_out_sessions = 0
     agent_ms = 0.0
     cost = 0.0
     run_dir = data_dir / "runs" / label / run_id
@@ -152,7 +165,11 @@ def _run_metrics(
                 continue
             functions += 1
             verified += record["outcome"] == "VERIFIED"
-            agent_ms += sum((s.get("duration_ms") or 0) for s in record["claude"])
+            timed_out_sessions += sum(1 for s in record["claude"] if s.get("timed_out"))
+            agent_ms += sum(
+                timeout_seconds * 1000 if s.get("timed_out") else (s.get("duration_ms") or 0)
+                for s in record["claude"]
+            )
             cost += float(record.get("total_cost_to_verify_usd") or 0)
 
     return {
@@ -164,6 +181,7 @@ def _run_metrics(
         "unscored": float(unscored),
         "verified": float(verified),
         "functions": float(functions),
+        "timed_out_sessions": float(timed_out_sessions),
         "agent_seconds": agent_ms / 1000,
         "cost_usd": cost,
     }
