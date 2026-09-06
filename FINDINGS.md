@@ -95,3 +95,32 @@ entries. Terminal states: confirmed, refuted, noise.
 - **Status:** open
 - **Evidence:**
 - **Commit:**
+
+## Guarded postconditions kill nothing; prefer total ones over a narrower precondition
+
+- **Hypothesis:** In the T2 runs the agent wrote `parse_csv` postconditions that are all
+  implications with very specific antecedents (`line[0] == '"' && line[3] == '\0' && ...`). Every
+  such clause is vacuously true on almost every input the precondition allows, so the spec killed
+  0 of 10 decided mutants despite being long and detailed. Telling the agent to prefer a clause
+  that constrains the result for *every* input the precondition allows -- narrowing the
+  precondition when that is what it takes -- should raise kill scores on the parser-shaped
+  functions where the current guidance produces case-split specs.
+- **Axis:** quality
+- **Status:** open
+- **Evidence:** `avocado-experimental-data/t2-2-csv_parser.jsonl` (`parse_csv` 0/10 decided);
+  the spec is in `avocado-experimental-data/runs/t2/2/csv_parser/csv.c`.
+- **Commit:**
+
+## Re-run a session when the function verifies but mutants survive
+
+- **Hypothesis:** `avocado_verify.is_spec_improvable_with_mutation_testing` returns False as soon
+  as the function verifies, so the harness never spends a second session on a spec that verifies
+  with a kill score of 0. Gating the re-run on the kill score instead (re-run while mutants
+  survive and the previous session raised the score) would spend agent time exactly where quality
+  is lowest. Cost: strictly more agent time, so it is only worth keeping if the kill-score gain is
+  larger than the run-to-run spread.
+- **Axis:** quality (at the cost of agent time)
+- **Status:** open
+- **Evidence:** `avocado_verify.py:436`; several T2 functions verified at kill score 0.0 and
+  received exactly one session.
+- **Commit:**
