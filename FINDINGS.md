@@ -183,3 +183,34 @@ entries. Terminal states: confirmed, refuted, noise.
 - **Status:** open
 - **Evidence:** `avocado-experimental-data/runs/final/7/csv_parser/fread_csv_line.c` lines 125-176.
 - **Commit:**
+
+## The harness spends up to 90 minutes on a session that never runs the verifier
+
+- **Hypothesis:** `avocado_verify` gives a function up to `_MAX_AGENT_SESSIONS_PER_FUNCTION` (3)
+  sessions of `_DEFAULT_CLAUDE_TIMEOUT_SEC` (1800 s) each while the agent has made fewer than two
+  verification attempts. A session that never calls `avocado-run-cbmc` at all therefore costs the
+  full 30 minutes and is retried twice, for 90 minutes on one function, with nothing to show. Two
+  candidate fixes: (a) tell the retry prompt that the previous session ended without running the
+  verifier, so the next one starts differently; (b) give the *first* retry a shorter timeout, on
+  the grounds that a session which has produced no attempt in 30 minutes is not about to.
+- **Axis:** agent time
+- **Status:** open (partially addressed by the `CLAUDE.md` workflow section, which removed every
+  timeout in three paired treatment runs; the structural fix is untested)
+- **Evidence:** baseline run 4 spent 5679 s of agent time against the treatment's 1151 s, almost
+  all of it in three killed sessions; see the "Agent measurement" entry in `WORK_SO_FAR.md`.
+- **Commit:**
+
+## Usage limits, not machine time, bound how much agent measurement is possible
+
+- **Hypothesis:** n/a -- this is an operational constraint worth recording so it is not
+  rediscovered. Nine concurrent agent runs exhausted the account's usage limit in about 75 minutes,
+  truncating all nine mid-benchmark. Two concurrent runs over the eight-function iteration tier
+  complete comfortably, but two concurrent runs over mkey (47 functions) exhausted it again after
+  roughly eight functions. Agent-time experiments must therefore be planned around a budget of
+  roughly one iteration-tier pair per hour, and a confirmation-tier pair needs a fresh window.
+- **Axis:** agent time (measurement capacity)
+- **Status:** confirmed
+- **Evidence:** `avocado-experimental-data/{base,final}-12-mkey.jsonl` and the `USAGE_LIMITED`
+  outcomes in `avocado-experimental-data/runs/{base,final}/12/`; the abandoned runs 1-3 of labels
+  `baseline`, `t1` and `t2`.
+- **Commit:**
