@@ -19,8 +19,15 @@
 #   scripts/experiments/run_agent_experiment.sh baseline 1 eval/benchmarks/quicksort eval/benchmarks/csv_parser
 #
 # Environment:
-#   CLAUDE_TIMEOUT   Per-function `claude -p` timeout in seconds, forwarded to `--claude-timeout`
-#                    when set.
+#   CLAUDE_TIMEOUT      Per-function `claude -p` timeout in seconds, forwarded to
+#                       `--claude-timeout` when set.
+#   AVOCADO_REPO_ROOT   Checkout whose harness (`avocado-verify`, `avocado-run-cbmc`, `CLAUDE.md`,
+#                       `.claude/settings.json`) the run should use. Defaults to the checkout this
+#                       script lives in. Point it at a separate `git worktree` (with its own
+#                       `.venv` from `uv sync`) to run several experiments concurrently without
+#                       sharing a working directory.
+#   AVOCADO_DATA_DIR    Where run directories and result files go. Defaults to
+#                       `<AVOCADO_REPO_ROOT>/avocado-experimental-data`.
 set -euo pipefail
 
 if [ "$#" -lt 3 ]; then
@@ -32,10 +39,17 @@ label="$1"
 run_id="$2"
 shift 2
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-data_dir="${repo_root}/avocado-experimental-data"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="${AVOCADO_REPO_ROOT:-$(cd "${script_dir}/../.." && pwd)}"
+data_dir="${AVOCADO_DATA_DIR:-${repo_root}/avocado-experimental-data}"
 run_root="${data_dir}/runs/${label}/${run_id}"
 mkdir -p "${run_root}"
+
+# Use the chosen checkout's tools (both for the harness and for the `avocado-run-cbmc` the inner
+# agent finds on PATH), and let `uv run` shebangs resolve that checkout's project.
+export PATH="${repo_root}/.venv/bin:${PATH}"
+unset VIRTUAL_ENV
+cd "${repo_root}"
 
 # `claude -p --dangerously-skip-permissions` refuses to run as root unless this is set (README).
 export IS_SANDBOX=1
@@ -44,11 +58,10 @@ for benchmark_dir in "$@"; do
   benchmark="$(basename "${benchmark_dir}")"
   work_dir="${run_root}/${benchmark}"
   time_log="${data_dir}/${label}-${run_id}-${benchmark}.time"
-  "${repo_root}/scripts/experiments/strip_specs.py" "${benchmark_dir}" "${work_dir}"
+  "${script_dir}/strip_specs.py" "${benchmark_dir}" "${work_dir}"
   echo "== ${label}/${run_id}/${benchmark}: agent pass $(date -u +%FT%TZ) commit=$(git -C "${repo_root}" rev-parse --short HEAD)" | tee "${time_log}"
   {
     time -p (
-      cd "${repo_root}"
       while IFS= read -r source_file; do
         echo "-- avocado-verify --file ${source_file} $(date -u +%FT%TZ)"
         avocado_args=(--file "${source_file}")
