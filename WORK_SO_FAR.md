@@ -271,3 +271,19 @@ deltas were -41 s, +7 s and +19 s, which is noise. The paragraph was reverted ra
 lengthens the prompt for no measured gain. The reason it cannot help is recorded as its own
 finding -- the two functions that score zero do so because their bodies are driven by unstubbed
 libc calls that CBMC treats as nondeterministic, not because of how the postconditions are shaped.
+
+## Deterministic re-measurement at the final commit
+
+The parallel-evaluation entry above was measured at commit a0620ca. Later commits touch the
+inner-agent prompt, `CLAUDE.md`, and the experiment scripts, none of which the scorer runs, so the
+deterministic numbers were re-taken at the final commit to confirm that:
+
+```sh
+scripts/experiments/measure_quality.sh head eval/benchmarks/quicksort eval/benchmarks/csv_parser \
+    eval/benchmarks/mkey
+```
+
+Every `mutation_summary` record matches the baseline exactly: 3 of 3 records on quicksort, 5 of 5
+on csv_parser, 46 of 46 on mkey, zero score differences. Wall-clock was 2.96 s, 3.66 s and 7.23 s
+(mkey ran while two agent sessions were competing for the machine, which is why it is above the
+5.17 s measured on an idle machine). Files: `avocado-experimental-data/head-*.jsonl`.
