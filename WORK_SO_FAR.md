@@ -490,11 +490,32 @@ the entries above and in the header of `scripts/experiments/run_paired_batches.s
 
 ## Plan: what to do next
 
-Ordered by value per unit of the scarce resource, which is not machine time but the account's usage
-limit. Each step names how it is measured and what would falsify it. Steps 1 and 2 need no agent
-runs at all and should be done first for that reason.
+**The binding constraint is the account's usage limit, not machine time.** Nine concurrent agent
+runs exhausted it in 75 minutes and wasted the whole batch; two concurrent runs over the
+eight-function iteration tier fit comfortably; two over mkey's 49 functions exhausted it again and
+needed a fresh window. Budget roughly one iteration-tier pair per hour, and start a
+confirmation-tier pair only with a fresh window. Machine time is free by comparison: a deterministic
+scoring pass over every tier is minutes, and all CBMC work in a whole mkey generation run is 63
+seconds.
 
-### 1. Cap the *agent-facing* verification budget (no metric impact, no quota)
+The plan is therefore ordered by value per agent session, not by value per hour, and each step
+below carries an explicit **Cost** in agent sessions alongside how it is measured and what would
+falsify it. Steps 1 and 2 are first because **they need no agent sessions at all** -- they can be
+built and validated entirely from deterministic runs, so they cost nothing against the constraint
+that actually binds. Steps 3 onwards each need dedicated agent runs and should be scheduled around
+the limit, one at a time.
+
+| Step | Agent sessions needed |
+| --- | --- |
+| 1. Cap the agent-facing verification budget | none to build and prove safe; the benefit rides along with the next paired runs |
+| 2. Record the kill score in the run log | none |
+| 3. Characterise kilo's agent loop | one un-paired run over `kilo.c` |
+| 4. Batch the functions with no mutants | three paired runs on mkey |
+| 5. Specify independent files concurrently | three paired runs on a multi-file benchmark |
+| 6. A worked example in `CLAUDE.md` | three paired runs on mkey |
+| 7. Targeted libc stubs | none for the first pass; three paired runs to confirm |
+
+### 1. Cap the *agent-facing* verification budget (no agent sessions needed)
 
 `avocado-run-cbmc` verifies the function under the full 600 s CBMC budget. On kilo a single
 verification of `editorDelRow` runs the whole 600 s and returns nothing, and `editorInsertRow`
@@ -507,12 +528,17 @@ recorded result. It is purely a bound on how long a session waits for an answer 
 get. Pair the cap with a message the agent can act on -- undecided within N seconds, so bound the
 input sizes in the precondition -- rather than a bare timeout.
 
-- **Measure:** three paired runs on mkey (agent time, cost, kill score) plus, first, the kilo
-  characterisation in step 3.
+- **Cost:** none. This is why it is first. The change cannot alter a recorded result, and the
+  safety check is deterministic: score every tier, record each run's decision time, and confirm no
+  contract needs longer than the proposed cap to verify. The data already in hand passes that check
+  on kilo, where every decisive run finished within 12.5 s.
+- **Measure:** the safety check above, deterministically. The agent-time benefit does not need a
+  dedicated experiment -- it shows up in whatever paired runs come next, as sessions that stop
+  being killed by the harness timeout.
 - **Falsifier:** any function whose contract verifies only at a budget above the cap; the ground
   truth would then disagree with what the agent was told, which is worse than the delay.
 
-### 2. Record the kill score in the run log, and stop re-deriving it (no quota)
+### 2. Record the kill score in the run log, and stop re-deriving it (no agent sessions needed)
 
 `avocado-run-cbmc` computes a kill score on every successful call and discards it. Persist the last
 one per function in `<stem>-avocado-verify.jsonl`. The offline pass then becomes a validation tool
@@ -523,6 +549,8 @@ an in-loop score is not automatically the metric's score. Either store the budge
 or re-score the single finished function at the metric's budget when the harness moves on -- one
 function, not the whole program.
 
+- **Cost:** none. Drive `avocado-run-cbmc` over a benchmark's functions directly, with no agent in
+  the loop, and compare what it records against the offline pass.
 - **Measure:** deterministic. The recorded scores must equal the offline pass's scores
   record-for-record on all four tiers.
 - **Falsifier:** any divergence that is not explained by the budget difference.
@@ -534,6 +562,8 @@ on it. One run of the current system over `kilo.c` settles which regime it is in
 first kilo agent-time datapoint. It is un-paired on purpose: this is characterisation, not a
 comparison, so it costs one run rather than two.
 
+- **Cost:** one un-paired run over `kilo.c` (37 functions). Un-paired on purpose: this is
+  characterisation, not a comparison, so it costs one run rather than two.
 - **Measure:** agent seconds per function, sessions killed by the timeout, and the share of session
   wall-clock spent inside `avocado-run-cbmc`.
 - **Falsifier for the whole "kilo-shaped" story:** if kilo's loop turns out to be model-latency
@@ -546,6 +576,8 @@ kill score by construction; twelve are the same one-line byte-order accessor. Th
 known before the session starts, for free. Give such functions one shared session instead of a cold
 start each.
 
+- **Cost:** three paired runs on mkey, so six runs over a 49-function program. Plan a fresh usage
+  window for it.
 - **Measure:** three paired runs on mkey. The headline is wall-clock and cost, but the number that
   decides it is the *callers'* kill scores, because a callee's contract is what its callers verify
   against under `--replace-call-with-contract`.
@@ -558,8 +590,10 @@ The call graph is built per file and has no cross-file edges, so different files
 constraint. mkey has four; `lz4_lib` has many. This does not reduce agent-seconds, it reduces the
 wall-clock to fully specify a program, which is the axis the goal names.
 
+- **Cost:** three paired runs on a multi-file benchmark. Note that concurrency spends the usage
+  limit faster in wall-clock terms even though the number of sessions is unchanged.
 - **Measure:** wall-clock of the whole pass, agent seconds (expected flat), and the kill score
-  (expected flat). Watch the usage limit, which concurrency consumes faster.
+  (expected flat).
 - **Falsifier:** any quality change at all; there should be none, since the sessions are independent.
 
 ### 6. A worked high-kill-score example in `CLAUDE.md`
@@ -568,6 +602,7 @@ The two prompt treatments that shipped prose without an example moved the iterat
 The remaining untried prompt intervention is a complete example: a function with a loop over a
 buffer, its contract, the mutants that contract kills, and one it does not.
 
+- **Cost:** three paired runs on mkey.
 - **Measure:** three paired runs on mkey, not the iteration tier -- the iteration tier is pinned and
   cannot show a quality difference.
 - **Falsifier:** unchanged pooled kill score across three pairs, as with T3.
@@ -579,6 +614,8 @@ nondeterministic. `stubs/` already resolves models per symbol from a `/* FUNCTIO
 so unlike the refuted `--add-library` change this can be added one symbol at a time with a
 measurable blast radius.
 
+- **Cost:** none for the first pass, which is deterministic; three paired runs only if the
+  deterministic pass looks promising.
 - **Measure:** deterministic first -- add one stub, re-score all four tiers, and see which functions
   gain and which stop verifying. Only then run agent pairs.
 - **Falsifier:** the same failure as `--add-library`, namely functions that verified against
