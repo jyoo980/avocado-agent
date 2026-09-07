@@ -856,7 +856,7 @@ entries. Terminal states: confirmed, refuted, noise.
   identical to the one before it: same prompt, same file, same model. That spends full sessions in
   three situations where the next session is not expected to differ from the last.
 - **Axis:** agent time
-- **Status:** implemented (commit `RERUN_COMMIT`); agent measurement pending, so not yet
+- **Status:** implemented (commit `06a7d02`); agent measurement pending, so not yet
   counted as kept -- see the note on measurement below.
 - **Evidence, from every completed run's log and transcript:**
   1. *Identical retries after a session that never ran the verifier.* Exactly one function in all
@@ -895,4 +895,4 @@ entries. Terminal states: confirmed, refuted, noise.
   a bound on a tail, not a shift of the mean. The honest test is the confirmation tier under the
   memory-isolated protocol of plan step 0, watching the count of killed sessions and of functions
   that receive more than one session. Until then this stays labelled "implemented, unmeasured".
-- **Commit:** `RERUN_COMMIT`
+- **Commit:** `06a7d02`

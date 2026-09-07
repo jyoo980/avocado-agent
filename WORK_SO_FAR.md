@@ -515,7 +515,7 @@ the entries above and in the header of `scripts/experiments/run_paired_batches.s
 
 Finding: "The per-function re-run loop retries sessions that cannot do better" in `FINDINGS.md`.
 
-Commit: RERUN_COMMIT. Status: **implemented; not yet counted as kept** -- it changes the loop's
+Commit: 06a7d02. Status: **implemented; not yet counted as kept** -- it changes the loop's
 control flow, which the goal says must be measured over three paired runs, and those runs have not
 been made (they belong after plan step 0, since the loop only fires on the tail of sessions that
 never reach the verifier).
