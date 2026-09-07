@@ -536,7 +536,7 @@ attempt, but the retry note is prompt text and is to be measured like any other.
 Finding: "Specify independent functions of one file concurrently" in `FINDINGS.md`; the design is
 recorded in the approved plan and summarised there.
 
-Commit: CONCURRENCY_COMMIT. Status: **implemented; not yet counted as kept.** It is a control-flow
+Commit: d4b80b6. Status: **implemented; not yet counted as kept.** It is a control-flow
 change and needs three paired runs (`--jobs 1` against `--jobs 4` on mkey, same commit, under the
 memory-isolated protocol of plan step 0) before the goal's rules let it count. The default is
 `--jobs 1`, so nothing changes for a run that does not ask for concurrency -- except one thing

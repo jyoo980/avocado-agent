@@ -987,7 +987,7 @@ entries. Terminal states: confirmed, refuted, noise.
   function as soon as the callees it depends on are merged bounds it by the longest dependency
   chain instead (479 s against 3223 s on mkey, measured from session times).
 - **Axis:** agent time (wall-clock to specify a program; agent-seconds and cost expected flat)
-- **Status:** implemented (commit `CONCURRENCY_COMMIT`); **not yet counted as kept** -- a
+- **Status:** implemented (commit `d4b80b6`); **not yet counted as kept** -- a
   control-flow change, to be measured over three paired runs (`--jobs 1` vs `--jobs 4` on mkey,
   same commit, under the memory-isolated protocol of plan step 0). Default is `--jobs 1`.
 - **What was built:**
@@ -1027,4 +1027,4 @@ entries. Terminal states: confirmed, refuted, noise.
   trivially verifies reports VERIFIED and does not stop the run; this predates the change and is
   left as is. (2) `stubs/` and the auto-memory directory remain shared across concurrent
   sessions (write races on same-name stubs; interleaved notes) -- documented, not fixed.
-- **Commit:** `CONCURRENCY_COMMIT`
+- **Commit:** `d4b80b6`
