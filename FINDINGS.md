@@ -787,3 +787,64 @@ entries. Terminal states: confirmed, refuted, noise.
   letting a session run CBMC by hand or wait on it -- not file I/O, not mutation testing, and not
   the scoring pass.
 - **Commit:**
+
+## Assessment of branch `rework-mutant-retry-logic` for wall-clock
+
+- **Hypothesis under test:** the branch (tip `0ec54d0`, based on `f457c83`, 15 files, +2469/-959)
+  improves wall-clock. It bundles four things: a persistent per-mutant verdict cache keyed on a
+  body-relative offset plus a digest of the function's and its callees' contracts
+  (`tools/util/mutation_cache.py`); a 120 s per-mutant CBMC budget (`MUTANT_CBMC_TIMEOUT_SEC`,
+  the same value chosen independently here); an `avocado-mark-equivalent` tool and prompt text
+  letting the agent declare survivors equivalent, with an *adjusted* kill score that excludes them
+  and a *raw* score that does not; and a reworked session loop that raises the cap from 3 to 5
+  sessions per function and keeps granting sessions while the kill score is still moving,
+  stopping only after two attempts that change neither the specification nor the score.
+- **Axis:** agent time (mostly), quality (its real purpose)
+- **Status:** measured; **refuted as a wall-clock improvement** on the evidence below. Its tests
+  (103) and checks pass at the tip.
+- **Deterministic evidence** (branch worktree `/root/avocado-retry`, fresh copies of the checked-in
+  benchmarks, its own scorer):
+
+  | | baseline (94a0f38) | branch, first pass | branch, second pass (cache warm) |
+  | --- | ---: | ---: | ---: |
+  | quicksort scorer wall-clock | 5.5 s | 5.4 s | -- |
+  | csv_parser | 6.9 s | 7.2 s | -- |
+  | mkey | 29.7 s | 31.5 s | 18.8 s (154/154 mutants reused) |
+  | verdict differences vs baseline | -- | 0 on all three tiers | 0 |
+  | kilo | 1103 s | KILO_P1 | KILO_P2 |
+
+  A repeated `avocado-run-cbmc` on `hexdump` (42 mutants): 2.69 s cold, **0.70 s** with the
+  spec unchanged, **2.64 s** again after a one-token change to the precondition -- a changed spec
+  invalidates the digest, and every mutant is re-run. This checkout's tool: 2.26 s every time.
+- **What that is worth in the loop.** The tool is 3-4% of session wall-clock (see "Where the
+  wall-clock actually goes"). Across the 49 treatment sessions of mkey run 14 the agent made 17
+  tool calls after a function first verified; even if every one of them were an unchanged-spec
+  repeat, the cache saves about 2 s each, roughly 34 s of a 3223 s pass, about 1%.
+- **What the session loop costs.** In that same run 18 of 49 functions verified with live
+  survivors; the branch keeps granting those functions sessions until the score plateaus. Their
+  first sessions were 2130 s of the 3223 s. One extra session each is +2130 s (1.66x wall-clock);
+  two is 2.3x; the cap of four is 3.6x. That is the branch working as designed -- it is a quality
+  change that spends agent time -- and it dwarfs everything the cache can give back.
+- **Two things to weigh before merging it for any reason:**
+  1. *It changes the metric.* The cache and the 120 s budget are applied unconditionally inside
+     `generate_mutants_and_compute_score`, which the evaluation scorer calls, and
+     `summary()["kill_score"]` becomes the adjusted score. On a fresh directory nothing differs
+     (verified above), but on a directory an agent has worked in, the scorer reads the agent's
+     cache and excludes anything marked or presumed equivalent from `kill_score`. The frozen metric
+     would then be `raw_kill_score`, which the comparison scripts do not read.
+  2. *Presumed equivalence is a heuristic that removes the signal.* A mutant that survives three
+     distinct specifications is presumed equivalent and dropped from the adjusted score. The
+     survivors spot-checked earlier (`reverse_words`, `align64`) are killable and would cross that
+     threshold after three weak attempts; the agent is then told to "work to raise the adjusted
+     score", which no longer counts them. The raw score stays honest; the incentive does not.
+- **Overlap with this branch:** it independently contains the 120 s mutant budget and the
+  per-mutant log suppression already kept here, and its recorded per-attempt kill score is the
+  "record the score during generation" item in the plan. Merging it onto this branch would
+  conflict in `tools/run_cbmc.py`, `tools/util/mutation.py` and
+  `tools/run_cbmc_and_mutation_testing.py`, which it rewrites.
+- **Verdict for the question asked:** no. Its cache recovers about 1% of wall-clock in the loop
+  and nothing in the scorer's first pass; its retry rule multiplies wall-clock by 1.7x to 3.6x on
+  mkey-shaped programs. If it is adopted it should be for the quality it may buy -- measured with
+  three paired runs on mkey and judged on the raw score -- and the slowdown recorded, as the
+  tie-break rule requires.
+- **Commit:** not merged. JSONL: `avocado-experimental-data/retry-*.jsonl`.
