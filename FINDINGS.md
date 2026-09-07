@@ -714,14 +714,20 @@ entries. Terminal states: confirmed, refuted, noise.
     more cannot be recovered from the logs.
   - The one comparison this does not touch is the deterministic one: the scorer never runs an
     agent, so the "identical scores, 2.7x faster" result for the parallel-evaluation change stands.
-- **Fix:** `avocado_verify._build_claude_command` now passes `--settings '{"autoMemoryEnabled":
-  false}'`, so a harness session knows only what the prompt and the repository tell it (commit
-  `6f5ca7b`, tested). The 37 notes are left on disk as evidence and are not used by
-  anything.
+- **Maintainer decision (2026-09-07):** memory persisting across functions and across runs is
+  *intended*. The harness change that disabled it (commit `6f5ca7b`) was reverted in
+  `REVERT_COMMIT`; sessions keep their notes, and the 37 existing notes stay in place. So this is
+  not a harness defect. It is a property of the system that any experiment must control for.
+- **What it means for measurement:** with memory on, "the system" includes what earlier sessions
+  wrote, so a fair comparison gives *both* arms memory but not the *same* memory. The
+  `autoMemoryDirectory` setting can point each arm at its own directory, which preserves the
+  within-arm carry-over the maintainer wants while stopping arms from coaching each other. That
+  needs a small hook -- the harness builds the `claude` command, so an experiment cannot add
+  `--settings` without one; an environment variable the harness forwards would do. Open item.
 - **What has to happen next:** every agent measurement in `WORK_SO_FAR.md` -- the iteration-tier
-  pairs, the mkey pairs, T3 -- was taken with shared memory on and must be re-run before it is
-  relied on. Step 0 of the plan.
-- **Commit:** `6f5ca7b`
+  pairs, the mkey pairs, T3 -- was taken with one directory shared by all arms and must be re-run
+  with per-arm directories before it is relied on. Step 0 of the plan.
+- **Commit:** `6f5ca7b` (disable), reverted by `REVERT_COMMIT`
 
 ## Where the wall-clock actually goes, from the transcripts turn by turn
 

@@ -1,7 +1,5 @@
 """Tests for the per-function prompt built by `avocado_verify`."""
 
-import json
-
 from avocado_verify import _build_claude_command, _build_prompt
 from tools.util.callgraph import CallGraph
 
@@ -39,9 +37,10 @@ def test_prompt_reports_none_for_leaf_functions_without_include_dirs() -> None:
     assert "you write): partition" in prompt
 
 
-def test_claude_command_disables_auto_memory() -> None:
+def test_claude_command_leaves_auto_memory_enabled() -> None:
+    # Memory across functions and runs is a deliberate feature of the harness; no `--settings`
+    # override may switch it off.
     command = _build_claude_command("prompt", file_path="/src/q.c", include_dirs=["/src/inc"])
-    settings = json.loads(command[command.index("--settings") + 1])
-    assert settings == {"autoMemoryEnabled": False}
+    assert "--settings" not in command
     assert command[:3] == ["claude", "--print", "prompt"]
     assert command.count("--add-dir") == 2

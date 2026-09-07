@@ -197,10 +197,11 @@ t3/9 split.c verbatim ... ship after one run", which a baseline session then did
 therefore not independent, and later runs were coached by earlier ones. The bias runs towards
 convergence of the arms and towards fewer turns, so treatment effects are more likely understated
 than overstated, but which arm gained more cannot be recovered. The full account is the "CRITICAL"
-entry in `FINDINGS.md`. The harness now disables auto-memory (`--settings
-'{"autoMemoryEnabled": false}'`, commit 6f5ca7b); every agent number below must be
-re-taken with that fix before it is relied on. The deterministic measurements are unaffected: the
-scorer never runs an agent.
+entry in `FINDINGS.md`. Memory across functions and runs is intended (the maintainer's decision;
+commit 6f5ca7b, which disabled it, is reverted by REVERT_COMMIT), so the remedy is not to switch
+it off but to give each arm its own memory directory during experiments. Every agent number below
+must be re-taken that way before it is relied on. The deterministic measurements are unaffected:
+the scorer never runs an agent.
 
 ## Agent measurement: baseline (94a0f38) versus the kept changes (51e6e98)
 
@@ -396,9 +397,10 @@ Work stopped on the 24-hour wall-clock budget (2026-09-06 00:56 UTC to 2026-09-0
 changes were kept, two were rejected, and several hypotheses remain open.
 
 **Read the agent numbers with the validity caveat above:** all of them were taken while every
-session shared one auto-memory directory across arms and runs, which was found and fixed only
-afterwards. The harness-time numbers stand; the agent-time and agent-quality numbers are
-indicative and must be re-measured with memory off.
+session shared one auto-memory directory across arms and runs, which was found only afterwards.
+Memory is intended to persist, so the re-measurement must give each arm its own directory rather
+than switch memory off. The harness-time numbers stand; the agent-time and agent-quality numbers
+are indicative until that re-measurement is done.
 
 ### Environment
 
@@ -528,7 +530,7 @@ the limit, one at a time.
 
 | Step | Agent sessions needed |
 | --- | --- |
-| 0. Re-take the baseline-vs-final measurement with auto-memory off | three paired runs on the iteration tier, then mkey |
+| 0. Re-take the baseline-vs-final measurement with per-arm memory directories | three paired runs on the iteration tier, then mkey |
 | 1. Cap the agent-facing verification budget | none to build and prove safe; the benefit rides along with the next paired runs |
 | 2. Record the kill score in the run log | none |
 | 3. Characterise kilo's agent loop | one un-paired run over `kilo.c` |
@@ -537,21 +539,23 @@ the limit, one at a time.
 | 6. A worked example in `CLAUDE.md` | three paired runs on mkey |
 | 7. Targeted libc stubs | none for the first pass; three paired runs to confirm |
 
-### 0. Re-take the agent measurements with auto-memory off
+### 0. Re-take the agent measurements with per-arm memory directories
 
 Every agent number in this document was taken while all sessions shared one memory directory (see
-the validity caveat). The harness now disables auto-memory. Before anything else that needs agent
-runs, repeat the paired baseline-versus-final measurement -- the baseline arm at 94a0f38 with the
-same `--settings` flag added so the comparison is fair -- on the iteration tier, then on mkey. Also
-move the 37 existing notes out of `/root/.claude/projects/-app/memory/` first, or a checkout that
-still has memory on will read them. Until this is done, the plan's ordering below rests on
-measurements that may be flattered by coaching.
+the validity caveat). Memory persisting across functions and runs is intended, so the control is
+isolation, not removal: point each arm at its own directory with Claude Code's
+`autoMemoryDirectory` setting, so a run still benefits from its arm's earlier runs but never from
+the other arm's. That needs one small hook, because the harness builds the `claude` command: an
+environment variable that `avocado_verify` forwards as `--settings`, unset in production. Both
+arms must start from the same memory state (empty, or the same snapshot of the 37 existing notes),
+and the baseline arm at 94a0f38 needs the same hook so the comparison is fair. Until this is done,
+the plan's ordering below rests on measurements that may be flattered by coaching.
 
 - **Cost:** three paired runs on the iteration tier, then three on mkey.
-- **Measure:** exactly as before (`compare_arms.py`), plus `session_timeline.py` to confirm no
-  session reads or writes a memory directory.
+- **Measure:** exactly as before (`compare_arms.py`), plus `session_timeline.py` to confirm each
+  session reads and writes only its own arm's directory.
 - **Falsifier of the earlier conclusions:** a materially different kill-score gap or timeout count
-  once the coaching is gone.
+  once the cross-arm coaching is gone.
 
 ### 1. Cap the *agent-facing* verification budget (no agent sessions needed)
 
