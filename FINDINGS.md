@@ -848,3 +848,51 @@ entries. Terminal states: confirmed, refuted, noise.
   three paired runs on mkey and judged on the raw score -- and the slowdown recorded, as the
   tie-break rule requires.
 - **Commit:** not merged. JSONL: `avocado-experimental-data/retry-*.jsonl`.
+
+## The per-function re-run loop retries sessions that cannot do better
+
+- **Hypothesis:** `avocado_verify._verify_via_agent` re-runs a function's session while the
+  agent has logged fewer than two verification attempts, up to three sessions, and every re-run is
+  identical to the one before it: same prompt, same file, same model. That spends full sessions in
+  three situations where the next session is not expected to differ from the last.
+- **Axis:** agent time
+- **Status:** implemented (commit `RERUN_COMMIT`); agent measurement pending, so not yet
+  counted as kept -- see the note on measurement below.
+- **Evidence, from every completed run's log and transcript:**
+  1. *Identical retries after a session that never ran the verifier.* Exactly one function in all
+     the completed runs earned extra sessions by the loop's own decision: `split_on_unescaped_newlines`
+     in baseline run 4, which went TIMEOUT (1800 s, no attempt on the file), TIMEOUT (1800 s, no
+     attempt), then a 64 s session -- 3664 s for one function -- and that third session "verified"
+     by copying another arm's finished contract on the strength of a shared memory note. Two
+     identical 30-minute sessions with no attempt are the strongest evidence available that a
+     third would do the same.
+  2. *Retries against a usage limit.* 49 functions hit a usage limit; the loop re-ran 52 sessions
+     against a limit that had already been hit. Each fails instantly, so the cost is small, but
+     the loop is doing something it cannot benefit from, and the harness's own outcome logic
+     already knows how to recognise the condition (`_is_usage_limit_hit`) -- it just applies it
+     after the loop rather than inside it.
+  3. *The attempt signal misses a third of the attempts.* Across the baseline and treatment mkey
+     transcripts the agent ran `avocado-run-cbmc` on its own function 480 times: 325 on the real
+     file and 155 on a copy somewhere else (`/tmp/probe`, `/tmp/split_dbg`, ...). The harness
+     counts attempts from the log beside the real file, so it saw none of the 155. The 3664 s
+     function above was one of these: its killed sessions ran the tool 24 and 11 times, on
+     copies. The floor was therefore measuring where the agent ran the tool, not whether it tried.
+- **The change:** `_should_rerun_session` decides on evidence. No re-run after a usage limit. A
+  session that adds no verification attempt on the file is re-run at most once
+  (`_MAX_SESSIONS_WITHOUT_ATTEMPT = 1`); a second such session ends the function's turn. The
+  floor, the session cap, and the "verified or no mutants" stop are unchanged. A re-run is never
+  identical: `_build_prompt` now takes a `retry_note` that leads the prompt with why the previous
+  session was not enough and tells the agent to run the verifier on this file first. Every prompt
+  also states that only runs against exactly this path count as attempts, which addresses (3)
+  without touching the tool.
+- **What it can and cannot do to quality.** It removes sessions only where the last session made
+  no attempt twice, or was throttled. A session that never runs the verifier produces no score, so
+  skipping its identical repeat cannot lower a kill score; the one measured case would have lost
+  a "success" that was contamination. The retry note is a prompt change and could change agent
+  behaviour on the (rare) re-run path in either direction.
+- **Measurement:** the loop's re-run path fired once in nine completed paired runs, so three
+  paired runs on the iteration tier will most likely show no difference at all -- the change is
+  a bound on a tail, not a shift of the mean. The honest test is the confirmation tier under the
+  memory-isolated protocol of plan step 0, watching the count of killed sessions and of functions
+  that receive more than one session. Until then this stays labelled "implemented, unmeasured".
+- **Commit:** `RERUN_COMMIT`

@@ -511,6 +511,26 @@ Everything else is committed: the experiment tooling is in `scripts/experiments/
 [README](scripts/experiments/README.md), and the exact invocations behind each measurement are in
 the entries above and in the header of `scripts/experiments/run_paired_batches.sh`.
 
+## Evidence-based re-run rule in `avocado_verify` (implemented, measurement pending)
+
+Finding: "The per-function re-run loop retries sessions that cannot do better" in `FINDINGS.md`.
+
+Commit: RERUN_COMMIT. Status: **implemented; not yet counted as kept** -- it changes the loop's
+control flow, which the goal says must be measured over three paired runs, and those runs have not
+been made (they belong after plan step 0, since the loop only fires on the tail of sessions that
+never reach the verifier).
+
+What changed: `_should_rerun_session` replaces the bare `attempts < 2 and sessions < 3` test. It
+still enforces the attempt floor and the session cap, but stops after a usage limit (52 pointless
+re-runs in the measured runs) and after two consecutive sessions that made no verification attempt
+on the file (the measured case: two identical 1800 s sessions). Re-runs now carry a retry note in
+the prompt, and every prompt states that only runs against the given path count as attempts, since
+a third of the agent's verifier calls were made on copies the harness cannot see.
+
+Expected effect on the recorded numbers: none on the mean; it bounds the worst function at one
+extra session instead of two. Quality cannot fall from a skipped session that would have made no
+attempt, but the retry note is prompt text and is to be measured like any other.
+
 ## Plan: what to do next
 
 **The binding constraint is the account's usage limit, not machine time.** Nine concurrent agent
