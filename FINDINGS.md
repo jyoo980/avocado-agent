@@ -527,3 +527,74 @@ entries. Terminal states: confirmed, refuted, noise.
   re-run the final scoring at the metric's budget once per function when the function is finished --
   which is far cheaper than a whole second pass, since it is one function rather than the program.
 - **Commit:**
+
+## Filter equivalent mutants, or let the agent nominate them
+
+- **Hypothesis:** `avocado-run-cbmc` runs CBMC on every mutant without asking whether some are
+  equivalent to the original. Detecting equivalents up front, or letting the agent nominate
+  likely-equivalent mutants so CBMC skips them (recording what was skipped), would cut mutation
+  time and stop the agent chasing unkillable mutants.
+- **Axis:** harness time and agent time
+- **Status:** open, with two of its three forms ruled out on the evidence below
+- **Evidence and assessment:**
+  - *Where the time is.* Mutation testing is not where the loop's time goes on the programs
+    measured: all 221 mkey mutants take 22 s in a 3223 s pass, and kilo's decisive mutants finish
+    within 12.5 s. Filtering every equivalent mutant would recover under 1% here. That may not hold
+    for a large file, where each mutant recompiles the whole file (goto-cc was 216 s of kilo's
+    1576 s of CBMC time, about 1.4 s per compile of 1564 lines) -- but the saving is then in
+    compiling, and a filter only helps if equivalents are a large fraction of mutants.
+  - *Are survivors equivalent?* A spot check on mkey says no. `reverse_words` survivors:
+    `i < words` mutated to `i > words` (the loop never runs) and `size % sizeof(u32)` mutated to
+    `size * sizeof(u32)` (returns early on any non-zero size); `align64` survivors flip the sign
+    of the rounding term. None is equivalent. They survive because the contract has no `ensures`
+    about the buffer's contents, i.e. the specification is weak, which is the signal the score is
+    supposed to send. Removing them would hide it.
+  - *Form 1, filter at generation:* permitted by the goal only as a documented, tested rule with
+    equivalents reported separately, and any change to the mutant set has to be re-validated
+    against the frozen scorer on every tier. Syntactic equivalence rules (e.g. `<` vs `!=` on a
+    loop counter that only increments) are rare in this operator set and error-prone under
+    `--partial-loops --unwind 5`, where a mutant can be equivalent only *within the bound*.
+  - *Form 2, the agent decides:* unsound as stated. A mutant the agent declares equivalent and CBMC
+    never runs cannot count as killed, and dropping it from the denominator on the agent's word is
+    exactly the gaming the goal forbids. Counting it as survived removes the incentive to nominate.
+  - *The sound form worth building:* let the **harness** prove equivalence, and use the proof as
+    *feedback*, not as a filter. For each survivor, one differential CBMC run -- original and
+    mutant called on the same nondeterministic inputs under the precondition, assert the observable
+    results agree -- labels it "provably equivalent within the bounds" or "survived: the contract
+    does not distinguish it". The mutant stays in the denominator either way; what changes is that
+    the agent stops spending turns on the first kind. The cost is one extra cheap CBMC run per
+    survivor. The hard part is the assertion for functions that write through pointers, which needs
+    the same `assigns` machinery the contract already declares.
+- **Commit:**
+
+## Generic ways to shorten the generation loop (not benchmark-specific)
+
+- **Hypothesis:** the loop's cost on every program measured is model turns, not CBMC. The changes
+  that shorten it without depending on how these particular benchmarks look are the ones that
+  remove turns from *every* session.
+- **Axis:** agent time
+- **Status:** open
+- **Candidates, each with its own measurement:**
+  1. *Have the agent emit the contract; have the harness insert it.* Today the agent reads the
+     file, edits it, and re-reads to confirm -- three turns before the first verification. The
+     clause stripper already locates every function's span, so the harness can splice a returned
+     contract in itself. Side benefit: the agent structurally cannot edit the body, which closes
+     the "in-body `__CPROVER_assert`" metric-validity finding above.
+  2. *Give the agent a verification slice, not the file.* The function, its callees' contracts, and
+     its callers' call sites are what a contract depends on. For a 1564-line `kilo.c` the whole
+     file is read every session; for a file the size of `lz4.c` it is the dominant token cost. This
+     is the change the current benchmarks undersell most, and the one most likely to matter on the
+     validation tier.
+  3. *Carry context across the functions of one file.* Every function is a cold `claude -p`
+     session that rediscovers the file's conventions. Either resume the previous session or pass a
+     short per-file summary (what verified, which predicates worked) forward. Measure turns per
+     function.
+  4. *Import the reference docs into the cached prompt.* Sessions spend a tool call reading
+     `docs/*.md`; `CLAUDE.md` can import them so they are part of the cached system prompt instead.
+     Measure tool calls per session.
+  5. *Spend less model on trivial functions.* `.claude/settings.json` pins one model at effort
+     `high` for every function. Twenty-seven of mkey's 49 functions have no mutants, and twelve are
+     the same one-liner; a lower effort level or a cheaper model for functions below a size and
+     mutant-count threshold is a config change, measurable in three paired runs, with the kill
+     score as the guard.
+- **Commit:**
