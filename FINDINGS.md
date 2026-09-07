@@ -469,3 +469,61 @@ entries. Terminal states: confirmed, refuted, noise.
   scratch-directory isolation, and the 120 s per-mutant budget. The large parallelism win was in
   the scoring pass, which had none.
 - **Commit:**
+
+## Cost-aware session scheduling: decide per function how much to spend
+
+- **Hypothesis:** the harness spends the same shape of effort on every function -- one fresh
+  session, a floor of two verification attempts, up to three sessions of 1800 s -- although it can
+  tell in advance, for free, that functions differ by an order of magnitude in what that effort can
+  buy. Two signals it already has should drive three different policies.
+- **Axis:** agent time (primarily), quality (by redirecting the time saved)
+- **Status:** open
+- **Evidence:** mkey run 14, treatment arm, agent time split by whether the function has any
+  mutants at all:
+
+  | | functions | agent time | per function |
+  | --- | ---: | ---: | ---: |
+  | no mutants | 27 | 909 s (28%) | 34 s |
+  | has mutants | 21 | 2238 s (69%) | 107 s |
+
+  The 27 functions with no mutants cannot move the kill score by construction -- the scorer reports
+  "no mutable operators" and excludes them -- yet they consume 28% of the wall-clock, one cold-start
+  session each. Twelve of them are the same one-line byte-order accessor written twelve times
+  (`getbe16`/`getbe32`/`getbe64`/`getle*`/`putbe*`/`putle*`).
+- **The two free signals:** `eval.mutants.mutate_function.get_mutants` is a pure tree-sitter walk
+  and is already called by `avocado_verify.is_spec_improvable_with_mutation_testing`, so the mutant
+  count is known *before* a session starts; and the wall-clock of the first `avocado-run-cbmc` call
+  says which CBMC regime the function is in (about 1 s on mkey, 400-600 s on kilo's
+  `editorDelRow` and `editorInsertRow`).
+- **Three policies this suggests:**
+  1. *Zero mutants:* batch several such functions into one session instead of paying a cold start
+     each. They still need good contracts, because callers verify against them under
+     `--replace-call-with-contract` -- the `swap`/`partition` trap is exactly this -- so the
+     measurement must be caller verification and downstream kill scores, not just wall-clock.
+  2. *Has mutants, CBMC fast:* the current path, unchanged. This is where the 69% goes and where
+     the kill score is actually won.
+  3. *CBMC does not return within a short budget:* cap the call and tell the agent why, namely that
+     its precondition has to bound the state space before any contract can be checked. That turns
+     an open-ended sink into a specific instruction, and it is the only one of the three that helps
+     kilo-shaped functions.
+- **Caveat on scope:** the split above is measured on mkey. No agent pass was ever run on kilo, so
+  the claim that kilo's *loop* is CBMC-bound is inferred from its CBMC timings (a single 602 s
+  verification), not measured end to end. That measurement should come first.
+- **Commit:**
+
+## Record the kill score during generation instead of re-deriving it afterwards
+
+- **Hypothesis:** `avocado-run-cbmc` already computes a kill score on every successful call, but the
+  harness throws it away and a separate offline pass recomputes it later. Persisting the last score
+  per function in the run log would make the scoring pass unnecessary for routine use.
+- **Axis:** harness time
+- **Status:** open
+- **Evidence:** `tools/run_cbmc_and_mutation_testing.main` prints the score and discards it;
+  `avocado_verify` records only the ground-truth pass/fail.
+- **Design detail that must not be missed:** the agent-facing tool now verifies mutants with a 120 s
+  budget while the frozen metric uses 600 s (this divergence was introduced deliberately, to bound
+  how long a session waits for feedback). A score recorded during generation is therefore not
+  necessarily the metric's score. Either record the budget alongside the score, or have the harness
+  re-run the final scoring at the metric's budget once per function when the function is finished --
+  which is far cheaper than a whole second pass, since it is one function rather than the program.
+- **Commit:**
