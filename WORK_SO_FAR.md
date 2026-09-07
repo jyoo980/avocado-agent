@@ -531,6 +531,27 @@ Expected effect on the recorded numbers: none on the mean; it bounds the worst f
 extra session instead of two. Quality cannot fall from a skipped session that would have made no
 attempt, but the retry note is prompt text and is to be measured like any other.
 
+## Concurrent sessions within a file (implemented, measurement pending)
+
+Finding: "Specify independent functions of one file concurrently" in `FINDINGS.md`; the design is
+recorded in the approved plan and summarised there.
+
+Commit: CONCURRENCY_COMMIT. Status: **implemented; not yet counted as kept.** It is a control-flow
+change and needs three paired runs (`--jobs 1` against `--jobs 4` on mkey, same commit, under the
+memory-isolated protocol of plan step 0) before the goal's rules let it count. The default is
+`--jobs 1`, so nothing changes for a run that does not ask for concurrency -- except one thing
+stated in the finding: every session now works in a private copy of the source directory and only
+its own function's definition plus new top-level helpers are merged back, so edits to other
+functions are dropped and logged even at `--jobs 1`.
+
+What to measure (the plan's verification section): pass wall-clock as the primary axis;
+agent-seconds, cost and kill score, all expected flat; timed-out sessions; usage-limited outcomes;
+merge failures by reason; dropped edits; stray files; and achieved parallelism (agent-seconds over
+wall-clock) against the 479 s longest-chain floor. The experiment scripts take `AVOCADO_JOBS`, and
+`run_paired_batches.sh` accepts `label:checkout:jobs` so both arms can be one checkout. Because two
+concurrent mkey runs already exhausted the usage limit once, the plan runs the two arms of each pair
+back to back rather than simultaneously, alternating order across pairs.
+
 ## Plan: what to do next
 
 **The binding constraint is the account's usage limit, not machine time.** Nine concurrent agent
@@ -555,7 +576,7 @@ the limit, one at a time.
 | 2. Record the kill score in the run log | none |
 | 3. Characterise kilo's agent loop | one un-paired run over `kilo.c` |
 | 4. Batch the functions with no mutants | three paired runs on mkey |
-| 5. Specify independent files concurrently | three paired runs on a multi-file benchmark |
+| 5. Specify independent functions concurrently (**implemented**, see the entry above) | three paired runs on mkey, `--jobs 1` vs `--jobs 4` |
 | 6. A worked example in `CLAUDE.md` | three paired runs on mkey |
 | 7. Targeted libc stubs | none for the first pass; three paired runs to confirm |
 

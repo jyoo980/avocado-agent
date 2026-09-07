@@ -8,11 +8,12 @@
 # "Usage limits, not machine time" in FINDINGS.md).
 #
 # Usage:
-#   scripts/experiments/run_paired_batches.sh <label>:<checkout> <label>:<checkout> \
+#   scripts/experiments/run_paired_batches.sh <label>:<checkout>[:<jobs>] <label>:<checkout>[:<jobs>] \
 #       -- <benchmark-dir> [<benchmark-dir> ...] -- <run-id> [<run-id> ...]
 #
 # Each <checkout> is a git worktree of this repository, synced with `uv sync --frozen`, pinned to
-# the commit that arm is testing. Results land in AVOCADO_DATA_DIR (default: this checkout's
+# the commit that arm is testing. An optional third field sets `avocado-verify --jobs` for that
+# arm, so two arms can be the same commit differing only in how many functions run concurrently. Results land in AVOCADO_DATA_DIR (default: this checkout's
 # `avocado-experimental-data`), and every arm is scored by AVOCADO_SCORER_ROOT (default: this
 # checkout) -- but see the note in that variable's documentation in run_agent_experiment.sh.
 #
@@ -65,9 +66,8 @@ fi
 mkdir -p "${data}"
 for id in "${run_ids[@]}"; do
   for arm in "${arms[@]}"; do
-    label="${arm%%:*}"
-    checkout="${arm#*:}"
-    AVOCADO_REPO_ROOT="${checkout}" AVOCADO_DATA_DIR="${data}" \
+    IFS=: read -r label checkout jobs <<<"${arm}"
+    AVOCADO_REPO_ROOT="${checkout}" AVOCADO_DATA_DIR="${data}" AVOCADO_JOBS="${jobs:-}" \
       AVOCADO_SCORER_ROOT="${AVOCADO_SCORER_ROOT:-${repo_root}}" \
       "${script_dir}/run_agent_experiment.sh" "${label}" "${id}" "${benchmarks[@]}" \
       > "${data}/${label}-${id}-run.log" 2>&1 &

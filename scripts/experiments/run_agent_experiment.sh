@@ -21,6 +21,8 @@
 # Environment:
 #   CLAUDE_TIMEOUT      Per-function `claude -p` timeout in seconds, forwarded to
 #                       `--claude-timeout` when set.
+#   AVOCADO_JOBS        Forwarded to `avocado-verify --jobs` when set: how many functions of one
+#                       file are specified concurrently (default 1, sequential).
 #   AVOCADO_REPO_ROOT   Checkout whose harness (`avocado-verify`, `avocado-run-cbmc`, `CLAUDE.md`,
 #                       `.claude/settings.json`) the run should use. Defaults to the checkout this
 #                       script lives in. Point it at a separate `git worktree` (with its own
@@ -90,6 +92,9 @@ for benchmark_dir in "$@"; do
         avocado_args=(--file "${source_file}")
         if [ -n "${CLAUDE_TIMEOUT:-}" ]; then
           avocado_args+=(--claude-timeout "${CLAUDE_TIMEOUT}")
+        fi
+        if [ -n "${AVOCADO_JOBS:-}" ]; then
+          avocado_args+=(--jobs "${AVOCADO_JOBS}")
         fi
         # avocado-verify exits 1 when some function is left unverified; that is a result, not an
         # error, so keep going.

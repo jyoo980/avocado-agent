@@ -811,7 +811,11 @@ entries. Terminal states: confirmed, refuted, noise.
   | csv_parser | 6.9 s | 7.2 s | -- |
   | mkey | 29.7 s | 31.5 s | 18.8 s (154/154 mutants reused) |
   | verdict differences vs baseline | -- | 0 on all three tiers | 0 |
-  | kilo | 1103 s | KILO_P1 | KILO_P2 |
+  | kilo | 1103 s | 1106 s | 1086 s (129 mutants reused) |
+
+  Kilo confirms the diagnosis in "Kilo's harness time is two undecidable functions": the cache
+  reuses 129 mutant verdicts on the second pass and saves 20 s of 1106, because kilo's time is
+  the two function verifications that run to the timeout, which no mutant cache touches.
 
   A repeated `avocado-run-cbmc` on `hexdump` (42 mutants): 2.69 s cold, **0.70 s** with the
   spec unchanged, **2.64 s** again after a one-token change to the precondition -- a changed spec
@@ -975,3 +979,52 @@ entries. Terminal states: confirmed, refuted, noise.
   300 s. Effort or fast mode multiply whatever remains. The trims and the concurrency are
   independent and both are on the plan; the effort change is the one that also cuts cost.
 - **Commit:** analysis only.
+
+## Specify independent functions of one file concurrently (implemented, measurement pending)
+
+- **Hypothesis:** the entry "Specify independent files concurrently" above; the maintainer chose
+  the within-file form. A file's pass is bounded by the sum over its functions today; running each
+  function as soon as the callees it depends on are merged bounds it by the longest dependency
+  chain instead (479 s against 3223 s on mkey, measured from session times).
+- **Axis:** agent time (wall-clock to specify a program; agent-seconds and cost expected flat)
+- **Status:** implemented (commit `CONCURRENCY_COMMIT`); **not yet counted as kept** -- a
+  control-flow change, to be measured over three paired runs (`--jobs 1` vs `--jobs 4` on mkey,
+  same commit, under the memory-isolated protocol of plan step 0). Default is `--jobs 1`.
+- **What was built:**
+  - Every session now runs in a private copy of the source directory (`_fork_session`, a
+    temporary directory outside the source tree so the scorer never sees it). The tool's
+    verification-attempts log, run log, call-graph cache and mutant files are therefore private to
+    the session, and the harness counts attempts from the copy the agent actually verifies --
+    which also closes the "155 of 480 tool calls were on ad-hoc copies" gap by construction.
+  - When a session ends, `tools/util/contract_merge.merge_function` splices the function's whole
+    definition (contract and body, exactly what lands today) and any *new* top-level items the
+    agent added (helpers, `#define`s, includes, declarations) into the canonical file immediately
+    before the function. Edits to other existing definitions are dropped and named in the run log
+    (`merge.dropped`); a helper whose name already exists with different text fails the merge.
+    Spans are sliced from the original bytes (tree-sitter's `node.text` is the clause-stripped
+    buffer), functions inside `#if` blocks are found, and a span is accepted only if it re-parses
+    alone as exactly one definition (tree-sitter's error recovery can otherwise swallow the
+    preceding item). The merged file must pass `goto-cc` before the canonical file is replaced,
+    atomically; ground truth then runs on a consistent scratch copy outside the lock.
+  - `_ready_functions` starts a function when every in-file callee that precedes it in the
+    existing topological order is done, which reproduces the sequential order at `--jobs 1` and
+    cannot deadlock on mutual recursion; `_verify_functions` drives a thread pool of `--jobs`
+    sessions and stops submitting on the first usage-limited session.
+  - The prompt tells the agent it works in a private copy and what is kept.
+- **Evidence so far:** 91 tests pass, including an end-to-end run with `--jobs 2` over a
+  clause-stripped `test/data/quicksort.c` with a fake session that edits the copy the way an agent
+  does, all three contracts landing in the canonical file and `swap` verified by real CBMC; two
+  independent functions overlap in time with `--jobs 2` and not with `--jobs 1`; a merge whose
+  helper needs a header that exists only in the session copy is rejected by the compile check.
+  Quicksort itself is a chain (`swap` -> `partition` -> `quickSort`), so it cannot show overlap
+  with a real agent; mkey can (its longest chain is 479 s of 3223 s).
+- **Behaviour change worth knowing at `--jobs 1`:** edits an agent makes to *other* functions --
+  the observed habit of fixing a callee's contract in passing -- are now dropped, and the run log
+  says so. The ground truth may then fail where it previously passed; how often is a number the
+  measurement must report (`merge.dropped`).
+- **Two observations from building it, recorded for later:** (1) `_outcome_for` lets a CBMC pass
+  outrank a usage limit, so a usage-limited session on a function whose contract-free file
+  trivially verifies reports VERIFIED and does not stop the run; this predates the change and is
+  left as is. (2) `stubs/` and the auto-memory directory remain shared across concurrent
+  sessions (write races on same-name stubs; interleaved notes) -- documented, not fixed.
+- **Commit:** `CONCURRENCY_COMMIT`

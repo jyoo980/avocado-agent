@@ -11,18 +11,31 @@ For each function the harness runs a fresh `claude -p` session prompting Claude 
 specification for a function. Once Claude reports it is finished, this harness independently runs
 CBMC to record a ground-truth verification result.
 
+Every session works in a private copy of the source file's directory (see `_fork_session`), and
+when it ends the harness splices the function's definition -- and any new top-level helpers the
+agent added for its contract -- back into the canonical file (`tools.util.contract_merge`). That
+isolation is what allows `--jobs N` to run several functions' sessions at once: a function starts
+as soon as the callees it depends on are merged, so a file's wall-clock is bounded by its longest
+dependency chain rather than by the sum over its functions.
+
 Usage:
     % avocado-verify --file <PATH_TO_C_FILE> \
         [--claude-timeout <TIMEOUT>] \
+        [--jobs <N>] \
+        [--keep-sessions] \
         [--resume-from <PATH_TO_JSONL_LOG>]
 """
 
 import argparse
 import json
 import shlex
+import shutil
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+import tempfile
+import threading
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -33,10 +46,11 @@ from loguru import logger
 from eval.mutants.mutate_function import get_mutants
 from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
-from tools.run_cbmc import RunCbmcResult
+from tools.run_cbmc import RunCbmcResult, compile_with_goto_cc
 from tools.run_cbmc_and_mutation_testing import VERIFICATION_ATTEMPTS_LOG_SUFFIX, verify_function
 from tools.util import get_in_file_callees_for, get_in_file_callers_of
 from tools.util.callgraph import CallGraph
+from tools.util.contract_merge import MergeReport, merge_function
 
 # Per-function wall-clock budget for a single `claude -p` session. A session may run CBMC
 # several times (each with its own multi-minute timeout) across the coverage and quality
@@ -74,6 +88,30 @@ _MIN_VERIFICATION_ATTEMPTS_PER_SESSION = 2
 # `_MIN_VERIFICATION_ATTEMPTS`. Prevents an unproductive session from looping forever; once hit,
 # the harness proceeds anyway and records the shortfall.
 _MAX_AGENT_SESSIONS_PER_FUNCTION = 3
+
+# How many functions' sessions run at once unless `--jobs` says otherwise. Sequential by default:
+# concurrency spends the account's usage limit several times faster per wall-clock hour, and the
+# numbers recorded in WORK_SO_FAR.md were taken sequentially.
+_DEFAULT_JOBS = 1
+
+# Prefixes of the temporary directories that hold a session's private copy of the source directory
+# and the consistent copy the ground-truth verification runs on.
+_SESSION_DIR_PREFIX = "avocado-session-"
+_GROUND_TRUTH_DIR_PREFIX = "avocado-ground-truth-"
+
+# What is left out when the source directory is copied for a session or a ground-truth run: the
+# harness's and the tool's own logs and caches, CBMC intermediates, and mutant sources. Each copy
+# then starts clean and, in particular, gets its own `<stem>-verification-attempts.jsonl`.
+_SNAPSHOT_IGNORE = shutil.ignore_patterns(
+    ".git", "*.goto", "*-callgraph.json", "*.jsonl", "*__mutant_*.c", "*__clause_drop_*.c"
+)
+
+# Serialises every read-for-merge and write of the canonical file, and every directory copy taken
+# of it, so a copy is always internally consistent and merges never interleave.
+_CANONICAL_LOCK = threading.Lock()
+
+# Serialises appends to the run log and the canonical-side attempts log from worker threads.
+_RUN_LOG_LOCK = threading.Lock()
 
 # A session that ends without a single verification attempt on the file is re-run at most this many
 # times in a row. One such session is bad luck; a second, identical one is evidence that the prompt
@@ -159,6 +197,10 @@ class FunctionVerificationResult:
             `avocado-run-cbmc`) for this function across all its sessions.
         agent_sessions (int): How many `claude -p` sessions this function received before the
             harness moved on (>= 1; > 1 when re-runs were needed to reach the attempt floor).
+        merge (MergeReport | None): What the merge of the session's copy into the canonical file
+            kept and dropped, or None when no merge was attempted.
+        stray_files (list[str]): Files other than the source file that the agent added or changed
+            in its private copy; they are never merged, only reported.
     """
 
     function: str
@@ -168,6 +210,8 @@ class FunctionVerificationResult:
     internal_callees: list[str]
     verification_attempts: int
     agent_sessions: int
+    merge: MergeReport | None = None
+    stray_files: list[str] = field(default_factory=list)
 
     def to_record(self) -> dict:
         """Return a JSON-serializable record of this result for the run log.
@@ -197,6 +241,9 @@ class FunctionVerificationResult:
                 else self.cbmc.failed_step.value,
             },
             "total_cost_to_verify_usd": total_cost_to_verify_usd,
+            "merge": None
+            if self.merge is None
+            else {**self.merge.to_record(), "stray_files": list(self.stray_files)},
         }
 
 
@@ -230,7 +277,24 @@ def main() -> None:
             "limit (exit code 2)."
         ),
     )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=_DEFAULT_JOBS,
+        metavar="N",
+        help=(
+            "How many functions to specify concurrently; each function starts as soon as the "
+            f"callees it depends on are done (default: {_DEFAULT_JOBS}, sequential)."
+        ),
+    )
+    parser.add_argument(
+        "--keep-sessions",
+        action="store_true",
+        help="Keep each session's private copy of the source directory for inspection.",
+    )
     args = parser.parse_args()
+    if args.jobs < 1:
+        parser.error("--jobs must be at least 1.")
 
     file_path = Path(args.file).resolve()
     if not file_path.is_file():
@@ -276,36 +340,36 @@ def main() -> None:
         f"{len(pending)} function(s) to verify in callees-first order: {', '.join(pending)}"
     )
 
-    results: list[FunctionVerificationResult] = []
-    for index, function in enumerate(pending, start=1):
-        logger.info(f"[{index}/{len(pending)}] {function}: generating spec via claude -p")
-        verification_result_from_agent = _verify_via_agent(
-            function,
-            file_path=str(file_path),
-            call_graph=call_graph,
-            timeout=args.claude_timeout,
-            include_dirs=include_dirs,
+    results, usage_limited = _verify_functions(
+        pending,
+        order=functions,
+        file_path=str(file_path),
+        call_graph=call_graph,
+        timeout=args.claude_timeout,
+        include_dirs=include_dirs,
+        jobs=args.jobs,
+        log_path=log_path,
+        keep_sessions=args.keep_sessions,
+    )
+    if usage_limited:
+        completed = {
+            result.function
+            for result in results
+            if result.outcome is not GroundTruthVerificationResult.USAGE_LIMITED
+        }
+        remaining = [function for function in pending if function not in completed]
+        logger.warning(
+            f"stopped after {len(completed)}/{len(pending)} function(s) this run due to a usage "
+            f"limit; {len(remaining)} remaining. Resume with --resume-from."
         )
-        results.append(verification_result_from_agent)
-        _append_jsonl(log_path, verification_result_from_agent.to_record())
-        logger.info(
-            f"[{index}/{len(pending)}] {function}: {verification_result_from_agent.outcome}"
+        _log_summary(results, log_path)
+        _finalize_run(
+            log_path,
+            functions=functions,
+            remaining=remaining,
+            status="usage_limited",
+            stopped_early=True,
         )
-
-        if verification_result_from_agent.outcome is GroundTruthVerificationResult.USAGE_LIMITED:
-            remaining = pending[index:]
-            logger.warning(
-                f"{function}: stopped after {index}/{len(pending)} function(s) this run due to a "
-                f"usage limit; {len(remaining)} remaining. Resume with --resume-from."
-            )
-            _log_summary(results, log_path)
-            _finalize_run(
-                log_path,
-                functions=functions,
-                remaining=[function, *remaining],
-                status="usage_limited",
-                stopped_early=True,
-            )
 
     _log_summary(results, log_path)
     _finalize_run(
@@ -356,6 +420,53 @@ def _finalize_run(
     sys.exit(_EXIT_ALL_VERIFIED if verified == len(functions) else _EXIT_SOME_UNVERIFIED)
 
 
+@dataclass(frozen=True)
+class _Session:
+    """A private copy of the source directory in which one function's sessions run.
+
+    Attributes:
+        function (str): The function the session works on.
+        directory (Path): The temporary root holding the copy; removed after the merge unless the
+            run keeps sessions.
+        file (Path): The copy of the source file inside `directory`.
+        fork_base (bytes): The canonical file's bytes when the copy was taken; the merge compares
+            the finished copy against it to see what the agent changed.
+    """
+
+    function: str
+    directory: Path
+    file: Path
+    fork_base: bytes
+
+
+def _fork_session(function: str, canonical_file: Path) -> _Session:
+    """Copy the canonical file's directory into a fresh temporary directory for one session.
+
+    The copy is taken under `_CANONICAL_LOCK` so it is consistent with `fork_base`: no merge can
+    land between reading the file and copying the directory. `_SNAPSHOT_IGNORE` leaves out logs,
+    caches, CBMC intermediates and mutant sources, so the copy starts clean and the tool's
+    verification-attempts log for this session starts empty beside the copy.
+
+    Args:
+        function (str): The function the session will work on.
+        canonical_file (Path): Absolute path to the canonical source file.
+
+    Returns:
+        _Session: The private copy.
+    """
+    with _CANONICAL_LOCK:
+        fork_base = canonical_file.read_bytes()
+        root = Path(tempfile.mkdtemp(prefix=_SESSION_DIR_PREFIX))
+        directory = root / canonical_file.parent.name
+        shutil.copytree(canonical_file.parent, directory, ignore=_SNAPSHOT_IGNORE)
+    return _Session(
+        function=function,
+        directory=root,
+        file=directory / canonical_file.name,
+        fork_base=fork_base,
+    )
+
+
 def _verify_via_agent(
     function: str,
     *,
@@ -363,26 +474,87 @@ def _verify_via_agent(
     call_graph: CallGraph,
     timeout: int,
     include_dirs: list[str],
+    keep_sessions: bool = False,
 ) -> FunctionVerificationResult:
-    """Run one or more `claude -p` sessions for `function`, then re-verify it with CBMC.
+    """Specify `function` in a private copy, merge the result back, and re-verify it with CBMC.
 
-    Re-runs the session until the agent has attempted verification at least
-    `_MIN_VERIFICATION_ATTEMPTS` times (capped at `_MAX_AGENT_SESSIONS_PER_FUNCTION`) before the
-    caller advances to the next function.
+    Runs one or more `claude -p` sessions against a fresh copy of the source directory
+    (`_fork_session`, `_run_sessions_for`), then splices the function's finished definition and
+    any new helpers into the canonical file and runs the independent ground truth on a consistent
+    copy of the result (`_merge_and_verify`). Safe to call for several functions concurrently as
+    long as their callees are already merged.
 
     Args:
         function (str): The function to specify and verify.
-        file_path (str): Absolute path to the C file defining the function.
+        file_path (str): Absolute path to the canonical C file defining the function.
         call_graph (CallGraph): Call graph of the file, used to record in-file callees.
-        timeout (int): Per-function timeout for the `claude -p` session, in seconds.
+        timeout (int): Per-function timeout for a `claude -p` session, in seconds.
         include_dirs (list[str]): Extra include directories to expose to the agent and forward to
             CBMC's include search path.
+        keep_sessions (bool): When True, the session's copy is kept for inspection.
 
     Returns:
         FunctionVerificationResult: The combined Claude/CBMC outcome for the function.
     """
-    attempts_log_path = Path(file_path).with_name(
-        f"{Path(file_path).stem}{VERIFICATION_ATTEMPTS_LOG_SUFFIX}"
+    canonical_file = Path(file_path)
+    session = _fork_session(function, canonical_file)
+    try:
+        sessions, attempts, session_count = _run_sessions_for(
+            function,
+            session_file=session.file,
+            call_graph=call_graph,
+            timeout=timeout,
+            include_dirs=include_dirs,
+        )
+        stray_files = _report_stray_edits(session, canonical_file.parent)
+        _mirror_attempts_log(session, canonical_file)
+        report, cbmc = _merge_and_verify(session, canonical_file, include_dirs=include_dirs)
+    finally:
+        if keep_sessions:
+            logger.info(f"{function}: session copy kept at {session.directory}")
+        else:
+            shutil.rmtree(session.directory, ignore_errors=True)
+    return FunctionVerificationResult(
+        function=function,
+        outcome=_outcome_for(sessions[-1], cbmc),
+        claude_sessions=sessions,
+        cbmc=cbmc,
+        internal_callees=call_graph.get_callees(function).internal,
+        verification_attempts=attempts,
+        agent_sessions=session_count,
+        merge=report,
+        stray_files=stray_files,
+    )
+
+
+def _run_sessions_for(
+    function: str,
+    *,
+    session_file: Path,
+    call_graph: CallGraph,
+    timeout: int,
+    include_dirs: list[str],
+) -> tuple[list[ClaudeRun], int, int]:
+    """Run the `claude -p` session(s) for `function` against its private copy of the file.
+
+    Re-runs the session while `_should_rerun_session` says another one can do better; every
+    re-run carries a retry note saying why. Verification attempts are counted from the attempts
+    log beside `session_file`, which the tool writes for exactly this copy.
+
+    Args:
+        function (str): The function to specify.
+        session_file (Path): The session's private copy of the source file.
+        call_graph (CallGraph): Call graph of the file, for the prompt's callee/caller lists.
+        timeout (int): Per-session timeout in seconds.
+        include_dirs (list[str]): Include directories forwarded to the agent and the tool.
+
+    Returns:
+        tuple[list[ClaudeRun], int, int]: The sessions run, the verification attempts they made,
+            and the number of sessions.
+    """
+    file_path = str(session_file)
+    attempts_log_path = session_file.with_name(
+        f"{session_file.stem}{VERIFICATION_ATTEMPTS_LOG_SUFFIX}"
     )
 
     # Attempts already logged for this function before this turn (e.g. by an earlier function's
@@ -453,20 +625,259 @@ def _verify_via_agent(
             f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} "
             f"verification attempt(s)"
         )
+    return claude_sessions_for_function, current_verification_attempts, sessions
 
-    # Objective verdict: re-run CBMC rather than trust Claude's self-report. `verify_function`
-    # runs the pipeline in a private scratch directory so no `.goto` intermediates land in the
-    # harness's working directory.
-    cbmc = verify_function(function, file_path, include_dirs=include_dirs)
-    return FunctionVerificationResult(
-        function=function,
-        outcome=_outcome_for(claude_sessions_for_function[-1], cbmc),
-        claude_sessions=claude_sessions_for_function,
-        cbmc=cbmc,
-        internal_callees=call_graph.get_callees(function).internal,
-        verification_attempts=current_verification_attempts,
-        agent_sessions=sessions,
+
+def _merge_and_verify(
+    session: _Session, canonical_file: Path, *, include_dirs: list[str]
+) -> tuple[MergeReport, RunCbmcResult]:
+    """Merge the session's copy into the canonical file, then run the independent ground truth.
+
+    Under `_CANONICAL_LOCK`: read the canonical file, compute the merge
+    (`tools.util.contract_merge.merge_function`), copy the canonical directory to a scratch
+    directory, write the merged bytes into that copy and check that `goto-cc` still accepts the
+    file. Only then is the canonical file replaced (atomically, via `os.replace`); a merge that
+    does not compile is rejected and the canonical file left untouched. The lock is released
+    before CBMC runs, on the scratch copy, so other sessions can merge meanwhile.
+
+    Args:
+        session (_Session): The finished session.
+        canonical_file (Path): Absolute path to the canonical source file.
+        include_dirs (list[str]): Include directories forwarded to `goto-cc` and CBMC.
+
+    Returns:
+        tuple[MergeReport, RunCbmcResult]: What the merge did, and the ground-truth verdict.
+    """
+    function = session.function
+    absolute_include_dirs = [str(Path(directory).resolve()) for directory in include_dirs]
+    with _CANONICAL_LOCK:
+        canonical = canonical_file.read_bytes()
+        try:
+            snapshot = session.file.read_bytes()
+        except OSError as error:
+            merged, report = canonical, MergeReport(False, f"session copy unreadable: {error}")
+        else:
+            merged, report = merge_function(
+                canonical=canonical,
+                snapshot=snapshot,
+                fork_base=session.fork_base,
+                function=function,
+            )
+        scratch_root = Path(tempfile.mkdtemp(prefix=_GROUND_TRUTH_DIR_PREFIX))
+        scratch_dir = scratch_root / canonical_file.parent.name
+        shutil.copytree(canonical_file.parent, scratch_dir, ignore=_SNAPSHOT_IGNORE)
+        scratch_file = scratch_dir / canonical_file.name
+        if report.merged:
+            scratch_file.write_bytes(merged)
+            returncode = compile_with_goto_cc(
+                function,
+                str(scratch_file),
+                include_dirs=absolute_include_dirs,
+                cwd=str(scratch_dir),
+            )
+            if returncode != 0:
+                report = replace(
+                    report,
+                    merged=False,
+                    reason=f"merged file does not compile with goto-cc (exit code {returncode})",
+                )
+                scratch_file.write_bytes(canonical)
+            else:
+                staged = canonical_file.with_name(f"{canonical_file.name}.avocado-merge")
+                staged.write_bytes(merged)
+                Path(staged).replace(canonical_file)
+    if report.merged:
+        if report.transplanted:
+            logger.info(f"{function}: transplanted {', '.join(report.transplanted)}")
+        if report.dropped:
+            logger.warning(
+                f"{function}: dropped edits outside the function: {', '.join(report.dropped)}"
+            )
+    else:
+        logger.warning(f"{function}: merge rejected: {report.reason}")
+    try:
+        cbmc = verify_function(function, str(scratch_file), include_dirs=include_dirs)
+    finally:
+        shutil.rmtree(scratch_root, ignore_errors=True)
+    return report, cbmc
+
+
+def _report_stray_edits(session: _Session, canonical_dir: Path) -> list[str]:
+    """Return the files other than the source file that the agent added or changed in its copy.
+
+    Headers, other sources and new files the agent created in the private copy are never merged;
+    they are named here so the run log shows when a contract depended on one. A file is compared
+    to the canonical directory's copy of it, which no session ever writes.
+
+    Args:
+        session (_Session): The finished session.
+        canonical_dir (Path): The canonical source directory.
+
+    Returns:
+        list[str]: Relative paths tagged `added:` or `modified:`, in sorted order.
+    """
+    stray: list[str] = []
+    session_dir = session.file.parent
+    for path in sorted(session_dir.rglob("*")):
+        if not path.is_file() or path == session.file:
+            continue
+        relative = path.relative_to(session_dir)
+        if _SNAPSHOT_IGNORE(str(path.parent), [path.name]):
+            continue
+        original = canonical_dir / relative
+        if not original.is_file():
+            stray.append(f"added:{relative}")
+        elif original.read_bytes() != path.read_bytes():
+            stray.append(f"modified:{relative}")
+    if stray:
+        logger.warning(
+            f"{session.function}: files changed in the session copy are not merged: {stray}"
+        )
+    return stray
+
+
+def _mirror_attempts_log(session: _Session, canonical_file: Path) -> None:
+    """Append the session copy's verification-attempt records to the canonical-side log.
+
+    The harness itself reads attempts from the session copy; the canonical-side log is kept for
+    post-hoc analysis of a run, where readers expect one log beside the source file. Failures to
+    read or write are swallowed so logging never affects a run.
+
+    Args:
+        session (_Session): The finished session.
+        canonical_file (Path): Absolute path to the canonical source file.
+    """
+    source_log = session.file.with_name(f"{session.file.stem}{VERIFICATION_ATTEMPTS_LOG_SUFFIX}")
+    target_log = canonical_file.with_name(
+        f"{canonical_file.stem}{VERIFICATION_ATTEMPTS_LOG_SUFFIX}"
     )
+    try:
+        records = source_log.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if not records.strip():
+        return
+    with _RUN_LOG_LOCK:
+        try:
+            with target_log.open("a", encoding="utf-8") as log_file:
+                log_file.write(records if records.endswith("\n") else records + "\n")
+        except OSError:
+            pass
+
+
+def _ready_functions(
+    order: list[str], call_graph: CallGraph, *, done: set[str], active: set[str]
+) -> list[str]:
+    """Return the functions that may start now, in topological order.
+
+    A function is ready when it is neither done nor running and every in-file callee of it that
+    precedes it in `order` is done. Restricting to *earlier* callees reproduces the sequential
+    harness exactly (each function waited only for functions before it), ignores self-recursion,
+    and cannot deadlock on mutual recursion, whose members wait only for earlier members.
+
+    Args:
+        order (list[str]): All verifiable functions, callees first, as returned by
+            `get_topological_ordering_of_functions`.
+        call_graph (CallGraph): Call graph of the file.
+        done (set[str]): Functions whose sessions have finished, or that an earlier run processed.
+        active (set[str]): Functions whose sessions are running.
+
+    Returns:
+        list[str]: The ready functions, earliest in `order` first.
+    """
+    rank = {function: index for index, function in enumerate(order)}
+    ready: list[str] = []
+    for function in order:
+        if function in done or function in active:
+            continue
+        callees = call_graph.get_callees(function).internal
+        if all(
+            callee in done for callee in callees if callee in rank and rank[callee] < rank[function]
+        ):
+            ready.append(function)
+    return ready
+
+
+def _verify_functions(
+    pending: list[str],
+    *,
+    order: list[str],
+    file_path: str,
+    call_graph: CallGraph,
+    timeout: int,
+    include_dirs: list[str],
+    jobs: int,
+    log_path: Path,
+    keep_sessions: bool,
+) -> tuple[list[FunctionVerificationResult], set[str]]:
+    """Specify every pending function, running up to `jobs` functions' sessions at once.
+
+    Functions start as `_ready_functions` allows; each completion is merged, ground-truthed and
+    appended to the run log before its dependents can start. The first session stopped by a usage
+    limit halts new submissions; sessions already running finish and merge.
+
+    Args:
+        pending (list[str]): Functions still to process, in topological order.
+        order (list[str]): All verifiable functions in the file, in topological order.
+        file_path (str): Absolute path to the canonical C file.
+        call_graph (CallGraph): Call graph of the file.
+        timeout (int): Per-session timeout in seconds.
+        include_dirs (list[str]): Include directories forwarded to the agent and CBMC.
+        jobs (int): Maximum number of concurrent sessions.
+        log_path (Path): The run log to append each function's record to.
+        keep_sessions (bool): When True, session copies are kept for inspection.
+
+    Returns:
+        tuple[list[FunctionVerificationResult], set[str]]: The results in completion order, and
+            the functions whose sessions were stopped by a usage limit.
+    """
+    done: set[str] = {function for function in order if function not in pending}
+    usage_limited: set[str] = set()
+    active: dict[Future[FunctionVerificationResult], str] = {}
+    results: list[FunctionVerificationResult] = []
+    started = 0
+    pool = ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="avocado-session")
+    try:
+        while True:
+            if not usage_limited:
+                for function in _ready_functions(
+                    order, call_graph, done=done, active=set(active.values())
+                ):
+                    if len(active) >= jobs:
+                        break
+                    started += 1
+                    logger.info(
+                        f"[{started}/{len(pending)}] {function}: generating spec via claude -p"
+                    )
+                    future = pool.submit(
+                        _verify_via_agent,
+                        function,
+                        file_path=file_path,
+                        call_graph=call_graph,
+                        timeout=timeout,
+                        include_dirs=include_dirs,
+                        keep_sessions=keep_sessions,
+                    )
+                    active[future] = function
+            if not active:
+                break
+            finished, _ = wait(active, return_when=FIRST_COMPLETED)
+            for future in finished:
+                function = active.pop(future)
+                result = future.result()
+                results.append(result)
+                _append_jsonl(log_path, result.to_record())
+                done.add(function)
+                logger.info(f"[{len(results)}/{len(pending)}] {function}: {result.outcome}")
+                if result.outcome is GroundTruthVerificationResult.USAGE_LIMITED:
+                    usage_limited.add(function)
+                    logger.warning(
+                        f"{function}: usage limit hit; no new sessions will start, "
+                        f"{len(active)} in flight will finish and merge"
+                    )
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+    return results, usage_limited
 
 
 @dataclass(frozen=True)
@@ -759,8 +1170,9 @@ def _build_prompt(
     directories the harness detected, which the agent cannot guess), the in-file callees whose
     contracts will replace their bodies, and the in-file callers whose call sites must satisfy the
     preconditions being written. It also says that only runs of that command against that path
-    count as attempts: in the measured runs a third of the agent's verifier calls were made on
-    copies of the file, which the harness cannot see.
+    count as attempts (in the measured runs a third of the agent's verifier calls were made on
+    copies of the file the harness could not see), and that the session works in a private copy
+    of which only the function's own definition and new top-level helpers are merged back.
 
     Args:
         function (str): The function to specify and verify.
@@ -800,7 +1212,12 @@ def _build_prompt(
         "In-file callees (verified earlier; their contracts replace their bodies while this "
         f"function is verified): {callees_text}\n"
         "In-file callers (their call sites must satisfy the preconditions you write): "
-        f"{callers_text}"
+        f"{callers_text}\n"
+        "\n"
+        "You are working in a private copy of the source directory. When this session ends, only "
+        f"your changes to {function}'s definition (its contract and body) and any new top-level "
+        "helper functions, declarations or macros you add to this file are kept; edits to other "
+        "functions, to other files and to headers are discarded."
     )
 
 
@@ -969,12 +1386,13 @@ def _append_jsonl(path: Path, record: dict) -> None:
         path (Path): The JSONL file to append to.
         record (dict): The JSON-serializable record to write.
     """
-    try:
-        with path.open("a", encoding="utf-8") as log_file:
-            log_file.write(json.dumps(record) + "\n")
-    except OSError:
-        # Never let logging errors crash the tool.
-        pass
+    with _RUN_LOG_LOCK:
+        try:
+            with path.open("a", encoding="utf-8") as log_file:
+                log_file.write(json.dumps(record) + "\n")
+        except OSError:
+            # Never let logging errors crash the tool.
+            pass
 
 
 def _log_summary(results: list[FunctionVerificationResult], log_path: Path) -> None:
