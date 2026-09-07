@@ -544,6 +544,13 @@ stated in the finding: every session now works in a private copy of the source d
 its own function's definition plus new top-level helpers are merged back, so edits to other
 functions are dropped and logged even at `--jobs 1`.
 
+Smoke run with the real agent (`avocado-verify --file <stripped copy of quicksort.c> --jobs 2`,
+commit d4b80b6): three functions, all VERIFIED, 85 s wall-clock, every merge accepted with nothing
+transplanted or dropped, no session directory left behind, and the frozen scorer gives the merged
+file a kill score of 1.0000 (21 of 21 mutants). Quicksort is a chain (`swap` -> `partition` ->
+`quickSort`), so this exercises isolation and merge-back, not overlap; overlap is covered by the
+unit test on independent functions and will be seen for real on mkey.
+
 What to measure (the plan's verification section): pass wall-clock as the primary axis;
 agent-seconds, cost and kill score, all expected flat; timed-out sessions; usage-limited outcomes;
 merge failures by reason; dropped edits; stray files; and achieved parallelism (agent-seconds over

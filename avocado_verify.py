@@ -99,11 +99,19 @@ _DEFAULT_JOBS = 1
 _SESSION_DIR_PREFIX = "avocado-session-"
 _GROUND_TRUTH_DIR_PREFIX = "avocado-ground-truth-"
 
-# What is left out when the source directory is copied for a session or a ground-truth run: the
-# harness's and the tool's own logs and caches, CBMC intermediates, and mutant sources. Each copy
-# then starts clean and, in particular, gets its own `<stem>-verification-attempts.jsonl`.
+# What is left out when the source directory is copied for a session or a ground-truth run, and
+# what `_report_stray_edits` does not count as an edit: the harness's and the tool's own logs and
+# caches (including the compile-failure log the tool writes into whatever directory the agent runs
+# it from), CBMC intermediates, and mutant sources. Each copy then starts clean and, in particular,
+# gets its own `<stem>-verification-attempts.jsonl`.
 _SNAPSHOT_IGNORE = shutil.ignore_patterns(
-    ".git", "*.goto", "*-callgraph.json", "*.jsonl", "*__mutant_*.c", "*__clause_drop_*.c"
+    ".git",
+    "*.goto",
+    "*-callgraph.json",
+    "*.jsonl",
+    "*__mutant_*.c",
+    "*__clause_drop_*.c",
+    "mutation_compile_failures.log",
 )
 
 # Serialises every read-for-merge and write of the canonical file, and every directory copy taken
