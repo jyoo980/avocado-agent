@@ -198,7 +198,7 @@ therefore not independent, and later runs were coached by earlier ones. The bias
 convergence of the arms and towards fewer turns, so treatment effects are more likely understated
 than overstated, but which arm gained more cannot be recovered. The full account is the "CRITICAL"
 entry in `FINDINGS.md`. The harness now disables auto-memory (`--settings
-'{"autoMemoryEnabled": false}'`, commit MEMORY_FIX_COMMIT); every agent number below must be
+'{"autoMemoryEnabled": false}'`, commit 6f5ca7b); every agent number below must be
 re-taken with that fix before it is relied on. The deterministic measurements are unaffected: the
 scorer never runs an agent.
 

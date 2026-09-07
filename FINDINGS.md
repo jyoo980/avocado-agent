@@ -687,7 +687,7 @@ entries. Terminal states: confirmed, refuted, noise.
 
 - **Hypothesis:** n/a -- a validity defect discovered while reading transcripts turn by turn.
 - **Axis:** all of them; it undermines every agent measurement recorded before commit
-  `MEMORY_FIX_COMMIT`.
+  `6f5ca7b`.
 - **Status:** confirmed; fixed for future runs; past agent measurements must be re-taken.
 - **What happened:** Claude Code's auto-memory feature gives each session a persistent notes
   directory and injects its index into the system prompt. It is keyed by the repository's *main*
@@ -716,12 +716,12 @@ entries. Terminal states: confirmed, refuted, noise.
     agent, so the "identical scores, 2.7x faster" result for the parallel-evaluation change stands.
 - **Fix:** `avocado_verify._build_claude_command` now passes `--settings '{"autoMemoryEnabled":
   false}'`, so a harness session knows only what the prompt and the repository tell it (commit
-  `MEMORY_FIX_COMMIT`, tested). The 37 notes are left on disk as evidence and are not used by
+  `6f5ca7b`, tested). The 37 notes are left on disk as evidence and are not used by
   anything.
 - **What has to happen next:** every agent measurement in `WORK_SO_FAR.md` -- the iteration-tier
   pairs, the mkey pairs, T3 -- was taken with shared memory on and must be re-run before it is
   relied on. Step 0 of the plan.
-- **Commit:** `MEMORY_FIX_COMMIT`
+- **Commit:** `6f5ca7b`
 
 ## Where the wall-clock actually goes, from the transcripts turn by turn
 
