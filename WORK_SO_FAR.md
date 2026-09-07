@@ -465,3 +465,124 @@ whole budget without ever running the verifier.
    as nondeterministic. Any future quality experiment should use mkey or kilo, where the checked-in
    specifications leave headroom, and should budget for the usage limit: roughly one iteration-tier
    pair per hour, and a fresh window for a confirmation-tier pair.
+
+## Plan: what to do next
+
+Ordered by value per unit of the scarce resource, which is not machine time but the account's usage
+limit. Each step names how it is measured and what would falsify it. Steps 1 and 2 need no agent
+runs at all and should be done first for that reason.
+
+### 1. Cap the *agent-facing* verification budget (no metric impact, no quota)
+
+`avocado-run-cbmc` verifies the function under the full 600 s CBMC budget. On kilo a single
+verification of `editorDelRow` runs the whole 600 s and returns nothing, and `editorInsertRow`
+aborts after 408 s, so one such function can consume an entire 1800 s session and can be retried
+twice more. Meanwhile every CBMC run on kilo that returned a verdict finished within 12.5 s.
+
+The reason this is the first step: the harness's ground-truth verification in `avocado_verify`
+re-runs CBMC independently at the full budget, so capping only the agent's copy cannot change any
+recorded result. It is purely a bound on how long a session waits for an answer it is not going to
+get. Pair the cap with a message the agent can act on -- undecided within N seconds, so bound the
+input sizes in the precondition -- rather than a bare timeout.
+
+- **Measure:** three paired runs on mkey (agent time, cost, kill score) plus, first, the kilo
+  characterisation in step 3.
+- **Falsifier:** any function whose contract verifies only at a budget above the cap; the ground
+  truth would then disagree with what the agent was told, which is worse than the delay.
+
+### 2. Record the kill score in the run log, and stop re-deriving it (no quota)
+
+`avocado-run-cbmc` computes a kill score on every successful call and discards it. Persist the last
+one per function in `<stem>-avocado-verify.jsonl`. The offline pass then becomes a validation tool
+rather than part of the workflow.
+
+The one trap: the agent-facing tool scores mutants at 120 s while the frozen metric uses 600 s, so
+an in-loop score is not automatically the metric's score. Either store the budget beside the score,
+or re-score the single finished function at the metric's budget when the harness moves on -- one
+function, not the whole program.
+
+- **Measure:** deterministic. The recorded scores must equal the offline pass's scores
+  record-for-record on all four tiers.
+- **Falsifier:** any divergence that is not explained by the budget difference.
+
+### 3. Characterise kilo's agent loop end to end (one un-paired run)
+
+Every claim here about kilo's *loop* is inferred from its CBMC timings; no agent pass was ever run
+on it. One run of the current system over `kilo.c` settles which regime it is in and gives the
+first kilo agent-time datapoint. It is un-paired on purpose: this is characterisation, not a
+comparison, so it costs one run rather than two.
+
+- **Measure:** agent seconds per function, sessions killed by the timeout, and the share of session
+  wall-clock spent inside `avocado-run-cbmc`.
+- **Falsifier for the whole "kilo-shaped" story:** if kilo's loop turns out to be model-latency
+  bound like mkey's, step 1 is worth much less and step 4 much more.
+
+### 4. Batch the functions that have no mutants
+
+On mkey, 27 of 49 functions have no mutants, cost 909 s of agent time (28%), and cannot move the
+kill score by construction; twelve are the same one-line byte-order accessor. The mutant count is
+known before the session starts, for free. Give such functions one shared session instead of a cold
+start each.
+
+- **Measure:** three paired runs on mkey. The headline is wall-clock and cost, but the number that
+  decides it is the *callers'* kill scores, because a callee's contract is what its callers verify
+  against under `--replace-call-with-contract`.
+- **Falsifier:** any drop in caller verification or in the pooled kill score. The `swap`/`partition`
+  trap in the checked-in quicksort specifications is exactly this failure, so it is a live risk.
+
+### 5. Specify independent files concurrently
+
+The call graph is built per file and has no cross-file edges, so different files carry no ordering
+constraint. mkey has four; `lz4_lib` has many. This does not reduce agent-seconds, it reduces the
+wall-clock to fully specify a program, which is the axis the goal names.
+
+- **Measure:** wall-clock of the whole pass, agent seconds (expected flat), and the kill score
+  (expected flat). Watch the usage limit, which concurrency consumes faster.
+- **Falsifier:** any quality change at all; there should be none, since the sessions are independent.
+
+### 6. A worked high-kill-score example in `CLAUDE.md`
+
+The two prompt treatments that shipped prose without an example moved the iteration tier not at all.
+The remaining untried prompt intervention is a complete example: a function with a loop over a
+buffer, its contract, the mutants that contract kills, and one it does not.
+
+- **Measure:** three paired runs on mkey, not the iteration tier -- the iteration tier is pinned and
+  cannot show a quality difference.
+- **Falsifier:** unchanged pooled kill score across three pairs, as with T3.
+
+### 7. Targeted libc stubs
+
+The confirmed quality ceiling on csv_parser is `malloc`, `strdup`, `free` and a `getc` macro being
+nondeterministic. `stubs/` already resolves models per symbol from a `/* FUNCTION: name */` marker,
+so unlike the refuted `--add-library` change this can be added one symbol at a time with a
+measurable blast radius.
+
+- **Measure:** deterministic first -- add one stub, re-score all four tiers, and see which functions
+  gain and which stop verifying. Only then run agent pairs.
+- **Falsifier:** the same failure as `--add-library`, namely functions that verified against
+  nondeterministic libc no longer verifying, with no compensating gain.
+
+### Not worth doing, with the evidence against them
+
+- Raising `--depth` globally: measured, no kill score rose, three functions stopped verifying, the
+  iteration tier went from 6.6 s to 629 s.
+- Injecting CBMC's whole C library: measured, four functions lost verification, none gained.
+- Skipping the pipeline retry after a decisive verdict: measured at 7% of CBMC time, and it changes
+  15 verdicts on kilo, so it is a metric change for a small gain.
+- Caching mutant verdicts within a session: cannot be settled from existing logs, and the agent
+  edits the contract between calls in nearly every transcript, so the cache would rarely hit.
+
+### Measurement protocol, learned the hard way
+
+- Score every arm with one checkout *and* one set of installed modules. `AVOCADO_SCORER_ROOT`
+  swaps the script but `uv` still resolves modules from the arm's checkout, which mixed this
+  checkout's parallel driver with the baseline's unlocked call-graph cache and crashed two scoring
+  passes. Use `scripts/experiments/rescore_run.sh` from a single checkout instead.
+- Never run `make clean-mutants` from the repository root while a run is active; it deletes
+  in-flight artifacts under `avocado-experimental-data/` and killed one scoring pass.
+- Never edit a shell script that is currently executing; bash re-reads it and fails mid-run.
+- Reset agent-written `stubs/` between runs, or one run's stubs silently change the next one.
+  `run_agent_experiment.sh` now does this.
+- Budget roughly one iteration-tier pair per hour against the usage limit, and start a
+  confirmation-tier pair only in a fresh window. Nine concurrent runs exhausted it in 75 minutes and
+  wasted the whole batch.
