@@ -585,10 +585,9 @@ entries. Terminal states: confirmed, refuted, noise.
      file is read every session; for a file the size of `lz4.c` it is the dominant token cost. This
      is the change the current benchmarks undersell most, and the one most likely to matter on the
      validation tier.
-  3. *Carry context across the functions of one file.* Every function is a cold `claude -p`
-     session that rediscovers the file's conventions. Either resume the previous session or pass a
-     short per-file summary (what verified, which predicates worked) forward. Measure turns per
-     function.
+  3. *Carry context across the functions of one file.* **Probably not worth it -- see the entry
+     "Would resuming sessions actually help?" below**, which measured what a cold start costs and
+     what a resumed session would carry.
   4. *Import the reference docs into the cached prompt.* Sessions spend a tool call reading
      `docs/*.md`; `CLAUDE.md` can import them so they are part of the cached system prompt instead.
      Measure tool calls per session.
@@ -597,4 +596,44 @@ entries. Terminal states: confirmed, refuted, noise.
      the same one-liner; a lower effort level or a cheaper model for functions below a size and
      mutant-count threshold is a config change, measurable in three paired runs, with the kill
      score as the guard.
+- **Commit:**
+
+## Would resuming sessions actually help?
+
+- **Hypothesis:** every function is a cold `claude -p` session, so resuming one session across a
+  file's functions should remove the repeated cost of re-reading and re-understanding the file.
+- **Axis:** agent time
+- **Status:** refuted on the evidence as a whole-file resume; the real waste it points at is
+  better removed by a verification slice (candidate 2 above) and by batching trivial functions.
+- **Evidence:** the 49 treatment sessions of mkey run 14, from their transcripts:
+
+  | | |
+  | --- | ---: |
+  | total session time | 3221 s |
+  | time before the first edit or verify ("orientation") | 1608 s (50%) |
+  | of which: thinking before any tool call | 250 s |
+  | of which: from the first tool result to the first edit | 1159 s |
+  | sessions whose first tool call reads the `.c` file | 43 of 49 |
+  | tool-result bytes a session accumulates | median 6 KB, max 31 KB, 0.5 MB over the file |
+  | model output tokens over the file | 533 K |
+
+  Half of all agent time is spent before the agent makes its first edit, which is what makes
+  resuming look attractive. But the split says most of that is *deciding what to write* after
+  reading, not the reading itself: the read tool call returns in well under a second, and the
+  1159 s is the model reasoning over what it read. A new function needs that reasoning whether or
+  not the session is warm. What a warm session would save is re-comprehending the file's
+  conventions, which is some unknown fraction of the 1159 s, and it would save nothing of the 250 s
+  spent before reading anything -- if anything a larger context makes that slower.
+- **What it would cost:** a resumed session accumulates 0.5 MB of tool output plus its own 533 K
+  output tokens over the file. That is several compactions in a 200 K window and, even in a 1 M
+  window, a growing prefix re-read on every turn (cache reads are cheaper, not free). It also
+  couples the functions: one bad session poisons the rest of the file, and a timeout becomes
+  impossible to attribute. The harness runs a fresh session per function on purpose.
+- **What the data actually points at:** 43 of 49 sessions open by reading the whole file to find
+  one function. That round-trip and the comprehension it demands are removed more cheaply by
+  putting the verification slice in the prompt (function, callee contracts, caller call sites),
+  which keeps sessions independent and shrinks what the model must reason over. And for the 27
+  functions with no mutants -- sessions of 14 to 20 s of which 9 to 16 s is orientation -- the
+  saving comes from batching a few of them into one session, which is "carry context" in the only
+  form where it amortises something.
 - **Commit:**
