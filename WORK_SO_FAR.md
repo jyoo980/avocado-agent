@@ -559,6 +559,18 @@ wall-clock) against the 479 s longest-chain floor. The experiment scripts take `
 concurrent mkey runs already exhausted the usage limit once, the plan runs the two arms of each pair
 back to back rather than simultaneously, alternating order across pairs.
 
+Pair 1 of 3 (run id 20, commit ac68cbe, `--jobs 4` first then `--jobs 1`, shared auto-memory as
+the user requires, driver `/root/avocado-runner/jobs_pairs.sh`):
+
+| arm | wall-clock | agent-s | parallelism | verified | kill mean / pooled | cost | merges failed / dropped / transplanted |
+|---|---|---|---|---|---|---|---|
+| `--jobs 1` | 2043 s | 1871 | 0.92x | 49/49 | 0.330 / 0.379 (58/153) | $29.96 | 0 / 0 / 17 |
+| `--jobs 4` | 941 s | 2189 | 2.33x | 48/49 | 0.330 / 0.369 (58/157) | $31.95 | 0 / 0 / 18 |
+
+Wall-clock fell 2.17x. The mean kill score is identical; the pooled score differs only because the
+concurrent arm has one more scored function (four more decided mutants, same 58 kills). No merge
+failed and no edit was dropped in either arm. Pairs 2 and 3 are running; the verdict waits for them.
+
 ## Plan: what to do next
 
 **The binding constraint is the account's usage limit, not machine time.** Nine concurrent agent
