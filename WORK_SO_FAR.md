@@ -186,6 +186,22 @@ Commits: cc8f99d and 51e6e98. **Kept** (see the agent measurement below).
 
 Nothing about CBMC's checks or the metric changed.
 
+## Validity caveat that applies to every agent measurement below
+
+Discovered after these entries were written, by reading the transcripts turn by turn: every
+`claude -p` session the harness started -- in every arm of every run -- was given the **same**
+persistent memory directory by Claude Code's auto-memory feature, which keys it on the repository's
+main worktree. Sessions wrote 37 notes there and 286 sessions read them, including notes such as
+"parse_csv is a harness ceiling ... write, run once, ship" and "split_on_unescaped_newlines: copy
+t3/9 split.c verbatim ... ship after one run", which a baseline session then did. The arms were
+therefore not independent, and later runs were coached by earlier ones. The bias runs towards
+convergence of the arms and towards fewer turns, so treatment effects are more likely understated
+than overstated, but which arm gained more cannot be recovered. The full account is the "CRITICAL"
+entry in `FINDINGS.md`. The harness now disables auto-memory (`--settings
+'{"autoMemoryEnabled": false}'`, commit MEMORY_FIX_COMMIT); every agent number below must be
+re-taken with that fix before it is relied on. The deterministic measurements are unaffected: the
+scorer never runs an agent.
+
 ## Agent measurement: baseline (94a0f38) versus the kept changes (51e6e98)
 
 This is the measurement that decides whether everything above is kept. It compares the untouched
@@ -379,6 +395,11 @@ using `scripts/experiments/rescore_run.sh base <id> mkey`, and the tables use th
 Work stopped on the 24-hour wall-clock budget (2026-09-06 00:56 UTC to 2026-09-07 01:00 UTC). Two
 changes were kept, two were rejected, and several hypotheses remain open.
 
+**Read the agent numbers with the validity caveat above:** all of them were taken while every
+session shared one auto-memory directory across arms and runs, which was found and fixed only
+afterwards. The harness-time numbers stand; the agent-time and agent-quality numbers are
+indicative and must be re-measured with memory off.
+
 ### Environment
 
 Not inside the Docker container: a bare Ubuntu 24.04 host with the same toolchain the Dockerfile
@@ -507,6 +528,7 @@ the limit, one at a time.
 
 | Step | Agent sessions needed |
 | --- | --- |
+| 0. Re-take the baseline-vs-final measurement with auto-memory off | three paired runs on the iteration tier, then mkey |
 | 1. Cap the agent-facing verification budget | none to build and prove safe; the benefit rides along with the next paired runs |
 | 2. Record the kill score in the run log | none |
 | 3. Characterise kilo's agent loop | one un-paired run over `kilo.c` |
@@ -514,6 +536,22 @@ the limit, one at a time.
 | 5. Specify independent files concurrently | three paired runs on a multi-file benchmark |
 | 6. A worked example in `CLAUDE.md` | three paired runs on mkey |
 | 7. Targeted libc stubs | none for the first pass; three paired runs to confirm |
+
+### 0. Re-take the agent measurements with auto-memory off
+
+Every agent number in this document was taken while all sessions shared one memory directory (see
+the validity caveat). The harness now disables auto-memory. Before anything else that needs agent
+runs, repeat the paired baseline-versus-final measurement -- the baseline arm at 94a0f38 with the
+same `--settings` flag added so the comparison is fair -- on the iteration tier, then on mkey. Also
+move the 37 existing notes out of `/root/.claude/projects/-app/memory/` first, or a checkout that
+still has memory on will read them. Until this is done, the plan's ordering below rests on
+measurements that may be flattered by coaching.
+
+- **Cost:** three paired runs on the iteration tier, then three on mkey.
+- **Measure:** exactly as before (`compare_arms.py`), plus `session_timeline.py` to confirm no
+  session reads or writes a memory directory.
+- **Falsifier of the earlier conclusions:** a materially different kill-score gap or timeout count
+  once the coaching is gone.
 
 ### 1. Cap the *agent-facing* verification budget (no agent sessions needed)
 

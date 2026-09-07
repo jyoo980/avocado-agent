@@ -65,6 +65,15 @@ _MAX_PARSE_SNIPPET_CHARS = 500
 # one place; adjust these as the CLI's wording evolves.
 _USAGE_LIMIT_RESULT_PATTERNS = ("usage limit reached", "rate limit", "resets ")
 
+# Settings passed to every `claude -p` session. Claude Code's auto-memory feature gives a session a
+# persistent notes directory keyed by the repository's main worktree and injects its index into the
+# system prompt; a session started from any worktree of this repository therefore reads and writes
+# the same directory as every earlier session, from any run. That defeats the "fresh session per
+# function" design -- sessions were observed copying another run's finished contract verbatim on
+# the strength of a note -- and makes runs on one machine non-independent. Disable it so a session
+# knows only what the harness tells it.
+_CLAUDE_SETTINGS = json.dumps({"autoMemoryEnabled": False})
+
 # The loop will not advance to the next function until the agent has *attempted* verification
 # (run `avocado-run-cbmc`) at least this many times for the current function, as counted from the
 # verification-attempts log. This guards against advancing on a session that barely tried.
@@ -686,7 +695,9 @@ def _build_claude_command(prompt: str, *, file_path: str, include_dirs: list[str
     `--dangerously-skip-permissions` is the documented sandbox modality (see README). The
     C file's directory is granted with `--add-dir` so the file is reachable regardless of
     where the harness is invoked from; each include directory is granted the same way so the
-    agent can read headers it needs.
+    agent can read headers it needs. `--settings` applies `_CLAUDE_SETTINGS`, which turns off
+    Claude Code's auto-memory so every session starts from nothing but the prompt and the
+    repository.
 
     Args:
         prompt (str): The prompt to send (see `_build_prompt`).
@@ -703,6 +714,8 @@ def _build_claude_command(prompt: str, *, file_path: str, include_dirs: list[str
         "--output-format",
         "json",
         "--dangerously-skip-permissions",
+        "--settings",
+        _CLAUDE_SETTINGS,
         "--add-dir",
         str(Path(file_path).parent),
     ]

@@ -682,3 +682,92 @@ entries. Terminal states: confirmed, refuted, noise.
      makes body edits structurally impossible, which closes the in-body-assert finding. It does not
      depend on the slice at all.
 - **Commit:**
+
+## CRITICAL: every inner session shared one persistent memory directory across all arms and runs
+
+- **Hypothesis:** n/a -- a validity defect discovered while reading transcripts turn by turn.
+- **Axis:** all of them; it undermines every agent measurement recorded before commit
+  `MEMORY_FIX_COMMIT`.
+- **Status:** confirmed; fixed for future runs; past agent measurements must be re-taken.
+- **What happened:** Claude Code's auto-memory feature gives each session a persistent notes
+  directory and injects its index into the system prompt. It is keyed by the repository's *main*
+  worktree, so every session started from any of the `/root/avocado-*` worktrees -- baseline,
+  treatment, T3, all of them -- was handed the same directory, `/root/.claude/projects/-app/memory/`.
+  A direct test confirms it: a `claude -p` session started from `/root/avocado-t2-1` reports that
+  path as its memory; with `--settings '{"autoMemoryEnabled": false}'` it reports none.
+- **Scale:** 37 notes and a 13.6 KB index, written by 85 sessions and read by 286, across every
+  arm (`base2`: 116 of 165 sessions touched it; `t2-1`: 130 of 189; `t3`: 20 of 24).
+- **What the notes say, verbatim from the index:** "quicksort partition and quickSort both reached
+  1.0"; "parse_csv is a harness ceiling -- verifies first try, 0/10 no matter the contract; write,
+  run once, ship"; "fread_csv_line 0/23 is a harness ceiling, write a contract, run once, stop";
+  "split_on_unescaped_newlines: copy t3/9 split.c verbatim ... verifies first try ... ship after
+  one run"; per-function mkey entries such as "ctr_add_counter ... final/14 confirmed 10/29;
+  final/15 confirmed 10/29 first run". A baseline session in run 4 did exactly what that note says
+  and copied the T3 arm's finished `split.c` into its own run directory.
+- **Consequences for the recorded results:**
+  - The arms were never independent. Both arms read notes written by sessions of the other arm,
+    including finished contracts and instructions to stop iterating. The identical 22/55 on every
+    iteration-tier run of every arm, reported earlier as a structural ceiling, is at least partly
+    the notes telling every session the ceiling and to ship after one run.
+  - The direction of the bias is towards *convergence* of the arms, which masks treatment
+    effects, and towards *fewer turns* in later runs, which flatters agent time. Which arm gained
+    more cannot be recovered from the logs.
+  - The one comparison this does not touch is the deterministic one: the scorer never runs an
+    agent, so the "identical scores, 2.7x faster" result for the parallel-evaluation change stands.
+- **Fix:** `avocado_verify._build_claude_command` now passes `--settings '{"autoMemoryEnabled":
+  false}'`, so a harness session knows only what the prompt and the repository tell it (commit
+  `MEMORY_FIX_COMMIT`, tested). The 37 notes are left on disk as evidence and are not used by
+  anything.
+- **What has to happen next:** every agent measurement in `WORK_SO_FAR.md` -- the iteration-tier
+  pairs, the mkey pairs, T3 -- was taken with shared memory on and must be re-run before it is
+  relied on. Step 0 of the plan.
+- **Commit:** `MEMORY_FIX_COMMIT`
+
+## Where the wall-clock actually goes, from the transcripts turn by turn
+
+- **Hypothesis:** n/a -- measurement. Earlier entries reasoned from aggregates; this one attributes
+  every second of every session to either the model generating or a named tool call, using
+  `scripts/experiments/session_timeline.py`.
+- **Axis:** agent time
+- **Status:** confirmed (subject to the memory caveat above, which affects the absolute numbers
+  but not the shape)
+- **Evidence, mkey run 14, all 49 sessions per arm:**
+
+  | | base | final |
+  | --- | ---: | ---: |
+  | wall-clock | 4015 s | 3221 s |
+  | model generating | 3061 s (76%) | 3080 s (96%) |
+  | CBMC run by hand by the agent | 819 s (20%) | 1 s |
+  | `avocado-run-cbmc` (verify + all mutants) | 116 s (3%) | 123 s (4%) |
+  | reading and editing files | 18 s | 17 s |
+  | model turns / output tokens | 369 / 221,675 | 309 / 224,780 |
+
+  The two arms generate the same number of output tokens and spend the same model time; the
+  entire 794 s difference is the baseline running CBMC by hand (a single `timeout 590 cbmc`
+  inside `mkey_detect_algorithm`). File reads and edits are noise.
+- **Model time is output tokens, almost exactly.** Over 445 treatment turns on both tiers the
+  correlation between a turn's latency and its output tokens is 0.99, at about 14.6 s per thousand
+  tokens. Median turn 5.9 s, p90 20.5 s, maximum 142 s. The 12 turns over 60 s are each a
+  6,000-11,000-token thought with no visible text ending in a single tool call, and they are 21%
+  of all model time. Thinking is redacted in the transcript but counted in `output_tokens`.
+- **What the long turns contain.** The costliest treatment session (`split_on_unescaped_newlines`,
+  720 s, 22 turns): turns 7-13 are 28-108 s each, each a thought of 2,500-8,900 tokens that ends
+  in a `python3 -` edit script; the verifier returns in 2 s and reports kill score 0 every time;
+  at turn 13 the agent's own regex "gutted the file" and it rewrote the benchmark source from
+  memory at turn 15. It finished with kill score 0. Note also turns 2 and 21: it reads and appends
+  to the shared memory directory.
+- **The sessions the harness killed** (baseline, iteration tier, 1800 s each, missing from the
+  run log because a killed session reports no id): `fread_csv_line` -- 491 s model, 605 s CBMC by
+  hand, 473 s in `ps aux | grep cbmc` polling loops, killed during a `timeout 240 cbmc`;
+  `split_on_unescaped_newlines` session A -- 872 s model, 929 s CBMC by hand, 309 s polling, 72
+  tool turns; session B -- 1194 s model, 617 s CBMC by hand, 55 tool turns; session C -- 1781 s
+  charged to the model across only 6 turns, i.e. the session stalled with nothing in flight.
+- **So the answer to "what costs the most wall-clock":** on the treatment arm, the model's own
+  thinking, in proportion to how many tokens it decides to think, with a heavy tail of long
+  deliberations before an edit; nothing else is above 4%. On the baseline arm, the same plus a
+  quarter of the time in CBMC the agent runs by hand, and, on the iteration tier, whole 1800 s
+  sessions lost to hand-run CBMC, polling loops and one stall. The levers that follow are the
+  thinking budget (the effort setting), the number of turns before the first verify, and never
+  letting a session run CBMC by hand or wait on it -- not file I/O, not mutation testing, and not
+  the scoring pass.
+- **Commit:**
