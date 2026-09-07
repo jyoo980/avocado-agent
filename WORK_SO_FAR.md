@@ -361,3 +361,99 @@ this checkout's parallel evaluation driver against its own unlocked `construct_c
 precisely the race the `_CALL_GRAPH_LOCK` in commit a0620ca removes, so it is evidence for that
 change rather than against the baseline. Both runs were re-scored entirely within this checkout
 using `scripts/experiments/rescore_run.sh base <id> mkey`, and the tables use those results.
+
+## Summary
+
+Work stopped on the 24-hour wall-clock budget (2026-09-06 00:56 UTC to 2026-09-07 01:00 UTC). Two
+changes were kept, two were rejected, and several hypotheses remain open.
+
+### Environment
+
+Not inside the Docker container: a bare Ubuntu 24.04 host with the same toolchain the Dockerfile
+installs (CBMC 6.9.0, `uv`, the Claude Code CLI), 128 CPUs and 503 GB RAM. `git` and `prek` were
+missing and were installed; neither is part of the system under evaluation. `claude -p` works, so
+agent-time experiments were possible, but the account's usage limit -- not machine time -- is what
+bounded how many of them could be run. `make test` and `make checks` pass at every commit.
+
+### Kept changes
+
+**1. Parallel evaluation, scratch-directory isolation, bounded mutant feedback (a0620ca).**
+`evaluate_specification_quality.py` scores every annotated function concurrently (`--jobs`,
+defaulting to the CPU count) while emitting records in the original order; each CBMC pipeline runs
+in its own temporary directory; one process-wide semaphore bounds concurrent subprocesses; mutant
+files are named per function; the shared tree-sitter parser and the call-graph cache are locked;
+`avocado-run-cbmc` reuses `tools.run_cbmc` instead of a second copy of the pipeline and gives each
+mutant a 120 s feedback budget (the metric keeps the full 600 s).
+
+**2. A per-function prompt and workflow guidance (cc8f99d, 51e6e98).** The harness prompt now
+carries the exact `avocado-run-cbmc` command with the include directories it detected, the in-file
+callees whose contracts replace their bodies, and the in-file callers whose call sites must satisfy
+the new preconditions. `CLAUDE.md` gained a workflow section (verify first, never run CBMC by hand
+or in the background, never read the harness sources or tune its bounds, stop when the score stops
+moving) and a section on writing contracts that verify and kill mutants.
+
+### Before and after, per tier
+
+Deterministic, scoring the checked-in specifications (single run each, scores identical
+record-for-record before and after):
+
+| Tier | Benchmark | Kill score | Harness wall-clock before | after |
+| --- | --- | --- | ---: | ---: |
+| Iteration | quicksort | unchanged (0.7143 mean) | 5.48 s | 2.94 s |
+| Iteration | csv_parser | unchanged (0.0000 mean) | 6.94 s | 3.69 s |
+| Confirmation | mkey | unchanged (0.1937 mean) | 29.73 s | 5.17 s |
+| Confirmation | kilo | unchanged (0.2332 mean) | 1103.17 s | 414.40 s |
+
+Agent runs, starting from benchmarks with every contract stripped:
+
+| Tier | Runs | Kill score before | after | Agent time before | after |
+| --- | --- | --- | --- | ---: | ---: |
+| Iteration (quicksort + csv_parser) | 3 paired | 0.500 mean | 0.500 mean | 2070.9 s | 580.8 s |
+| Confirmation (mkey), run 14 | 1 paired | 0.3024 mean | 0.3576 mean | 4016.7 s | 3223.0 s |
+| Confirmation (mkey), run 15 | 1 paired, partial | 0.2576 mean | 0.2922 mean | not comparable |
+
+Validation tier (`lz4_lib`) was not run. It carries no CBMC annotations, so there is nothing for the
+deterministic scorer to measure, and an agent pass over `lz4.c` is the multi-hour, real-money run
+the goal says not to start speculatively -- there was neither the wall-clock nor the usage-limit
+headroom for it after the confirmation tier.
+
+### What the agent-time win actually is
+
+It is not that a typical session got faster. On the iteration tier two of the three paired runs are
+a wash (+80 s and -22 s); the entire mean difference comes from one run where three baseline
+sessions were killed by the harness's 1800 s per-function timeout, one of them after the agent
+downloaded CBMC's own C++ source from GitHub to study its inliner. No treatment session was killed
+by the timeout in any run on either tier. The change removes the tail in which a session spends its
+whole budget without ever running the verifier.
+
+### Rejected changes
+
+- **Always injecting CBMC's C-library models** (branch `addlib`, never merged). It raised no
+  function's kill score and cost four functions their verification: modelled libc is stricter than
+  nondeterministic libc, and specifications written against the latter do not survive it.
+- **Guidance to prefer total postconditions over guarded ones** (fcba9af, reverted by 00c1264).
+  Three paired runs produced byte-identical scores in both arms -- 22 of 55 decided mutants killed,
+  every run -- so the paragraph was reverted rather than left in the prompt for nothing.
+
+### Most promising open hypotheses
+
+1. **Re-run a session when the function verifies but mutants survive.**
+   `avocado_verify.is_spec_improvable_with_mutation_testing` stops as soon as a function verifies,
+   so a contract that verifies with a kill score of 0 gets exactly one session. Gating the retry on
+   the kill score instead would spend agent time where quality is lowest. It costs agent time by
+   construction, so it needs three paired runs on a tier with headroom (mkey, not the iteration
+   tier) to justify.
+2. **A structural guard against sessions that never call the verifier.** The prompt now discourages
+   them, but nothing prevents one; the harness will still spend up to three 30-minute sessions on a
+   function before moving on. Telling the retry that the previous session produced no verification
+   attempt, or shortening the first retry, would make the fix independent of prompt compliance.
+3. **The kill score counts in-body assertions.** One treatment run's `fread_csv_line` gained a dozen
+   `__CPROVER_assert` statements inside the function body, which CBMC checks and which can kill
+   mutants the contract alone would not. That makes the metric measure something broader than
+   contract strength. A body-integrity check would fix it, but only by lowering measured scores, so
+   it has to be introduced as a metric change with its own re-measurement.
+4. **The iteration tier is insensitive to prompt work.** `parse_csv` and `fread_csv_line` score 0 in
+   every arm of every run because their bodies are driven by unstubbed libc calls that CBMC treats
+   as nondeterministic. Any future quality experiment should use mkey or kilo, where the checked-in
+   specifications leave headroom, and should budget for the usage limit: roughly one iteration-tier
+   pair per hour, and a fresh window for a confirmation-tier pair.
