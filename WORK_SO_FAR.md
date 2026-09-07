@@ -304,7 +304,43 @@ AVOCADO_SKIP_GLOB='*/polarssl/*' AVOCADO_SCORER_ROOT=/app \
 scripts/experiments/compare_arms.py --baseline base --treatment final --runs <ids> --benchmarks mkey
 ```
 
-MKEY_TABLE_PLACEHOLDER
+Three paired runs were attempted (ids 14, 15, 16). Only run 14 completed: the account's usage
+limit truncated run 15 near its end (the baseline arm reached 43 of 49 functions, the treatment 47)
+and stopped run 16 after four functions, which is discarded. Run 15 is reported over the 42
+functions both arms specified, using `scripts/experiments/compare_on_intersection.py`, so the two
+arms are compared like for like.
+
+Run 14, complete, all 49 functions in both arms:
+
+| Metric | base (94a0f38) | final (51e6e98) |
+| --- | ---: | ---: |
+| mean kill score | 0.3024 | 0.3576 |
+| pooled kill score | 0.2396 (52/217) | 0.2490 (62/249) |
+| functions with a scorable contract | 17 | 21 |
+| functions whose contract does not verify | 5 | 1 |
+| functions verified by the harness (of 49) | 49 | 49 |
+| sessions killed by the 1800 s timeout | 0 | 0 |
+| agent time (s) | 4016.7 | 3223.0 |
+| reported cost (USD) | 34.37 | 31.90 |
+
+Run 15, restricted to the 42 functions both arms specified (22 of which have mutants in both):
+
+| Metric | base | final |
+| --- | ---: | ---: |
+| mean kill score | 0.2576 | 0.2922 |
+| pooled kill score | 0.2417 (51/211) | 0.2218 (55/248) |
+
+Both runs move the mean kill score up, by 0.055 and 0.035. The pooled score moves up in run 14 and
+down slightly in run 15, because the treatment decides more mutants (248 against 211 on the same
+functions) and a larger denominator can lower a ratio even as the count of killed mutants rises.
+Two functions account for most of the difference in both runs: `main_set_data_path`, where the
+baseline writes a contract that does not verify and the treatment reaches 0.7143, and
+`ctr_crypt_counter`, where the baseline scores 0.0000 against the treatment's 0.5000.
+
+With one complete paired run and one partial one, this is weaker evidence than the three complete
+paired runs on the iteration tier. It is enough to say the change does not lower the kill score on
+the confirmation tier -- the requirement the tie-break rule imposes -- and that the direction is
+favourable on both the mean and the count of functions carrying a contract worth scoring.
 
 Both arms verify all 49 functions and annotate all 49; neither loses a session to the harness
 timeout. The difference is in what the contracts are worth. The treatment writes contracts that
@@ -317,11 +353,11 @@ For scale, the committed specifications in `eval/benchmarks/mkey` score a mean o
 pooled 0.1111 (17 of 153 decided mutants, 14 functions tested). Both agent arms beat the checked-in
 specifications comfortably; the treatment beats the baseline arm.
 
-**Measurement artifact worth recording.** The first scoring pass for the `base` arm of run 14
+**Measurement artifact worth recording.** The first scoring pass for the `base` arm of runs 14 and 15
 crashed with a `JSONDecodeError` reading a half-written call-graph JSON. The cause was in the
 experiment harness, not in either arm: `AVOCADO_SCORER_ROOT=/app` makes the *script* come from this
 checkout while `uv` still resolves the *modules* from the arm's checkout, so the baseline arm ran
 this checkout's parallel evaluation driver against its own unlocked `construct_call_graph`. That is
-precisely the race the `_CALL_GRAPH_LOCK` in commit a0620ca removes. The run was re-scored entirely
-within this checkout using `scripts/experiments/rescore_run.sh base 14 mkey`, and the table uses
-that result.
+precisely the race the `_CALL_GRAPH_LOCK` in commit a0620ca removes, so it is evidence for that
+change rather than against the baseline. Both runs were re-scored entirely within this checkout
+using `scripts/experiments/rescore_run.sh base <id> mkey`, and the tables use those results.
