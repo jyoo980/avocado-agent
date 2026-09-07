@@ -411,7 +411,17 @@ entries. Terminal states: confirmed, refuted, noise.
   5 s of harness time, so agent time is over 99% of the total.
 - **Status:** open
 - **Evidence:** `avocado-experimental-data/final-14-mkey.time` (four files, walked in sequence);
-  `tools/util/tree_sitter_utils.get_call_graph` builds the graph from a single file.
+  `tools/util/tree_sitter_utils.get_call_graph` builds the graph from a single file. Sizing it
+  from the measured per-function session times of that run (3223 s sequential over 49 functions):
+  one session per file in parallel gives a wall-clock equal to the largest file, `mkey.c` at
+  1246 s, a 2.6x reduction; running every function as soon as its callees are done gives a
+  wall-clock bounded below by the longest dependency chain, 479 s (in `mkey.c`), a 6.7x
+  reduction. The second figure is a floor -- it assumes unlimited concurrency and ignores machine
+  contention and the usage limit -- but it is the only lever measured here whose effect grows with
+  the program rather than shaving a percentage off a serial sum, and it costs no model thinking
+  and so carries no quality risk from thinking less. Function-level concurrency within a file needs
+  the harness to insert contracts itself (candidate 1 of the generic speedups), or concurrent
+  sessions will edit the same file.
 - **Risks to measure:** concurrent sessions multiply the rate at which the account's usage limit is
   consumed, which is already the binding constraint on measurement; and they contend for the
   machine during mutation testing, which the subprocess semaphore bounds but does not eliminate.
