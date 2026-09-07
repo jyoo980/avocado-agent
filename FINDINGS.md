@@ -234,3 +234,138 @@ entries. Terminal states: confirmed, refuted, noise.
   outcomes in `avocado-experimental-data/runs/{base,final}/12/`; the abandoned runs 1-3 of labels
   `baseline`, `t1` and `t2`.
 - **Commit:**
+
+## Let the agent raise `--depth` monotonically
+
+- **Hypothesis:** `DEVELOPMENT.md` proposes letting agents raise (never lower) CBMC's `--depth`,
+  on the grounds that agents report mutants they cannot kill because of the default bound of 200.
+  CBMC itself prints "Depth-bounded analysis may yield unsound verification results" on every run,
+  so raising the bound is strictly sounder and is explicitly permitted by the goal's soundness
+  invariants.
+- **Axis:** quality (at a large cost in harness time)
+- **Status:** refuted as a global change; open as a per-function, agent-chosen one
+- **Evidence:** Raising `_CBMC_DEPTH` from 200 to 2000 for everything (branch `depth2000`,
+  worktree `/root/avocado-depth`) and re-scoring the checked-in specifications:
+
+  | Benchmark | depth 200 | depth 2000 |
+  | --- | --- | --- |
+  | quicksort wall-clock | 2.94 s | 28.82 s |
+  | csv_parser wall-clock | 3.69 s | 600.58 s (hit the CBMC timeout) |
+  | quicksort functions scored | 1 (`quickSort`, 0.7143) | 0 |
+  | csv_parser functions scored | 2 | 1 |
+
+  Not one function's kill score rose. Every function that changed changed for the worse:
+  `quickSort`, `partition` and `fread_csv_line` went from verifying to "did not verify", because a
+  deeper analysis checks paths their contracts do not cover. Files:
+  `avocado-experimental-data/depth2000-*.jsonl`.
+- **Why the per-function version is still open:** the measurement above raises the bound for
+  everything at once, which is not the proposal. An agent raising it for one function would see the
+  same effect -- its contract stops verifying -- and would then have to strengthen the contract
+  until it verifies at the higher bound, which is exactly the work that produces a stronger
+  specification. The incentive is self-correcting: a function that does not verify is not scored at
+  all, so an agent cannot raise the bound and walk away.
+- **Design problem to solve first:** the bound lives in `tools/run_cbmc.py` and is used both by the
+  agent's tool and by `evaluate_specification_quality.py`. If the agent picks a depth per function,
+  the scorer must use the same depth for that function, or a specification tuned at depth 2000 is
+  graded at depth 200 and the two disagree. The chosen bound would have to become part of the
+  function's recorded specification (a machine-readable annotation the harness reads back), not a
+  transient command-line flag. That also keeps `CLAUDE.md`'s "never hard-code CBMC command-line
+  values into specifications" rule honest: the value would live in harness metadata, not in a
+  clause.
+- **Commit:** not merged; branch `depth2000` kept for reference.
+
+## Give the mutant pipeline a budget matched to observed decision times
+
+- **Hypothesis:** every mutant gets the full 600 s CBMC budget, but mutants are decided far faster
+  than that. All 42 of `hexdump`'s mutants are decided between 0.4 s and 1.4 s, a margin of more
+  than 400x. Kilo's 414 s evaluation, by contrast, is dominated by a few runs that consume the
+  whole 600 s and are then discarded as undecided. A budget derived from the unmutated function's
+  own verification time (say a fixed multiple of it) would cut the tail without touching any
+  mutant that was ever going to be decided.
+- **Axis:** harness time
+- **Status:** open
+- **Evidence:** per-mutant `seconds`, now recorded on every `MutantVerificationResult` and emitted
+  by `eval/mutants/generate_mutants_and_compute_score.py`, measured on
+  `eval/benchmarks/mkey/source/utils.c#hexdump`.
+- **How to keep the metric frozen:** this changes which mutants are decided, so it may not be
+  merged on the strength of the idea. Run the full benchmark set at 600 s with per-mutant times
+  recorded, find the slowest *decided* mutant, and set the budget above it; then re-score
+  everything and require identical records. If any decided mutant is slower than the proposed
+  budget, the budget is wrong, not the mutant.
+- **Commit:**
+
+## Schedule mutants longest-first
+
+- **Hypothesis:** mutants are submitted to the pool in source order. With a bounded pool the
+  makespan is minimised by starting the longest jobs first, and a mutant's cost is predictable from
+  the same mutant's cost on the previous run of that function. Ordering by the previous run's
+  recorded `seconds` (falling back to source order for a first run) should shorten the wall-clock
+  of the slow benchmarks without touching any verdict, since scheduling cannot change a result.
+- **Axis:** harness time
+- **Status:** open
+- **Evidence:** none yet; the per-mutant `seconds` needed to drive it are now recorded.
+- **Commit:**
+
+## Stub the specific libc functions the benchmarks call
+
+- **Hypothesis:** the confirmed csv_parser ceiling comes from `malloc`, `strdup`, `free` and a
+  `getc` macro being nondeterministic. Injecting CBMC's whole library is refuted (it broke four
+  functions), but `stubs/` already supports per-symbol models keyed by a `/* FUNCTION: name */`
+  marker and applied only to the callees a function actually has. Hand-written deterministic models
+  for the handful of allocation and string functions these benchmarks use would make callers'
+  results observable, one symbol at a time, with the blast radius of each stub measurable on its
+  own.
+- **Axis:** quality
+- **Status:** open
+- **Evidence:** "csv_parser's libc-heavy functions are the quality ceiling" and the refuted
+  "Always inject CBMC's C-library models" entries above.
+- **Commit:**
+
+## Put the callee contracts, not just the callee names, in the prompt
+
+- **Hypothesis:** the per-function prompt names the in-file callees whose contracts replace their
+  bodies, but the agent still has to open the file to read them, and what those contracts promise
+  is the entire basis for what the caller can assert. Inlining the callees' clause text should save
+  turns and reduce contracts written against what the callee *does* rather than what it *promises*.
+- **Axis:** agent time, possibly quality
+- **Status:** open
+- **Evidence:** transcripts consistently show a first turn spent reading the whole file.
+- **Commit:**
+
+## Summarise surviving mutants by location instead of listing every diff
+
+- **Hypothesis:** `get_mutation_testing_results_for_client` emits a unified diff per surviving
+  mutant, up to a 50 KB budget. On `editorUpdateSyntax` that is 62 diffs, and on `hexdump` 42, most
+  of them one-line variations on the same expression. Grouping survivors by line and operator class
+  ("all 31 survivors are the relational operators in the loop at lines 118-140") would spend the
+  agent's context on the shape of the gap rather than on 62 near-identical hunks.
+- **Axis:** agent time, possibly quality
+- **Status:** open
+- **Evidence:** `avocado-experimental-data/baseline-kilo.jsonl` (`editorUpdateSyntax`, 0 of 62
+  killed).
+- **Commit:**
+
+## Put a worked high-kill-score example in `CLAUDE.md`
+
+- **Hypothesis:** the prompt and `docs/` explain contract syntax, and the only worked example is a
+  three-line `sum`. Nothing shows a complete contract that actually kills mutants on a loop over a
+  buffer, which is the shape of nearly every function in the benchmark set. A single end-to-end
+  example -- function, contract, the mutants it kills, and the one it does not -- is the cheapest
+  remaining prompt intervention and the kind that usually moves model output most.
+- **Axis:** quality
+- **Status:** open
+- **Evidence:** none direct; the two prompt treatments that did *not* include an example (T2's
+  prose guidance and T3's) moved the iteration tier's score not at all.
+- **Commit:**
+
+## Move to CBMC's `--dfcc` contract mode
+
+- **Hypothesis:** `DEVELOPMENT.md` records that `--dfcc` is where the project wants to go. It is
+  the supported path for contract checking in current CBMC, and the `_dfcc`-suffixed predicates in
+  `docs/contracts-memory-predicates.md` (for example `__CPROVER_pointer_in_range_dfcc`) are only
+  available under it, so today the agent is told about predicates it cannot use. It is a rework of
+  the pipeline and the prompts rather than a tweak.
+- **Axis:** quality
+- **Status:** open
+- **Evidence:** `DEVELOPMENT.md`; `docs/contracts-memory-predicates.md`.
+- **Commit:**
