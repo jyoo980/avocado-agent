@@ -466,6 +466,24 @@ whole budget without ever running the verifier.
    specifications leave headroom, and should budget for the usage limit: roughly one iteration-tier
    pair per hour, and a fresh window for a confirmation-tier pair.
 
+## What a reader needs that is not in this repository
+
+Two things these documents cite are not in a fresh clone, by the repository's own
+conventions rather than by oversight:
+
+- **The evidence files.** Every JSONL and `.time` file named here lives under
+  `avocado-experimental-data/`, which `.gitignore` excludes (it did so before this work, and the
+  goal directs experiment data there). The documents and the scripts travel with the repository;
+  the measurements do not. Re-derive them with the commands quoted in each entry.
+- **The rejected-treatment branches.** `addlib` (inject CBMC's C library), `depth2000` (raise
+  `--depth` globally) and `t3` (the reverted prompt paragraph, which is also on this branch as
+  fcba9af followed by its revert) were never pushed. The findings entries carry the numbers, so the
+  branches are a convenience, not a dependency.
+
+Everything else is committed: the experiment tooling is in `scripts/experiments/` with its own
+[README](scripts/experiments/README.md), and the exact invocations behind each measurement are in
+the entries above and in the header of `scripts/experiments/run_paired_batches.sh`.
+
 ## Plan: what to do next
 
 Ordered by value per unit of the scarce resource, which is not machine time but the account's usage
