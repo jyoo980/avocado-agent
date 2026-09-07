@@ -896,3 +896,82 @@ entries. Terminal states: confirmed, refuted, noise.
   memory-isolated protocol of plan step 0, watching the count of killed sessions and of functions
   that receive more than one session. Until then this stays labelled "implemented, unmeasured".
 - **Commit:** `06a7d02`
+
+## Wall-clock ledger and every lever on it, ranked
+
+- **Hypothesis:** n/a -- a consolidated accounting, so the levers can be compared on one scale.
+  All numbers are from the treatment arm of mkey run 14 (49 functions, 3221 s of agent time,
+  measured turn by turn with `session_timeline.py`) unless marked.
+- **Axis:** agent time, harness time
+- **Status:** confirmed as a ledger; each lever carries its own status.
+- **Where the 3221 s go** (categories overlap; they are views, not a partition):
+
+  | component | seconds | share |
+  | --- | ---: | ---: |
+  | model generating (proportional to output tokens, ~14.6 s per 1K) | 3080 | 96% |
+  |   of which: before the first edit ("orientation") | 1608 | 50% |
+  |   of which: the 12 turns over 60 s (6-11K-token thoughts) | 993 (both tiers) | 21% of model |
+  |   of which: after the tool said nothing was left to kill (30 sessions) | 378 | 12% |
+  |   of which: after two verified runs at the same score (9 sessions) | 373 | 12% |
+  |   of which: the closing summary turn after the last tool result | 333 | 10% |
+  | `claude` CLI startup, launch to first prompt event | 107 | 3% |
+  | inside tools (verify + mutants 123 s; reads and edits 17 s) | 141 | 4% |
+  | sessions on the 27 functions that have no mutants | 909 | 28% |
+  | harness ground-truth re-verification (outside the sessions) | ~41 | 1% |
+  | structure: 49 functions run one after another; longest dependency chain | 479 | 15% |
+
+- **Levers, ranked by expected wall-clock effect.** Magnitudes are measured or bounded from the
+  ledger; "risk" is to the kill score.
+
+  *Multiplicative (change the structure):*
+  1. **Run independent functions concurrently**, each as soon as its callees are done. Floor is
+     the longest dependency chain: 479 s against 3223 s, 6.7x. Needs harness-side contract
+     insertion so concurrent sessions never edit one file. Risk: none to quality; spends the
+     usage limit faster in wall-clock terms.
+  2. **Run files concurrently.** Largest file 1246 s against 3223 s, 2.6x. Scheduling change only.
+
+  *Additive, remove work that produces nothing (safe by construction):*
+  3. **End the session when the tool reports nothing left to kill.** 378 s (12%). The tool
+     already knows; make its output an explicit "stop now" and have the prompt honour it.
+  4. **Drop the closing summary.** 333 s (10%). Nothing reads it: the harness takes its verdict
+     from CBMC and its numbers from the tool log. Overlaps with 3.
+  5. **Batch the 27 no-mutant functions into a few sessions.** 909 s (28%) today, one cold start
+     each; twelve are the same one-line accessor. Plausibly saves half. Risk: callers verify
+     against these contracts, so measure callers' scores.
+  6. **Enforce the in-session plateau.** 373 s (12%) after two verified runs at the same score,
+     which the prompt already tells the agent is the stopping point; have the tool say "score
+     unchanged from the previous run" so the instruction has something to bite on.
+  7. **Lower the per-session timeout from 1800 s.** The longest successful treatment session
+     on either tier was 720 s; on mkey, 345 s. A 900 s cap would have cut no productive session
+     and halves the tail that killed sessions cost; with the new re-run rule the worst case per
+     function falls from 3600 s to 1800 s.
+  8. **Cap the agent-facing function-verification budget** (600 s to about 60 s). Zero effect on
+     mkey; on kilo a single verification runs 602 s to a timeout and can swallow a session. No
+     metric impact: ground truth keeps 600 s.
+
+  *Make each turn cheaper (the 96%):*
+  9. **Lower the effort setting** (`CLAUDE_CODE_EFFORT_LEVEL: high` in `.claude/settings.json`).
+     Latency is output tokens; the effort setting is the thinking budget. Unmeasured, potentially
+     the largest single per-session gain, and the one with real quality risk. One-line change,
+     three paired mkey runs to decide.
+  10. **Fast mode** (Claude Opus 5, up to 2.5x output tokens per second at Fable's price). Attacks
+      the 14.6 s per 1K directly. Needs the SDK opt-in that `claude -p` reports as required; a
+      model change, so quality is unknown.
+  11. **Harness-side contract insertion.** 113 of 114 edits were `sed`/`python` scripts the model
+      wrote out as tokens; at a few hundred tokens each that is on the order of 5-25 s per session.
+      Also the prerequisite for lever 1 and the fix for body edits.
+  12. **Function line range in the prompt.** Removes the 30 whole-file reads; a few percent.
+  13. **CLI startup, 107 s.** Only fewer sessions (lever 5) reduces it.
+
+  *Measured not to help:* importing the docs (read in 1 of 49 sessions), resuming sessions across
+  a file (orientation is deciding, not reading; context grows 0.5 MB plus 533 K output tokens),
+  equivalent-mutant filtering (mutation is 22 s of 3223), the verdict cache (about 1%), skipping
+  the pipeline retry (7% of CBMC time, changes verdicts), raising `--depth` globally (slower and
+  three functions stop verifying).
+
+- **Stacked estimate for mkey**, to show the order of operations: the session trims (3-7)
+  remove roughly a third of session time, about 3221 s to 2100 s; file concurrency then bounds
+  the pass by the largest file, about 800 s; function concurrency by the longest chain, about
+  300 s. Effort or fast mode multiply whatever remains. The trims and the concurrency are
+  independent and both are on the plan; the effort change is the one that also cuts cost.
+- **Commit:** analysis only.
