@@ -44,8 +44,8 @@ so they exist only where the work was done.
   and cost for a run in flight.
 - `summarize_agent_runs.py <run-dir>...` aggregates a finished run, charging a
   session killed by the harness timeout its full timeout rather than zero.
-- `compare_arms.py --baseline <label> --treatment <label> --runs <id>... --benchmarks <name>...`
-  is the paired comparison that decides a treatment.
+- `compare_arms.py` with `--baseline`, `--treatment`, `--runs` and
+  `--benchmarks` is the paired comparison that decides a treatment.
 - `rescore_run.sh <label> <run-id> <benchmark>...` re-scores a run's
   specifications from one checkout. Use it whenever a scoring pass was
   interrupted, or to make sure both arms were scored by identical code.
