@@ -21,7 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -142,9 +142,13 @@ def main() -> None:
     """Attribute session time for the sessions named in the given run logs."""
     parser = argparse.ArgumentParser(description="Attribute agent session time to model vs tools.")
     parser.add_argument("run_logs", nargs="+", help="`<stem>-avocado-verify.jsonl` run logs.")
-    parser.add_argument("--projects-dir", required=True, help="Claude projects dir holding the transcripts.")
+    parser.add_argument(
+        "--projects-dir", required=True, help="Claude projects dir holding the transcripts."
+    )
     parser.add_argument("--top", type=int, default=6, help="How many costliest sessions to list.")
-    parser.add_argument("--timeout", type=float, default=1800.0, help="Harness per-session timeout.")
+    parser.add_argument(
+        "--timeout", type=float, default=1800.0, help="Harness per-session timeout."
+    )
     args = parser.parse_args()
 
     total_span = total_model = 0.0
@@ -185,7 +189,9 @@ def main() -> None:
     for span, fn, res in sessions[: args.top]:
         top_tools = ", ".join(f"{k} {v:.0f}s" for k, v in res["tools"].most_common(2))
         flag = "  [KILLED BY HARNESS]" if res["killed"] else ""
-        print(f"  {fn:26s} {span:7,.0f}s  model {res['model']:6,.0f}s  turns {res['turns']:3d}  {top_tools}{flag}")
+        print(
+            f"  {fn:26s} {span:7,.0f}s  model {res['model']:6,.0f}s  turns {res['turns']:3d}  {top_tools}{flag}"
+        )
         for secs, kind, summary in res["longest"][:2]:
             print(f"        {secs:7,.0f}s {kind:22s} {summary}")
 

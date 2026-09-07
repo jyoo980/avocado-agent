@@ -198,7 +198,7 @@ therefore not independent, and later runs were coached by earlier ones. The bias
 convergence of the arms and towards fewer turns, so treatment effects are more likely understated
 than overstated, but which arm gained more cannot be recovered. The full account is the "CRITICAL"
 entry in `FINDINGS.md`. Memory across functions and runs is intended (the maintainer's decision;
-commit 6f5ca7b, which disabled it, is reverted by REVERT_COMMIT), so the remedy is not to switch
+commit 6f5ca7b, which disabled it, is reverted by 396bbf4), so the remedy is not to switch
 it off but to give each arm its own memory directory during experiments. Every agent number below
 must be re-taken that way before it is relied on. The deterministic measurements are unaffected:
 the scorer never runs an agent.

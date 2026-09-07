@@ -716,7 +716,7 @@ entries. Terminal states: confirmed, refuted, noise.
     agent, so the "identical scores, 2.7x faster" result for the parallel-evaluation change stands.
 - **Maintainer decision (2026-09-07):** memory persisting across functions and across runs is
   *intended*. The harness change that disabled it (commit `6f5ca7b`) was reverted in
-  `REVERT_COMMIT`; sessions keep their notes, and the 37 existing notes stay in place. So this is
+  `396bbf4`; sessions keep their notes, and the 37 existing notes stay in place. So this is
   not a harness defect. It is a property of the system that any experiment must control for.
 - **What it means for measurement:** with memory on, "the system" includes what earlier sessions
   wrote, so a fair comparison gives *both* arms memory but not the *same* memory. The
@@ -727,7 +727,7 @@ entries. Terminal states: confirmed, refuted, noise.
 - **What has to happen next:** every agent measurement in `WORK_SO_FAR.md` -- the iteration-tier
   pairs, the mkey pairs, T3 -- was taken with one directory shared by all arms and must be re-run
   with per-arm directories before it is relied on. Step 0 of the plan.
-- **Commit:** `6f5ca7b` (disable), reverted by `REVERT_COMMIT`
+- **Commit:** `6f5ca7b` (disable), reverted by `396bbf4`
 
 ## Where the wall-clock actually goes, from the transcripts turn by turn
 
