@@ -369,3 +369,66 @@ entries. Terminal states: confirmed, refuted, noise.
 - **Status:** open
 - **Evidence:** `DEVELOPMENT.md`; `docs/contracts-memory-predicates.md`.
 - **Commit:**
+
+## Kilo's harness time is two undecidable functions, not a thousand small ones
+
+- **Hypothesis:** the remaining harness time on the slowest benchmark is concentrated in CBMC runs
+  that never return a verdict, so capping the per-run budget at a validated multiple of the slowest
+  *decisive* run would cut it several-fold without changing a single score.
+- **Axis:** harness time
+- **Status:** open, with the supporting measurement done
+- **Evidence:** kilo scored with `--keep-artifacts`, then the per-step `seconds` now recorded in
+  each `<stem>-cbmc-runs.jsonl` aggregated over all 156 pipeline runs:
+
+  | | count | time |
+  | --- | ---: | ---: |
+  | verified (rc 0) | 110 | median 3.1 s, max 5.6 s |
+  | killed / failed (rc 10) | 33 | median 6.2 s, max 12.5 s |
+  | undecided (timeout or crash) | 13 | 1054 s |
+
+  Total CBMC subprocess time is 1576 s, of which the 13 undecided runs are 1054 s, or 67%. Two
+  functions account for almost all of it: `editorDelRow` hits the 600 s timeout and
+  `editorInsertRow` aborts (rc 134) after 408 s. Neither is scored either way, so that time buys
+  nothing. Meanwhile *every* run that returned a verdict finished within 12.5 s -- the 600 s budget
+  is roughly 48x the slowest decisive run. Because the evaluation is now parallel, the wall-clock
+  floor is the single slowest run, so the 600 s timeout alone sets it.
+- **How to keep the metric frozen:** shortening the budget changes which mutants are decided, so it
+  may not be merged on the strength of this alone. Record the decision time of every run across all
+  four tiers, take the slowest decisive one, set the cap comfortably above it, re-score everything
+  and require identical records. If any decided run is slower than the proposed cap, the cap is
+  wrong.
+- **Commit:**
+
+## Specify independent files concurrently
+
+- **Hypothesis:** `avocado-verify` walks one function at a time, and the experiment driver walks one
+  file at a time, so a program's specification time is the sum over every function. The call graph
+  is built per file and has no cross-file edges, so different files have no ordering constraint at
+  all; within a file, functions in disjoint parts of the call graph do not constrain each other
+  either. Running one agent session per file concurrently would cut the wall-clock to fully specify
+  a multi-file program to roughly its largest file.
+- **Axis:** agent time -- by far the larger clock. On mkey the agent pass is about 3200 s against
+  5 s of harness time, so agent time is over 99% of the total.
+- **Status:** open
+- **Evidence:** `avocado-experimental-data/final-14-mkey.time` (four files, walked in sequence);
+  `tools/util/tree_sitter_utils.get_call_graph` builds the graph from a single file.
+- **Risks to measure:** concurrent sessions multiply the rate at which the account's usage limit is
+  consumed, which is already the binding constraint on measurement; and they contend for the
+  machine during mutation testing, which the subprocess semaphore bounds but does not eliminate.
+  Both are wall-clock-versus-throughput trade-offs to quantify, not correctness problems.
+- **Commit:**
+
+## Skip the pipeline re-run when CBMC has already returned a verdict
+
+- **Hypothesis:** `run_cbmc` retries the whole pipeline when the output mentions a missing callee
+  body, and that check fires even when the first `cbmc` call already returned a decisive 0 or 10.
+  Benchmarks full of unstubbed libc calls should therefore verify many mutants twice for nothing.
+- **Axis:** harness time
+- **Status:** refuted as a free win; open as a deliberate metric change
+- **Evidence:** on kilo, 101 pipelines had a decisive first verdict and were re-run anyway. The
+  re-run left the verdict unchanged in 86 of them and *changed it* in 15, so the retry is doing
+  real work, not just burning time. The redundant portion is 104 s of 1576 s, about 7% -- much less
+  than the doubling the hypothesis assumed, because the re-runs are cheap next to the two
+  undecidable functions. Skipping it would be a metric change affecting 15 verdicts on one
+  benchmark, for a 7% saving; the budget cap above is the better lever.
+- **Commit:**
