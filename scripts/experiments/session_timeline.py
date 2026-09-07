@@ -13,7 +13,8 @@ Prints, per arm, the split between model time and tool time (by tool kind), and 
 cost the most, so the question "what is the wall-clock actually spent on" has a measured answer.
 
 Usage:
-    % scripts/experiments/session_timeline.py --projects-dir <DIR> <RUN_LOG>... [--top N] [--timeout 1800]
+    % scripts/experiments/session_timeline.py --projects-dir <DIR> <RUN_LOG>... \
+          [--top N] [--timeout 1800]
 """
 
 from __future__ import annotations
@@ -32,11 +33,28 @@ _CBMC_BY_HAND = re.compile(r"\b(cbmc|goto-cc|goto-instrument)\b")
 
 
 def _ts(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    """Parse a transcript timestamp.
+
+    Args:
+        value (str): An ISO-8601 timestamp as written by Claude Code.
+
+    Returns:
+        datetime: The parsed, timezone-aware timestamp.
+    """
+    return datetime.fromisoformat(value)
 
 
 def _tool_kind(name: str, inp: dict) -> str:
-    """Classify a tool call into the buckets the report uses."""
+    """Classify a tool call into the buckets the report uses.
+
+    Args:
+        name (str): The tool's name as recorded in the transcript.
+        inp (dict): The tool's input; for `Bash`, its `command` decides the bucket.
+
+    Returns:
+        str: One of `read`, `edit`, `avocado-run-cbmc`, `cbmc-by-hand`, `background-wait`,
+            `other-bash`, or `other:<tool>`.
+    """
     if name in ("Read", "Glob", "Grep"):
         return "read"
     if name in ("Edit", "Write", "MultiEdit"):
@@ -65,6 +83,10 @@ def analyse(path: Path, timeout: float, killed: bool) -> dict | None:
         timeout (float): The harness per-session timeout, charged to a killed session.
         killed (bool): Whether the harness killed this session on timeout (from the run log). A
             transcript cannot tell on its own: a normal session also ends on an assistant message.
+
+    Returns:
+        dict | None: The session's span, model time, per-kind tool time, turn count, killed flag,
+            and its longest tool calls; None when the transcript cannot be read or is empty.
     """
     try:
         lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
@@ -190,7 +212,8 @@ def main() -> None:
         top_tools = ", ".join(f"{k} {v:.0f}s" for k, v in res["tools"].most_common(2))
         flag = "  [KILLED BY HARNESS]" if res["killed"] else ""
         print(
-            f"  {fn:26s} {span:7,.0f}s  model {res['model']:6,.0f}s  turns {res['turns']:3d}  {top_tools}{flag}"
+            f"  {fn:26s} {span:7,.0f}s  model {res['model']:6,.0f}s  "
+            f"turns {res['turns']:3d}  {top_tools}{flag}"
         )
         for secs, kind, summary in res["longest"][:2]:
             print(f"        {secs:7,.0f}s {kind:22s} {summary}")
