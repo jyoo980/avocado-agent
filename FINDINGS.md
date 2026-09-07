@@ -580,11 +580,10 @@ entries. Terminal states: confirmed, refuted, noise.
      clause stripper already locates every function's span, so the harness can splice a returned
      contract in itself. Side benefit: the agent structurally cannot edit the body, which closes
      the "in-body `__CPROVER_assert`" metric-validity finding above.
-  2. *Give the agent a verification slice, not the file.* The function, its callees' contracts, and
-     its callers' call sites are what a contract depends on. For a 1564-line `kilo.c` the whole
-     file is read every session; for a file the size of `lz4.c` it is the dominant token cost. This
-     is the change the current benchmarks undersell most, and the one most likely to matter on the
-     validation tier.
+  2. *Give the agent a verification slice, not the file.* **Viable, but smaller than claimed, and
+     only in a particular shape** -- see "How the agent actually reads and edits" below. "Dominant
+     token cost" was an overstatement: on `lz4.c` (2829 lines, about 29 K tokens, 90 functions)
+     whole-file reads would be on the order of 5-10% of a pass, not most of it.
   3. *Carry context across the functions of one file.* **Probably not worth it -- see the entry
      "Would resuming sessions actually help?" below**, which measured what a cold start costs and
      what a resumed session would carry.
@@ -643,4 +642,43 @@ entries. Terminal states: confirmed, refuted, noise.
   functions with no mutants -- sessions of 14 to 20 s of which 9 to 16 s is orientation -- the
   saving comes from batching a few of them into one session, which is "carry context" in the only
   form where it amortises something.
+- **Commit:**
+
+## How the agent actually reads and edits (and what that does to the "slice" idea)
+
+- **Hypothesis under test:** the agent must read the whole file to edit it, so a prompt-supplied
+  slice cannot remove the read.
+- **Axis:** agent time
+- **Status:** the premise is refuted by the transcripts; the slice idea survives in a narrower form
+- **Evidence:** tool calls across the 49 treatment sessions of mkey run 14:
+
+  | | count |
+  | --- | ---: |
+  | whole-file reads (`cat`, or `Read` with no range) | 30 |
+  | ranged reads (`sed -n a,bp`, `head`, `Read` with offset/limit) | 148 |
+  | edits through the `Edit`/`Write` tool (which require a prior read) | 1 |
+  | edits through `sed -i` / `python3 -` string replacement, anchored on the signature | 113 |
+
+  The agent almost never uses the editing tool; it splices contract text in with a blind string
+  replacement anchored on the function signature it already has. So editing does *not* force a
+  whole-file read today. And once it knows where to look, it reads by range five times as often as
+  it reads the whole file. What a slice in the prompt would remove is the remaining 30 whole-file
+  reads and some of the ranged ones -- on files the size of mkey's, a few kilobytes each; on
+  `lz4.c`, about 29 K tokens each, which for 90 functions at the observed rate is roughly 1.6 M
+  input tokens per pass, or 5-10% of the pass, not the majority.
+- **Why the naive slice would not even deliver that:** a contract needs more than the function,
+  its callees' contracts and its callers' call sites. It needs the struct and typedef definitions,
+  the macros (`READ_BLOCK_SIZE`, byte-order helpers) and the globals the function touches. A slice
+  that omits them sends the agent back to the file, and building one that includes them is a real
+  slicing problem across headers and the preprocessor.
+- **The two versions worth doing, cheapest first:**
+  1. *Put the function's line range in the prompt.* The harness already locates every function
+     with tree-sitter. With the range in hand the agent's own habit does the rest -- it reads by
+     range. No slicing machinery, no risk of omitting context, one line in `_build_prompt`. Measure:
+     whole-file reads per session, expected to fall from about 0.6 towards zero.
+  2. *Harness-side insertion of the contract* (candidate 1 above). This is the half with the real
+     value: it replaces 113 fragile blind `sed`/`python` edits -- a signature anchor also matches a
+     forward declaration or a prototype -- with a splice at a span the harness knows exactly, and it
+     makes body edits structurally impossible, which closes the in-body-assert finding. It does not
+     depend on the slice at all.
 - **Commit:**
