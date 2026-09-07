@@ -101,7 +101,15 @@ Commit: a0620ca. **Kept.**
 
 ### What changed and why
 
-Harness (deterministic, measured with one run per tier, scores compared record-by-record):
+Harness (deterministic, measured with one run per tier, scores compared record-by-record).
+
+**Read the timings below with this caveat:** they measure
+`eval/mutants/evaluate_specification_quality.py`, the offline pass that grades a benchmark after
+the fact. That is harness time by the goal's definition, but it is a measurement tool and is not
+part of `avocado-verify`. Inside the generation loop, one complete pass of `avocado-run-cbmc` over
+mkey's 49 functions costs 41 s of verification plus 22 s of mutation testing against an agent pass
+of 3223 s -- about 2%. See the "Correction: where the time to specify a program actually goes"
+entry in `FINDINGS.md`.
 
 - `eval/mutants/evaluate_specification_quality.py` gained `--jobs N` (default: CPU count). Every
   annotated function of every file is submitted to one thread pool up front; records are still

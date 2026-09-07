@@ -432,3 +432,40 @@ entries. Terminal states: confirmed, refuted, noise.
   undecidable functions. Skipping it would be a metric change affecting 15 verdicts on one
   benchmark, for a 7% saving; the budget cap above is the better lever.
 - **Commit:**
+
+## Correction: where the time to specify a program actually goes
+
+- **Hypothesis:** n/a -- this corrects a framing error in earlier entries and in `WORK_SO_FAR.md`.
+  The harness-time numbers reported for the parallel-evaluation change (kilo 1103 s -> 414 s, and
+  so on) are for `eval/mutants/evaluate_specification_quality.py`, the *offline scoring pass* used
+  to grade a benchmark after the fact. That is harness time by the goal's definition, but it is a
+  measurement tool: it is not part of `avocado-verify`, and speeding it up does not by itself speed
+  up specifying a program.
+- **Axis:** harness time and agent time (their relative size)
+- **Status:** confirmed
+- **Evidence:** measured on mkey's 49 functions, using the specifications the treatment arm of run
+  14 produced:
+
+  | | time |
+  | --- | ---: |
+  | one full pass of `avocado-run-cbmc` over all 49 functions: verification | 41 s |
+  | the same pass: mutation testing, 221 mutants | 22 s |
+  | **total CBMC work for one pass over the program** | **63 s** |
+  | agent wall-clock for the same program (`claude -p`) | 3223 s |
+
+  So all CBMC work, mutants included, is about 2% of the wall-clock to specify mkey; even at three
+  tool calls per function it stays under 6%. The verification runs logged during the actual agent
+  pass corroborate it: 148 pipeline runs totalling 127 s of a 3223 s pass. Per call the split is
+  small in absolute terms -- `hexdump` is 0.55 s to verify and 1.52 s to score its 42 mutants.
+- **What this means for the two clocks:** on programs like mkey the loop is model-latency bound, and
+  the levers are the number of turns and sessions, not CBMC. The exception is bimodal, not
+  marginal: on kilo a single verification of `editorDelRow` runs 602 s to a timeout and
+  `editorInsertRow` aborts after 408 s, so one pathological function costs the agent more than ten
+  typical functions and can consume a whole 1800 s session. The per-run budget cap proposed above
+  therefore matters in the generation loop, not only in the scoring pass.
+- **Also worth being accurate about:** mutants were *already* verified in a 32-worker thread pool
+  before any change here. What changed in the loop was the cap (32 to the CPU count, which only
+  binds on functions with more than 32 mutants), the process-wide subprocess semaphore, the
+  scratch-directory isolation, and the 120 s per-mutant budget. The large parallelism win was in
+  the scoring pass, which had none.
+- **Commit:**
