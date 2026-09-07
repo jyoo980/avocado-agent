@@ -588,9 +588,16 @@ entries. Terminal states: confirmed, refuted, noise.
   3. *Carry context across the functions of one file.* **Probably not worth it -- see the entry
      "Would resuming sessions actually help?" below**, which measured what a cold start costs and
      what a resumed session would carry.
-  4. *Import the reference docs into the cached prompt.* Sessions spend a tool call reading
-     `docs/*.md`; `CLAUDE.md` can import them so they are part of the cached system prompt instead.
-     Measure tool calls per session.
+  4. *Import the reference docs into the cached prompt.* **Refuted -- the premise is false.** The
+     idea: `CLAUDE.md` is loaded into every session's system prompt and that prompt is cached
+     across sessions, while `docs/*.md` (33 KB) is only read when the agent chooses to `cat` it,
+     which costs a tool turn and puts the text into context as uncached tool output; `CLAUDE.md`
+     can import files with `@docs/<name>.md`, which would make the docs part of the cached prefix
+     and save the turn. Measured on mkey run 14: the docs were read in **1 of 49 sessions** in the
+     treatment arm and **1 of 49** in the baseline arm, never in a turn of their own, pulling in
+     2-3 KB in total. Importing all 33 KB would add roughly 8 K tokens to every one of the 49
+     prompts to save one bundled read. Net loss. The early quicksort sessions did read the docs;
+     on mkey's functions the agent does not need them.
   5. *Spend less model on trivial functions.* `.claude/settings.json` pins one model at effort
      `high` for every function. Twenty-seven of mkey's 49 functions have no mutants, and twelve are
      the same one-liner; a lower effort level or a cheaper model for functions below a size and
