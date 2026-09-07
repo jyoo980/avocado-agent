@@ -197,7 +197,10 @@ writes its specifications from scratch; the committed benchmark files are never 
 
 ```sh
 # One paired batch per run id: a `base` run (94a0f38) and a `final` run (51e6e98) start together.
-/root/avocado-runner/batches.sh 4 5 6          # wraps scripts/experiments/run_agent_experiment.sh
+# Driven at the time by a machine-local copy of what is now committed as
+# scripts/experiments/run_paired_batches.sh, whose header records these invocations:
+scripts/experiments/run_paired_batches.sh base:/root/avocado-base2 final:/root/avocado-t2-1 \
+    -- eval/benchmarks/quicksort eval/benchmarks/csv_parser -- 4 5 6
 scripts/experiments/compare_arms.py --baseline base --treatment final --runs 4 5 6 \
     --benchmarks quicksort csv_parser
 ```
@@ -261,7 +264,8 @@ precondition is the way to make a clause bite. It was measured over three paired
 kept treatment:
 
 ```sh
-/root/avocado-runner/batches_t3.sh 7 8 9
+scripts/experiments/run_paired_batches.sh final:/root/avocado-t2-1 t3:/root/avocado-t3 \
+    -- eval/benchmarks/quicksort eval/benchmarks/csv_parser -- 7 8 9
 scripts/experiments/compare_arms.py --baseline final --treatment t3 --runs 7 8 9 \
     --benchmarks quicksort csv_parser
 ```
@@ -307,8 +311,8 @@ no committed specifications and would dominate the run, so those sources are exc
 mkey baseline scores.
 
 ```sh
-AVOCADO_SKIP_GLOB='*/polarssl/*' AVOCADO_SCORER_ROOT=/app \
-  scripts/experiments/run_agent_experiment.sh <base|final> <run-id> eval/benchmarks/mkey
+AVOCADO_SKIP_GLOB='*/polarssl/*' scripts/experiments/run_paired_batches.sh \
+    base:/root/avocado-base2 final:/root/avocado-t2-1 -- eval/benchmarks/mkey -- 14 15
 scripts/experiments/compare_arms.py --baseline base --treatment final --runs <ids> --benchmarks mkey
 ```
 
