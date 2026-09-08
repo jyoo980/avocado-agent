@@ -569,7 +569,14 @@ the user requires, driver `/root/avocado-runner/jobs_pairs.sh`):
 
 Wall-clock fell 2.17x. The mean kill score is identical; the pooled score differs only because the
 concurrent arm has one more scored function (four more decided mutants, same 58 kills). No merge
-failed and no edit was dropped in either arm. Pairs 2 and 3 are running; the verdict waits for them.
+failed and no edit was dropped in either arm.
+
+Run ids 21 and 22 are **not** usable pairs: the account's usage limit hit during `par/21` (32 of 49
+functions done, the remaining 17 `USAGE_LIMITED`; 603 s before it stopped), and both arms of 22
+started after the limit and stopped in about 20 s with every function `USAGE_LIMITED`. `seq/21`
+completed (2322 s, 49/49 verified) but has no complete partner. The two replacement pairs run as
+ids 23 (`--jobs 1` first) and 24 (`--jobs 4` first) after the limit reset, via
+`/root/avocado-runner/jobs_pairs_seqfirst.sh`; the verdict waits for them.
 
 ## Plan: what to do next
 
