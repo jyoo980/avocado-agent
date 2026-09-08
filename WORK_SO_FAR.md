@@ -393,8 +393,10 @@ using `scripts/experiments/rescore_run.sh base <id> mkey`, and the tables use th
 
 ## Summary
 
-Work stopped on the 24-hour wall-clock budget (2026-09-06 00:56 UTC to 2026-09-07 01:00 UTC). Two
-changes were kept, two were rejected, and several hypotheses remain open.
+Work stopped on the 24-hour wall-clock budget (2026-09-06 00:56 UTC to 2026-09-07 01:00 UTC). Three
+changes were kept, two were rejected, and several hypotheses remain open. The third, concurrent
+sessions within a file, was measured after the budget on the user's instruction and is the largest
+wall-clock win recorded here.
 
 **Read the agent numbers with the validity caveat above:** all of them were taken while every
 session shared one auto-memory directory across arms and runs, which was found only afterwards.
@@ -426,6 +428,14 @@ callees whose contracts replace their bodies, and the in-file callers whose call
 the new preconditions. `CLAUDE.md` gained a workflow section (verify first, never run CBMC by hand
 or in the background, never read the harness sources or tune its bounds, stop when the score stops
 moving) and a section on writing contracts that verify and kill mutants.
+
+**3. Concurrent sessions within a file (d4b80b6, ac68cbe; `--jobs N`, default 1).** Each session
+works in a private copy of the source directory and the harness merges back only that function's
+definition and the new helpers it added, so independent functions of one file run at once as soon
+as their callees are merged. Three paired runs on mkey: wall-clock 2096 s to 889 s (2.36x), every
+commonly scored function at the identical kill score, agent-seconds and cost flat. Three of 147
+concurrent function runs lost verification to the two resources still shared between sessions
+(ghost-global name clashes and `stubs/`); plan step 5b addresses them.
 
 ### Before and after, per tier
 
@@ -531,7 +541,7 @@ Expected effect on the recorded numbers: none on the mean; it bounds the worst f
 extra session instead of two. Quality cannot fall from a skipped session that would have made no
 attempt, but the retry note is prompt text and is to be measured like any other.
 
-## Concurrent sessions within a file (implemented, measurement pending)
+## Concurrent sessions within a file (kept: 2.36x wall-clock on mkey, kill score unchanged)
 
 Finding: "Specify independent functions of one file concurrently" in `FINDINGS.md`; the design is
 recorded in the approved plan and summarised there.
@@ -559,24 +569,55 @@ wall-clock) against the 479 s longest-chain floor. The experiment scripts take `
 concurrent mkey runs already exhausted the usage limit once, the plan runs the two arms of each pair
 back to back rather than simultaneously, alternating order across pairs.
 
-Pair 1 of 3 (run id 20, commit ac68cbe, `--jobs 4` first then `--jobs 1`, shared auto-memory as
-the user requires, driver `/root/avocado-runner/jobs_pairs.sh`):
+Measurement: three complete pairs on mkey (run ids 20, 23, 24; commit ac68cbe; both arms the same
+checkout, differing only in `--jobs`; arms run back to back with the order alternated; shared
+auto-memory, as the user requires; driver `/root/avocado-runner/jobs_pairs.sh` and its seq-first
+copy; scored with the frozen scorer from this checkout). Run ids 21 and 22 hit the usage limit
+(`par/21` stopped at 32 of 49 functions; both arms of 22 died in 20 s) and are excluded.
 
-| arm | wall-clock | agent-s | parallelism | verified | kill mean / pooled | cost | merges failed / dropped / transplanted |
-|---|---|---|---|---|---|---|---|
-| `--jobs 1` | 2043 s | 1871 | 0.92x | 49/49 | 0.330 / 0.379 (58/153) | $29.96 | 0 / 0 / 17 |
-| `--jobs 4` | 941 s | 2189 | 2.33x | 48/49 | 0.330 / 0.369 (58/157) | $31.95 | 0 / 0 / 18 |
+| pair | arm | wall-clock | agent-s | parallelism | verified | mean kill | pooled kill | cost | merges failed / edits dropped / items transplanted |
+|---|---|---|---|---|---|---|---|---|---|
+| 20 | `--jobs 1` | 2043 s | 1871 | 0.92x | 49/49 | 0.3302 | 58/153 = 0.379 | $29.96 | 0 / 0 / 17 |
+| 20 | `--jobs 4` | 941 s | 2189 | 2.33x | 48/49 | 0.3302 | 58/157 = 0.369 | $31.95 | 0 / 0 / 18 |
+| 23 | `--jobs 1` | 2007 s | 1846 | 0.92x | 49/49 | 0.3302 | 58/153 = 0.379 | $34.81 | 0 / 0 / 19 |
+| 23 | `--jobs 4` | 899 s | 1985 | 2.21x | 47/49 | 0.3459 | 58/160 = 0.363 | $33.76 | 1 / 1 / 18 |
+| 24 | `--jobs 1` | 2238 s | 2067 | 0.92x | 49/49 | 0.3302 | 58/237 = 0.245 | $31.89 | 0 / 0 / 19 |
+| 24 | `--jobs 4` | 827 s | 1978 | 2.39x | 49/49 | 0.3302 | 58/237 = 0.245 | $33.49 | 0 / 0 / 19 |
 
-Wall-clock fell 2.17x. The mean kill score is identical; the pooled score differs only because the
-concurrent arm has one more scored function (four more decided mutants, same 58 kills). No merge
-failed and no edit was dropped in either arm.
+**Wall-clock: 2.17x, 2.23x and 2.71x, 2.36x on the mean** (2096 s to 889 s). Per file, the
+first-to-last-record span fell from 395-541 s to 123-214 s on ctr, 669-771 s to 285-345 s on mkey
+and 602-693 s to 155-203 s on utils; `main.c` (two dependent functions) did not change. Achieved
+parallelism is 2.2-2.4x of the 4 slots because the four files run one after another and each
+file's tail is a dependency chain. Agent-seconds are flat within the run-to-run spread (+318, +138,
+-89) and cost moves by at most $2 either way, so concurrency changes *when* sessions run, not what
+they do.
 
-Run ids 21 and 22 are **not** usable pairs: the account's usage limit hit during `par/21` (32 of 49
-functions done, the remaining 17 `USAGE_LIMITED`; 603 s before it stopped), and both arms of 22
-started after the limit and stopped in about 20 s with every function `USAGE_LIMITED`. `seq/21`
-completed (2322 s, 49/49 verified) but has no complete partner. The two replacement pairs run as
-ids 23 (`--jobs 1` first) and 24 (`--jobs 4` first) after the limit reset, via
-`/root/avocado-runner/jobs_pairs_seqfirst.sh`; the verdict waits for them.
+**Kill score: every function scored in both arms has the identical kill score in all three pairs**
+(`compare_on_intersection.py`: 22, 21 and 22 scorable functions in common, zero differing); the
+same 58 mutants are killed in every one of the six runs. The mean kill score is equal in pairs 20
+and 24 and higher in the concurrent arm of 23 (+0.016). The pooled score is lower in the concurrent
+arm of 20 (-0.010) and 23 (-0.017) and equal in 24: the killed count is the same and only the
+denominator moves, because mutants that time out in one scoring pass are decided in another. That
+is the same denominator noise the pooled score showed in every earlier pair, and by the precedent
+set for the first kept change it does not breach the quality floor. Per the tie-break rule the
+change is **kept**.
+
+**What concurrency cost, stated plainly:** three of the 147 concurrent-arm function runs ended
+UNVERIFIED where the sequential arm verified all 147, and all three trace to the two shared
+resources the design left shared. (1) In pair 23, the sessions for `mkey_detect_algorithm` and
+`mkey_generate_v3_v4` ran at the same time and each added a ghost global named
+`__avocado_strtoull_ret` for the `strtoull` stub, with different declarations; the first merge won,
+the second was refused ("already defined differently"), and the caller `mkey_generate` then saw its
+own in-passing edit to `mkey_generate_v3_v4` dropped and failed `goto-instrument`. (2) In pair 20,
+`ctr_init_cbc_encrypt` merged cleanly but its ground truth failed at `goto-cc`; its twin
+`ctr_init_cbc_decrypt` was running at the same time and both rewrite the shared
+`stubs/polarssl_aes.c`, the race the finding documents. In pair 23 the function that failed to
+merge is one whose score is 0 in every sequential run (its contract is a depth ceiling), which is
+why the concurrent arm's mean is *higher* there; that is a metric artefact of the missing
+function, not a stronger contract, and is said so here. Both hazards are fixable without touching
+the scheduler: give each session a private `stubs/` copy merged back like the source file, and
+have the merge treat a same-name declaration with a different type as a rename rather than a
+refusal. That is plan step 5b below.
 
 ## Plan: what to do next
 
@@ -602,7 +643,8 @@ the limit, one at a time.
 | 2. Record the kill score in the run log | none |
 | 3. Characterise kilo's agent loop | one un-paired run over `kilo.c` |
 | 4. Batch the functions with no mutants | three paired runs on mkey |
-| 5. Specify independent functions concurrently (**implemented**, see the entry above) | three paired runs on mkey, `--jobs 1` vs `--jobs 4` |
+| 5. Specify independent functions concurrently (**kept**, 2.36x on mkey, see the entry above) | done: three paired runs on mkey, `--jobs 1` vs `--jobs 4` |
+| 5b. Private `stubs/` per session and declaration-clash tolerance in the merge | none to build; three paired runs on mkey to confirm the three lost verifications return |
 | 6. A worked example in `CLAUDE.md` | three paired runs on mkey |
 | 7. Targeted libc stubs | none for the first pass; three paired runs to confirm |
 

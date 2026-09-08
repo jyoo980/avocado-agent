@@ -980,16 +980,30 @@ entries. Terminal states: confirmed, refuted, noise.
   independent and both are on the plan; the effort change is the one that also cuts cost.
 - **Commit:** analysis only.
 
-## Specify independent functions of one file concurrently (implemented, measurement pending)
+## Specify independent functions of one file concurrently (kept: 2.36x wall-clock on mkey)
 
 - **Hypothesis:** the entry "Specify independent files concurrently" above; the maintainer chose
   the within-file form. A file's pass is bounded by the sum over its functions today; running each
   function as soon as the callees it depends on are merged bounds it by the longest dependency
   chain instead (479 s against 3223 s on mkey, measured from session times).
 - **Axis:** agent time (wall-clock to specify a program; agent-seconds and cost expected flat)
-- **Status:** implemented (commit `d4b80b6`); **not yet counted as kept** -- a
-  control-flow change, to be measured over three paired runs (`--jobs 1` vs `--jobs 4` on mkey,
-  same commit, under the memory-isolated protocol of plan step 0). Default is `--jobs 1`.
+- **Status:** **kept.** Implemented in `d4b80b6`/`ac68cbe` and measured over three complete
+  paired runs on mkey (`--jobs 1` vs `--jobs 4`, same checkout, arms back to back with the order
+  alternated, shared auto-memory as the user requires; run ids 20, 23, 24 -- 21 and 22 were cut
+  short by the usage limit and are excluded). Default is `--jobs 1`.
+- **Result:** wall-clock 2043/2007/2238 s sequential against 941/899/827 s concurrent, 2.17x,
+  2.23x and 2.71x (2.36x on the mean); achieved parallelism 2.2-2.4x of 4 slots because files still
+  run one after another and each file ends in a dependency chain. Every function scored in both
+  arms has the identical kill score in all three pairs (22, 21 and 22 common scorable functions,
+  none differing); the same 58 mutants are killed in all six runs; the mean is equal or higher in
+  the concurrent arm, the pooled score moves only through the decided-mutant denominator. Agent
+  seconds (+318, +138, -89) and cost (within $2) are flat. Full table in `WORK_SO_FAR.md`.
+- **Cost of the change, stated plainly:** 3 of 147 concurrent function runs ended UNVERIFIED where
+  the sequential arm verified all 147, all through the two resources left shared: two concurrent
+  sessions declared the same ghost global `__avocado_strtoull_ret` with different types (the
+  second merge is refused and its caller then fails), and the twin `ctr_init_cbc_*` sessions race
+  on `stubs/polarssl_aes.c`. Follow-up (plan step 5b): a private `stubs/` copy per session merged
+  back like the source, and declaration-clash tolerance in the merge.
 - **What was built:**
   - Every session now runs in a private copy of the source directory (`_fork_session`, a
     temporary directory outside the source tree so the scorer never sees it). The tool's
