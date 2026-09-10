@@ -20,6 +20,10 @@ Please feel free to open a pull request (draft pull requests are fine,
 
 ### Speed Enhancements
 
+- Run generate-and-verify jobs in parallel:
+  - For a given `.c` file, it might be the case that some functions are totally indepdendent of
+    the other (i.e., they are disconnected components in the call graph).
+  - It makes sense for the case above to run verification in parallel (as opposed to going function-by-function in a top-level loop).
 - The current system will invoke agents on a function multiple times, which also runs mutation
   testing multiple times. This is regardless of whether the mutants can be killed or not.
   - **Idea**: Give the agent an "escape hatch" to stop iterating on a function if there are mutants
