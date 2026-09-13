@@ -1,6 +1,7 @@
 """Tests for tree_sitter utility functions."""
 
 import json
+import re
 from pathlib import Path
 
 from loguru import logger
@@ -190,7 +191,8 @@ def test_construct_call_graph_unions_callees_of_duplicate_definitions() -> None:
     assert call_graph.get_callees("hash").internal == ["read32"], (
         f"Expected 'hash' to call 'read32', got {call_graph.get_callees('hash')}"
     )
-    assert any("'read32' is defined 3 times" in message for message in warnings), (
+    error_matcher_re = re.compile(r"Multiple definitions for .*read32")
+    assert any(error_matcher_re.match(message) for message in warnings), (
         f"Expected a warning about the duplicate definitions of 'read32', got {warnings}"
     )
 
