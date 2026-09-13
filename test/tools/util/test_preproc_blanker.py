@@ -100,3 +100,37 @@ def test_invariants_hold_on_fixtures() -> None:
     for path in sorted(Path("test/data").glob("*.c")):
         source = path.read_bytes()
         _assert_invariants(source, blank_preprocessor_conditionals(source))
+
+
+def test_braces_on_continued_define_lines_do_not_count() -> None:
+    source = (
+        b"#define FOO(x) do { \\\n    stuff(x);       \\\n} while (0)\n"
+        b"void f(void) {\n#if FAST\nlbl:\n#endif\n    return;\n}\n"
+    )
+    blanked = blank_preprocessor_conditionals(source)
+    _assert_invariants(source, blanked)
+    assert b"#if FAST" not in blanked and b"#endif" not in blanked, (
+        f"Expected the in-body conditional to be blanked despite the multi-line macro, "
+        f"got {blanked!r}"
+    )
+    assert blanked.startswith(b"#define FOO(x) do { \\\n    stuff(x);       \\\n} while (0)\n"), (
+        f"Expected the macro definition to be kept, got {blanked!r}"
+    )
+
+
+def test_continued_conditional_directive_is_blanked_in_full() -> None:
+    source = b"void f(void) {\n#if defined(A) || \\\n    defined(B)\n    a();\n#endif\n}\n"
+    blanked = blank_preprocessor_conditionals(source)
+    _assert_invariants(source, blanked)
+    assert b"defined" not in blanked, (
+        f"Expected the continuation line of the directive to be blanked, got {blanked!r}"
+    )
+    assert b"a();" in blanked, f"Expected the branch body to be kept, got {blanked!r}"
+
+
+def test_continued_if_zero_is_recognised() -> None:
+    source = b"void f(void) {\n#if \\\n    0\n    dead();\n#endif\n    live();\n}\n"
+    blanked = blank_preprocessor_conditionals(source)
+    _assert_invariants(source, blanked)
+    assert b"dead" not in blanked, f"Expected the #if 0 branch to be blanked, got {blanked!r}"
+    assert b"live();" in blanked, f"Expected the code after #endif to be kept, got {blanked!r}"
