@@ -32,6 +32,9 @@ _WRAPPING_DECLARATOR_TYPES = frozenset(
     {"pointer_declarator", "parenthesized_declarator", "array_declarator", "attributed_declarator"}
 )
 
+# Every node type that can appear where a declarator is expected.
+_DECLARATOR_TYPES = _WRAPPING_DECLARATOR_TYPES | {"function_declarator", "identifier"}
+
 _MAX_REPORTED_ERROR_LINES = 20
 
 
@@ -56,17 +59,19 @@ def get_call_graph(path_to_file: str) -> CallGraph:
     file_content = Path(path_to_file).read_bytes()
     tree = _parse_to_ast(file_content, label=path_to_file)
 
-    definitions: dict[str, list[Node]] = {}
+    function_name_to_definition_nodes: dict[str, list[Node]] = {}
     for function_name, node in _iter_function_definitions(tree.root_node):
-        definitions.setdefault(function_name, []).append(node)
-    in_file_functions = set(definitions)
+        function_name_to_definition_nodes.setdefault(function_name, []).append(node)
+    in_file_functions = set(function_name_to_definition_nodes)
 
     call_graph: dict[str, dict[str, list[str]]] = {}
-    for function_name, nodes in definitions.items():
+    for function_name, nodes in function_name_to_definition_nodes.items():
         if len(nodes) > 1:
-            lines = [node.start_point[0] + 1 for node in nodes]
+            # Warn about finding multiple definitions for a function in a file.
+            definition_start_lines = [node.start_point[0] + 1 for node in nodes]
             logger.warning(
-                f"{path_to_file}: '{function_name}' is defined {len(nodes)} times (lines {lines}), "
+                f"Multiple definitions for {path_to_file}#{function_name} "
+                f"(lines {definition_start_lines}), "
                 "probably in alternative preprocessor branches; taking the union of their callees"
             )
         callees: set[str] = set()
@@ -162,9 +167,10 @@ def is_binary_operator_node(node: Node) -> bool:
 def get_function_declarator(fn_def: Node) -> Node | None:
     """Return the `function_declarator` node of a `function_definition`.
 
-    For functions returning a pointer (e.g. `char *foo(...)`), tree-sitter wraps the
-    `function_declarator` in one or more `pointer_declarator` nodes. Descend through any
-    such wrappers to reach the underlying `function_declarator`.
+    For functions returning a pointer (e.g. `char *foo(...)`) or carrying a trailing C23
+    attribute (e.g. `int foo(...) [[deprecated]]`), tree-sitter wraps the `function_declarator`
+    in one or more wrapping declarator nodes. Descend through any such wrappers to reach the
+    underlying `function_declarator`.
 
     Args:
         fn_def (Node): The `function_definition` node.
@@ -174,7 +180,7 @@ def get_function_declarator(fn_def: Node) -> Node | None:
     """
     declarator = fn_def.child_by_field_name("declarator")
     while declarator is not None and declarator.type != "function_declarator":
-        declarator = declarator.child_by_field_name("declarator")
+        declarator = _get_inner_declarator(declarator)
     return declarator
 
 
@@ -206,11 +212,11 @@ def _parse_to_ast(
         content = content.encode("utf-8")
     stripped, _ = strip_cbmc_clauses(content)
     tree = _PARSER.parse(blank_preprocessor_conditionals(stripped))
-    _report_parse_errors(tree.root_node, label)
+    _log_parse_errors(tree.root_node, label)
     return tree
 
 
-def _report_parse_errors(root: Node, label: str) -> None:
+def _log_parse_errors(root: Node, label: str) -> None:
     """Log tree-sitter parse errors so that misparses do not go unnoticed.
 
     A root node of type `ERROR` means recovery failed for the whole file and functions are likely
@@ -219,21 +225,15 @@ def _report_parse_errors(root: Node, label: str) -> None:
 
     Args:
         root (Node): The root node of the parsed tree.
-        label (str): A name for the source used in the message.
+        label (str): A name for the source code file used in the message.
     """
     if not root.has_error:
         return
-    error_lines = sorted(
-        {
-            node.start_point[0] + 1
-            for node in dfs_traversal(root)
-            if node.is_error or node.is_missing
-        }
-    )
-    shown = error_lines[:_MAX_REPORTED_ERROR_LINES]
-    suffix = ", ..." if len(error_lines) > _MAX_REPORTED_ERROR_LINES else ""
+    lines_with_errors = _get_lines_with_error_nodes(root)
+    shown = lines_with_errors[:_MAX_REPORTED_ERROR_LINES]
+    suffix = ", ..." if len(lines_with_errors) > _MAX_REPORTED_ERROR_LINES else ""
     message = (
-        f"{label}: tree-sitter reported parse errors at {len(error_lines)} line(s): "
+        f"{label}: tree-sitter reported parse errors at {len(lines_with_errors)} line(s): "
         f"{', '.join(map(str, shown))}{suffix}"
     )
     if root.type == "ERROR":
@@ -242,6 +242,24 @@ def _report_parse_errors(root: Node, label: str) -> None:
         )
     else:
         logger.debug(message)
+
+
+def _get_lines_with_error_nodes(root: Node) -> list[int]:
+    """Return the line numbers of the error nodes found underneath the root node.
+
+    Args:
+        root (Node): The root node from which to collect error nodes.
+
+    Returns:
+        list[int]: The line numbers of the error nodes found underneath the root node.
+    """
+    return sorted(
+        {
+            node.start_point[0] + 1
+            for node in dfs_traversal(root)
+            if node.is_error or node.is_missing
+        }
+    )
 
 
 def dfs_traversal(root: Node) -> Iterator[Node]:
@@ -269,8 +287,7 @@ def _get_function_definition_name(function_definition_node: Node) -> str | None:
     Returns:
         str | None: The name of the function, or None if it could not be determined.
     """
-    declarator = get_function_declarator(function_definition_node)
-    if declarator is None:
+    if (declarator := get_function_declarator(function_definition_node)) is None:
         return None
     return _get_name_from_declarator(declarator)
 
@@ -297,19 +314,77 @@ def _get_name_from_declarator(node: Node) -> str | None:
     if node.is_error:
         return _last_identifier_in(node)
     if node.type == "function_declarator":
-        parameters = node.child_by_field_name("parameters")
-        sibling = parameters.prev_sibling if parameters is not None else None
-        while sibling is not None:
-            if sibling.is_error:
-                if (name := _last_identifier_in(sibling)) is not None:
-                    return name
-            elif sibling.type == "identifier" or sibling.type in _WRAPPING_DECLARATOR_TYPES:
-                return _get_name_from_declarator(sibling)
-            sibling = sibling.prev_sibling
-        return None
+        return _get_function_name_anchored_by_parameters(node)
     if node.type in _WRAPPING_DECLARATOR_TYPES:
-        inner = node.child_by_field_name("declarator")
-        return _get_name_from_declarator(inner) if inner is not None else None
+        return _get_function_name_from_wrapped_declarator(node)
+    return None
+
+
+def _get_function_name_anchored_by_parameters(node: Node) -> str | None:
+    """Return the function name using the parameter list as a reference point.
+
+    Using the parameter list as a starting point for the search is an parse-error tolerant way to
+    obtain the function name (i.e., the identifier for a function will always be immediately next
+    to the parameter list).
+
+    Args:
+        node (Node): The function declarator node.
+
+    Returns:
+        str | None: The function name, if found. Otherwise None.
+    """
+    parameters = node.child_by_field_name("parameters")
+    sibling = parameters.prev_sibling if parameters is not None else None
+    while sibling is not None:
+        if sibling.is_error:
+            if (name := _last_identifier_in(sibling)) is not None:
+                return name
+        elif sibling.type == "identifier" or sibling.type in _WRAPPING_DECLARATOR_TYPES:
+            return _get_name_from_declarator(sibling)
+        sibling = sibling.prev_sibling
+    return None
+
+
+def _get_function_name_from_wrapped_declarator(node: Node) -> str | None:
+    """Return the function name parsed from a wrapped declarator node.
+
+    Also handles parenthesized declarators, e.g.,
+
+        int (*fp)(int);
+        int (*get_handler(int kind))(int);
+
+    And attributed declarators, e.g.,
+
+        int compute [[nodiscard]] (int x) { return x; }
+
+    Args:
+        node (Node): The wrapped declarator node.
+
+    Returns:
+        str | None: The function name parsed from a wrapped declarator node, or None.
+    """
+    inner = _get_inner_declarator(node)
+    return _get_name_from_declarator(inner) if inner is not None else None
+
+
+def _get_inner_declarator(node: Node) -> Node | None:
+    """Return the declarator nested inside a wrapping declarator node.
+
+    `pointer_declarator` and `array_declarator` expose the nested declarator through their
+    `declarator` field, but `parenthesized_declarator` and `attributed_declarator` leave it
+    unnamed. For those, fall back to the only named child that is itself a declarator.
+
+    Args:
+        node (Node): A wrapping declarator node.
+
+    Returns:
+        Node | None: The nested declarator, or None if the node has none.
+    """
+    if (inner := node.child_by_field_name("declarator")) is not None:
+        return inner
+    for child in node.named_children:
+        if child.type in _DECLARATOR_TYPES:
+            return child
     return None
 
 
