@@ -30,7 +30,6 @@ from subprocess import TimeoutExpired
 
 from loguru import logger
 
-from eval.mutants.mutate_function import get_mutants
 from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
 from tools.run_cbmc import RunCbmcResult, run_cbmc
@@ -69,10 +68,16 @@ _USAGE_LIMIT_RESULT_PATTERNS = ("usage limit reached", "rate limit", "resets ")
 # verification-attempts log. This guards against advancing on a session that barely tried.
 _MIN_VERIFICATION_ATTEMPTS_PER_SESSION = 2
 
-# Upper bound on how many `claude -p` sessions a single function may receive while trying to reach
-# `_MIN_VERIFICATION_ATTEMPTS`. Prevents an unproductive session from looping forever; once hit,
-# the harness proceeds anyway and records the shortfall.
-_MAX_AGENT_SESSIONS_PER_FUNCTION = 3
+# Hard ceiling on how many `claude -p` sessions a single function may receive. Sessions beyond the
+# first are granted only while the agent is demonstrably still improving the specification (see
+# `_should_grant_another_session`), so this bounds the pathological case rather than setting the
+# usual budget.
+_MAX_AGENT_SESSIONS_PER_FUNCTION = 5
+
+# How many consecutive sessions may leave both the specification and the kill score untouched
+# before the harness concludes the agent is spinning and moves on. Two is the smallest value that
+# still tolerates a single wasted session.
+_PLATEAU_SESSIONS_BEFORE_STOPPING = 2
 
 
 class GroundTruthVerificationResult(StrEnum):
@@ -150,7 +155,12 @@ class FunctionVerificationResult:
         verification_attempts (int): How many times the agent attempted verification (ran
             `avocado-run-cbmc`) for this function across all its sessions.
         agent_sessions (int): How many `claude -p` sessions this function received before the
-            harness moved on (>= 1; > 1 when re-runs were needed to reach the attempt floor).
+            harness moved on (>= 1; > 1 when the agent was still making progress).
+        kill_score (float | None): The adjusted mutation kill score from the function's last
+            mutation-tested attempt, or None if it was never mutation-tested. Recorded so a run log
+            captures specification *strength*, not just pass/fail.
+        raw_kill_score (float | None): The same, with presumed-equivalent mutants counted as
+            survivors.
     """
 
     function: str
@@ -160,6 +170,8 @@ class FunctionVerificationResult:
     internal_callees: list[str]
     verification_attempts: int
     agent_sessions: int
+    kill_score: float | None = None
+    raw_kill_score: float | None = None
 
     def to_record(self) -> dict:
         """Return a JSON-serializable record of this result for the run log.
@@ -178,6 +190,8 @@ class FunctionVerificationResult:
             "internal_callees": self.internal_callees,
             "verification_attempts": self.verification_attempts,
             "agent_sessions": self.agent_sessions,
+            "kill_score": self.kill_score,
+            "raw_kill_score": self.raw_kill_score,
             "claude": claude_session_records,
             "cbmc": {
                 "verdict": str(self.cbmc),
@@ -210,6 +224,28 @@ def main() -> None:
         help=(
             "Per-function timeout for a `claude -p` session in seconds "
             f"(default: {_DEFAULT_CLAUDE_TIMEOUT_SEC})."
+        ),
+    )
+    parser.add_argument(
+        "--max-sessions",
+        type=int,
+        default=_MAX_AGENT_SESSIONS_PER_FUNCTION,
+        metavar="N",
+        help=(
+            "Hard ceiling on `claude -p` sessions per function. Sessions beyond the first are "
+            "granted only while the agent is still improving the specification "
+            f"(default: {_MAX_AGENT_SESSIONS_PER_FUNCTION})."
+        ),
+    )
+    parser.add_argument(
+        "--plateau-limit",
+        type=int,
+        default=_PLATEAU_SESSIONS_BEFORE_STOPPING,
+        metavar="N",
+        help=(
+            "Stop granting sessions once this many consecutive verification attempts have changed "
+            "neither the specification nor the kill score "
+            f"(default: {_PLATEAU_SESSIONS_BEFORE_STOPPING})."
         ),
     )
     parser.add_argument(
@@ -277,6 +313,8 @@ def main() -> None:
             call_graph=call_graph,
             timeout=args.claude_timeout,
             include_dirs=include_dirs,
+            max_sessions=args.max_sessions,
+            plateau_limit=args.plateau_limit,
         )
         results.append(verification_result_from_agent)
         _append_jsonl(log_path, verification_result_from_agent.to_record())
@@ -355,12 +393,15 @@ def _verify_via_agent(
     call_graph: CallGraph,
     timeout: int,
     include_dirs: list[str],
+    max_sessions: int = _MAX_AGENT_SESSIONS_PER_FUNCTION,
+    plateau_limit: int = _PLATEAU_SESSIONS_BEFORE_STOPPING,
 ) -> FunctionVerificationResult:
     """Run one or more `claude -p` sessions for `function`, then re-verify it with CBMC.
 
-    Re-runs the session until the agent has attempted verification at least
-    `_MIN_VERIFICATION_ATTEMPTS` times (capped at `_MAX_AGENT_SESSIONS_PER_FUNCTION`) before the
-    caller advances to the next function.
+    Sessions after the first are granted on evidence of progress rather than on a fixed attempt
+    count: see `_should_grant_another_session`. The effect is that a function whose specification
+    is still getting stronger keeps earning sessions up to `max_sessions`, while one whose agent
+    has stalled is abandoned early instead of burning the full budget.
 
     Args:
         function (str): The function to specify and verify.
@@ -369,6 +410,9 @@ def _verify_via_agent(
         timeout (int): Per-function timeout for the `claude -p` session, in seconds.
         include_dirs (list[str]): Extra include directories to expose to the agent and forward to
             CBMC's include search path.
+        max_sessions (int): Hard ceiling on `claude -p` sessions for this function.
+        plateau_limit (int): Consecutive unproductive verification attempts tolerated before the
+            harness concludes the agent is spinning.
 
     Returns:
         FunctionVerificationResult: The combined Claude/CBMC outcome for the function.
@@ -381,44 +425,41 @@ def _verify_via_agent(
 
     # Attempts already logged for this function before this turn (e.g. by an earlier function's
     # session that also exercised this one); gate only on attempts made from here forward.
-    previous_verification_attempts = _count_verification_attempts(attempts_log_path, function)
+    previous_verification_attempts = len(_read_attempts(attempts_log_path, function))
 
-    # Do not advance to the next function until the agent has attempted verification at least
-    # `_MIN_VERIFICATION_ATTEMPTS` times, re-running the session up to a capped number of times.
     claude_sessions_for_function = [_run_claude(command, timeout)]
-    sessions = len(claude_sessions_for_function)
-    current_verification_attempts = (
-        _count_verification_attempts(attempts_log_path, function) - previous_verification_attempts
-    )
-    while (
-        current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION
-        and sessions < _MAX_AGENT_SESSIONS_PER_FUNCTION
-        and is_spec_improvable_with_mutation_testing(function, file_path, attempts_log_path)
-    ):
-        logger.warning(
-            f"{function}: agent attempted verification "
-            f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} time(s); "
-            f"re-running session ({sessions + 1}/{_MAX_AGENT_SESSIONS_PER_FUNCTION})"
+    while True:
+        if _is_usage_limit_hit(claude_sessions_for_function[-1]):
+            # The account is throttled, not the specification wrong. Retrying would spend the
+            # whole session budget against the same limit; the caller stops the run instead.
+            logger.warning(f"{function}: session stopped by a usage limit; not retrying")
+            attempts = _read_attempts(attempts_log_path, function)
+            decision = _SessionDecision(False, "stopped by a usage limit")
+            break
+        attempts = _read_attempts(attempts_log_path, function)
+        decision = _should_grant_another_session(
+            function, attempts, previous_verification_attempts, plateau_limit=plateau_limit
+        )
+        if not decision.grant:
+            break
+        if len(claude_sessions_for_function) >= max_sessions:
+            logger.warning(
+                f"{function}: {decision.rationale}, but the {max_sessions}-session ceiling is "
+                "reached; moving on"
+            )
+            break
+        logger.info(
+            f"{function}: {decision.rationale}; re-running session "
+            f"({len(claude_sessions_for_function) + 1}/{max_sessions})"
         )
         claude_sessions_for_function.append(_run_claude(command, timeout))
-        sessions = len(claude_sessions_for_function)
-        current_verification_attempts = (
-            _count_verification_attempts(attempts_log_path, function)
-            - previous_verification_attempts
-        )
-    if not is_spec_improvable_with_mutation_testing(function, file_path, attempts_log_path):
-        # Stopped deliberately, not short of the floor: there are no mutants to kill, so further
-        # sessions cannot strengthen the (already verifying) spec.
-        logger.info(
-            f"{function}: verified with no mutants after {sessions} session(s); skipping the "
-            f"attempt-count floor (no kill score to raise)"
-        )
-    elif current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION:
-        logger.warning(
-            f"{function}: proceeding after {sessions} session(s) with only "
-            f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} "
-            f"verification attempt(s)"
-        )
+
+    sessions = len(claude_sessions_for_function)
+    current_verification_attempts = len(attempts) - previous_verification_attempts
+    logger.info(
+        f"{function}: stopping after {sessions} session(s) and "
+        f"{current_verification_attempts} verification attempt(s): {decision.rationale}"
+    )
 
     # Objective verdict: re-run CBMC rather than trust Claude's self-report.
     cbmc = run_cbmc(function, file_path, include_dirs=include_dirs)
@@ -430,92 +471,199 @@ def _verify_via_agent(
         internal_callees=call_graph.get_callees(function).internal,
         verification_attempts=current_verification_attempts,
         agent_sessions=sessions,
+        kill_score=_latest_kill_score(attempts),
+        raw_kill_score=_latest_kill_score(attempts, raw=True),
     )
 
 
-def is_spec_improvable_with_mutation_testing(
-    function: str, source_path: str, attempts_log_path: Path
-) -> bool:
-    """Return True iff a function's specification can be improved.
+@dataclass(frozen=True)
+class _SessionDecision:
+    """Whether to spend another `claude -p` session on a function, and why.
 
-    Whether a specification can be improved (via Avocado) depends on the availability of mutants to
-    kill; the kill score is the only metric that is provided to the agent. If no mutants are
-    generated, and the function already verifies, there is no point going further.
+    Attributes:
+        grant (bool): True iff another session should be run.
+        rationale (str): Human-readable justification, logged either way.
+    """
+
+    grant: bool
+    rationale: str
+
+
+def _should_grant_another_session(
+    function: str,
+    attempts: list[dict],
+    previous_attempts: int,
+    *,
+    plateau_limit: int = _PLATEAU_SESSIONS_BEFORE_STOPPING,
+) -> _SessionDecision:
+    """Decide whether `function` has earned another agent session.
+
+    The old rule counted how many times the agent ran `avocado-run-cbmc` and stopped at a fixed
+    cap, which both cut off agents that were still strengthening a specification and kept paying
+    for agents that had stalled. This decides on evidence instead, reading the verification-attempts
+    log that `avocado-run-cbmc` writes:
+
+    - An agent that has not yet reached the attempt floor gets another session — it barely tried.
+    - An agent that verified the function and left no killable mutants is done; there is no score
+      left to raise.
+    - An agent whose last attempt raised the kill score, changed the specification, or newly
+      verified the function is making progress and gets another session.
+    - An agent whose last `plateau_limit` attempts changed neither the specification nor the score
+      is spinning, and is stopped.
 
     Args:
-        function (str): The function under specification generation.
-        source_path (str): The path to the source file where the function is declared.
-        attempts_log_path (Path): The path to the log of verification attempts.
+        function (str): The function under verification, for the rationale text.
+        attempts (list[dict]): All attempt records logged for the function, oldest first.
+        previous_attempts (int): How many of those predate this harness turn.
+        plateau_limit (int): Consecutive unproductive attempts tolerated before stopping.
 
     Returns:
-        bool: True iff a function's specification can be improved, i.e., it has mutants to kill
-            and it is not successfully verified, yet.
+        _SessionDecision: Whether to grant another session, with the reason.
     """
-    function_has_mutants = False
-    try:
-        function_has_mutants = bool(get_mutants(source_path, function))
-    except Exception:  # ruff: ignore[blind-except] - any generation failure should fall back to default behavior.
-        logger.error(f"Failure in mutant generation for '{function}' in {source_path}")
-        # Assume mutants exist in the worst-case scenario.
-        function_has_mutants = True
-    is_function_successfully_verified = _last_attempt_verified(attempts_log_path, function)
-    return function_has_mutants and not is_function_successfully_verified
+    attempts_this_turn = attempts[previous_attempts:]
+    if len(attempts_this_turn) < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION:
+        return _SessionDecision(
+            True,
+            f"agent attempted verification {len(attempts_this_turn)}/"
+            f"{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} time(s)",
+        )
+
+    latest = attempts_this_turn[-1]
+    if not latest.get("verified"):
+        # Still failing to verify: more attempts are the only way forward, and the plateau check
+        # below cannot apply because there is no kill score yet.
+        if _is_plateaued(attempts_this_turn, plateau_limit):
+            return _SessionDecision(
+                False,
+                f"{function} still unverified and the last {plateau_limit} attempts changed "
+                "neither the specification nor the outcome",
+            )
+        return _SessionDecision(True, f"{function} does not verify yet")
+
+    mutation = latest.get("mutation")
+    if not isinstance(mutation, dict):
+        # Verified, but nothing was mutation-tested (no mutable operators), so there is no kill
+        # score to improve and another session cannot strengthen the specification.
+        return _SessionDecision(False, f"{function} verified with no mutants to kill")
+
+    if not _has_live_mutants(mutation):
+        return _SessionDecision(
+            False, f"{function} verified and every killable mutant is accounted for"
+        )
+
+    if _is_plateaued(attempts_this_turn, plateau_limit):
+        return _SessionDecision(
+            False,
+            f"kill score and specification unchanged across the last {plateau_limit} attempt(s)",
+        )
+    return _SessionDecision(
+        True, f"{function} still has {mutation.get('survived', 0)} live surviving mutant(s)"
+    )
 
 
-def _count_verification_attempts(log_path: Path, function: str) -> int:
-    """Return the number of logged `avocado-run-cbmc` verification attempts for `function`.
+def _has_live_mutants(mutation: dict) -> bool:
+    """Return True iff a mutation summary still shows mutants worth trying to kill.
 
-    Reads the verification-attempts JSONL that `avocado-run-cbmc` appends to (one record per
-    top-level verification attempt). A missing log, blank lines, and malformed records are treated
-    as zero/skipped so counting never raises.
+    Timed-out, compile-failed, instrumentation-failed, and presumed-equivalent mutants are all
+    excluded: none of them can be turned into a kill by strengthening the specification.
 
     Args:
-        log_path (Path): Path to the verification-attempts JSONL log.
-        function (str): The function whose attempts should be counted.
+        mutation (dict): A `MutationScore.summary()` record from the attempts log.
 
     Returns:
-        int: The number of attempts recorded for `function`.
+        bool: True iff any surviving, killable mutant remains.
     """
     try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return 0
-    count = 0
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            record = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        if record.get("function") == function:
-            count += 1
-    return count
-
-
-def _last_attempt_verified(log_path: Path, function: str) -> bool:
-    """Return whether the most recent logged verification attempt for `function` succeeded.
-
-    Reads the verification-attempts JSONL that `avocado-run-cbmc` appends to and returns the
-    `verified` field of the last record naming `function`. That field is the *tool's* own CBMC
-    verdict (`run_cbmc_and_mutation_testing._log_verification_attempt` records
-    `result.is_function_verified`), not Claude's self-report, so it is safe to trust here. A missing
-    log, blank lines, and malformed records are skipped; the function returns False when there is no
-    decided record, so callers never skip work on the basis of a verification that did not happen.
-
-    Args:
-        log_path (Path): Path to the verification-attempts JSONL log.
-        function (str): The function whose latest attempt should be inspected.
-
-    Returns:
-        bool: True iff the most recent attempt record for `function` reports verification success.
-    """
-    try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
+        return int(mutation.get("survived", 0)) > 0
+    except (TypeError, ValueError):
         return False
-    verified = False
+
+
+def _is_plateaued(attempts: list[dict], plateau_limit: int) -> bool:
+    """Return True iff the last `plateau_limit` attempts made no discernible progress.
+
+    Progress means any of: the specification changed (a different `spec_digest`), the kill score
+    moved, or the pass/fail verdict changed. `spec_digest` is read from the mutation summary, so
+    attempts that never reached mutation testing fall back to comparing verdicts alone.
+
+    Args:
+        attempts (list[dict]): Attempt records for the function, oldest first.
+        plateau_limit (int): How many consecutive unproductive attempts constitute a plateau.
+
+    Returns:
+        bool: True iff the agent appears to be spinning.
+    """
+    if len(attempts) < plateau_limit + 1:
+        return False
+    window = attempts[-(plateau_limit + 1) :]
+    signatures = {
+        (
+            bool(record.get("verified")),
+            _kill_score_of(record),
+            (record.get("mutation") or {}).get("spec_digest"),
+        )
+        for record in window
+    }
+    return len(signatures) == 1
+
+
+def _kill_score_of(attempt: dict, *, raw: bool = False) -> float | None:
+    """Return the kill score recorded on one attempt, or None when it was not mutation-tested.
+
+    Args:
+        attempt (dict): An attempt record from the verification-attempts log.
+        raw (bool): When True, return the raw score (presumed-equivalent mutants counted as
+            survivors) instead of the adjusted one.
+
+    Returns:
+        float | None: The recorded score, or None if absent or unparseable.
+    """
+    mutation = attempt.get("mutation")
+    if not isinstance(mutation, dict):
+        return None
+    try:
+        return float(mutation["raw_kill_score" if raw else "kill_score"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _latest_kill_score(attempts: list[dict], *, raw: bool = False) -> float | None:
+    """Return the most recently recorded kill score for a function.
+
+    Args:
+        attempts (list[dict]): Attempt records for the function, oldest first.
+        raw (bool): When True, return the raw rather than the adjusted score.
+
+    Returns:
+        float | None: The latest recorded score, or None when none was recorded.
+    """
+    for attempt in reversed(attempts):
+        if (score := _kill_score_of(attempt, raw=raw)) is not None:
+            return score
+    return None
+
+
+def _read_attempts(log_path: Path, function: str) -> list[dict]:
+    """Return every logged `avocado-run-cbmc` verification attempt for `function`, oldest first.
+
+    Reads the verification-attempts JSONL that `avocado-run-cbmc` appends to, one record per
+    top-level invocation. Each record carries the *tool's* own CBMC verdict (`verified`) and, when
+    mutation testing ran, a `mutation` summary with the kill scores and the specification digest —
+    which is what lets the harness tell a productive session from a stalled one. A missing log,
+    blank lines, and malformed records are skipped so reading never raises.
+
+    Args:
+        log_path (Path): Path to the verification-attempts JSONL log.
+        function (str): The function whose attempts should be returned.
+
+    Returns:
+        list[dict]: The attempt records naming `function`, in log order.
+    """
+    try:
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    attempts: list[dict] = []
     for line in lines:
         stripped = line.strip()
         if not stripped:
@@ -524,9 +672,9 @@ def _last_attempt_verified(log_path: Path, function: str) -> bool:
             record = json.loads(stripped)
         except json.JSONDecodeError:
             continue
-        if record.get("function") == function:
-            verified = bool(record.get("verified", False))
-    return verified
+        if isinstance(record, dict) and record.get("function") == function:
+            attempts.append(record)
+    return attempts
 
 
 def _read_function_outcomes(log_path: Path) -> dict[str, str]:

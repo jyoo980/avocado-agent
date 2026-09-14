@@ -39,6 +39,51 @@ You can also search the web for more CBMC documentation.
 
   **This tool can run for a long time, and that is expected — not a hang.**
 
+  Mutant verdicts are remembered between runs. Re-running the tool without having changed the
+  specification will reuse them and finish quickly; changing the specification (or a callee's
+  specification) re-verifies whatever the change could have affected.
+
+- **To mark a surviving mutant as impossible to kill**, run:
+
+  ```sh
+  avocado-mark-equivalent --function <FUNCTION_NAME> \
+                          --file <PATH_TO_C_FILE> \
+                          --mutant <MUTANT_ID> \
+                          --reason "<why no specification can kill it>"
+  ```
+
+  Each surviving mutant in `avocado-run-cbmc` output is listed with an id, e.g.
+  `--- surviving mutant 2 [id 9f3a1c...] — foo.c:42 (RELATIONAL: < -> <=) ---`.
+  Use that id here.
+
+- **To re-check the kill score without re-running full verification**, run:
+
+  ```sh
+  avocado-get-mutation-score --function <FUNCTION_NAME> --file <PATH_TO_C_FILE>
+  ```
+
+## Mutation Testing and the Kill Score
+
+A mutant is "killed" when CBMC fails to verify the mutated program against your specification,
+which shows the specification is strong enough to detect that perturbation.
+
+Some mutants are *equivalent*: the operator swap produces a program that behaves identically to
+the original, so no specification can ever kill them. Chasing these wastes effort and cannot raise
+the score.
+
+- If a mutant survives across several different specifications you have tried, or you can argue it
+  is semantically equivalent to the original, record it with `avocado-mark-equivalent` and move on.
+  Do not keep rewriting a specification to chase a mutant you believe is equivalent.
+- Only declare a mutant equivalent when you genuinely believe no specification could kill it. The
+  reason you give is recorded and may be audited. Declaring a killable mutant equivalent is a
+  worse outcome than a lower kill score.
+- Mutants that time out, fail to compile, or fail instrumentation are already excluded from the
+  score. You do not need to do anything about them.
+
+When any mutant has been excluded as presumed-equivalent, two scores are reported: the *adjusted*
+kill score (which excludes them) and the *raw* kill score (which counts them as survivors).
+Work to raise the adjusted score.
+
 - **To obtain a call graph of the functions in a file in JSON format**, run:
 
   ```sh
