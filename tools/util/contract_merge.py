@@ -245,10 +245,10 @@ def _item_key(node: Node, source: bytes) -> tuple[str, str]:
     """
     kind = node.type
     if kind == "function_definition":
-        try:
-            return ("function", _get_function_definition_name(node))
-        except AssertionError:
-            return ("function", _normalize(_slice(source, node)).decode("utf-8", "replace"))
+        function_name = _get_function_definition_name(node)
+        if function_name is not None:
+            return ("function", function_name)
+        return ("function", _normalize(_slice(source, node)).decode("utf-8", "replace"))
     if kind in ("preproc_def", "preproc_function_def"):
         name = node.child_by_field_name("name")
         if name is not None:
@@ -335,11 +335,7 @@ def find_function_span(source: bytes, function: str) -> FunctionSpan | None:
     for node in dfs_traversal(tree.root_node):
         if node.type != "function_definition":
             continue
-        try:
-            name = _get_function_definition_name(node)
-        except AssertionError:
-            continue
-        if name == function:
+        if _get_function_definition_name(node) == function:
             matches.append(node)
     if len(matches) != 1:
         return None
@@ -383,10 +379,7 @@ def _span_is_self_contained(text: bytes, function: str) -> bool:
     definitions = [child for child in root.children if child.type not in _IGNORED_KINDS]
     if len(definitions) != 1 or definitions[0].type != "function_definition":
         return False
-    try:
-        return _get_function_definition_name(definitions[0]) == function
-    except AssertionError:
-        return False
+    return _get_function_definition_name(definitions[0]) == function
 
 
 def merge_function(
