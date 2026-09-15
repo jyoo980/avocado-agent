@@ -7,7 +7,11 @@ from tools.util.contract_merge import (
     iter_top_level_items,
     merge_function,
 )
-from tools.util.tree_sitter_utils import _parse_to_ast, get_function_declarator, get_function_definition
+from tools.util.tree_sitter_utils import (
+    _parse_to_ast,
+    get_function_declarator,
+    get_function_definition,
+)
 
 BASE = b"""#include <stdio.h>
 #define CAP 16
@@ -103,7 +107,9 @@ def test_merge_transplants_helper_and_define_before_the_function_in_order() -> N
 
 
 def test_merge_carries_body_edit_and_reports_it() -> None:
-    snapshot = BASE.replace(b"{\n    return a;\n}", b"{\n    __CPROVER_assert(a >= 0, \"a\");\n    return a;\n}")
+    snapshot = BASE.replace(
+        b"{\n    return a;\n}", b'{\n    __CPROVER_assert(a >= 0, "a");\n    return a;\n}'
+    )
     merged, report = merge_function(canonical=BASE, snapshot=snapshot, fork_base=BASE, function="f")
     assert report.merged and report.body_changed
     assert b"__CPROVER_assert(a >= 0" in merged
@@ -125,13 +131,19 @@ def test_merge_drops_edits_to_other_functions_and_declarations() -> None:
 
 def test_merge_fails_on_helper_with_different_text_and_skips_identical_helper() -> None:
     helper = b"static int spec_ok(int a) { return a > 0; }\n"
-    snapshot = BASE.replace(b"int f(int a)\n{", helper + b"int f(int a)\n__CPROVER_requires(spec_ok(a))\n{")
+    snapshot = BASE.replace(
+        b"int f(int a)\n{", helper + b"int f(int a)\n__CPROVER_requires(spec_ok(a))\n{"
+    )
     canonical = BASE.replace(b"int g(int b)", helper + b"int g(int b)")  # another session added it
-    merged, report = merge_function(canonical=canonical, snapshot=snapshot, fork_base=BASE, function="f")
+    merged, report = merge_function(
+        canonical=canonical, snapshot=snapshot, fork_base=BASE, function="f"
+    )
     assert report.merged and report.skipped_duplicates == ["function:spec_ok"]
     assert merged.count(b"static int spec_ok") == 1
     clashing = canonical.replace(b"return a > 0;", b"return a >= 0;")
-    merged, report = merge_function(canonical=clashing, snapshot=snapshot, fork_base=BASE, function="f")
+    merged, report = merge_function(
+        canonical=clashing, snapshot=snapshot, fork_base=BASE, function="f"
+    )
     assert not report.merged and "spec_ok" in report.reason
     assert merged == clashing
 
@@ -139,10 +151,15 @@ def test_merge_fails_on_helper_with_different_text_and_skips_identical_helper() 
 def test_merge_after_a_prior_merge_keeps_both_contracts() -> None:
     # Session for `g` landed first, shifting every later offset in the canonical file.
     canonical = BASE.replace(
-        b"int g(int b) { return b; }", b"int g(int b)\n__CPROVER_ensures(__CPROVER_return_value == b)\n{ return b; }"
+        b"int g(int b) { return b; }",
+        b"int g(int b)\n__CPROVER_ensures(__CPROVER_return_value == b)\n{ return b; }",
     )
-    snapshot = BASE.replace(b"int f(int a)\n{", b"int f(int a)\n__CPROVER_ensures(__CPROVER_return_value == a)\n{")
-    merged, report = merge_function(canonical=canonical, snapshot=snapshot, fork_base=BASE, function="f")
+    snapshot = BASE.replace(
+        b"int f(int a)\n{", b"int f(int a)\n__CPROVER_ensures(__CPROVER_return_value == a)\n{"
+    )
+    merged, report = merge_function(
+        canonical=canonical, snapshot=snapshot, fork_base=BASE, function="f"
+    )
     assert report.merged and not report.dropped
     assert b"__CPROVER_return_value == a" in _contract_text(merged, "f")
     assert b"__CPROVER_return_value == b" in _contract_text(merged, "g")
@@ -153,7 +170,9 @@ def test_merge_function_inside_preproc_block() -> None:
         b"static int hidden(int x) { return x; }",
         b"static int hidden(int x)\n__CPROVER_requires(x > 0)\n{ return x; }",
     )
-    merged, report = merge_function(canonical=BASE, snapshot=snapshot, fork_base=BASE, function="hidden")
+    merged, report = merge_function(
+        canonical=BASE, snapshot=snapshot, fork_base=BASE, function="hidden"
+    )
     assert report.merged
     block = merged[merged.index(b"#ifdef FOO") : merged.index(b"#endif")]
     assert b"__CPROVER_requires(x > 0)" in block
@@ -178,4 +197,115 @@ def test_merge_on_the_quicksort_fixture_round_trips_a_stripped_copy() -> None:
         )
         assert report.merged, (function, report.reason)
     for function in ("swap", "partition", "quickSort"):
-        assert _contract_text(canonical, function).strip() == _contract_text(original, function).strip()
+        assert (
+            _contract_text(canonical, function).strip()
+            == _contract_text(original, function).strip()
+        )
+
+
+MACRO_BASE = b"""#define KB *(1 << 10)
+#define FORCE_INLINE static inline __attribute__((always_inline))
+int before(void) { return 1; }
+FORCE_INLINE int fi(int x)
+{
+    return x;
+}
+int kb(void) { return 64 KB; }
+int after(void) { return 2; }
+"""
+
+
+def test_find_function_span_tolerates_macros_tree_sitter_cannot_parse() -> None:
+    # An attribute macro before the return type and an operator macro in the body both leave
+    # ERROR nodes inside a correctly delimited definition; the span is kept, prefix included.
+    for function, prefix in (("fi", b"FORCE_INLINE int fi("), ("kb", b"int kb(void)")):
+        span = find_function_span(MACRO_BASE, function)
+        assert span is not None, function
+        assert MACRO_BASE[span.start_byte :].startswith(prefix)
+        assert MACRO_BASE[span.end_byte - 1] == ord("}")
+    # The neighbours are untouched by the recovery.
+    assert find_function_span(MACRO_BASE, "before") is not None
+    assert find_function_span(MACRO_BASE, "after") is not None
+
+
+def test_merge_lands_a_contract_on_a_macro_prefixed_function() -> None:
+    snapshot = MACRO_BASE.replace(
+        b"FORCE_INLINE int fi(int x)\n{",
+        b"FORCE_INLINE int fi(int x)\n__CPROVER_ensures(__CPROVER_return_value == x)\n{",
+    )
+    merged, report = merge_function(
+        canonical=MACRO_BASE, snapshot=snapshot, fork_base=MACRO_BASE, function="fi"
+    )
+    assert report.merged, report.reason
+    assert merged == snapshot
+    assert not report.dropped and not report.transplanted
+
+
+def test_merge_rejects_a_span_whose_prefix_differs_from_the_canonical_one() -> None:
+    # If the session copy's span carries different text before the name -- a swallowed
+    # neighbour the agent edited, or an edited signature -- it is not the same span.
+    snapshot = MACRO_BASE.replace(b"FORCE_INLINE int fi(int x)", b"int fi(int x)")
+    merged, report = merge_function(
+        canonical=MACRO_BASE, snapshot=snapshot, fork_base=MACRO_BASE, function="fi"
+    )
+    assert not report.merged
+    assert "differs between the session copy and the canonical file" in report.reason
+    assert merged == MACRO_BASE
+
+
+def test_merge_carries_an_edited_function_only_when_allowed() -> None:
+    fixed_helper = BASE.replace(
+        b"static int helper_old(int x) { return x; }",
+        b"static int helper_old(int x)\n__CPROVER_ensures(__CPROVER_return_value == x)\n"
+        b"{ return x; }",
+    )
+    snapshot = fixed_helper.replace(
+        b"int f(int a)\n{", b"int f(int a)\n__CPROVER_ensures(__CPROVER_return_value == a)\n{"
+    )
+    # Default: the isolation rule drops the helper's edit.
+    merged, report = merge_function(canonical=BASE, snapshot=snapshot, fork_base=BASE, function="f")
+    assert report.merged and report.carried == [] and "function:helper_old" in report.dropped
+    assert b"__CPROVER_return_value == x" not in merged
+    # No session on the helper: its edit is carried at its own span.
+    merged, report = merge_function(
+        canonical=BASE, snapshot=snapshot, fork_base=BASE, function="f", frozen_functions=set()
+    )
+    assert report.merged and report.carried == ["helper_old"] and report.dropped == []
+    assert merged == snapshot
+    # A session on the helper: dropped, with the reason.
+    merged, report = merge_function(
+        canonical=BASE,
+        snapshot=snapshot,
+        fork_base=BASE,
+        function="f",
+        frozen_functions={"helper_old"},
+    )
+    assert (
+        report.carried == []
+        and "function:helper_old (a session is running on it)" in report.dropped
+    )
+    # The helper changed in the canonical file since the fork: dropped, the other edit wins.
+    other = BASE.replace(
+        b"static int helper_old(int x) { return x; }",
+        b"static int helper_old(int x) { return x + 0; }",
+    )
+    merged, report = merge_function(
+        canonical=other, snapshot=snapshot, fork_base=BASE, function="f", frozen_functions=set()
+    )
+    assert report.carried == [] and any(
+        "changed in the canonical file since the fork" in d for d in report.dropped
+    )
+    assert b"return x + 0;" in merged and b"__CPROVER_return_value == a" in merged
+
+
+def test_unchanged_duplicate_definitions_are_not_reported_as_dropped() -> None:
+    dup = (
+        b"#ifdef FAST\nstatic int rd(void) { return 1; }\n#else\n"
+        b"static int rd(void) { return 2; }\n#endif\nint f(void) { return rd(); }\n"
+    )
+    snapshot = dup.replace(b"int f(void) {", b"int f(void)\n__CPROVER_ensures(1)\n{")
+    merged, report = merge_function(
+        canonical=dup, snapshot=snapshot, fork_base=dup, function="f", frozen_functions=set()
+    )
+    assert report.merged and report.dropped == [] and report.carried == []
+    assert merged == snapshot

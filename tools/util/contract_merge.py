@@ -4,9 +4,13 @@
 directory. When a session for function F ends, only F's definition (its contract clauses and,
 exactly as today, anything the agent did inside F's body) and the *new* top-level items the agent
 added for that contract -- helper functions, `#define`s, includes, declarations -- are carried into
-the canonical file. Edits to any other existing definition are dropped: that is the isolation rule
-that makes concurrent sessions safe, since every other definition in the canonical file may belong
-to a session that is still running or has already finished.
+the canonical file. Edits to other existing *functions* are carried too when the caller allows it
+(`merge_function(frozen_functions=...)`): an agent proving a caller routinely fixes a callee's
+contract in passing, and dropping that fix leaves a caller that verified in the copy but not in the
+canonical file. A function that another session is running on is never carried, nor is one that
+has changed in the canonical file since the fork; edits to other existing items (macros, typedefs,
+declarations) are always dropped. Whether a carried edit is *kept* is the caller's decision: it
+re-verifies what the edit can affect before committing (see `avocado_verify._merge_and_verify`).
 
 Everything here works on bytes and byte offsets of the *original* source. Parsing goes through
 `tools.util.tree_sitter_utils._parse_to_ast`, which blanks CBMC clauses to whitespace of identical
@@ -17,7 +21,9 @@ the original with `source[start_byte:end_byte]`.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
+from itertools import pairwise
 from typing import TYPE_CHECKING
 
 from tools.util.tree_sitter_utils import (
@@ -27,6 +33,8 @@ from tools.util.tree_sitter_utils import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from tree_sitter import Node
 
 # Preprocessor nodes whose children are top-level items of the file; the enumerator descends into
@@ -44,6 +52,16 @@ _SPECIFIER_KINDS = frozenset({"struct_specifier", "union_specifier", "enum_speci
 
 # Declarator wrappers descended to reach the identifier a declaration introduces.
 _DECLARATOR_FIELD = "declarator"
+
+# Comments and preprocessor directives (with backslash continuations), erased before a span's
+# prefix is inspected; neither can hide a swallowed neighbour's terminator.
+_COMMENT = re.compile(rb"/\*.*?\*/|//[^\n]*", re.DOTALL)
+_DIRECTIVE_LINE = re.compile(rb"^[ \t]*#(?:[^\n\\]|\\\n)*$", re.MULTILINE)
+
+# Tokens that never occur between the start of a function definition and its name -- a storage
+# class, attribute macros and the return type contain none of them -- but that a top-level item
+# swallowed by tree-sitter's error recovery nearly always leaves behind.
+_PREFIX_BREAKERS = re.compile(rb"[;{}]")
 
 
 @dataclass(frozen=True)
@@ -100,7 +118,10 @@ class MergeReport:
         skipped_duplicates (list[str]): New items that another session had already added with
             identical text, so nothing needed doing.
         dropped (list[str]): Edits outside the function that the isolation rule discarded
-            (modified or removed existing items), rendered as `kind:name`.
+            (modified or removed existing items), rendered as `kind:name`, with the reason in
+            parentheses when there is a specific one.
+        carried (list[str]): Other existing functions whose edited definitions were spliced in
+            alongside the function's own (see `merge_function`).
         body_changed (bool): True iff the function's body differs from the fork base. Body
             edits are carried, as they are today; this is a diagnostic.
     """
@@ -110,6 +131,7 @@ class MergeReport:
     transplanted: list[str] = field(default_factory=list)
     skipped_duplicates: list[str] = field(default_factory=list)
     dropped: list[str] = field(default_factory=list)
+    carried: list[str] = field(default_factory=list)
     body_changed: bool = False
 
     def to_record(self) -> dict:
@@ -124,6 +146,7 @@ class MergeReport:
             "transplanted": list(self.transplanted),
             "skipped_duplicates": list(self.skipped_duplicates),
             "dropped": list(self.dropped),
+            "carried": list(self.carried),
             "body_changed": self.body_changed,
         }
 
@@ -319,9 +342,10 @@ def find_function_span(source: bytes, function: str) -> FunctionSpan | None:
     """Return the span of `function`'s definition, or None when it cannot be trusted.
 
     None is returned when the function is absent or defined more than once, when its node sits
-    under a parse error, or when the span does not re-parse on its own as exactly that one
-    definition -- tree-sitter's error recovery can start a definition node early and swallow the
-    item before it, and such a span must never be spliced into another file.
+    under a parse error, or when the span does not re-parse on its own as that one definition
+    and nothing else (see `_span_is_self_contained`) -- tree-sitter's error recovery can start a
+    definition node early and swallow the item before it, and such a span must never be spliced
+    into another file.
 
     Args:
         source (bytes): The original C source.
@@ -363,27 +387,68 @@ def find_function_span(source: bytes, function: str) -> FunctionSpan | None:
 
 
 def _span_is_self_contained(text: bytes, function: str) -> bool:
-    """Return True iff `text`, parsed alone, is exactly one clean definition of `function`.
+    """Return True iff `text`, parsed alone, is one definition of `function` and nothing else.
+
+    tree-sitter parses unpreprocessed C, so a definition that uses a macro the grammar cannot
+    read -- an attribute macro before the return type (`LZ4_FORCE_INLINE U32 f(...)`) or an
+    operator macro in the body (`64 KB`) -- carries ERROR nodes even though its span is delimited
+    correctly. Those errors are tolerated: the file is compiled with goto-cc and verified after
+    the merge, which catches anything a lenient parse lets through.
+
+    What is rejected is a span that is not exactly one `function_definition` of `function`
+    covering the whole text apart from comments, one that does not end with the closing brace of
+    the body, and one whose text before the function's name contains a `;`, `{` or `}` outside
+    comments and directives: tree-sitter's error recovery can start a definition node inside the
+    broken item before it, and a swallowed item nearly always leaves one of those tokens in the
+    prefix, while a storage class, attribute macros and a return type never do.
 
     Args:
         text (bytes): A candidate definition span.
         function (str): The expected function name.
 
     Returns:
-        bool: True iff the span is a single, error-free definition of `function`.
+        bool: True iff the span is a single definition of `function`.
     """
     tree = _parse_to_ast(text)
-    root = tree.root_node
-    if root.has_error:
+    items = [child for child in tree.root_node.children if child.type not in _IGNORED_KINDS]
+    if len(items) != 1 or items[0].type != "function_definition":
         return False
-    definitions = [child for child in root.children if child.type not in _IGNORED_KINDS]
-    if len(definitions) != 1 or definitions[0].type != "function_definition":
+    node = items[0]
+    if _get_function_definition_name(node) != function:
         return False
-    return _get_function_definition_name(definitions[0]) == function
+    if not text.rstrip().endswith(b"}"):
+        return False
+    outside = text[: node.start_byte] + text[node.end_byte :]
+    if _COMMENT.sub(b"", outside).strip():
+        return False
+    prefix = _signature_prefix(text, function)
+    return prefix is not None and _PREFIX_BREAKERS.search(prefix) is None
+
+
+def _signature_prefix(text: bytes, function: str) -> bytes | None:
+    """Return a definition span's text before `function`'s name, comments and directives erased.
+
+    Args:
+        text (bytes): A definition span of `function`.
+        function (str): The function name.
+
+    Returns:
+        bytes | None: The whitespace-normalized prefix, or None if the name is not followed by `(`.
+    """
+    cleaned = _DIRECTIVE_LINE.sub(b"", _COMMENT.sub(b"", text))
+    match = re.search(rb"\b" + re.escape(function.encode("utf-8")) + rb"\s*\(", cleaned)
+    if match is None:
+        return None
+    return _normalize(cleaned[: match.start()])
 
 
 def merge_function(
-    *, canonical: bytes, snapshot: bytes, fork_base: bytes, function: str
+    *,
+    canonical: bytes,
+    snapshot: bytes,
+    fork_base: bytes,
+    function: str,
+    frozen_functions: Collection[str] | None = None,
 ) -> tuple[bytes, MergeReport]:
     """Splice `function`'s definition and its new helpers from `snapshot` into `canonical`.
 
@@ -393,11 +458,22 @@ def merge_function(
     merges. Offsets in `canonical` are taken from a fresh parse, so earlier merges are accounted
     for; offsets in `snapshot` are independent of it.
 
+    `frozen_functions` selects the isolation rule for edits to *other existing functions*. When
+    it is None (the default) every such edit is dropped. Otherwise an edited function is carried
+    -- its canonical definition is replaced by the session's, at its own span -- unless it is
+    named in `frozen_functions` (a session is running on it), it has already changed in the
+    canonical file since the fork (another session got there first), or its span cannot be found
+    in both files. Carried functions are listed in `MergeReport.carried`; the caller re-verifies
+    what they can affect before keeping the result. Edits to other existing items (macros,
+    typedefs, declarations) are always dropped.
+
     Args:
         canonical (bytes): The current canonical file.
         snapshot (bytes): The session's finished copy.
         fork_base (bytes): The canonical file at fork time.
         function (str): The function the session worked on.
+        frozen_functions (Collection[str] | None): Functions whose edits must not be carried
+            because a session is running on them; None drops every edit to another function.
 
     Returns:
         tuple[bytes, MergeReport]: The merged file (or `canonical` unchanged on failure) and the
@@ -413,6 +489,14 @@ def merge_function(
         return canonical, MergeReport(
             False, f"{function} is missing, duplicated or ill-formed in the canonical file"
         )
+    # Both spans were accepted with parse errors tolerated, so make sure they are spans of the
+    # same thing: a swallowed neighbour that the agent also edited would show up here.
+    if not _same_prefix(snapshot, snapshot_span, canonical, canonical_span, function):
+        return canonical, MergeReport(
+            False,
+            f"the text before {function}'s name differs between the session copy and the "
+            "canonical file",
+        )
 
     own_key = ("function", function)
     base_by_key = _index(iter_top_level_items(fork_base))
@@ -423,18 +507,29 @@ def merge_function(
     transplant: list[TopLevelItem] = []
     skipped: list[str] = []
     seen: set[tuple[str, str]] = set()
+    carry_candidates: dict[str, TopLevelItem] = {}
     for item in snapshot_items:
         if item.key == own_key:
             continue
         seen.add(item.key)
-        base_text = base_by_key.get(item.key)
-        if base_text is not None:
-            if _normalize(item.text) != base_text:
+        base_texts = base_by_key.get(item.key)
+        if base_texts is not None:
+            if _normalize(item.text) in base_texts:
+                continue
+            if frozen_functions is None or item.key[0] != "function":
                 dropped.append(_render(item.key))
+            elif item.key[1] in frozen_functions:
+                dropped.append(f"{_render(item.key)} (a session is running on it)")
+            elif canonical_by_key.get(item.key) != base_texts:
+                dropped.append(
+                    f"{_render(item.key)} (changed in the canonical file since the fork)"
+                )
+            else:
+                carry_candidates.setdefault(item.key[1], item)
             continue
-        canonical_text = canonical_by_key.get(item.key)
-        if canonical_text is not None:
-            if _normalize(item.text) == canonical_text:
+        canonical_texts = canonical_by_key.get(item.key)
+        if canonical_texts is not None:
+            if _normalize(item.text) in canonical_texts:
                 skipped.append(_render(item.key))
                 continue
             return canonical, MergeReport(
@@ -447,40 +542,98 @@ def merge_function(
         transplant.append(item)
     dropped.extend(_render(key) for key in base_by_key if key != own_key and key not in seen)
 
+    prefix = b"".join(item.text.rstrip(b"\n") + b"\n\n" for item in transplant)
+    replacements: list[tuple[int, int, bytes]] = [
+        (
+            canonical_span.start_byte,
+            canonical_span.end_byte,
+            prefix + snapshot[snapshot_span.start_byte : snapshot_span.end_byte],
+        )
+    ]
+    carried: list[str] = []
+    for name, item in carry_candidates.items():
+        other_snapshot = find_function_span(snapshot, name)
+        other_canonical = find_function_span(canonical, name)
+        if (
+            other_snapshot is None
+            or other_canonical is None
+            or not _same_prefix(snapshot, other_snapshot, canonical, other_canonical, name)
+        ):
+            dropped.append(f"{_render(item.key)} (its definition could not be matched)")
+            continue
+        replacements.append(
+            (
+                other_canonical.start_byte,
+                other_canonical.end_byte,
+                snapshot[other_snapshot.start_byte : other_snapshot.end_byte],
+            )
+        )
+        carried.append(name)
+    replacements.sort()
+    for (_, previous_end, _), (start, _, _) in pairwise(replacements):
+        if start < previous_end:
+            return canonical, MergeReport(
+                False, "the definitions to splice overlap in the canonical file", dropped=dropped
+            )
+
     base_span = find_function_span(fork_base, function)
     body_changed = base_span is not None and _normalize(
         snapshot[snapshot_span.body_start_byte : snapshot_span.body_end_byte]
     ) != _normalize(fork_base[base_span.body_start_byte : base_span.body_end_byte])
 
-    prefix = b"".join(item.text.rstrip(b"\n") + b"\n\n" for item in transplant)
-    merged = (
-        canonical[: canonical_span.start_byte]
-        + prefix
-        + snapshot[snapshot_span.start_byte : snapshot_span.end_byte]
-        + canonical[canonical_span.end_byte :]
-    )
+    merged = canonical
+    for start, end, text in reversed(replacements):
+        merged = merged[:start] + text + merged[end:]
     return merged, MergeReport(
         True,
         transplanted=[_render(item.key) for item in transplant],
         skipped_duplicates=skipped,
         dropped=dropped,
+        carried=carried,
         body_changed=body_changed,
     )
 
 
-def _index(items: list[TopLevelItem]) -> dict[tuple[str, str], bytes]:
-    """Return a map from item key to normalized text; on duplicate keys the first item wins.
+def _same_prefix(
+    snapshot: bytes,
+    snapshot_span: FunctionSpan,
+    canonical: bytes,
+    canonical_span: FunctionSpan,
+    function: str,
+) -> bool:
+    """Return True iff the two spans carry the same text before `function`'s name.
+
+    Args:
+        snapshot (bytes): The session's copy.
+        snapshot_span (FunctionSpan): `function`'s span in it.
+        canonical (bytes): The canonical file.
+        canonical_span (FunctionSpan): `function`'s span in it.
+        function (str): The function name.
+
+    Returns:
+        bool: True iff the normalized, comment-free prefixes are identical.
+    """
+    return _signature_prefix(
+        snapshot[snapshot_span.start_byte : snapshot_span.end_byte], function
+    ) == _signature_prefix(canonical[canonical_span.start_byte : canonical_span.end_byte], function)
+
+
+def _index(items: list[TopLevelItem]) -> dict[tuple[str, str], frozenset[bytes]]:
+    """Return a map from item key to the normalized texts of every item with that key.
+
+    A function or macro defined once per preprocessor branch has several texts under one key;
+    indexing all of them is what lets an unchanged second definition compare as unchanged.
 
     Args:
         items (list[TopLevelItem]): Items in source order.
 
     Returns:
-        dict[tuple[str, str], bytes]: Key to normalized text.
+        dict[tuple[str, str], frozenset[bytes]]: Key to the set of normalized texts.
     """
-    indexed: dict[tuple[str, str], bytes] = {}
+    indexed: dict[tuple[str, str], set[bytes]] = {}
     for item in items:
-        indexed.setdefault(item.key, _normalize(item.text))
-    return indexed
+        indexed.setdefault(item.key, set()).add(_normalize(item.text))
+    return {key: frozenset(texts) for key, texts in indexed.items()}
 
 
 def _render(key: tuple[str, str]) -> str:

@@ -188,7 +188,8 @@ def test_prompt_states_the_isolation_rule() -> None:
         "swap", file_path="/tmp/copy/q.c", call_graph=_quicksort_call_graph(), include_dirs=[]
     )
     assert "private copy of the source directory" in prompt
-    assert "edits to other functions, to other files and to headers are discarded" in prompt
+    assert "A contract you fix on another function in this file is kept too" in prompt
+    assert "Edits to other files and to headers are always discarded" in prompt
 
 
 def test_append_jsonl_is_safe_under_threads(tmp_path: Path) -> None:
@@ -208,7 +209,9 @@ def test_append_jsonl_is_safe_under_threads(tmp_path: Path) -> None:
     assert all(json.loads(line)["pad"] == "x" * 500 for line in lines)
 
 
-def test_fork_session_copies_the_directory_outside_the_tree_without_artifacts(tmp_path: Path) -> None:
+def test_fork_session_copies_the_directory_outside_the_tree_without_artifacts(
+    tmp_path: Path,
+) -> None:
     source_dir = tmp_path / "bench"
     source_dir.mkdir()
     canonical = source_dir / "q.c"
@@ -234,7 +237,11 @@ def _write_contract(session_file: Path, function: str, contract: bytes) -> None:
     span = find_function_span(source, function)
     assert span is not None
     session_file.write_bytes(
-        source[: span.body_start_byte].rstrip(b" \t") + b"\n" + contract + b"\n" + source[span.body_start_byte :]
+        source[: span.body_start_byte].rstrip(b" \t")
+        + b"\n"
+        + contract
+        + b"\n"
+        + source[span.body_start_byte :]
     )
 
 
@@ -247,7 +254,9 @@ def _log_attempts(session_file: Path, function: str, count: int = 2) -> None:
 
 
 def _verified_cbmc(function: str) -> RunCbmcResult:
-    return RunCbmcResult(function=function, failed_step=None, timed_out=False, returncode=0, response="ok")
+    return RunCbmcResult(
+        function=function, failed_step=None, timed_out=False, returncode=0, response="ok"
+    )
 
 
 def _stripped_quicksort(tmp_path: Path) -> Path:
@@ -290,7 +299,9 @@ class _FakeClaude:
         if function in self.fail:
             return _session(is_error=True, text="Usage limit reached; resets at 3pm")
         if function in self.rename:
-            renamed = path.read_bytes().replace(function.encode(), b"renamed_" + function.encode(), 1)
+            renamed = path.read_bytes().replace(
+                function.encode(), b"renamed_" + function.encode(), 1
+            )
             path.write_bytes(renamed)
         else:
             _write_contract(path, function, _CONTRACTS.get(function, b"__CPROVER_ensures(1)"))
@@ -354,15 +365,24 @@ def test_two_independent_functions_overlap_only_with_two_jobs(tmp_path: Path, mo
         fake = _fake_claude(sleep=0.4)
         monkeypatch.setattr(avocado_verify, "_run_claude", fake)
         _verify_functions(
-            order, order=order, file_path=str(canonical), call_graph=graph, timeout=10,
-            include_dirs=[], jobs=jobs, log_path=tmp_path / f"run{jobs}.jsonl", keep_sessions=False,
+            order,
+            order=order,
+            file_path=str(canonical),
+            call_graph=graph,
+            timeout=10,
+            include_dirs=[],
+            jobs=jobs,
+            log_path=tmp_path / f"run{jobs}.jsonl",
+            keep_sessions=False,
         )
         (s1, e1), (s2, e2) = (fake.intervals[f] for f in order[:2])
         overlap = s1 < e2 and s2 < e1
         assert overlap is expect_overlap, (jobs, fake.intervals)
 
 
-def test_usage_limit_stops_new_submissions_but_in_flight_sessions_merge(tmp_path: Path, monkeypatch) -> None:
+def test_usage_limit_stops_new_submissions_but_in_flight_sessions_merge(
+    tmp_path: Path, monkeypatch
+) -> None:
     source_dir = tmp_path / "bench"
     source_dir.mkdir()
     canonical = source_dir / "no_callees.c"
@@ -383,8 +403,15 @@ def test_usage_limit_stops_new_submissions_but_in_flight_sessions_merge(tmp_path
     fake = _fake_claude(sleep=0.2, fail={order[0]})
     monkeypatch.setattr(avocado_verify, "_run_claude", fake)
     results, limited = _verify_functions(
-        order, order=order, file_path=str(canonical), call_graph=graph, timeout=10,
-        include_dirs=[], jobs=2, log_path=tmp_path / "run.jsonl", keep_sessions=False,
+        order,
+        order=order,
+        file_path=str(canonical),
+        call_graph=graph,
+        timeout=10,
+        include_dirs=[],
+        jobs=2,
+        log_path=tmp_path / "run.jsonl",
+        keep_sessions=False,
     )
     assert limited == {order[0]}
     started = {result.function for result in results}
@@ -398,9 +425,15 @@ def test_merge_failure_is_logged_and_canonical_untouched(tmp_path: Path, monkeyp
     original = canonical.read_bytes()
     monkeypatch.setattr(avocado_verify, "_run_claude", _fake_claude(rename={"swap"}))
     results, _ = _verify_functions(
-        ["swap"], order=["swap", "partition", "quickSort"], file_path=str(canonical),
-        call_graph=_quicksort_call_graph(), timeout=10, include_dirs=[], jobs=1,
-        log_path=tmp_path / "run.jsonl", keep_sessions=False,
+        ["swap"],
+        order=["swap", "partition", "quickSort"],
+        file_path=str(canonical),
+        call_graph=_quicksort_call_graph(),
+        timeout=10,
+        include_dirs=[],
+        jobs=1,
+        log_path=tmp_path / "run.jsonl",
+        keep_sessions=False,
     )
     assert results[0].merge is not None and not results[0].merge.merged
     assert "swap" in results[0].merge.reason
@@ -415,12 +448,152 @@ def test_merge_and_verify_rejects_a_merge_that_does_not_compile(tmp_path: Path) 
         # A helper that includes a header that exists only in the session copy.
         (session.file.parent / "nope.h").write_text("int nope(void);\n")
         source = session.file.read_bytes().replace(
-            b"void swap(", b'#include "nope.h"\nstatic int uses_nope(void) { return nope(); }\nvoid swap(', 1
+            b"void swap(",
+            b'#include "nope.h"\nstatic int uses_nope(void) { return nope(); }\nvoid swap(',
+            1,
         )
         session.file.write_bytes(source)
-        report, cbmc = _merge_and_verify(session, canonical, include_dirs=[])
+        report, cbmc, reverified = _merge_and_verify(session, canonical, include_dirs=[])
     finally:
         shutil.rmtree(session.directory, ignore_errors=True)
     assert not report.merged and "goto-cc" in report.reason
+    assert reverified == {}
     assert canonical.read_bytes() == original
     assert cbmc.function == "swap"
+
+
+class _FakeVerify:
+    """A `verify_function` stand-in that fails the functions named in `failing` and records calls."""
+
+    def __init__(self, failing: set[str] | None = None) -> None:
+        self.failing = failing or set()
+        self.calls: list[str] = []
+
+    def __call__(self, function: str, file_path: str, include_dirs=None) -> RunCbmcResult:
+        del file_path, include_dirs
+        self.calls.append(function)
+        if function in self.failing:
+            return RunCbmcResult(
+                function=function, failed_step=None, timed_out=False, returncode=10, response="fail"
+            )
+        return _verified_cbmc(function)
+
+
+def _call_graph_where_quicksort_also_calls_swap() -> CallGraph:
+    """A quicksort call graph in which `swap` has a second caller besides `partition`."""
+    return CallGraph(
+        {
+            "swap": {"internal": [], "external": []},
+            "partition": {"internal": ["swap"], "external": []},
+            "quickSort": {"internal": ["partition", "swap", "quickSort"], "external": []},
+        }
+    )
+
+
+def _partition_session_that_fixes_swap(canonical: Path):
+    """Fork a session for `partition` whose agent also put a contract on its callee `swap`."""
+    session = _fork_session("partition", canonical)
+    _write_contract(session.file, "partition", _CONTRACTS["partition"])
+    _write_contract(session.file, "swap", _CONTRACTS["swap"])
+    return session
+
+
+def test_merge_and_verify_carries_a_callee_fix_and_reverifies_its_verified_callers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    fake = _FakeVerify()
+    monkeypatch.setattr(avocado_verify, "verify_function", fake)
+    state = avocado_verify._MergeState(active={"partition"}, verified={"swap", "quickSort"})
+    session = _partition_session_that_fixes_swap(canonical)
+    try:
+        report, cbmc, reverified = _merge_and_verify(
+            session,
+            canonical,
+            include_dirs=[],
+            call_graph=_call_graph_where_quicksort_also_calls_swap(),
+            state=state,
+        )
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    assert report.merged and report.carried == ["swap"], report
+    merged = canonical.read_bytes()
+    assert _CONTRACTS["partition"] in merged and _CONTRACTS["swap"] in merged
+    # The carried callee and its other verified caller were re-verified; the merging function
+    # itself is verified separately.
+    assert set(reverified) == {"swap", "quickSort"}
+    assert fake.calls[-1] == "partition" and set(fake.calls) == {"swap", "quickSort", "partition"}
+    assert cbmc.is_function_verified
+    assert state.active == set() and state.verified == {"swap", "quickSort", "partition"}
+
+
+def test_merge_and_verify_reverts_carried_edits_that_break_a_verified_caller(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    original = canonical.read_bytes()
+    fake = _FakeVerify(failing={"quickSort"})
+    monkeypatch.setattr(avocado_verify, "verify_function", fake)
+    state = avocado_verify._MergeState(active={"partition"}, verified={"swap", "quickSort"})
+    session = _partition_session_that_fixes_swap(canonical)
+    try:
+        report, _cbmc, reverified = _merge_and_verify(
+            session,
+            canonical,
+            include_dirs=[],
+            call_graph=_call_graph_where_quicksort_also_calls_swap(),
+            state=state,
+        )
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    assert report.merged and report.carried == []
+    assert any(
+        "reverted" in entry and "quickSort would no longer verify" in entry
+        for entry in report.dropped
+    ), report.dropped
+    merged = canonical.read_bytes()
+    assert _CONTRACTS["partition"] in merged
+    assert _CONTRACTS["swap"] not in merged
+    assert find_function_span(merged, "swap") is not None
+    assert not reverified["quickSort"].is_function_verified
+    # Nothing that was verified before is lost.
+    assert {"swap", "quickSort"} <= state.verified
+    assert original.count(b"__CPROVER_") == 0 and merged.count(b"__CPROVER_ensures") == 0
+
+
+def test_merge_drops_a_callee_edit_while_a_session_runs_on_the_callee(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    fake = _FakeVerify()
+    monkeypatch.setattr(avocado_verify, "verify_function", fake)
+    state = avocado_verify._MergeState(active={"partition", "swap"}, verified=set())
+    session = _partition_session_that_fixes_swap(canonical)
+    try:
+        report, _cbmc, reverified = _merge_and_verify(
+            session, canonical, include_dirs=[], call_graph=_quicksort_call_graph(), state=state
+        )
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    assert report.merged and report.carried == [] and reverified == {}
+    assert "function:swap (a session is running on it)" in report.dropped
+    assert _CONTRACTS["swap"] not in canonical.read_bytes()
+    assert fake.calls == ["partition"]
+
+
+def test_reverified_pass_counts_as_verified_for_recorded_functions_only(tmp_path: Path) -> None:
+    log = tmp_path / "run.jsonl"
+    _append_jsonl(log, {"function": "swap", "outcome": "UNVERIFIED"})
+    _append_jsonl(
+        log,
+        {
+            "function": "partition",
+            "outcome": "VERIFIED",
+            "reverified": {
+                "swap": {"verdict": "PASS", "is_function_verified": True},
+                "quickSort": {"verdict": "PASS", "is_function_verified": True},
+            },
+        },
+    )
+    outcomes = avocado_verify._read_function_outcomes(log)
+    assert outcomes == {"swap": "VERIFIED", "partition": "VERIFIED"}

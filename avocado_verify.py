@@ -209,6 +209,9 @@ class FunctionVerificationResult:
             kept and dropped, or None when no merge was attempted.
         stray_files (list[str]): Files other than the source file that the agent added or changed
             in its private copy; they are never merged, only reported.
+        reverified (dict[str, RunCbmcResult]): Ground-truth verdicts of the other functions this
+            merge had to re-verify because it carried edits to them or to their callees (see
+            `_merge_and_verify`); empty when it carried none.
     """
 
     function: str
@@ -220,6 +223,7 @@ class FunctionVerificationResult:
     agent_sessions: int
     merge: MergeReport | None = None
     stray_files: list[str] = field(default_factory=list)
+    reverified: dict[str, RunCbmcResult] = field(default_factory=dict)
 
     def to_record(self) -> dict:
         """Return a JSON-serializable record of this result for the run log.
@@ -252,6 +256,13 @@ class FunctionVerificationResult:
             "merge": None
             if self.merge is None
             else {**self.merge.to_record(), "stray_files": list(self.stray_files)},
+            "reverified": {
+                function: {
+                    "verdict": str(result),
+                    "is_function_verified": result.is_function_verified,
+                }
+                for function, result in self.reverified.items()
+            },
         }
 
 
@@ -447,6 +458,21 @@ class _Session:
     fork_base: bytes
 
 
+@dataclass
+class _MergeState:
+    """What concurrent sessions' merges need to know about each other; guarded by `_CANONICAL_LOCK`.
+
+    Attributes:
+        active (set[str]): Functions with a live session. Only that session may change their
+            definitions, so another session's edit to one of them is dropped at merge time.
+        verified (set[str]): Functions whose latest ground truth on the canonical file passed. A
+            merge that would make one of them stop verifying is not committed as is.
+    """
+
+    active: set[str] = field(default_factory=set)
+    verified: set[str] = field(default_factory=set)
+
+
 def _fork_session(function: str, canonical_file: Path) -> _Session:
     """Copy the canonical file's directory into a fresh temporary directory for one session.
 
@@ -483,6 +509,7 @@ def _verify_via_agent(
     timeout: int,
     include_dirs: list[str],
     keep_sessions: bool = False,
+    state: _MergeState | None = None,
 ) -> FunctionVerificationResult:
     """Specify `function` in a private copy, merge the result back, and re-verify it with CBMC.
 
@@ -500,6 +527,8 @@ def _verify_via_agent(
         include_dirs (list[str]): Extra include directories to expose to the agent and forward to
             CBMC's include search path.
         keep_sessions (bool): When True, the session's copy is kept for inspection.
+        state (_MergeState | None): Shared merge state of the run; None makes the merge drop every
+            edit to another function (see `_merge_and_verify`).
 
     Returns:
         FunctionVerificationResult: The combined Claude/CBMC outcome for the function.
@@ -516,7 +545,9 @@ def _verify_via_agent(
         )
         stray_files = _report_stray_edits(session, canonical_file.parent)
         _mirror_attempts_log(session, canonical_file)
-        report, cbmc = _merge_and_verify(session, canonical_file, include_dirs=include_dirs)
+        report, cbmc, reverified = _merge_and_verify(
+            session, canonical_file, include_dirs=include_dirs, call_graph=call_graph, state=state
+        )
     finally:
         if keep_sessions:
             logger.info(f"{function}: session copy kept at {session.directory}")
@@ -532,6 +563,7 @@ def _verify_via_agent(
         agent_sessions=session_count,
         merge=report,
         stray_files=stray_files,
+        reverified=reverified,
     )
 
 
@@ -637,8 +669,13 @@ def _run_sessions_for(
 
 
 def _merge_and_verify(
-    session: _Session, canonical_file: Path, *, include_dirs: list[str]
-) -> tuple[MergeReport, RunCbmcResult]:
+    session: _Session,
+    canonical_file: Path,
+    *,
+    include_dirs: list[str],
+    call_graph: CallGraph | None = None,
+    state: _MergeState | None = None,
+) -> tuple[MergeReport, RunCbmcResult, dict[str, RunCbmcResult]]:
     """Merge the session's copy into the canonical file, then run the independent ground truth.
 
     Under `_CANONICAL_LOCK`: read the canonical file, compute the merge
@@ -646,23 +683,39 @@ def _merge_and_verify(
     directory, write the merged bytes into that copy and check that `goto-cc` still accepts the
     file. Only then is the canonical file replaced (atomically, via `os.replace`); a merge that
     does not compile is rejected and the canonical file left untouched. The lock is released
-    before CBMC runs, on the scratch copy, so other sessions can merge meanwhile.
+    before the function's own CBMC run, on the scratch copy, so other sessions can merge meanwhile.
+
+    With `state`, the merge also carries the agent's edits to other functions that no live
+    session owns (`MergeReport.carried`) -- typically a callee's contract fixed in passing, which
+    the function's own proof depends on. Before such a merge is committed, every carried function
+    and every already-verified in-file caller of one is re-verified on the scratch copy, still
+    under the lock; if a function that verified before would stop verifying, or the file no
+    longer compiles, the merge is redone without the carried edits and the reason is appended to
+    `MergeReport.dropped`. A merge therefore never turns a verified function into an unverified
+    one, and the re-verification verdicts are returned for the run log.
 
     Args:
         session (_Session): The finished session.
         canonical_file (Path): Absolute path to the canonical source file.
         include_dirs (list[str]): Include directories forwarded to `goto-cc` and CBMC.
+        call_graph (CallGraph | None): Call graph of the file, to find the callers a carried edit
+            can affect; None finds none.
+        state (_MergeState | None): The run's shared merge state; None carries nothing.
 
     Returns:
-        tuple[MergeReport, RunCbmcResult]: What the merge did, and the ground-truth verdict.
+        tuple[MergeReport, RunCbmcResult, dict[str, RunCbmcResult]]: What the merge did, the
+            ground-truth verdict for the function, and the verdicts of the functions re-verified
+            because of carried edits (empty when there were none).
     """
     function = session.function
     absolute_include_dirs = [str(Path(directory).resolve()) for directory in include_dirs]
+    reverified: dict[str, RunCbmcResult] = {}
     with _CANONICAL_LOCK:
         canonical = canonical_file.read_bytes()
         try:
             snapshot = session.file.read_bytes()
         except OSError as error:
+            snapshot = None
             merged, report = canonical, MergeReport(False, f"session copy unreadable: {error}")
         else:
             merged, report = merge_function(
@@ -670,19 +723,68 @@ def _merge_and_verify(
                 snapshot=snapshot,
                 fork_base=session.fork_base,
                 function=function,
+                frozen_functions=None if state is None else state.active,
             )
         scratch_root = Path(tempfile.mkdtemp(prefix=_GROUND_TRUTH_DIR_PREFIX))
         scratch_dir = scratch_root / canonical_file.parent.name
         shutil.copytree(canonical_file.parent, scratch_dir, ignore=_SNAPSHOT_IGNORE)
         scratch_file = scratch_dir / canonical_file.name
-        if report.merged:
-            scratch_file.write_bytes(merged)
-            returncode = compile_with_goto_cc(
+
+        def compiles(candidate: bytes) -> int:
+            scratch_file.write_bytes(candidate)
+            return compile_with_goto_cc(
                 function,
                 str(scratch_file),
                 include_dirs=absolute_include_dirs,
                 cwd=str(scratch_dir),
             )
+
+        def without_carried(why: str) -> tuple[bytes, MergeReport]:
+            assert snapshot is not None
+            logger.warning(
+                f"{function}: reverting carried edits to {', '.join(report.carried)}: {why}"
+            )
+            strict, strict_report = merge_function(
+                canonical=canonical,
+                snapshot=snapshot,
+                fork_base=session.fork_base,
+                function=function,
+            )
+            note = f"edits to {', '.join(report.carried)} reverted: {why}"
+            return strict, replace(strict_report, dropped=[*strict_report.dropped, note])
+
+        if report.merged:
+            returncode = compiles(merged)
+            if returncode != 0 and report.carried:
+                merged, report = without_carried("the merged file does not compile with them")
+                returncode = compiles(merged)
+            if returncode == 0 and report.carried:
+                assert state is not None
+                affected = _functions_affected_by(
+                    report.carried, call_graph=call_graph, verified=state.verified, exclude=function
+                )
+                logger.info(
+                    f"{function}: carried edits to {', '.join(report.carried)}; re-verifying "
+                    f"{', '.join(affected)}"
+                )
+                reverified = {
+                    other: verify_function(other, str(scratch_file), include_dirs=include_dirs)
+                    for other in affected
+                }
+                regressed = [
+                    other
+                    for other in affected
+                    if other in state.verified and not reverified[other].is_function_verified
+                ]
+                if regressed:
+                    merged, report = without_carried(
+                        f"{', '.join(regressed)} would no longer verify"
+                    )
+                    returncode = compiles(merged)
+                else:
+                    state.verified.update(
+                        other for other, result in reverified.items() if result.is_function_verified
+                    )
             if returncode != 0:
                 report = replace(
                     report,
@@ -697,6 +799,8 @@ def _merge_and_verify(
     if report.merged:
         if report.transplanted:
             logger.info(f"{function}: transplanted {', '.join(report.transplanted)}")
+        if report.carried:
+            logger.info(f"{function}: carried edits to {', '.join(report.carried)}")
         if report.dropped:
             logger.warning(
                 f"{function}: dropped edits outside the function: {', '.join(report.dropped)}"
@@ -707,7 +811,44 @@ def _merge_and_verify(
         cbmc = verify_function(function, str(scratch_file), include_dirs=include_dirs)
     finally:
         shutil.rmtree(scratch_root, ignore_errors=True)
-    return report, cbmc
+    if state is not None:
+        with _CANONICAL_LOCK:
+            state.active.discard(function)
+            if cbmc.is_function_verified:
+                state.verified.add(function)
+            else:
+                state.verified.discard(function)
+    return report, cbmc, reverified
+
+
+def _functions_affected_by(
+    carried: list[str], *, call_graph: CallGraph | None, verified: set[str], exclude: str
+) -> list[str]:
+    """Return the functions whose ground truth a merge carrying edits to `carried` can change.
+
+    Those are the carried functions themselves (their contracts changed) and every verified
+    in-file caller of one (a caller is verified against its callees' contracts). `exclude` is the
+    merging function, which is verified separately.
+
+    Args:
+        carried (list[str]): Functions whose edited definitions the merge carries.
+        call_graph (CallGraph | None): Call graph of the file; None yields no callers.
+        verified (set[str]): Functions currently verified on the canonical file.
+        exclude (str): The function whose session is merging.
+
+    Returns:
+        list[str]: The affected functions, sorted.
+    """
+    affected = set(carried)
+    if call_graph is not None:
+        affected.update(
+            caller
+            for caller in verified
+            if caller in call_graph
+            and any(other in call_graph.get_callees(caller).internal for other in carried)
+        )
+    affected.discard(exclude)
+    return sorted(affected)
 
 
 def _report_stray_edits(session: _Session, canonical_dir: Path) -> list[str]:
@@ -822,7 +963,9 @@ def _verify_functions(
 
     Functions start as `_ready_functions` allows; each completion is merged, ground-truthed and
     appended to the run log before its dependents can start. The first session stopped by a usage
-    limit halts new submissions; sessions already running finish and merge.
+    limit halts new submissions; sessions already running finish and merge. A `_MergeState`
+    shared by the sessions tells each merge which functions have a live session and which are
+    verified, so a callee fix made in passing is kept when it is sound (`_merge_and_verify`).
 
     Args:
         pending (list[str]): Functions still to process, in topological order.
@@ -840,6 +983,9 @@ def _verify_functions(
             the functions whose sessions were stopped by a usage limit.
     """
     done: set[str] = {function for function in order if function not in pending}
+    state = _MergeState(
+        verified={function for function in _verified_functions(log_path) if function in done}
+    )
     usage_limited: set[str] = set()
     active: dict[Future[FunctionVerificationResult], str] = {}
     results: list[FunctionVerificationResult] = []
@@ -857,6 +1003,8 @@ def _verify_functions(
                     logger.info(
                         f"[{started}/{len(pending)}] {function}: generating spec via claude -p"
                     )
+                    with _CANONICAL_LOCK:
+                        state.active.add(function)
                     future = pool.submit(
                         _verify_via_agent,
                         function,
@@ -865,6 +1013,7 @@ def _verify_functions(
                         timeout=timeout,
                         include_dirs=include_dirs,
                         keep_sessions=keep_sessions,
+                        state=state,
                     )
                     active[future] = function
             if not active:
@@ -1065,7 +1214,8 @@ def _read_function_outcomes(log_path: Path) -> dict[str, str]:
 
     Reads `<stem>-avocado-verify.jsonl`, ignoring blank/malformed lines and the terminal
     run-summary record (identified by a `"type"` key). Later records win, so the returned outcome
-    reflects each function's most recent attempt. Never raises; a missing log yields an empty map.
+    reflects each function's most recent attempt, including a later merge's re-verification of it
+    (`reverified`). Never raises; a missing log yields an empty map.
 
     Args:
         log_path (Path): Path to the `<stem>-avocado-verify.jsonl` run log.
@@ -1092,6 +1242,12 @@ def _read_function_outcomes(log_path: Path) -> dict[str, str]:
         outcome = record.get("outcome")
         if function is not None and outcome is not None:
             outcomes[function] = outcome
+        # A merge that carried edits re-verified other, already recorded functions on the result;
+        # a pass there is that function's latest verdict. Functions not yet recorded are left
+        # alone so a resumed run still gives them their own session.
+        for other, verdict in (record.get("reverified") or {}).items():
+            if other in outcomes and verdict.get("is_function_verified"):
+                outcomes[other] = str(GroundTruthVerificationResult.VERIFIED)
     return outcomes
 
 
@@ -1180,7 +1336,8 @@ def _build_prompt(
     preconditions being written. It also says that only runs of that command against that path
     count as attempts (in the measured runs a third of the agent's verifier calls were made on
     copies of the file the harness could not see), and that the session works in a private copy
-    of which only the function's own definition and new top-level helpers are merged back.
+    of which the function's own definition, new top-level helpers and sound fixes to other
+    functions' contracts are merged back.
 
     Args:
         function (str): The function to specify and verify.
@@ -1222,10 +1379,13 @@ def _build_prompt(
         "In-file callers (their call sites must satisfy the preconditions you write): "
         f"{callers_text}\n"
         "\n"
-        "You are working in a private copy of the source directory. When this session ends, only "
+        "You are working in a private copy of the source directory. When this session ends, "
         f"your changes to {function}'s definition (its contract and body) and any new top-level "
-        "helper functions, declarations or macros you add to this file are kept; edits to other "
-        "functions, to other files and to headers are discarded."
+        "helper functions, declarations or macros you add to this file are kept. A contract you "
+        "fix on another function in this file is kept too, provided no other session is working "
+        "on that function and every function that already verified still verifies with your "
+        "change; otherwise it is discarded. Edits to other files and to headers are always "
+        "discarded."
     )
 
 
