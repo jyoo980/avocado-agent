@@ -24,16 +24,17 @@ latter when not given) and emits one JSON summary:
     {
       "file_name": "<path to the verified C file>",
       "total_time_to_verify": <int ms>,       # wall-clock, run start -> last function
-      "functions_verified": <int>,            # (extra) from the run summary
-      "functions_total": <int>,               # (extra)
+      "functions_verified": <int>,
+      "functions_total": <int>,
       "functions": [
         {
           "name": "<function>",
           "cost": <float usd>,                # total_cost_to_verify_usd
           "time_taken_to_verify": <int ms>,   # wall-clock span for this function
           "is_verified": <bool>,
-          "verification_attempts": <int|null>,# (extra) complexity proxy
-          "first_attempt_verified": <bool|null> # (extra) did CBMC pass first try?
+          "timed_out": <bool>,                # agent session or CBMC step timed out
+          "verification_attempts": <int|null>,
+          "first_attempt_verified": <bool|null> # did CBMC pass first try when run in agent sandbox?
         },
         ...
       ]
@@ -136,8 +137,10 @@ class ConsoleLog:
         self.file_path: Optional[str] = None
         self.verified_count: Optional[int] = None
         self.total_count: Optional[int] = None
-        # Ordered (name, is_verified, completion_ts) from "[i/N] func: STATUS".
-        self.status_events: list[tuple[str, bool, datetime]] = []
+        # Ordered (name, status, completion_ts) from "[i/N] func: STATUS",
+        # where status is the UPPER_SNAKE verdict (VERIFIED, UNVERIFIED,
+        # CLAUDE_TIMED_OUT, ...).
+        self.status_events: list[tuple[str, str, datetime]] = []
 
         for line in text.splitlines():
             m_ts = _CONSOLE_TS_RE.match(line)
@@ -150,9 +153,9 @@ class ConsoleLog:
             m_status = _CONSOLE_STATUS_RE.search(line)
             if m_status and ts is not None:
                 name = m_status.group(3)
-                is_verified = m_status.group(4) == "VERIFIED"
+                status = m_status.group(4)
                 # "generating" would be excluded by the UPPER_SNAKE match above.
-                self.status_events.append((name, is_verified, ts))
+                self.status_events.append((name, status, ts))
 
             m_path = _CONSOLE_LOGPATH_RE.search(line)
             if m_path:
@@ -214,6 +217,10 @@ def build_report(
                 continue
             claude_sessions = rec.get("claude") or []
             agent_ms = sum(int(s.get("duration_ms") or 0) for s in claude_sessions)
+            # A run timed out if any agent session or the CBMC step timed out.
+            timed_out = any(bool(s.get("timed_out")) for s in claude_sessions) or bool(
+                (rec.get("cbmc") or {}).get("timed_out")
+            )
             rows.append(
                 {
                     "name": name,
@@ -222,19 +229,21 @@ def build_report(
                     "completion_ts": _parse_iso(rec["timestamp"]),
                     "verification_attempts": rec.get("verification_attempts"),
                     "agent_duration_ms": agent_ms,
+                    "timed_out": timed_out,
                 }
             )
     elif console and console.status_events:
         # Fall back to the console log's per-function verdicts (no cost available).
-        for name, is_verified, ts in console.status_events:
+        for name, status, ts in console.status_events:
             rows.append(
                 {
                     "name": name,
                     "cost": None,
-                    "is_verified": is_verified,
+                    "is_verified": status == "VERIFIED",
                     "completion_ts": ts,
                     "verification_attempts": None,
                     "agent_duration_ms": None,
+                    "timed_out": status == "CLAUDE_TIMED_OUT",
                 }
             )
     else:
@@ -291,6 +300,7 @@ def build_report(
                 "cost": None if row["cost"] is None else round(row["cost"], 3),
                 "time_taken_to_verify": span_ms,
                 "is_verified": row["is_verified"],
+                "timed_out": row["timed_out"],
                 "verification_attempts": n_attempts,
                 "first_attempt_verified": first_attempt_verified,
             }
