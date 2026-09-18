@@ -1,7 +1,8 @@
 .PHONY: build-image run checks all test clean clean-mutants
 
 # Avocado Agent may be run in an environment that only offers `podman` or `docker`.
-CONTAINER_ENGINE := $(shell command -v podman 2> /dev/null || command -v docker 2> /dev/null)
+-CONTAINER_ENGINE := $(shell command -v podman 2> /dev/null || command -v docker 2> /dev/null)
++CONTAINER_ENGINE ?= $(shell command -v docker 2> /dev/null || command -v podman 2> /dev/null)
 
 
 IMAGE_NAME ?= avocado-agent-container
