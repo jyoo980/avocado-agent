@@ -79,8 +79,7 @@ Check the memory and/or CPU limits for the container by running:
 % docker stats <CONTAINER_ID>
 ```
 
-he limits,
-    by default,
+The default limits
     should match the maximum amount of CPU cores or RAM on the machine on which the container is
     running.
 If this is not the case (e.g., for macOS),
@@ -93,6 +92,7 @@ Re-run the `docker stats` command afterwards to validate your changes have taken
   subscription (required to run Claude Code).
 - [Docker](https://www.docker.com): Avocado Agent and its dependencies (e.g., CBMC) are packaged and
   run inside a Docker container.
+  - Alternatively-[Podman](https://podman.io): Avocado Agent can run on either Docker or Podman.
 - [uv](https://docs.astral.sh/uv/)
   - Used to manage packages,
     dependencies,
