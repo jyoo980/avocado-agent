@@ -370,7 +370,7 @@ def build_report(
             n_attempts = len(attempt_flags)
 
         if attempt_flags:
-            first_attempt_verified: Optional[bool] = attempt_flags[0]
+            first_attempt_verified: bool = attempt_flags[0]
         elif n_attempts == 1:
             # The only attempt's result is the function's result.
             first_attempt_verified = row["is_verified"]
