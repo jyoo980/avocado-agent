@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """Report timing results for a single ``avocado-verify`` run over one C file.
 
-``avocado-verify --file <program>.c`` leaves three artifacts behind that,
-together, describe how long verification took and how it went:
+``avocado-verify --file <program>.c`` creates three log files that, together,
+describe how long verification took and how it went:
 
-* ``claude-output.json`` -- despite the name this is the plain console log
+* ``claude-output.json`` -- plain console log
   (stdout+stderr, e.g. produced with ``avocado-verify --file lz4.c &> claude-output.json``).
   It is a stream of timestamped loguru lines.  It carries the true run
   *start* time, the original file path, and ``[i/N] <func>: VERIFIED`` markers.
-* ``<program>-avocado-verify.jsonl`` -- one compact JSON object per verified
-  function (its completion ``timestamp``, ``outcome``, ``verification_attempts``,
+* ``<program>-avocado-verify.jsonl`` -- one JSON object per verified function
+  (its completion ``timestamp``, ``outcome``, ``verification_attempts``,
   ``total_cost_to_verify_usd``, per-session ``claude`` metadata), followed by a
   final ``{"type": "run_summary", ...}`` record.  This is the richest source.
-* ``<program>-verification-attempts.jsonl`` -- a stream of (pretty-printed)
-  JSON objects, one per time CBMC was fired, each with ``ts``/``function``/
-  ``verified``.  Used to recover per-function attempt counts and whether the
-  *first* attempt already passed.
+* ``<program>-verification-attempts.jsonl`` -- a stream of JSON objects, one 
+  per time CBMC was fired, each with ``ts``/``function``/``verified``.  
+  Used to recover per-function attempt counts and whether the *first* 
+  attempt already passed.
 
 This script accepts any combination of these (the console log and/or the
 ``-avocado-verify.jsonl``; the attempts file is auto-discovered next to the
@@ -42,8 +42,8 @@ latter when not given) and emits one JSON summary:
 
 ``time_taken_to_verify`` and ``total_time_to_verify`` are durations in
 milliseconds (wall-clock spans between the completion timestamps the logs
-already record), per the benchmarking use case -- not absolute epoch stamps.
-The per-function times sum to ``total_time_to_verify``.
+already record) -- not absolute epoch stamps. The per-function times sum 
+to ``total_time_to_verify``.
 """
 
 from __future__ import annotations
@@ -52,13 +52,10 @@ import argparse
 import json
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
+from collections.abc import Iterator
 
-# ----------------------------------------------------------------------------
-# Low-level parsing helpers
-# ----------------------------------------------------------------------------
 
 # Matches the loguru prefix of a console line: "2026-09-14 18:43:40.077 | ".
 _CONSOLE_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)\b")
@@ -72,25 +69,114 @@ _CONSOLE_LOGPATH_RE = re.compile(r"log written to (\S+-avocado-verify\.jsonl)")
 _CONSOLE_SUMMARY_RE = re.compile(r"(\d+)/(\d+) function\(s\) verified")
 
 
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        description="Report timing results for one avocado-verify run.",
+    )
+    parser.add_argument(
+        "log_files",
+        nargs="*",
+        type=Path,
+        help="Any of: claude-output console log, <prog>-avocado-verify.jsonl, "
+        "<prog>-verification-attempts.jsonl (auto-classified by name).",
+    )
+    parser.add_argument("--claude-output", type=Path, help="Console log path.")
+    parser.add_argument("--avocado-verify", type=Path, help="<prog>-avocado-verify.jsonl path.")
+    parser.add_argument("--attempts", type=Path, help="<prog>-verification-attempts.jsonl path.")
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        help="Where to write the JSON report (default: <prog>-time-benchmarks.json "
+        "next to the -avocado-verify.jsonl, else stdout).",
+    )
+    args = parser.parse_args(argv)
+
+    console_path = args.claude_output
+    verify_path = args.avocado_verify
+    attempts_path = args.attempts
+
+    for path in args.log_files:
+        kind = _classify(path)
+        if kind == "verify" and verify_path is None:
+            verify_path = path
+        elif kind == "attempts" and attempts_path is None:
+            attempts_path = path
+        elif kind == "console" and console_path is None:
+            console_path = path
+
+    if verify_path is None and console_path is None:
+        parser.error("provide at least a -avocado-verify.jsonl or a console log.")
+
+    # Auto-discover a sibling attempts file next to the verify log.
+    if attempts_path is None and verify_path is not None:
+        stem = verify_path.name[: -len("-avocado-verify.jsonl")]
+        candidate = verify_path.with_name(stem + "-verification-attempts.jsonl")
+        if candidate.exists():
+            attempts_path = candidate
+
+    verify_records = None
+    if verify_path is not None:
+        verify_records = list(_iter_json_objects(verify_path.read_text()))
+
+    console = None
+    if console_path is not None:
+        console = ConsoleLog(console_path.read_text())
+
+    attempts = None
+    attempts_start = None
+    if attempts_path is not None:
+        attempts_text = attempts_path.read_text()
+        attempts = _attempts_by_function(attempts_text)
+        attempts_start = _earliest_attempt_ts(attempts_text)
+
+    # If the console log did not supply the file path, derive it from the
+    # "<stem>-avocado-verify.jsonl" filename (-> "<stem>.c").
+    file_name_hint = None
+    if verify_path is not None:
+        stem = verify_path.name[: -len("-avocado-verify.jsonl")]
+        file_name_hint = stem + ".c"
+
+    report = build_report(
+        verify_records, console, attempts, attempts_start, file_name_hint
+    )
+
+    text = json.dumps(report, indent=2)
+    out_path = args.output
+    if out_path is None and verify_path is not None:
+        stem = verify_path.name[: -len("-avocado-verify.jsonl")]
+        out_path = verify_path.with_name(stem + "-time-benchmarks.json")
+
+    if out_path is None:
+        print(text)
+    else:
+        out_path.write_text(text + "\n")
+        print(f"wrote {out_path}")
+    return 0
+
+
+# ----------------------------------------------------------------------------
+# Low-level parsing helpers
+# ----------------------------------------------------------------------------
+
+
 def _parse_iso(ts: str) -> datetime:
-    """Parse an ISO-8601 timestamp (``...Z`` or ``+00:00``) to an aware UTC datetime."""
-    if ts.endswith("Z"):
-        ts = ts[:-1] + "+00:00"
+    """Parse an ISO-8601 timestamp to a UTC datetime."""
     dt = datetime.fromisoformat(ts)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def _parse_console_ts(ts: str) -> datetime:
-    """Parse a loguru console timestamp ('2026-09-14 18:43:40.077'); assumed UTC.
+    """Parse a loguru console timestamp ('2026-09-14 18:43:40.077').
 
     The console log's clock agrees with the UTC timestamps in the JSONL logs
     (the first console line precedes the first function completion by seconds),
     so we treat these naive stamps as UTC for cross-source spans.
     """
     dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f")
-    return dt.replace(tzinfo=timezone.utc)
+    return dt.replace(tzinfo=UTC)
 
 
 def _epoch_ms(dt: datetime) -> int:
@@ -132,14 +218,11 @@ class ConsoleLog:
     """Parsed view of the ``claude-output.json`` console log."""
 
     def __init__(self, text: str):
-        self.start: Optional[datetime] = None
-        self.end: Optional[datetime] = None
-        self.file_path: Optional[str] = None
-        self.verified_count: Optional[int] = None
-        self.total_count: Optional[int] = None
-        # Ordered (name, status, completion_ts) from "[i/N] func: STATUS",
-        # where status is the UPPER_SNAKE verdict (VERIFIED, UNVERIFIED,
-        # CLAUDE_TIMED_OUT, ...).
+        self.start: datetime
+        self.end: datetime
+        self.file_path: str
+        self.verified_count: int
+        self.total_count: int
         self.status_events: list[tuple[str, str, datetime]] = []
 
         for line in text.splitlines():
@@ -195,17 +278,17 @@ def _attempts_by_function(text: str) -> dict[str, list[bool]]:
 
 
 def build_report(
-    verify_records: Optional[list[dict]],
-    console: Optional[ConsoleLog],
-    attempts: Optional[dict[str, list[bool]]],
-    attempts_start: Optional[datetime] = None,
-    file_name_hint: Optional[str] = None,
+    verify_records: list[dict],
+    console: ConsoleLog,
+    attempts: dict[str, list[bool]],
+    attempts_start: datetime,
+    file_name_hint: str
 ) -> dict:
     attempts = attempts or {}
 
     # ---- Per-function base rows (name, is_verified, cost, completion_ts, ...) --
     rows: list[dict] = []
-    run_summary: Optional[dict] = None
+    run_summary: dict
 
     if verify_records:
         for rec in verify_records:
@@ -332,8 +415,8 @@ def build_report(
     }
 
 
-def _earliest_attempt_ts(text: str) -> Optional[datetime]:
-    earliest: Optional[datetime] = None
+def _earliest_attempt_ts(text: str) -> datetime:
+    earliest: datetime
     for obj in _iter_json_objects(text):
         ts = obj.get("ts")
         if not ts:
@@ -358,91 +441,5 @@ def _classify(path: Path) -> str:
     return "console"
 
 
-def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Report timing results for one avocado-verify run.",
-    )
-    parser.add_argument(
-        "inputs",
-        nargs="*",
-        type=Path,
-        help="Any of: claude-output console log, <prog>-avocado-verify.jsonl, "
-        "<prog>-verification-attempts.jsonl (auto-classified by name).",
-    )
-    parser.add_argument("--claude-output", type=Path, help="Console log path.")
-    parser.add_argument("--avocado-verify", type=Path, help="<prog>-avocado-verify.jsonl path.")
-    parser.add_argument("--attempts", type=Path, help="<prog>-verification-attempts.jsonl path.")
-    parser.add_argument(
-        "-o",
-        "--output",
-        type=Path,
-        help="Where to write the JSON report (default: <prog>-time-benchmarks.json "
-        "next to the -avocado-verify.jsonl, else stdout).",
-    )
-    args = parser.parse_args(argv)
-
-    console_path = args.claude_output
-    verify_path = args.avocado_verify
-    attempts_path = args.attempts
-
-    for path in args.inputs:
-        kind = _classify(path)
-        if kind == "verify" and verify_path is None:
-            verify_path = path
-        elif kind == "attempts" and attempts_path is None:
-            attempts_path = path
-        elif kind == "console" and console_path is None:
-            console_path = path
-
-    if verify_path is None and console_path is None:
-        parser.error("provide at least a -avocado-verify.jsonl or a console log.")
-
-    # Auto-discover a sibling attempts file next to the verify log.
-    if attempts_path is None and verify_path is not None:
-        stem = verify_path.name[: -len("-avocado-verify.jsonl")]
-        candidate = verify_path.with_name(stem + "-verification-attempts.jsonl")
-        if candidate.exists():
-            attempts_path = candidate
-
-    verify_records = None
-    if verify_path is not None:
-        verify_records = list(_iter_json_objects(verify_path.read_text()))
-
-    console = None
-    if console_path is not None:
-        console = ConsoleLog(console_path.read_text())
-
-    attempts = None
-    attempts_start = None
-    if attempts_path is not None:
-        attempts_text = attempts_path.read_text()
-        attempts = _attempts_by_function(attempts_text)
-        attempts_start = _earliest_attempt_ts(attempts_text)
-
-    # If the console log did not supply the file path, derive it from the
-    # "<stem>-avocado-verify.jsonl" filename (-> "<stem>.c").
-    file_name_hint = None
-    if verify_path is not None:
-        stem = verify_path.name[: -len("-avocado-verify.jsonl")]
-        file_name_hint = stem + ".c"
-
-    report = build_report(
-        verify_records, console, attempts, attempts_start, file_name_hint
-    )
-
-    text = json.dumps(report, indent=2)
-    out_path = args.output
-    if out_path is None and verify_path is not None:
-        stem = verify_path.name[: -len("-avocado-verify.jsonl")]
-        out_path = verify_path.with_name(stem + "-time-benchmarks.json")
-
-    if out_path is None:
-        print(text)
-    else:
-        out_path.write_text(text + "\n")
-        print(f"wrote {out_path}")
-    return 0
-
-
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
