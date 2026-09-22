@@ -110,24 +110,6 @@ To obtain a local copy, run:
 
 ## FAQ
 
-> How do I run Claude Code with the `--dangerously-skip-permissions` flag in a Docker container?
-
-This is not a recommended modality in which to run Claude Code;
-  do so at your own risk.
-If you are in a sandboxed environment with no internet access (e.g., a Docker container with limited
-  network access),
-  you can run:
-
-```sh
-% export IS_SANDBOX=1
-```
-
-And then run:
-
-```sh
-% claude --dangerously-skip-permissions
-```
-
 > My CBMC processes (e.g., `goto-instrument`, `cbmc`) keep erroring out with the error messsage "Killed"
 
 This is most likely due to an OOM error.
