@@ -1,15 +1,23 @@
 .PHONY: build-image run checks all test clean clean-mutants
 
+CONTAINER_ENGINE := $(shell command -v podman 2> /dev/null || command -v docker 2> /dev/null)
 IMAGE_NAME ?= avocado-agent-container
 # Name of the container started by `make run`.
 # Override it to run several containers at once, e.g. `make run CONTAINER_NAME=avocado-2`.
 CONTAINER_NAME ?= avocado-agent
 
 build-image:
-	docker build -t $(IMAGE_NAME) .
+	$(CONTAINER_ENGINE) build -t $(IMAGE_NAME) .
+
+# Memory ceiling for the container.
+# Parallelized CBMC runs in a container must not exhaust the host.
+CONTAINER_MEMORY ?= 256g
 
 run:
-	docker run -it --rm --name $(CONTAINER_NAME) -v $(PWD):/app $(IMAGE_NAME)
+	$(CONTAINER_ENGINE) run -it --rm --name $(CONTAINER_NAME) \
+	  --memory=$(CONTAINER_MEMORY) --memory-swap=$(CONTAINER_MEMORY) \
+	  --oom-score-adj=500 \
+	  -v $(PWD):/app $(IMAGE_NAME)
 
 all: build-image test checks
 test:
