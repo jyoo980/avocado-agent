@@ -54,7 +54,8 @@ import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from collections.abc import Iterator
+
+from log_parse_util import _parse_iso, _parse_console_ts, _epoch_ms, _iter_json_objects
 
 
 # Matches the loguru prefix of a console line: "2026-09-14 18:43:40.077 | ".
@@ -69,7 +70,7 @@ _CONSOLE_LOGPATH_RE = re.compile(r"log written to (\S+-avocado-verify\.jsonl)")
 _CONSOLE_SUMMARY_RE = re.compile(r"(\d+)/(\d+) function\(s\) verified")
 
 
-def main(argv: list[str]) -> int:
+def main() -> int:
     parser = argparse.ArgumentParser(
         description="Report timing results for one avocado-verify run.",
     )
@@ -90,7 +91,7 @@ def main(argv: list[str]) -> int:
         help="Where to write the JSON report (default: <prog>-time-benchmarks.json "
         "next to the -avocado-verify.jsonl, else stdout).",
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args()
 
     console_path = args.claude_output
     verify_path = args.avocado_verify
@@ -156,60 +157,6 @@ def main(argv: list[str]) -> int:
 
 
 # ----------------------------------------------------------------------------
-# Low-level parsing helpers
-# ----------------------------------------------------------------------------
-
-
-def _parse_iso(ts: str) -> datetime:
-    """Parse an ISO-8601 timestamp to a UTC datetime."""
-    dt = datetime.fromisoformat(ts)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC)
-
-
-def _parse_console_ts(ts: str) -> datetime:
-    """Parse a loguru console timestamp ('2026-09-14 18:43:40.077').
-
-    The console log's clock agrees with the UTC timestamps in the JSONL logs
-    (the first console line precedes the first function completion by seconds),
-    so we treat these naive stamps as UTC for cross-source spans.
-    """
-    dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f")
-    return dt.replace(tzinfo=UTC)
-
-
-def _epoch_ms(dt: datetime) -> int:
-    return int(round(dt.timestamp() * 1000))
-
-
-def _iter_json_objects(text: str) -> Iterator[dict]:
-    """Yield each JSON object from *text*, robust to both one-per-line and
-    concatenated pretty-printed streams (uses raw_decode over the whole blob)."""
-    decoder = json.JSONDecoder()
-    idx = 0
-    n = len(text)
-    while idx < n:
-        # Skip whitespace (and stray separators) between objects.
-        while idx < n and text[idx] in " \t\r\n":
-            idx += 1
-        if idx >= n:
-            break
-        try:
-            obj, end = decoder.raw_decode(text, idx)
-        except json.JSONDecodeError:
-            # Advance to the next plausible object start to stay resilient.
-            nxt = text.find("{", idx + 1)
-            if nxt == -1:
-                break
-            idx = nxt
-            continue
-        if isinstance(obj, dict):
-            yield obj
-        idx = end
-
-
-# ----------------------------------------------------------------------------
 # Source-specific loaders
 # ----------------------------------------------------------------------------
 
@@ -218,11 +165,11 @@ class ConsoleLog:
     """Parsed view of the ``claude-output.json`` console log."""
 
     def __init__(self, text: str):
-        self.start: datetime
-        self.end: datetime
-        self.file_path: str
-        self.verified_count: int
-        self.total_count: int
+        self.start: datetime | None = None
+        self.end: datetime | None = None
+        self.file_path: str | None = None
+        self.verified_count: int | None = None
+        self.total_count: int | None = None
         self.status_events: list[tuple[str, str, datetime]] = []
 
         for line in text.splitlines():
@@ -416,7 +363,7 @@ def build_report(
 
 
 def _earliest_attempt_ts(text: str) -> datetime:
-    earliest: datetime
+    earliest: datetime | None = None
     for obj in _iter_json_objects(text):
         ts = obj.get("ts")
         if not ts:
