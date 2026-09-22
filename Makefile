@@ -1,6 +1,8 @@
 .PHONY: build-image run checks all test clean clean-mutants
 
-CONTAINER_ENGINE := $(shell command -v podman 2> /dev/null || command -v docker 2> /dev/null)
+# Avocado Agent may be run in an environment that only offers `podman` or `docker`.
+CONTAINER_ENGINE ?= $(shell command -v docker 2> /dev/null || command -v podman 2> /dev/null)
+
 IMAGE_NAME ?= avocado-agent-container
 # Name of the container started by `make run`.
 # Override it to run several containers at once, e.g. `make run CONTAINER_NAME=avocado-2`.

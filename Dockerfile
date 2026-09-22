@@ -39,7 +39,7 @@ WORKDIR /app
 # Bound the subprocess pool used by CBMC invocations, which otherwise defaults
 # to os.cpu_count().
 ENV AVOCADO_MAX_CONCURRENT_CBMC=8
-
+ENV IS_SANDBOX=1
 ENV VIRTUAL_ENV="/app/.venv"
 ENV PATH="/app/.venv/bin:$PATH"
 

@@ -79,8 +79,7 @@ Check the memory and/or CPU limits for the container by running:
 % docker stats <CONTAINER_ID>
 ```
 
-he limits,
-    by default,
+The default limits
     should match the maximum amount of CPU cores or RAM on the machine on which the container is
     running.
 If this is not the case (e.g., for macOS),
@@ -93,6 +92,7 @@ Re-run the `docker stats` command afterwards to validate your changes have taken
   subscription (required to run Claude Code).
 - [Docker](https://www.docker.com): Avocado Agent and its dependencies (e.g., CBMC) are packaged and
   run inside a Docker container.
+  - Alternatively-[Podman](https://podman.io): Avocado Agent can run on either Docker or Podman.
 - [uv](https://docs.astral.sh/uv/)
   - Used to manage packages,
     dependencies,
@@ -109,24 +109,6 @@ To obtain a local copy, run:
 ```
 
 ## FAQ
-
-> How do I run Claude Code with the `--dangerously-skip-permissions` flag in a Docker container?
-
-This is not a recommended modality in which to run Claude Code;
-  do so at your own risk.
-If you are in a sandboxed environment with no internet access (e.g., a Docker container with limited
-  network access),
-  you can run:
-
-```sh
-% export IS_SANDBOX=1
-```
-
-And then run:
-
-```sh
-% claude --dangerously-skip-permissions
-```
 
 > My CBMC processes (e.g., `goto-instrument`, `cbmc`) keep erroring out with the error messsage "Killed"
 
