@@ -10,6 +10,7 @@
             "Bash(avocado-*)"
         ],
         "deny": [
+            "Bash(avocado-count-sloc)",
             "Bash(*git*)",
             "Bash(*.git*)",
             "Read(*.git*)",
