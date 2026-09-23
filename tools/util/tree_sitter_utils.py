@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import tree_sitter_c as tsc
@@ -148,6 +149,76 @@ def get_function_definition(root: Node, name: str) -> Node | None:
         if fn_name == name:
             return node
     return None
+
+
+@dataclass(frozen=True)
+class FunctionSloc:
+    """Source-lines-of-code count for one function definition.
+
+    Attributes:
+        name (str): The function name.
+        start_line (int): 1-based line on which the definition starts (its return type).
+        end_line (int): 1-based line on which the definition ends (its closing brace).
+        sloc (int): Number of source lines of code; see `get_function_sloc` for the definition.
+    """
+
+    name: str
+    start_line: int
+    end_line: int
+    sloc: int
+
+
+def get_function_sloc(path_to_file: str) -> list[FunctionSloc]:
+    """Return the source-lines-of-code count of every function in the given C file.
+
+    A line counts as a source line of code iff it lies within the function definition (from the
+    first token of its signature through its closing brace) and carries at least one token that is
+    not a comment. Consequently, blank lines, comment-only lines, CBMC contract clauses
+    (`__CPROVER_requires(...)`, ...) and the contents of `#if 0` blocks are *not* counted, while
+    the signature line, the braces, and lines holding both code and a comment are.
+
+    Functions defined several times (typically in alternative `#if`/`#elif`/`#else` branches)
+    yield one entry per definition; the line numbers tell them apart.
+
+    Args:
+        path_to_file (str): The path to the C file to scan.
+
+    Returns:
+        list[FunctionSloc]: One entry per function definition, in source order.
+    """
+    source = Path(path_to_file).read_bytes()
+    tree = _parse_to_ast(source, label=path_to_file)
+    return [
+        FunctionSloc(
+            name=name,
+            start_line=node.start_point[0] + 1,
+            end_line=node.end_point[0] + 1,
+            sloc=_count_lines_with_code(node),
+        )
+        for name, node in _iter_function_definitions(tree.root_node)
+    ]
+
+
+def _count_lines_with_code(node: Node) -> int:
+    """Return the number of lines under `node` holding at least one non-comment token.
+
+    A token spanning several lines (e.g. a string literal with a backslash-newline continuation)
+    contributes every line it touches.
+
+    Args:
+        node (Node): The subtree to count lines in, typically a `function_definition`.
+
+    Returns:
+        int: The number of lines with at least one non-comment token.
+    """
+    if node.type != "function_definition":
+        raise Exception("Attempted to count SLOC under a non-function node")
+    lines_with_code: set[int] = set()
+    for descendant in dfs_traversal(node):
+        if descendant.child_count > 0 or descendant.is_missing or descendant.type == "comment":
+            continue
+        lines_with_code.update(range(descendant.start_point[0], descendant.end_point[0] + 1))
+    return len(lines_with_code)
 
 
 def is_binary_operator_node(node: Node) -> bool:
