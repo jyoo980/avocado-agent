@@ -262,30 +262,30 @@ def test_get_function_sloc_excludes_blank_comment_dead_and_contract_lines() -> N
         "returns_pointer",
     ], f"Unexpected functions or order in sloc_sample.c: {records}"
 
-    # Everything on one line.
+    # Body and braces share the signature line.
     assert by_name["one_liner"].sloc == 1
     assert (by_name["one_liner"].start_line, by_name["one_liner"].end_line) == (5, 5)
-    # Signature, `{`, `int y = ...; /* ... */`, `return y;`, `}`; comment-only and blank lines
-    # do not count.
-    assert by_name["with_comments"].sloc == 5
+    # `int y = ...; /* ... */` and `return y;`; the signature, braces, comment-only and blank
+    # lines do not count.
+    assert by_name["with_comments"].sloc == 2
     assert (by_name["with_comments"].start_line, by_name["with_comments"].end_line) == (7, 16)
-    # Signature, `{`, `return x;`, `}`; the `#if 0` block and its directives do not count.
-    assert by_name["with_dead_code"].sloc == 4
-    # Signature, `{`, `return x + 1;`, `}`; the two `__CPROVER_*` clauses do not count.
-    assert by_name["with_contract"].sloc == 4
-    # Signature, `{`, the two-line string literal, `return p;`, `}`.
-    assert by_name["returns_pointer"].sloc == 6
+    # `return x;`; the `#if 0` block and its directives do not count.
+    assert by_name["with_dead_code"].sloc == 1
+    # `return x + 1;`; the two `__CPROVER_*` clauses do not count.
+    assert by_name["with_contract"].sloc == 1
+    # The two-line string literal and `return p;`.
+    assert by_name["returns_pointer"].sloc == 3
 
 
 def test_get_function_sloc_on_annotated_quicksort() -> None:
     records = tree_sitter_utils.get_function_sloc("test/data/quicksort.c")
     sloc = {record.name: record.sloc for record in records}
-    assert sloc == {"swap": 6, "partition": 13, "quickSort": 8}, sloc
+    assert sloc == {"swap": 3, "partition": 10, "quickSort": 5}, sloc
 
 
 def test_get_function_sloc_reports_each_duplicate_definition() -> None:
     records = tree_sitter_utils.get_function_sloc("test/data/duplicate_definitions.c")
     read32 = [record for record in records if record.name == "read32"]
-    assert [record.sloc for record in read32] == [1, 1, 6], read32
+    assert [record.sloc for record in read32] == [1, 1, 3], read32
     assert [record.start_line for record in read32] == [6, 8, 10], read32
     assert [record.name for record in records if record.name != "read32"] == ["hash"]

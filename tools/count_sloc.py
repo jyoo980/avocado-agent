@@ -1,10 +1,12 @@
+#!/usr/bin/env python3
+
 """Print the number of source lines of code (SLOC) of every function in one or more C files.
 
-A line counts as a source line of code iff it lies within a function definition (from the
-first token of its signature through its closing brace) and carries at least one token that is
-not a comment. Blank lines, comment-only lines, CBMC contract clauses (`__CPROVER_requires(...)`,
-...) and the contents of `#if 0` blocks are therefore excluded; the signature line, the braces and
-lines mixing code with a trailing comment are included.
+A line counts as a source line of code iff it carries at least one non-comment token lying within
+a function body, i.e. strictly between the body's enclosing braces. The signature, CBMC contract
+clauses (`__CPROVER_requires(...)`, ...), the enclosing braces, blank lines, comment-only lines and
+the contents of `#if 0` blocks are therefore excluded; lines mixing code with a trailing comment
+are included.
 
 Files are parsed as-is with tree-sitter: `#include` directives are not followed and macros are not
 expanded. A function defined several times in a file (typically in alternative preprocessor
@@ -74,7 +76,9 @@ def count_sloc(paths_to_files: list[str]) -> dict[str, list[FunctionSloc]]:
 def format_text(sloc_by_file: dict[str, list[FunctionSloc]]) -> str:
     """Return a tab-separated rendering of the given SLOC counts, one function per line.
 
-    Each file's functions are followed by a `<total>` line summing their SLOC.
+    Each file's functions are followed by a `<total>` line summing their SLOC. A function whose
+    SLOC could not be counted is rendered as `?`. The total sums only the known counts; when
+    some are unknown it is marked as partial, e.g. `27 (+2 unknown)`.
 
     Args:
         sloc_by_file (dict[str, list[FunctionSloc]]): Per-file function records.
@@ -82,15 +86,42 @@ def format_text(sloc_by_file: dict[str, list[FunctionSloc]]) -> str:
     Returns:
         str: The rendered table, ending in a newline (or empty if there are no files).
     """
-    lines = []
+    lines: list[str] = []
     for path, records in sloc_by_file.items():
         lines.extend(
-            f"{path}\t{record.name}\t{record.start_line}-{record.end_line}\t{record.sloc}"
+            f"{path}\t{record.name}\t{record.start_line}-{record.end_line}\t{_render(record.sloc)}"
             for record in records
         )
-        total = sum(record.sloc for record in records)
-        lines.append(f"{path}\t<total>\t{len(records)} function(s)\t{total}")
+        lines.append(f"{path}\t<total>\t{len(records)} function(s)\t{_render_total(records)}")
     return "".join(f"{line}\n" for line in lines)
+
+
+def _render_total(records: list[FunctionSloc]) -> str:
+    """Return the summed SLOC of the given records for display, flagging unknown counts.
+
+    Args:
+        records (list[FunctionSloc]): The records to sum.
+
+    Returns:
+        str: The sum of the known counts, followed by ` (+N unknown)` if N > 0 records have no
+            count.
+    """
+    known = [record.sloc for record in records if record.sloc is not None]
+    unknown = len(records) - len(known)
+    total = str(sum(known))
+    return f"{total} (+{unknown} unknown)" if unknown else total
+
+
+def _render(sloc: int | None) -> str:
+    """Return a SLOC count for display, using `?` for an unknown count.
+
+    Args:
+        sloc (int | None): The SLOC count, or None if it could not be determined.
+
+    Returns:
+        str: The count as text, or `?` if unknown.
+    """
+    return "?" if sloc is None else str(sloc)
 
 
 def format_json(sloc_by_file: dict[str, list[FunctionSloc]]) -> str:

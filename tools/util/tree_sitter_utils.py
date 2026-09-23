@@ -159,23 +159,25 @@ class FunctionSloc:
         name (str): The function name.
         start_line (int): 1-based line on which the definition starts (its return type).
         end_line (int): 1-based line on which the definition ends (its closing brace).
-        sloc (int): Number of source lines of code; see `get_function_sloc` for the definition.
+        sloc (int | None): Number of source lines of code or `None` on error.
+            See `get_function_sloc` for the definition.
     """
 
     name: str
     start_line: int
     end_line: int
-    sloc: int
+    sloc: int | None
 
 
 def get_function_sloc(path_to_file: str) -> list[FunctionSloc]:
     """Return the source-lines-of-code count of every function in the given C file.
 
-    A line counts as a source line of code iff it lies within the function definition (from the
-    first token of its signature through its closing brace) and carries at least one token that is
-    not a comment. Consequently, blank lines, comment-only lines, CBMC contract clauses
-    (`__CPROVER_requires(...)`, ...) and the contents of `#if 0` blocks are *not* counted, while
-    the signature line, the braces, and lines holding both code and a comment are.
+    A line counts as a source line of code iff it carries at least one non-comment token lying
+    within the function body, i.e. strictly between the body's enclosing braces. Consequently, the
+    signature, CBMC contract clauses (`__CPROVER_requires(...)`, ...), the enclosing braces, blank
+    lines, comment-only lines and the contents of `#if 0` blocks are *not* counted, while lines
+    holding both code and a comment are. A line that holds body code still counts even when the
+    signature or a brace is also on it (as in `int f(void) { return 1; }`).
 
     Functions defined several times (typically in alternative `#if`/`#elif`/`#else` branches)
     yield one entry per definition; the line numbers tell them apart.
@@ -199,25 +201,38 @@ def get_function_sloc(path_to_file: str) -> list[FunctionSloc]:
     ]
 
 
-def _count_lines_with_code(node: Node) -> int:
-    """Return the number of lines under `node` holding at least one non-comment token.
+def _count_lines_with_code(node: Node) -> int | None:
+    """Return the number of lines in the body of `node` holding at least one non-comment token.
 
-    A token spanning several lines (e.g. a string literal with a backslash-newline continuation)
-    contributes every line it touches.
+    Only tokens strictly inside the body's enclosing braces are considered; the signature and the
+    enclosing braces themselves are not. A token spanning several lines (e.g. a string literal with
+    a backslash-newline continuation) contributes every line it touches.
 
     Args:
-        node (Node): The subtree to count lines in, typically a `function_definition`.
+        node (Node): The `function_definition` whose body to count lines in.
 
     Returns:
-        int: The number of lines with at least one non-comment token.
+        int | None: The number of body lines with at least one non-comment token, or None if
+            `node` is not a `function_definition`.
     """
     if node.type != "function_definition":
-        raise Exception("Attempted to count SLOC under a non-function node")
+        logger.warning(
+            "Attempted to count SLOC under a non-function node (type={!r}); returning None",
+            node.type,
+        )
+        return None
+    body = node.child_by_field_name("body")
+    if body is None:
+        return 0
     lines_with_code: set[int] = set()
-    for descendant in dfs_traversal(node):
-        if descendant.child_count > 0 or descendant.is_missing or descendant.type == "comment":
+    for child in body.children:
+        # Skip the body's own enclosing braces; nested braces are counted like any other token.
+        if child.type in ("{", "}"):
             continue
-        lines_with_code.update(range(descendant.start_point[0], descendant.end_point[0] + 1))
+        for descendant in dfs_traversal(child):
+            if descendant.child_count > 0 or descendant.is_missing or descendant.type == "comment":
+                continue
+            lines_with_code.update(range(descendant.start_point[0], descendant.end_point[0] + 1))
     return len(lines_with_code)
 
 
