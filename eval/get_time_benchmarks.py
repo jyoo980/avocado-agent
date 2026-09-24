@@ -5,34 +5,31 @@
 describe how long verification took and how it went:
 
 * ``claude-output.json`` -- plain console log
-  (stdout+stderr, e.g. produced with ``avocado-verify --file lz4.c &> claude-output.json``).
   It is a stream of timestamped loguru lines.  It carries the true run
   *start* time, the original file path, and ``[i/N] <func>: VERIFIED`` markers.
 * ``<program>-avocado-verify.jsonl`` -- one JSON object per verified function
-  (its completion ``timestamp``, ``outcome``, ``verification_attempts``,
-  ``total_cost_to_verify_usd``, per-session ``claude`` metadata), followed by a
-  final ``{"type": "run_summary", ...}`` record.  This is the richest source.
-* ``<program>-verification-attempts.jsonl`` -- a stream of JSON objects, one
-  per time CBMC was fired, each with ``ts``/``function``/``verified``.
-  Used to recover per-function attempt counts and whether the *first*
-  attempt already passed.
+  Provides records for each function: ``timestamp``, ``outcome``, ``verification_attempts``,
+  ``total_cost_to_verify_usd``, per-session ``claude`` metadata, run_summary. Our primary log.
+* ``<program>-verification-attempts.jsonl`` -- attempts log
+  Adds a stream of JSON objects, one per time CBMC was fired. Used to recover per-function
+  attempt counts and whether the *first* attempt already passed.
 
-This script accepts any combination of these (the console log and/or the
-``-avocado-verify.jsonl``; the attempts file is auto-discovered next to the
-latter when not given) and emits one JSON summary:
+This script accepts any combination of the console log and/or the ``-avocado-verify.jsonl``.
+The regex are used for the console log as a backup for the JSONL files and for calculating
+the true run time. Below is this script's summary JSON file output:
 
     {
       "file_name": "<path to the verified C file>",
-      "total_time_to_verify": <int ms>,       # wall-clock, run start -> last function
+      "total_time_to_verify": <int ms>,         # wall-clock, run start -> last function
       "functions_verified": <int>,
       "functions_total": <int>,
       "functions": [
         {
           "name": "<function>",
-          "cost": <float usd>,                # total_cost_to_verify_usd
-          "time_taken_to_verify": <int ms>,   # wall-clock span for this function
+          "cost": <float usd>,                  # total_cost_to_verify_usd
+          "time_taken_to_verify": <int ms>,     # wall-clock span for this function
           "is_verified": <bool>,
-          "timed_out": <bool>,                # agent session or CBMC step timed out
+          "timed_out": <bool>,                  # agent session or CBMC step timed out
           "verification_attempts": <int|null>,
           "first_attempt_verified": <bool|null> # did CBMC pass first try when run in agent sandbox?
         },
@@ -50,12 +47,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import operator
 import re
 import sys
-from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from log_parse_util import _epoch_ms, _iter_json_objects, _parse_console_ts, _parse_iso
+if TYPE_CHECKING:
+    from datetime import datetime
+
+from log_parse_util import epoch_ms, iter_json_objects, parse_console_ts, parse_iso
 
 # Matches the loguru prefix of a console line: "2026-09-14 18:43:40.077 | ".
 _CONSOLE_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)\b")
@@ -70,6 +71,11 @@ _CONSOLE_SUMMARY_RE = re.compile(r"(\d+)/(\d+) function\(s\) verified")
 
 
 def main() -> int:
+    """Create JSON file with time and verification data on each function in the logs.
+
+    Returns:
+        int: Process exit code (0 on success).
+    """
     parser = argparse.ArgumentParser(
         description="Report timing results for one avocado-verify run.",
     )
@@ -117,7 +123,7 @@ def main() -> int:
 
     verify_records = None
     if verify_path is not None:
-        verify_records = list(_iter_json_objects(verify_path.read_text()))
+        verify_records = list(iter_json_objects(verify_path.read_text()))
 
     console = None
     if console_path is not None:
@@ -166,6 +172,12 @@ class ConsoleLog:
     """Parsed view of the ``claude-output.json`` console log."""
 
     def __init__(self, text: str):
+        """Parse a console log into the run's timing, per-function verdicts, path, and counts.
+
+        Args:
+            text (str): Full console output (stdout+stderr) from an ``avocado-verify`` run.
+                i.e. the contents of the ``claude-output.json`` file.
+        """
         self.start: datetime | None = None
         self.end: datetime | None = None
         self.file_path: str | None = None
@@ -175,7 +187,7 @@ class ConsoleLog:
 
         for line in text.splitlines():
             m_ts = _CONSOLE_TS_RE.match(line)
-            ts = _parse_console_ts(m_ts.group(1)) if m_ts else None
+            ts = parse_console_ts(m_ts.group(1)) if m_ts else None
             if ts is not None:
                 if self.start is None:
                     self.start = ts
@@ -200,7 +212,11 @@ class ConsoleLog:
 
 
 def _c_file_from_jsonl(jsonl_path: str) -> str:
-    """Map '.../<stem>-avocado-verify.jsonl' back to '.../<stem>.c'."""
+    """Map '.../<stem>-avocado-verify.jsonl' back to '.../<stem>.c'.
+
+    Returns:
+        str: Path to the sibiling C source file (``<stem>.C``).
+    """
     p = Path(jsonl_path)
     stem = p.name[: -len("-avocado-verify.jsonl")]
     return str(p.with_name(stem + ".c"))
@@ -209,10 +225,12 @@ def _c_file_from_jsonl(jsonl_path: str) -> str:
 def _attempts_by_function(text: str) -> dict[str, list[bool]]:
     """Group ``-verification-attempts.jsonl`` records by function, preserving order.
 
-    Returns {function: [verified_flag_of_each_CBMC_firing, ...]}.
+    Returns:
+        dict[str, list[bool]]: Maps each function name to the ordered list of
+            per-CBMC-firing verified flags.
     """
     groups: dict[str, list[bool]] = {}
-    for obj in _iter_json_objects(text):
+    for obj in iter_json_objects(text):
         fn = obj.get("function")
         if fn is None:
             continue
@@ -222,21 +240,27 @@ def _attempts_by_function(text: str) -> dict[str, list[bool]]:
 
 def _earliest_attempt_ts(text: str) -> datetime | None:
     return min(
-        (_parse_iso(ts) for obj in _iter_json_objects(text) if (ts := obj.get("ts"))),
+        (parse_iso(ts) for obj in iter_json_objects(text) if (ts := obj.get("ts"))),
         default=None,
     )
 
 
 def build_report(
-    verify_records: list[dict],
-    console: ConsoleLog,
-    attempts: dict[str, list[bool]],
-    attempts_start: datetime,
-    file_name_hint: str,
+    verify_records: list[dict] | None,
+    console: ConsoleLog | None,
+    attempts: dict[str, list[bool]] | None,
+    attempts_start: datetime | None,
+    file_name_hint: str | None,
 ) -> dict:
+    """Assemble the timing report for one avocado-verify run from its parsed logs.
+
+    Returns:
+        dict: The timing report, with keys ``file_name``, ``total_time_to_verify``,
+            ``functions_verified``, ``functions_total``, and ``functions``.
+    """
     attempts = attempts or {}
 
-    rows: list[dict] = []  # each row represents a single record per function
+    rows: list[dict] = []  # Each row represents a single record per function.
     run_summary: dict | None = None
 
     if verify_records:
@@ -244,12 +268,12 @@ def build_report(
             if _is_run_summary(rec):
                 run_summary = rec
                 continue
-            if rec.get("function") is None:  # skip malformed/nameless records
+            if rec.get("function") is None:  # Skip malformed/nameless records.
                 continue
             rows.append(_construct_row(rec))
 
     elif console and console.status_events:
-        # Fall back to the console log's per-function verdicts (no cost available)
+        # Fall back to the console log's per-function verdicts (no cost available).
         for name, status, ts in console.status_events:
             rows.append(
                 {
@@ -268,16 +292,16 @@ def build_report(
             "log with per-function verdicts to produce a report."
         )
 
-    rows.sort(key=lambda r: r["completion_ts"])
+    rows.sort(key=operator.itemgetter("completion_ts"))
 
     run_start = _resolve_run_start(rows, console, attempts_start)
     run_end = rows[-1]["completion_ts"]
-    total_ms = _epoch_ms(run_end) - _epoch_ms(run_start)  # total run time
+    total_ms = epoch_ms(run_end) - epoch_ms(run_start)  # Total run time.
 
     functions = []
     prev_boundary = run_start
     for row in rows:
-        # Constructs record for each function.
+        # Constructs a record for each function.
         functions.append(_construct_function_record(row, prev_boundary, attempts))
         prev_boundary = row["completion_ts"]
 
@@ -316,7 +340,7 @@ def _construct_row(rec: dict) -> dict:
         "name": name,
         "cost": rec.get("total_cost_to_verify_usd"),
         "is_verified": rec.get("outcome") == "VERIFIED",
-        "completion_ts": _parse_iso(rec["timestamp"]),
+        "completion_ts": parse_iso(rec["timestamp"]),
         "verification_attempts": rec.get("verification_attempts"),
         "agent_duration_ms": agent_ms,
         "timed_out": timed_out,
@@ -348,7 +372,7 @@ def _resolve_run_start(
 def _construct_function_record(
     row: dict, prev_boundary: datetime, attempts: dict[str, list[bool]]
 ) -> dict:
-    span_ms = _epoch_ms(row["completion_ts"]) - _epoch_ms(prev_boundary)
+    span_ms = epoch_ms(row["completion_ts"]) - epoch_ms(prev_boundary)
 
     attempt_flags = attempts.get(row["name"])
     n_attempts = row["verification_attempts"]
@@ -378,7 +402,7 @@ def _construct_function_record(
 
 def _resolve_verification_counts(
     run_summary: dict | None, console: ConsoleLog | None, functions: list[dict]
-) -> tuple[int, int]:  # (verified_count, total_count)
+) -> tuple[int, int]:  # (verified_count, total_count).
     if run_summary is not None:
         verified_count = run_summary.get("verified")
         total_count = run_summary.get("total")
