@@ -140,8 +140,7 @@ def main() -> int:
     # "<stem>-avocado-verify.jsonl" filename (-> "<stem>.c").
     file_name_hint = None
     if verify_path is not None:
-        stem = verify_path.name[: -len("-avocado-verify.jsonl")]
-        file_name_hint = stem + ".c"
+        file_name_hint = _c_file_from_jsonl(str(verify_path))
 
     report = build_report(verify_records, console, attempts, attempts_start, file_name_hint)
 
@@ -234,7 +233,7 @@ def _attempts_by_function(text: str) -> dict[str, list[bool]]:
         fn = obj.get("function")
         if fn is None:
             continue
-        groups.setdefault(fn, []).append(bool(obj.get("verified", False)))
+        groups.setdefault(fn, []).append(obj.get("verified") is True)
     return groups
 
 
