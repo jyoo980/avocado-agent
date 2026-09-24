@@ -233,37 +233,20 @@ def build_report(
 ) -> dict:
     attempts = attempts or {}
 
-    # ---- Per-function base rows (name, is_verified, cost, completion_ts, ...) --
-    rows: list[dict] = []
-    run_summary: dict
+    rows: list[dict] = []   # each row represents a single record per function
+    run_summary: dict | None = None
 
     if verify_records:
         for rec in verify_records:
-            if rec.get("type") == "run_summary":
+            if _is_run_summary(rec):
                 run_summary = rec
                 continue
-            name = rec.get("function")
-            if name is None:
+            if rec.get("function") is None:   # skip malformed/nameless records
                 continue
-            claude_sessions = rec.get("claude") or []
-            agent_ms = sum(int(s.get("duration_ms") or 0) for s in claude_sessions)
-            # A run timed out if any agent session or the CBMC step timed out.
-            timed_out = any(bool(s.get("timed_out")) for s in claude_sessions) or bool(
-                (rec.get("cbmc") or {}).get("timed_out")
-            )
-            rows.append(
-                {
-                    "name": name,
-                    "cost": rec.get("total_cost_to_verify_usd"),
-                    "is_verified": rec.get("outcome") == "VERIFIED",
-                    "completion_ts": _parse_iso(rec["timestamp"]),
-                    "verification_attempts": rec.get("verification_attempts"),
-                    "agent_duration_ms": agent_ms,
-                    "timed_out": timed_out,
-                }
-            )
+            rows.append(_construct_row(rec))
+
     elif console and console.status_events:
-        # Fall back to the console log's per-function verdicts (no cost available).
+        # Fall back to the console log's per-function verdicts (no cost available)
         for name, status, ts in console.status_events:
             rows.append(
                 {
@@ -284,9 +267,67 @@ def build_report(
 
     rows.sort(key=lambda r: r["completion_ts"])
 
-    # ---- Run start / end -----------------------------------------------------
+    run_start = _resolve_run_start(rows, console, attempts_start)
+    run_end = rows[-1]["completion_ts"]
+    total_ms = _epoch_ms(run_end) - _epoch_ms(run_start)    # total run time
+
+    functions = []
+    prev_boundary = run_start
+    for row in rows:
+        # Constructs record for each function.
+        functions.append(_construct_function_record(row, prev_boundary, attempts))
+        prev_boundary = row["completion_ts"]
+
+    if console and console.file_path:
+        file_name = console.file_path
+    else:
+        file_name = file_name_hint
+
+    verified_count, total_count = _resolve_verification_counts(run_summary, console, functions)
+
+    report = {
+        "file_name": file_name,
+        "total_time_to_verify": total_ms,
+        "functions_verified": verified_count,
+        "functions_total": total_count,
+        "functions": functions,
+    }
+
+    return report
+
+
+def _is_run_summary(rec: dict) -> bool:
+    return rec.get("type") == "run_summary"
+
+
+def _construct_row(rec: dict) -> dict:
+    name = rec["function"]
+    claude_sessions = rec.get("claude") or []
+    agent_ms = sum(int(s.get("duration_ms") or 0) for s in claude_sessions)
+    # A run timed out if any agent session or the CBMC step timed out.
+    timed_out = any(bool(s.get("timed_out")) for s in claude_sessions) or bool(
+        (rec.get("cbmc") or {}).get("timed_out")
+    )
+
+    row = {
+        "name": name,
+        "cost": rec.get("total_cost_to_verify_usd"),
+        "is_verified": rec.get("outcome") == "VERIFIED",
+        "completion_ts": _parse_iso(rec["timestamp"]),
+        "verification_attempts": rec.get("verification_attempts"),
+        "agent_duration_ms": agent_ms,
+        "timed_out": timed_out,
+    }
+
+    return row
+
+
+def _resolve_run_start(
+    rows: list[dict], 
+    console: ConsoleLog | None, 
+    attempts_start: datetime | None
+) -> int:
     first_completion = rows[0]["completion_ts"]
-    last_completion = rows[-1]["completion_ts"]
 
     run_start = console.start if console and console.start else None
     if run_start is None and attempts_start is not None:
@@ -300,49 +341,47 @@ def build_report(
             )
         run_start = first_completion
 
-    run_end = last_completion  # per-function spans sum exactly to the total.
+    return run_start
 
-    total_ms = _epoch_ms(run_end) - _epoch_ms(run_start)
 
-    # ---- Per-function wall-clock spans --------------------------------------
-    functions = []
-    prev_boundary = run_start
-    for row in rows:
-        span_ms = _epoch_ms(row["completion_ts"]) - _epoch_ms(prev_boundary)
-        prev_boundary = row["completion_ts"]
+def _construct_function_record(
+    row: dict, 
+    prev_boundary: datetime, 
+    attempts: dict[str, list[bool]]
+) -> dict:
+    span_ms = _epoch_ms(row["completion_ts"]) - _epoch_ms(prev_boundary)
 
-        attempt_flags = attempts.get(row["name"])
-        n_attempts = row["verification_attempts"]
-        if n_attempts is None and attempt_flags is not None:
-            n_attempts = len(attempt_flags)
+    attempt_flags = attempts.get(row["name"])
+    n_attempts = row["verification_attempts"]
+    if n_attempts is None and attempt_flags is not None:
+        n_attempts = len(attempt_flags)
 
-        if attempt_flags:
-            first_attempt_verified: bool = attempt_flags[0]
-        elif n_attempts == 1:
-            # The only attempt's result is the function's result.
-            first_attempt_verified = row["is_verified"]
-        else:
-            first_attempt_verified = None
-
-        functions.append(
-            {
-                "name": row["name"],
-                "cost": None if row["cost"] is None else round(row["cost"], 3),
-                "time_taken_to_verify": span_ms,
-                "is_verified": row["is_verified"],
-                "timed_out": row["timed_out"],
-                "verification_attempts": n_attempts,
-                "first_attempt_verified": first_attempt_verified,
-            }
-        )
-
-    # ---- File name -----------------------------------------------------------
-    if console and console.file_path:
-        file_name = console.file_path
+    if attempt_flags:
+        first_attempt_verified: bool | None = attempt_flags[0]
+    elif n_attempts == 1:
+        # The only attempt's result is the function's result.
+        first_attempt_verified = row["is_verified"]
     else:
-        file_name = file_name_hint
+        first_attempt_verified = None
 
-    # ---- Verified / total counts --------------------------------------------
+    function_record = {
+        "name": row["name"],
+        "cost": None if row["cost"] is None else round(row["cost"], 3),
+        "time_taken_to_verify": span_ms,
+        "is_verified": row["is_verified"],
+        "timed_out": row["timed_out"],
+        "verification_attempts": n_attempts,
+        "first_attempt_verified": first_attempt_verified,
+    }
+
+    return function_record
+
+
+def _resolve_verification_counts(
+    run_summary: dict | None,
+    console: ConsoleLog | None,
+    functions: list[dict]
+) -> tuple[int, int]:       # (verified_count, total_count)
     if run_summary is not None:
         verified_count = run_summary.get("verified")
         total_count = run_summary.get("total")
@@ -353,13 +392,7 @@ def build_report(
         verified_count = sum(1 for f in functions if f["is_verified"])
         total_count = len(functions)
 
-    return {
-        "file_name": file_name,
-        "total_time_to_verify": total_ms,
-        "functions_verified": verified_count,
-        "functions_total": total_count,
-        "functions": functions,
-    }
+    return verified_count, total_count
 
 
 def _earliest_attempt_ts(text: str) -> datetime:
