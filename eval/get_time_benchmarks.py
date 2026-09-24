@@ -12,9 +12,9 @@ describe how long verification took and how it went:
   (its completion ``timestamp``, ``outcome``, ``verification_attempts``,
   ``total_cost_to_verify_usd``, per-session ``claude`` metadata), followed by a
   final ``{"type": "run_summary", ...}`` record.  This is the richest source.
-* ``<program>-verification-attempts.jsonl`` -- a stream of JSON objects, one 
-  per time CBMC was fired, each with ``ts``/``function``/``verified``.  
-  Used to recover per-function attempt counts and whether the *first* 
+* ``<program>-verification-attempts.jsonl`` -- a stream of JSON objects, one
+  per time CBMC was fired, each with ``ts``/``function``/``verified``.
+  Used to recover per-function attempt counts and whether the *first*
   attempt already passed.
 
 This script accepts any combination of these (the console log and/or the
@@ -42,7 +42,7 @@ latter when not given) and emits one JSON summary:
 
 ``time_taken_to_verify`` and ``total_time_to_verify`` are durations in
 milliseconds (wall-clock spans between the completion timestamps the logs
-already record) -- not absolute epoch stamps. The per-function times sum 
+already record) -- not absolute epoch stamps. The per-function times sum
 to ``total_time_to_verify``.
 """
 
@@ -52,11 +52,10 @@ import argparse
 import json
 import re
 import sys
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
-from log_parse_util import _parse_iso, _parse_console_ts, _epoch_ms, _iter_json_objects
-
+from log_parse_util import _epoch_ms, _iter_json_objects, _parse_console_ts, _parse_iso
 
 # Matches the loguru prefix of a console line: "2026-09-14 18:43:40.077 | ".
 _CONSOLE_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)\b")
@@ -138,9 +137,7 @@ def main() -> int:
         stem = verify_path.name[: -len("-avocado-verify.jsonl")]
         file_name_hint = stem + ".c"
 
-    report = build_report(
-        verify_records, console, attempts, attempts_start, file_name_hint
-    )
+    report = build_report(verify_records, console, attempts, attempts_start, file_name_hint)
 
     text = json.dumps(report, indent=2)
     out_path = args.output
@@ -156,9 +153,13 @@ def main() -> int:
     return 0
 
 
-# ----------------------------------------------------------------------------
-# Source-specific loaders
-# ----------------------------------------------------------------------------
+def _classify(path: Path) -> str:
+    name = path.name
+    if name.endswith("-avocado-verify.jsonl"):
+        return "verify"
+    if name.endswith("-verification-attempts.jsonl"):
+        return "attempts"
+    return "console"
 
 
 class ConsoleLog:
@@ -219,9 +220,11 @@ def _attempts_by_function(text: str) -> dict[str, list[bool]]:
     return groups
 
 
-# ----------------------------------------------------------------------------
-# Core assembly
-# ----------------------------------------------------------------------------
+def _earliest_attempt_ts(text: str) -> datetime | None:
+    return min(
+        (_parse_iso(ts) for obj in _iter_json_objects(text) if (ts := obj.get("ts"))),
+        default=None,
+    )
 
 
 def build_report(
@@ -229,11 +232,11 @@ def build_report(
     console: ConsoleLog,
     attempts: dict[str, list[bool]],
     attempts_start: datetime,
-    file_name_hint: str
+    file_name_hint: str,
 ) -> dict:
     attempts = attempts or {}
 
-    rows: list[dict] = []   # each row represents a single record per function
+    rows: list[dict] = []  # each row represents a single record per function
     run_summary: dict | None = None
 
     if verify_records:
@@ -241,7 +244,7 @@ def build_report(
             if _is_run_summary(rec):
                 run_summary = rec
                 continue
-            if rec.get("function") is None:   # skip malformed/nameless records
+            if rec.get("function") is None:  # skip malformed/nameless records
                 continue
             rows.append(_construct_row(rec))
 
@@ -269,7 +272,7 @@ def build_report(
 
     run_start = _resolve_run_start(rows, console, attempts_start)
     run_end = rows[-1]["completion_ts"]
-    total_ms = _epoch_ms(run_end) - _epoch_ms(run_start)    # total run time
+    total_ms = _epoch_ms(run_end) - _epoch_ms(run_start)  # total run time
 
     functions = []
     prev_boundary = run_start
@@ -323,9 +326,7 @@ def _construct_row(rec: dict) -> dict:
 
 
 def _resolve_run_start(
-    rows: list[dict], 
-    console: ConsoleLog | None, 
-    attempts_start: datetime | None
+    rows: list[dict], console: ConsoleLog | None, attempts_start: datetime | None
 ) -> int:
     first_completion = rows[0]["completion_ts"]
 
@@ -345,9 +346,7 @@ def _resolve_run_start(
 
 
 def _construct_function_record(
-    row: dict, 
-    prev_boundary: datetime, 
-    attempts: dict[str, list[bool]]
+    row: dict, prev_boundary: datetime, attempts: dict[str, list[bool]]
 ) -> dict:
     span_ms = _epoch_ms(row["completion_ts"]) - _epoch_ms(prev_boundary)
 
@@ -378,10 +377,8 @@ def _construct_function_record(
 
 
 def _resolve_verification_counts(
-    run_summary: dict | None,
-    console: ConsoleLog | None,
-    functions: list[dict]
-) -> tuple[int, int]:       # (verified_count, total_count)
+    run_summary: dict | None, console: ConsoleLog | None, functions: list[dict]
+) -> tuple[int, int]:  # (verified_count, total_count)
     if run_summary is not None:
         verified_count = run_summary.get("verified")
         total_count = run_summary.get("total")
@@ -393,32 +390,6 @@ def _resolve_verification_counts(
         total_count = len(functions)
 
     return verified_count, total_count
-
-
-def _earliest_attempt_ts(text: str) -> datetime:
-    earliest: datetime | None = None
-    for obj in _iter_json_objects(text):
-        ts = obj.get("ts")
-        if not ts:
-            continue
-        dt = _parse_iso(ts)
-        if earliest is None or dt < earliest:
-            earliest = dt
-    return earliest
-
-
-# ----------------------------------------------------------------------------
-# CLI
-# ----------------------------------------------------------------------------
-
-
-def _classify(path: Path) -> str:
-    name = path.name
-    if name.endswith("-avocado-verify.jsonl"):
-        return "verify"
-    if name.endswith("-verification-attempts.jsonl"):
-        return "attempts"
-    return "console"
 
 
 if __name__ == "__main__":
