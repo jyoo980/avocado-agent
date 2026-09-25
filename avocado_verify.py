@@ -249,7 +249,9 @@ def main() -> None:
         log_path = file_path.with_name(f"{file_path.stem}-avocado-verify.jsonl")
         already_done = set()
         log_path.write_text("", encoding="utf-8")  # Fresh run: truncate any prior log.
-        attempts_log_path = file_path.with_name(f"{file_path.stem}{VERIFICATION_ATTEMPTS_LOG_SUFFIX}")
+        attempts_log_path = file_path.with_name(
+            f"{file_path.stem}{VERIFICATION_ATTEMPTS_LOG_SUFFIX}"
+        )
         attempts_log_path.write_text("", encoding="utf-8")  # Scope the attempts log to this run.
 
     num_functions = len(functions)
