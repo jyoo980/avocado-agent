@@ -50,6 +50,7 @@ import json
 import operator
 import re
 import sys
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -267,7 +268,8 @@ def build_report(
             if _is_run_summary(rec):
                 run_summary = rec
                 continue
-            if rec.get("function") is None:  # Skip malformed/nameless records.
+            # Skip malformed/nameless records.
+            if rec.get("function") is None or rec.get("timestamp") is None:
                 continue
             rows.append(_construct_row(rec))
 
@@ -291,6 +293,8 @@ def build_report(
             "log with per-function verdicts to produce a report."
         )
 
+    if not rows:
+        raise SystemExit("error: no per-function records found to build a report.")
     rows.sort(key=operator.itemgetter("completion_ts"))
 
     run_start = _resolve_run_start(rows, console, attempts_start)
@@ -350,20 +354,25 @@ def _construct_row(rec: dict) -> dict:
 
 def _resolve_run_start(
     rows: list[dict], console: ConsoleLog | None, attempts_start: datetime | None
-) -> int:
+) -> datetime:
     first_completion = rows[0]["completion_ts"]
 
     run_start = console.start if console and console.start else None
     if run_start is None and attempts_start is not None:
         # Earliest CBMC firing is the next-best lower bound on the run start.
         run_start = attempts_start
-    if run_start is None or run_start > first_completion:
-        if run_start is not None and run_start > first_completion:
-            print(
-                "warning: run start is after the first completion; clamping.",
-                file=sys.stderr,
-            )
+    if run_start is not None and run_start > first_completion:
+        print(
+            "warning: run start is after the first completion; clamping.",
+            file=sys.stderr,
+        )
         run_start = first_completion
+    elif run_start is None:
+        # Estimate the first function's start (no attempts log for concrete reference).
+        agent_ms = rows[0].get("agent_duration_ms")
+        run_start = (
+            first_completion - timedelta(milliseconds=agent_ms) if agent_ms else first_completion
+        )
 
     return run_start
 
@@ -402,9 +411,9 @@ def _construct_function_record(
 def _resolve_verification_counts(
     run_summary: dict | None, console: ConsoleLog | None, functions: list[dict]
 ) -> tuple[int, int]:  # (verified_count, total_count).
-    if run_summary is not None:
-        verified_count = run_summary.get("verified")
-        total_count = run_summary.get("total")
+    if run_summary is not None and "verified" in run_summary and "total" in run_summary:
+        verified_count = run_summary["verified"]
+        total_count = run_summary["total"]
     elif console and console.verified_count is not None:
         verified_count = console.verified_count
         total_count = console.total_count
