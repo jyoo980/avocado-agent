@@ -36,6 +36,7 @@ RUN ARCH="$(dpkg --print-architecture)" && \
 
 WORKDIR /app
 
+ENV IS_SANDBOX=1
 ENV VIRTUAL_ENV="/app/.venv"
 ENV PATH="/app/.venv/bin:$PATH"
 
