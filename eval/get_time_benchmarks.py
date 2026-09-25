@@ -57,7 +57,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from datetime import datetime
 
-from log_parse_util import epoch_ms, iter_json_objects, parse_console_ts, parse_iso
+from eval.log_parse_util import epoch_ms, iter_json_objects, parse_console_ts, parse_iso
 
 # Matches the loguru prefix of a console line: "2026-09-14 18:43:40.077 | ".
 _CONSOLE_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)\b")
@@ -411,15 +411,14 @@ def _construct_function_record(
 def _resolve_verification_counts(
     run_summary: dict | None, console: ConsoleLog | None, functions: list[dict]
 ) -> tuple[int, int]:  # (verified_count, total_count).
+    verified_count = sum(1 for f in functions if f["is_verified"])
+    total_count = len(functions)
     if run_summary is not None and "verified" in run_summary and "total" in run_summary:
         verified_count = run_summary["verified"]
         total_count = run_summary["total"]
-    elif console and console.verified_count is not None:
+    elif console and console.verified_count is not None and console.total_count is not None:
         verified_count = console.verified_count
         total_count = console.total_count
-    else:
-        verified_count = sum(1 for f in functions if f["is_verified"])
-        total_count = len(functions)
 
     return verified_count, total_count
 
