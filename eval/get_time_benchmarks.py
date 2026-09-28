@@ -123,7 +123,7 @@ def main() -> int:
     attempts_start = None
     if attempts_path is not None:
         attempts_text = attempts_path.read_text()
-        attempts = _attempts_by_function(attempts_text)
+        attempts = _function_to_verification_status(attempts_text)
         attempts_start = _earliest_attempt_ts(attempts_text)
 
     # If the console log did not supply the file path, derive it from the
@@ -157,20 +157,29 @@ def _classify(path: Path) -> str:
     return "console"
 
 
-def _attempts_by_function(text: str) -> dict[str, list[bool]]:
+def _function_to_verification_status(text: str) -> dict[str, tuple[bool, int]]:
     """Group ``-verification-attempts.jsonl`` records by function, preserving order.
 
+    Per function, measures (1) if the function was verified on the first attempt and
+    (2) how many total attempts are tried.
+
     Returns:
-        dict[str, list[bool]]: Maps each function name to the ordered list of
-            per-CBMC-firing verified flags.
+        dict[str, tuple[bool, int]]: Maps each function name to the tuple of
+            first-try verification and number of total verification attempts.
     """
-    groups: dict[str, list[bool]] = {}
+    summaries: dict[str, tuple[bool, int]] = {}
     for obj in iter_json_objects(text):
         fn = obj.get("function")
         if fn is None:
             continue
-        groups.setdefault(fn, []).append(obj.get("verified") is True)
-    return groups
+        verified = obj.get("verified") is True
+        existing = summaries.get(fn)
+        if existing is None:
+            summaries[fn] = (verified, 1)  # First firing sets the bool.
+        else:
+            first_verified, count = existing  # Unpack, keep the bool, bump the count.
+            summaries[fn] = (first_verified, count + 1)
+    return summaries
 
 
 def _earliest_attempt_ts(text: str) -> datetime | None:
@@ -183,7 +192,7 @@ def _earliest_attempt_ts(text: str) -> datetime | None:
 def build_report(
     verify_records: list[dict] | None,
     console: ConsoleLog | None,
-    attempts: dict[str, list[bool]] | None,
+    attempts: dict[str, tuple[bool, int]] | None,
     attempts_start: datetime | None,
     file_name_hint: str | None,
 ) -> dict:
@@ -313,17 +322,17 @@ def _resolve_run_start(
 
 
 def _construct_function_record(
-    row: dict, prev_boundary: datetime, attempts: dict[str, list[bool]]
+    row: dict, prev_boundary: datetime, attempts: dict[str, tuple[bool, int]]
 ) -> dict:
     span_ms = epoch_ms(row["completion_ts"]) - epoch_ms(prev_boundary)
 
-    attempt_flags = attempts.get(row["name"])
+    status = attempts.get(row["name"])  # (first_verified, attempt_count) or None.
     n_attempts = row["verification_attempts"]
-    if n_attempts is None and attempt_flags is not None:
-        n_attempts = len(attempt_flags)
+    if n_attempts is None and status is not None:
+        n_attempts = status[1]
 
-    if attempt_flags:
-        first_attempt_verified: bool | None = attempt_flags[0]
+    if status is not None:
+        first_attempt_verified: bool | None = status[0]
     elif n_attempts == 1:
         # The only attempt's result is the function's result.
         first_attempt_verified = row["is_verified"]
