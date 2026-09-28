@@ -48,7 +48,6 @@ from __future__ import annotations
 import argparse
 import json
 import operator
-import re
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -57,18 +56,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from datetime import datetime
 
-from eval.log_parse_util import epoch_ms, iter_json_objects, parse_console_ts, parse_iso
-
-# Matches the loguru prefix of a console line: "2026-09-14 18:43:40.077 | ".
-_CONSOLE_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)\b")
-# Matches a per-function terminal verdict, e.g. "[1/91] LZ4_isAligned: VERIFIED"
-# or "[.../91] foo: CLAUDE_TIMED_OUT". The status is an UPPER_SNAKE token, which
-# excludes the lowercase "[i/N] foo: generating spec via claude -p" start line.
-_CONSOLE_STATUS_RE = re.compile(r"\[(\d+)/(\d+)\]\s+(\w+):\s+([A-Z][A-Z_]+)\s*$")
-# Matches the final "... log written to /app/lz4_lib/lz4-avocado-verify.jsonl".
-_CONSOLE_LOGPATH_RE = re.compile(r"log written to (\S+-avocado-verify\.jsonl)")
-# Matches "25/91 function(s) verified".
-_CONSOLE_SUMMARY_RE = re.compile(r"(\d+)/(\d+) function\(s\) verified")
+from eval.console_log import ConsoleLog
+from eval.log_parse_util import c_file_from_jsonl, epoch_ms, iter_json_objects, parse_iso
 
 
 def main() -> int:
@@ -141,7 +130,7 @@ def main() -> int:
     # "<stem>-avocado-verify.jsonl" filename (-> "<stem>.c").
     file_name_hint = None
     if verify_path is not None:
-        file_name_hint = _c_file_from_jsonl(str(verify_path))
+        file_name_hint = c_file_from_jsonl(str(verify_path))
 
     report = build_report(verify_records, console, attempts, attempts_start, file_name_hint)
 
@@ -166,60 +155,6 @@ def _classify(path: Path) -> str:
     if name.endswith("-verification-attempts.jsonl"):
         return "attempts"
     return "console"
-
-
-class ConsoleLog:
-    """Parsed view of the ``claude-output.json`` console log."""
-
-    def __init__(self, text: str):
-        """Parse a console log into the run's timing, per-function verdicts, path, and counts.
-
-        Args:
-            text (str): Full console output (stdout+stderr) from an ``avocado-verify`` run.
-                i.e. the contents of the ``claude-output.json`` file.
-        """
-        self.start: datetime | None = None
-        self.end: datetime | None = None
-        self.file_path: str | None = None
-        self.verified_count: int | None = None
-        self.total_count: int | None = None
-        self.status_events: list[tuple[str, str, datetime]] = []
-
-        for line in text.splitlines():
-            m_ts = _CONSOLE_TS_RE.match(line)
-            ts = parse_console_ts(m_ts.group(1)) if m_ts else None
-            if ts is not None:
-                if self.start is None:
-                    self.start = ts
-                self.end = ts
-
-            m_status = _CONSOLE_STATUS_RE.search(line)
-            if m_status and ts is not None:
-                name = m_status.group(3)
-                status = m_status.group(4)
-                # "generating" would be excluded by the UPPER_SNAKE match above.
-                self.status_events.append((name, status, ts))
-
-            m_path = _CONSOLE_LOGPATH_RE.search(line)
-            if m_path:
-                jsonl_path = m_path.group(1)
-                self.file_path = _c_file_from_jsonl(jsonl_path)
-
-            m_sum = _CONSOLE_SUMMARY_RE.search(line)
-            if m_sum:
-                self.verified_count = int(m_sum.group(1))
-                self.total_count = int(m_sum.group(2))
-
-
-def _c_file_from_jsonl(jsonl_path: str) -> str:
-    """Map '.../<stem>-avocado-verify.jsonl' back to '.../<stem>.c'.
-
-    Returns:
-        str: Path to the sibiling C source file (``<stem>.C``).
-    """
-    p = Path(jsonl_path)
-    stem = p.name[: -len("-avocado-verify.jsonl")]
-    return str(p.with_name(stem + ".c"))
 
 
 def _attempts_by_function(text: str) -> dict[str, list[bool]]:

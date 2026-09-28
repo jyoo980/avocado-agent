@@ -10,6 +10,7 @@ Low-level parsing helper file for ``get_time_benchmarks.py``.
 import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from pathlib import Path
 
 
 def parse_iso(ts: str) -> datetime:
@@ -75,3 +76,14 @@ def iter_json_objects(text: str) -> Iterator[dict]:
         if isinstance(obj, dict):
             yield obj
         idx = end
+
+
+def c_file_from_jsonl(jsonl_path: str) -> str:
+    """Map '.../<stem>-avocado-verify.jsonl' back to '.../<stem>.c'.
+
+    Returns:
+        str: Path to the sibling C source file (``<stem>.C``).
+    """
+    p = Path(jsonl_path)
+    stem = p.name[: -len("-avocado-verify.jsonl")]
+    return str(p.with_name(stem + ".c"))
