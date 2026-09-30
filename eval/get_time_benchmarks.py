@@ -61,7 +61,7 @@ from eval.log_parse_util import c_file_from_jsonl, epoch_ms, iter_json_objects, 
 
 
 def main() -> int:
-    """Create JSON file with time and verification data on each function in the logs.
+    """Create a JSON file with time and verification data on each function in the logs.
 
     Returns:
         int: Process exit code (0 on success).
@@ -93,7 +93,7 @@ def main() -> int:
     attempts_path = args.attempts
 
     for path in args.log_files:
-        kind = _classify(path)
+        kind = _classify_log_type(path)
         if kind == "verify" and verify_path is None:
             verify_path = path
         elif kind == "attempts" and attempts_path is None:
@@ -124,7 +124,7 @@ def main() -> int:
     if attempts_path is not None:
         attempts_text = attempts_path.read_text()
         attempts = _function_to_verification_status(attempts_text)
-        attempts_start = _earliest_attempt_ts(attempts_text)
+        attempts_start = _get_timestamp_of_earliest_verification_attempt(attempts_text)
 
     # If the console log did not supply the file path, derive it from the
     # "<stem>-avocado-verify.jsonl" filename (-> "<stem>.c").
@@ -148,7 +148,17 @@ def main() -> int:
     return 0
 
 
-def _classify(path: Path) -> str:
+def _classify_log_type(path: Path) -> str:
+    """Return the type (one of "verify", "attempts", or "console" given a file path.
+
+    TODO: Should the log type be an enum?
+
+    Args:
+        path (Path): The path to the log file.
+
+    Returns: The log type of the file at the given path.
+        str: 
+    """
     name = path.name
     if name.endswith("-avocado-verify.jsonl"):
         return "verify"
@@ -173,16 +183,24 @@ def _function_to_verification_status(text: str) -> dict[str, tuple[bool, int]]:
         if fn is None:
             continue
         verified = obj.get("verified") is True
-        existing = summaries.get(fn)
-        if existing is None:
-            summaries[fn] = (verified, 1)  # First firing sets the bool.
+        is_verified_on_first_attempt_and_total_attempt_count = summaries.get(fn)
+        if is_verified_on_first_attempt_and_total_attempt_count is None:
+            summaries[fn] = (verified, 1)
         else:
-            first_verified, count = existing  # Unpack, keep the bool, bump the count.
-            summaries[fn] = (first_verified, count + 1)
+            is_verified_on_first_attempt, total_attempt_count = is_verified_on_first_attempt_and_total_attempt_count  # Unpack, keep the bool, bump the count.
+            summaries[fn] = (is_verified_on_first_attempt, total_attempt_count + 1)
     return summaries
 
 
-def _earliest_attempt_ts(text: str) -> datetime | None:
+def _get_timestamp_of_earliest_verification_attempt(text: str) -> datetime | None:
+    """Return the timestamp of the earliest verification attempt.
+
+    Args:
+        text (str): The content of the log file of verification attempts.
+
+    Returns:
+        datetime | None: The timestamp of the earliest verification attempt if found, else None.
+    """
     return min(
         (parse_iso(ts) for obj in iter_json_objects(text) if (ts := obj.get("ts"))),
         default=None,
@@ -257,9 +275,9 @@ def build_report(
     else:
         file_name = file_name_hint
 
-    verified_count, total_count = _resolve_verification_counts(run_summary, console, functions)
+    verified_count, total_count = _get_verification_counts_from_summary(run_summary, console, functions)
 
-    report = {
+    return {
         "file_name": file_name,
         "total_time_to_verify": total_ms,
         "functions_verified": verified_count,
@@ -283,7 +301,7 @@ def _construct_row(rec: dict) -> dict:
         (rec.get("cbmc") or {}).get("timed_out")
     )
 
-    row = {
+    return {
         "name": name,
         "cost": rec.get("total_cost_to_verify_usd"),
         "is_verified": rec.get("outcome") == "VERIFIED",
@@ -339,7 +357,7 @@ def _construct_function_record(
     else:
         first_attempt_verified = None
 
-    function_record = {
+    return {
         "name": row["name"],
         "cost": None if row["cost"] is None else round(row["cost"], 3),
         "time_taken_to_verify": span_ms,
@@ -349,12 +367,21 @@ def _construct_function_record(
         "first_attempt_verified": first_attempt_verified,
     }
 
-    return function_record
 
-
-def _resolve_verification_counts(
+def _get_verification_counts_from_summary(
     run_summary: dict | None, console: ConsoleLog | None, functions: list[dict]
-) -> tuple[int, int]:  # (verified_count, total_count).
+) -> tuple[int, int]:
+    """Return the count of verified functions and the number of all functions in a summary.
+
+    Args:
+        run_summary (dict): The run summary.
+        console (ConsoleLog | None): The console log.
+        functions (list[dict]): The functions.
+
+    Returns:
+        tuple[int, int]: The count of verified functions and the number of all functions in a
+            summary
+    """
     verified_count = sum(1 for f in functions if f["is_verified"])
     total_count = len(functions)
     if run_summary is not None and "verified" in run_summary and "total" in run_summary:
