@@ -43,26 +43,26 @@ class ConsoleLog:
         self.status_events: list[tuple[str, str, datetime]] = []
 
         for line in text.splitlines():
-            m_ts = _CONSOLE_TS_RE.match(line)
-            ts = parse_console_ts(m_ts.group(1)) if m_ts else None
+            ts_match = _CONSOLE_TS_RE.match(line)
+            ts = parse_console_ts(ts_match.group(1)) if ts_match else None
             if ts is not None:
                 if self.start is None:
                     self.start = ts
                 self.end = ts
 
-            m_status = _CONSOLE_STATUS_RE.search(line)
-            if m_status and ts is not None:
-                name = m_status.group(3)
-                status = m_status.group(4)
+            status_match = _CONSOLE_STATUS_RE.search(line)
+            if status_match and ts is not None:
+                name = status_match.group(3)
+                status = status_match.group(4)
                 # "generating" would be excluded by the UPPER_SNAKE match above.
                 self.status_events.append((name, status, ts))
 
-            m_path = _CONSOLE_LOGPATH_RE.search(line)
-            if m_path:
-                jsonl_path = m_path.group(1)
+            path_match = _CONSOLE_LOGPATH_RE.search(line)
+            if path_match:
+                jsonl_path = path_match.group(1)
                 self.file_path = c_file_from_jsonl(jsonl_path)
 
-            m_sum = _CONSOLE_SUMMARY_RE.search(line)
-            if m_sum:
-                self.verified_count = int(m_sum.group(1))
-                self.total_count = int(m_sum.group(2))
+            sum_match = _CONSOLE_SUMMARY_RE.search(line)
+            if sum_match:
+                self.verified_count = int(sum_match.group(1))
+                self.total_count = int(sum_match.group(2))
