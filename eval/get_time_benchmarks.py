@@ -227,7 +227,7 @@ def build_report(
 
     if verify_records:
         for rec in verify_records:
-            if _is_run_summary(rec):
+            if rec.get("type") == "run_summary":
                 run_summary = rec
                 continue
             # Skip malformed/nameless records.
@@ -285,12 +285,6 @@ def build_report(
         "functions": functions,
     }
 
-    return report
-
-
-def _is_run_summary(rec: dict) -> bool:
-    return rec.get("type") == "run_summary"
-
 
 def _construct_row(rec: dict) -> dict:
     name = rec["function"]
@@ -310,8 +304,6 @@ def _construct_row(rec: dict) -> dict:
         "agent_duration_ms": agent_ms,
         "timed_out": timed_out,
     }
-
-    return row
 
 
 def _resolve_run_start(
