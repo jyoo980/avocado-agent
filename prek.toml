@@ -38,7 +38,7 @@ exclude = { glob = [
   "tests/kvasir-tests/povray/**/*",
   # Added for Avocado
   ".coderabbit.yaml",
-  "CLAUDE.md",
+  "AGENTS.md",
   "DEVELOPMENT.md",
   "README.md",
   "avocado-experimental-data/*",
