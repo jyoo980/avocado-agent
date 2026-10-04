@@ -97,6 +97,9 @@ Re-run the `docker stats` command afterwards to validate your changes have taken
   - Used to manage packages,
     dependencies,
     and develop the tools provided to Claude Code.
+- [prek](https://prek.j178.dev):
+  - This is a code hook framework we use to run pre-commit linting and style checking.
+  - Once `prek` is installed on your machine, run `prek install` to install the pre-commit hook.
 
 ## DARPA TRACTOR Test Cases
 
@@ -114,3 +117,20 @@ To obtain a local copy, run:
 
 This is most likely due to an OOM error.
 See [the container configuration section](#container-configuration) for details.
+
+> There isn't any pre-commit style checking happening, or it's broken.
+
+There may have been changes to a pre-commit hook.
+You can delete the pre-commit hook:
+
+```sh
+% rm .git/hooks/pre-commit
+```
+
+And re-install it:
+
+```sh
+% prek install
+```
+
+Which should print the message: "Installed Git hook at `.git/hooks/pre-commit`" on success.
