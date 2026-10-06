@@ -19,7 +19,7 @@
 3. Run the following command to kick off specification generation and capture output:
 
     ```sh
-    % claude "Carefully read @CLAUDE.md. Then, verify the C source files in <REPO_PATH>" --dangerously-skip-permissions --print --output-format json > claude-output-<REPO_PATH>.json
+    % avocado-verify --file <PATH_TO_C_FILE>
     ```
 
 4. Save the output and metadata with the `save-session-metadata` script (inside the container):
