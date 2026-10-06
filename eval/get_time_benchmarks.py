@@ -180,7 +180,7 @@ def _function_to_verification_status(text: str) -> dict[str, tuple[bool, int]]:
         fn = obj.get("function")
         if fn is None:
             continue
-        verified = obj.get("verified")
+        verified = obj.get("verified") is True
         summary = summaries.get(fn)
         if summary is None:
             summaries[fn] = (verified, 1)
