@@ -52,7 +52,7 @@ _EXIT_SOME_UNVERIFIED = 1
 # 2 indicates an early stop due to a usage limit being hit.
 _EXIT_USAGE_LIMITED = 2
 
-# `main` is never specified (see CLAUDE.md); skip it wherever it appears in the ordering.
+# `main` is never specified (see AGENTS.md); skip it wherever it appears in the ordering.
 _UNVERIFIABLE_FUNCTIONS = frozenset({"main"})
 
 # Cap on the raw stdout/stderr snippet kept when Claude's JSON output cannot be parsed.
