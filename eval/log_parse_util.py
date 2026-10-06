@@ -28,8 +28,8 @@ def parse_iso(ts: str) -> datetime:
 def parse_console_ts(ts: str) -> datetime:
     """Parse a loguru console timestamp ('2026-09-14 18:43:40.077').
 
-    The console log's clock agrees with the UTC timestamps in the JSONL logs
-    so we treat these naive stamps as UTC for cross-source spans.
+    ``avocado-verify`` logs console timestamps in UTC, so these naive stamps
+    are UTC, matching the timestamps in the JSONL logs.
 
     Returns:
         datetime: loguru timestamp.

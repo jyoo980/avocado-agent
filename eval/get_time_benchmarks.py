@@ -111,18 +111,18 @@ def main() -> int:
         if candidate.exists():
             attempts_path = candidate
 
-    verify_records = None
+    verify_records = []
     if verify_path is not None:
-        verify_records = list(iter_json_objects(verify_path.read_text()))
+        verify_records = list(iter_json_objects(verify_path.read_text(encoding="utf-8")))
 
     console = None
     if console_path is not None:
-        console = ConsoleLog(console_path.read_text())
+        console = ConsoleLog(console_path.read_text(encoding="utf-8"))
 
     attempts = None
     attempts_start = None
     if attempts_path is not None:
-        attempts_text = attempts_path.read_text()
+        attempts_text = attempts_path.read_text(encoding="utf-8")
         attempts = _function_to_verification_status(attempts_text)
         attempts_start = _get_timestamp_of_earliest_verification_attempt(attempts_text)
 
@@ -143,21 +143,19 @@ def main() -> int:
     if out_path is None:
         print(text)
     else:
-        out_path.write_text(text + "\n")
+        out_path.write_text(text + "\n", encoding="utf-8")
         print(f"wrote {out_path}")
     return 0
 
 
 def _classify_log_type(path: Path) -> str:
-    """Return the type (one of "verify", "attempts", or "console" given a file path.
-
-    TODO: Should the log type be an enum?
+    """Return the type (one of "verify", "attempts", or "console") given a file path.
 
     Args:
         path (Path): The path to the log file.
 
-    Returns: The log type of the file at the given path.
-        str: 
+    Returns:
+        str: The log type of the file at the given path.
     """
     name = path.name
     if name.endswith("-avocado-verify.jsonl"):
@@ -182,12 +180,12 @@ def _function_to_verification_status(text: str) -> dict[str, tuple[bool, int]]:
         fn = obj.get("function")
         if fn is None:
             continue
-        verified = obj.get("verified") is True
-        is_verified_on_first_attempt_and_total_attempt_count = summaries.get(fn)
-        if is_verified_on_first_attempt_and_total_attempt_count is None:
+        verified = obj.get("verified")
+        summary = summaries.get(fn)
+        if summary is None:
             summaries[fn] = (verified, 1)
         else:
-            is_verified_on_first_attempt, total_attempt_count = is_verified_on_first_attempt_and_total_attempt_count  # Unpack, keep the bool, bump the count.
+            is_verified_on_first_attempt, total_attempt_count = summary
             summaries[fn] = (is_verified_on_first_attempt, total_attempt_count + 1)
     return summaries
 
@@ -208,7 +206,7 @@ def _get_timestamp_of_earliest_verification_attempt(text: str) -> datetime | Non
 
 
 def build_report(
-    verify_records: list[dict] | None,
+    verify_records: list[dict],
     console: ConsoleLog | None,
     attempts: dict[str, tuple[bool, int]] | None,
     attempts_start: datetime | None,
@@ -275,7 +273,9 @@ def build_report(
     else:
         file_name = file_name_hint
 
-    verified_count, total_count = _get_verification_counts_from_summary(run_summary, console, functions)
+    verified_count, total_count = (
+        _get_verification_counts_from_summary(run_summary, console, functions)
+    )
 
     return {
         "file_name": file_name,
