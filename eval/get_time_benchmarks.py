@@ -1,0 +1,390 @@
+#!/usr/bin/env python3
+"""Report timing results for a single ``avocado-verify`` run over one C file.
+
+``avocado-verify --file <program>.c`` creates three log files that, together,
+describe how long verification took and how it went:
+
+* ``claude-output.json`` -- plain console log
+  It is a stream of timestamped loguru lines.  It carries the true run
+  *start* time, the original file path, and ``[i/N] <func>: VERIFIED`` markers.
+* ``<program>-avocado-verify.jsonl`` -- one JSON object per verified function
+  Provides records for each function: ``timestamp``, ``outcome``, ``verification_attempts``,
+  ``total_cost_to_verify_usd``, per-session ``claude`` metadata, run_summary. Our primary log.
+* ``<program>-verification-attempts.jsonl`` -- attempts log
+  Adds a stream of JSON objects, one per time CBMC was fired. Used to recover per-function
+  attempt counts and whether the *first* attempt already passed.
+
+This script accepts any combination of the console log and/or the ``-avocado-verify.jsonl``.
+The regex are used for the console log as a backup for the JSONL files and for calculating
+the true run time. Below is this script's summary JSON file output:
+
+    {
+      "file_name": "<path to the verified C file>",
+      "total_time_to_verify": <int ms>,         # wall-clock, run start -> last function
+      "functions_verified": <int>,
+      "functions_total": <int>,
+      "functions": [
+        {
+          "name": "<function>",
+          "cost": <float usd>,                  # total_cost_to_verify_usd
+          "time_taken_to_verify": <int ms>,     # wall-clock span for this function
+          "is_verified": <bool>,
+          "timed_out": <bool>,                  # agent session or CBMC step timed out
+          "verification_attempts": <int|null>,
+          "first_attempt_verified": <bool|null> # did CBMC pass first try when run in agent sandbox?
+        },
+        ...
+      ]
+    }
+
+``time_taken_to_verify`` and ``total_time_to_verify`` are durations in
+milliseconds (wall-clock spans between the completion timestamps the logs
+already record) -- not absolute epoch stamps. The per-function times sum
+to ``total_time_to_verify``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import operator
+import sys
+from datetime import timedelta
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from datetime import datetime
+
+from eval.console_log import ConsoleLog
+from eval.log_parse_util import c_file_from_jsonl, epoch_ms, iter_json_objects, parse_iso
+
+
+def main() -> int:
+    """Create a JSON file with time and verification data on each function in the logs.
+
+    Returns:
+        int: Process exit code (0 on success).
+    """
+    parser = argparse.ArgumentParser(
+        description="Report timing results for one avocado-verify run.",
+    )
+    parser.add_argument(
+        "log_files",
+        nargs="*",
+        type=Path,
+        help="Any of: claude-output console log, <prog>-avocado-verify.jsonl, "
+        "<prog>-verification-attempts.jsonl (auto-classified by name).",
+    )
+    parser.add_argument("--claude-output", type=Path, help="Console log path.")
+    parser.add_argument("--avocado-verify", type=Path, help="<prog>-avocado-verify.jsonl path.")
+    parser.add_argument("--attempts", type=Path, help="<prog>-verification-attempts.jsonl path.")
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        help="Where to write the JSON report (default: <prog>-time-benchmarks.json "
+        "next to the -avocado-verify.jsonl, else stdout).",
+    )
+    args = parser.parse_args()
+
+    console_path = args.claude_output
+    verify_path = args.avocado_verify
+    attempts_path = args.attempts
+
+    for path in args.log_files:
+        kind = _classify_log_type(path)
+        if kind == "verify" and verify_path is None:
+            verify_path = path
+        elif kind == "attempts" and attempts_path is None:
+            attempts_path = path
+        elif kind == "console" and console_path is None:
+            console_path = path
+
+    if verify_path is None and console_path is None:
+        parser.error("provide at least a -avocado-verify.jsonl or a console log.")
+
+    # Auto-discover a sibling attempts file next to the verify log.
+    if attempts_path is None and verify_path is not None:
+        stem = verify_path.name[: -len("-avocado-verify.jsonl")]
+        candidate = verify_path.with_name(stem + "-verification-attempts.jsonl")
+        if candidate.exists():
+            attempts_path = candidate
+
+    verify_records = []
+    if verify_path is not None:
+        verify_records = list(iter_json_objects(verify_path.read_text(encoding="utf-8")))
+
+    console = None
+    if console_path is not None:
+        console = ConsoleLog(console_path.read_text(encoding="utf-8"))
+
+    attempts = None
+    attempts_start = None
+    if attempts_path is not None:
+        attempts_text = attempts_path.read_text(encoding="utf-8")
+        attempts = _function_to_verification_status(attempts_text)
+        attempts_start = _get_timestamp_of_earliest_verification_attempt(attempts_text)
+
+    # If the console log did not supply the file path, derive it from the
+    # "<stem>-avocado-verify.jsonl" filename (-> "<stem>.c").
+    file_name_hint = None
+    if verify_path is not None:
+        file_name_hint = c_file_from_jsonl(str(verify_path))
+
+    report = build_report(verify_records, console, attempts, attempts_start, file_name_hint)
+
+    text = json.dumps(report, indent=2)
+    out_path = args.output
+    if out_path is None and verify_path is not None:
+        stem = verify_path.name[: -len("-avocado-verify.jsonl")]
+        out_path = verify_path.with_name(stem + "-time-benchmarks.json")
+
+    if out_path is None:
+        print(text)
+    else:
+        out_path.write_text(text + "\n", encoding="utf-8")
+        print(f"wrote {out_path}")
+    return 0
+
+
+def _classify_log_type(path: Path) -> str:
+    """Return the type (one of "verify", "attempts", or "console") given a file path.
+
+    Args:
+        path (Path): The path to the log file.
+
+    Returns:
+        str: The log type of the file at the given path.
+    """
+    name = path.name
+    if name.endswith("-avocado-verify.jsonl"):
+        return "verify"
+    if name.endswith("-verification-attempts.jsonl"):
+        return "attempts"
+    return "console"
+
+
+def _function_to_verification_status(text: str) -> dict[str, tuple[bool, int]]:
+    """Group ``-verification-attempts.jsonl`` records by function, preserving order.
+
+    Per function, measures (1) if the function was verified on the first attempt and
+    (2) how many total attempts are tried.
+
+    Returns:
+        dict[str, tuple[bool, int]]: Maps each function name to the tuple of
+            first-try verification and number of total verification attempts.
+    """
+    summaries: dict[str, tuple[bool, int]] = {}
+    for obj in iter_json_objects(text):
+        fn = obj.get("function")
+        if fn is None:
+            continue
+        verified = obj.get("verified") is True
+        summary = summaries.get(fn)
+        if summary is None:
+            summaries[fn] = (verified, 1)
+        else:
+            is_verified_on_first_attempt, total_attempt_count = summary
+            summaries[fn] = (is_verified_on_first_attempt, total_attempt_count + 1)
+    return summaries
+
+
+def _get_timestamp_of_earliest_verification_attempt(text: str) -> datetime | None:
+    """Return the timestamp of the earliest verification attempt.
+
+    Args:
+        text (str): The content of the log file of verification attempts.
+
+    Returns:
+        datetime | None: The timestamp of the earliest verification attempt if found, else None.
+    """
+    return min(
+        (parse_iso(ts) for obj in iter_json_objects(text) if (ts := obj.get("ts"))),
+        default=None,
+    )
+
+
+def build_report(
+    verify_records: list[dict],
+    console: ConsoleLog | None,
+    attempts: dict[str, tuple[bool, int]] | None,
+    attempts_start: datetime | None,
+    file_name_hint: str | None,
+) -> dict:
+    """Assemble the timing report for one avocado-verify run from its parsed logs.
+
+    Returns:
+        dict: The timing report, with keys ``file_name``, ``total_time_to_verify``,
+            ``functions_verified``, ``functions_total``, and ``functions``.
+    """
+    attempts = attempts or {}
+
+    rows: list[dict] = []  # Each row represents a single record per function.
+    run_summary: dict | None = None
+
+    if verify_records:
+        for rec in verify_records:
+            if rec.get("type") == "run_summary":
+                run_summary = rec
+                continue
+            # Skip malformed/nameless records.
+            if rec.get("function") is None or rec.get("timestamp") is None:
+                continue
+            rows.append(_construct_row(rec))
+
+    elif console and console.status_events:
+        # Fall back to the console log's per-function verdicts (no cost available).
+        for name, status, ts in console.status_events:
+            rows.append(
+                {
+                    "name": name,
+                    "cost": None,
+                    "is_verified": status == "VERIFIED",
+                    "completion_ts": ts,
+                    "verification_attempts": None,
+                    "agent_duration_ms": None,
+                    "timed_out": status == "CLAUDE_TIMED_OUT",
+                }
+            )
+    else:
+        raise SystemExit(
+            "error: need either a -avocado-verify.jsonl or a claude-output console "
+            "log with per-function verdicts to produce a report."
+        )
+
+    if not rows:
+        raise SystemExit("error: no per-function records found to build a report.")
+    rows.sort(key=operator.itemgetter("completion_ts"))
+
+    run_start = _resolve_run_start(rows, console, attempts_start)
+    run_end = rows[-1]["completion_ts"]
+    total_ms = epoch_ms(run_end) - epoch_ms(run_start)  # Total run time.
+
+    functions = []
+    prev_boundary = run_start
+    for row in rows:
+        # Constructs a record for each function.
+        functions.append(_construct_function_record(row, prev_boundary, attempts))
+        prev_boundary = row["completion_ts"]
+
+    if console and console.file_path:
+        file_name = console.file_path
+    else:
+        file_name = file_name_hint
+
+    verified_count, total_count = (
+        _get_verification_counts_from_summary(run_summary, console, functions)
+    )
+
+    return {
+        "file_name": file_name,
+        "total_time_to_verify": total_ms,
+        "functions_verified": verified_count,
+        "functions_total": total_count,
+        "functions": functions,
+    }
+
+
+def _construct_row(rec: dict) -> dict:
+    name = rec["function"]
+    claude_sessions = rec.get("claude") or []
+    agent_ms = sum(int(s.get("duration_ms") or 0) for s in claude_sessions)
+    # A run timed out if any agent session or the CBMC step timed out.
+    timed_out = any(bool(s.get("timed_out")) for s in claude_sessions) or bool(
+        (rec.get("cbmc") or {}).get("timed_out")
+    )
+
+    return {
+        "name": name,
+        "cost": rec.get("total_cost_to_verify_usd"),
+        "is_verified": rec.get("outcome") == "VERIFIED",
+        "completion_ts": parse_iso(rec["timestamp"]),
+        "verification_attempts": rec.get("verification_attempts"),
+        "agent_duration_ms": agent_ms,
+        "timed_out": timed_out,
+    }
+
+
+def _resolve_run_start(
+    rows: list[dict], console: ConsoleLog | None, attempts_start: datetime | None
+) -> datetime:
+    first_completion = rows[0]["completion_ts"]
+
+    run_start = console.start if console and console.start else None
+    if run_start is None and attempts_start is not None:
+        # Earliest CBMC firing is the next-best lower bound on the run start.
+        run_start = attempts_start
+    if run_start is not None and run_start > first_completion:
+        print(
+            "warning: run start is after the first completion; clamping.",
+            file=sys.stderr,
+        )
+        run_start = first_completion
+    elif run_start is None:
+        # Estimate the first function's start (no attempts log for concrete reference).
+        agent_ms = rows[0].get("agent_duration_ms")
+        run_start = (
+            first_completion - timedelta(milliseconds=agent_ms) if agent_ms else first_completion
+        )
+
+    return run_start
+
+
+def _construct_function_record(
+    row: dict, prev_boundary: datetime, attempts: dict[str, tuple[bool, int]]
+) -> dict:
+    span_ms = epoch_ms(row["completion_ts"]) - epoch_ms(prev_boundary)
+
+    status = attempts.get(row["name"])  # (first_verified, attempt_count) or None.
+    n_attempts = row["verification_attempts"]
+    if n_attempts is None and status is not None:
+        n_attempts = status[1]
+
+    if status is not None:
+        first_attempt_verified: bool | None = status[0]
+    elif n_attempts == 1:
+        # The only attempt's result is the function's result.
+        first_attempt_verified = row["is_verified"]
+    else:
+        first_attempt_verified = None
+
+    return {
+        "name": row["name"],
+        "cost": None if row["cost"] is None else round(row["cost"], 3),
+        "time_taken_to_verify": span_ms,
+        "is_verified": row["is_verified"],
+        "timed_out": row["timed_out"],
+        "verification_attempts": n_attempts,
+        "first_attempt_verified": first_attempt_verified,
+    }
+
+
+def _get_verification_counts_from_summary(
+    run_summary: dict | None, console: ConsoleLog | None, functions: list[dict]
+) -> tuple[int, int]:
+    """Return the count of verified functions and the number of all functions in a summary.
+
+    Args:
+        run_summary (dict): The run summary.
+        console (ConsoleLog | None): The console log.
+        functions (list[dict]): The functions.
+
+    Returns:
+        tuple[int, int]: The count of verified functions and the number of all functions in a
+            summary
+    """
+    verified_count = sum(1 for f in functions if f["is_verified"])
+    total_count = len(functions)
+    if run_summary is not None and "verified" in run_summary and "total" in run_summary:
+        verified_count = run_summary["verified"]
+        total_count = run_summary["total"]
+    elif console and console.verified_count is not None and console.total_count is not None:
+        verified_count = console.verified_count
+        total_count = console.total_count
+
+    return verified_count, total_count
+
+
+if __name__ == "__main__":
+    main()
