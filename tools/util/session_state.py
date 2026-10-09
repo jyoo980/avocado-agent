@@ -36,10 +36,12 @@ RUN_STATE_SUFFIX = "-avocado-run-state.json"
 # What is left out when the source directory is copied for a session or a ground-truth run, and
 # what is not counted as an edit by the agent: the harness's and the tool's own logs, state and
 # caches (including the compile-failure log the tool writes into whatever directory the agent runs
-# it from), CBMC intermediates, and mutant sources. Each copy then starts clean and, in particular,
+# it from), CBMC intermediates, mutant sources, and the folder metadata macOS writes whenever a
+# directory is opened in Finder. Each copy then starts clean and, in particular,
 # gets its own `<stem>-verification-attempts.jsonl`.
 SNAPSHOT_IGNORE = shutil.ignore_patterns(
     ".git",
+    ".DS_Store",
     "*.goto",
     "*-callgraph.json",
     "*.jsonl",
