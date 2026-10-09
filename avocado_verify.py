@@ -50,7 +50,8 @@ from tools.run_cbmc import RunCbmcResult, compile_with_goto_cc
 from tools.run_cbmc_and_mutation_testing import VERIFICATION_ATTEMPTS_LOG_SUFFIX, verify_function
 from tools.util import get_in_file_callees_for, get_in_file_callers_of
 from tools.util.callgraph import CallGraph
-from tools.util.contract_merge import MergeReport, merge_function
+from tools.util.contract_merge import MergeReport, functions_affected_by, merge_function
+from tools.util.session_state import SNAPSHOT_IGNORE, write_run_state, write_session_info
 
 # Per-function wall-clock budget for a single `claude -p` session. A session may run CBMC
 # several times (each with its own multi-minute timeout) across the coverage and quality
@@ -100,19 +101,9 @@ _SESSION_DIR_PREFIX = "avocado-session-"
 _GROUND_TRUTH_DIR_PREFIX = "avocado-ground-truth-"
 
 # What is left out when the source directory is copied for a session or a ground-truth run, and
-# what `_report_stray_edits` does not count as an edit: the harness's and the tool's own logs and
-# caches (including the compile-failure log the tool writes into whatever directory the agent runs
-# it from), CBMC intermediates, and mutant sources. Each copy then starts clean and, in particular,
-# gets its own `<stem>-verification-attempts.jsonl`.
-_SNAPSHOT_IGNORE = shutil.ignore_patterns(
-    ".git",
-    "*.goto",
-    "*-callgraph.json",
-    "*.jsonl",
-    "*__mutant_*.c",
-    "*__clause_drop_*.c",
-    "mutation_compile_failures.log",
-)
+# what `_report_stray_edits` does not count as an edit; shared with the agent-side tools, which
+# copy the directory the same way (see `tools.util.session_state.SNAPSHOT_IGNORE`).
+_SNAPSHOT_IGNORE = SNAPSHOT_IGNORE
 
 # Serialises every read-for-merge and write of the canonical file, and every directory copy taken
 # of it, so a copy is always internally consistent and merges never interleave.
@@ -481,6 +472,10 @@ def _fork_session(function: str, canonical_file: Path) -> _Session:
     caches, CBMC intermediates and mutant sources, so the copy starts clean and the tool's
     verification-attempts log for this session starts empty beside the copy.
 
+    The session's identity and fork base are also written into the temporary root, beside the
+    copied directory, for the tools the agent runs in the copy (`tools.util.session_state`). The
+    harness itself keeps using `fork_base` from memory.
+
     Args:
         function (str): The function the session will work on.
         canonical_file (Path): Absolute path to the canonical source file.
@@ -493,6 +488,7 @@ def _fork_session(function: str, canonical_file: Path) -> _Session:
         root = Path(tempfile.mkdtemp(prefix=_SESSION_DIR_PREFIX))
         directory = root / canonical_file.parent.name
         shutil.copytree(canonical_file.parent, directory, ignore=_SNAPSHOT_IGNORE)
+    write_session_info(root, function=function, canonical_file=canonical_file, fork_base=fork_base)
     return _Session(
         function=function,
         directory=root,
@@ -760,7 +756,7 @@ def _merge_and_verify(
                 returncode = compiles(merged)
             if returncode == 0 and report.carried:
                 assert state is not None
-                affected = _functions_affected_by(
+                affected = functions_affected_by(
                     report.carried, call_graph=call_graph, verified=state.verified, exclude=function
                 )
                 logger.info(
@@ -796,6 +792,8 @@ def _merge_and_verify(
                 staged = canonical_file.with_name(f"{canonical_file.name}.avocado-merge")
                 staged.write_bytes(merged)
                 Path(staged).replace(canonical_file)
+        if state is not None:
+            _publish_run_state(state, canonical_file)
     if report.merged:
         if report.transplanted:
             logger.info(f"{function}: transplanted {', '.join(report.transplanted)}")
@@ -818,37 +816,21 @@ def _merge_and_verify(
                 state.verified.add(function)
             else:
                 state.verified.discard(function)
+            _publish_run_state(state, canonical_file)
     return report, cbmc, reverified
 
 
-def _functions_affected_by(
-    carried: list[str], *, call_graph: CallGraph | None, verified: set[str], exclude: str
-) -> list[str]:
-    """Return the functions whose ground truth a merge carrying edits to `carried` can change.
+def _publish_run_state(state: _MergeState, canonical_file: Path) -> None:
+    """Write the run's merge state beside the canonical file for the agent-side tools.
 
-    Those are the carried functions themselves (their contracts changed) and every verified
-    in-file caller of one (a caller is verified against its callees' contracts). `exclude` is the
-    merging function, which is verified separately.
+    Must be called with `_CANONICAL_LOCK` held, so the published sets are a consistent view of
+    `state`. The harness never reads the file back.
 
     Args:
-        carried (list[str]): Functions whose edited definitions the merge carries.
-        call_graph (CallGraph | None): Call graph of the file; None yields no callers.
-        verified (set[str]): Functions currently verified on the canonical file.
-        exclude (str): The function whose session is merging.
-
-    Returns:
-        list[str]: The affected functions, sorted.
+        state (_MergeState): The run's shared merge state.
+        canonical_file (Path): Absolute path to the canonical source file.
     """
-    affected = set(carried)
-    if call_graph is not None:
-        affected.update(
-            caller
-            for caller in verified
-            if caller in call_graph
-            and any(other in call_graph.get_callees(caller).internal for other in carried)
-        )
-    affected.discard(exclude)
-    return sorted(affected)
+    write_run_state(canonical_file, verified=state.verified, active=state.active)
 
 
 def _report_stray_edits(session: _Session, canonical_dir: Path) -> list[str]:
@@ -986,6 +968,8 @@ def _verify_functions(
     state = _MergeState(
         verified={function for function in _verified_functions(log_path) if function in done}
     )
+    with _CANONICAL_LOCK:
+        _publish_run_state(state, Path(file_path))
     usage_limited: set[str] = set()
     active: dict[Future[FunctionVerificationResult], str] = {}
     results: list[FunctionVerificationResult] = []
@@ -1005,6 +989,7 @@ def _verify_functions(
                     )
                     with _CANONICAL_LOCK:
                         state.active.add(function)
+                        _publish_run_state(state, Path(file_path))
                     future = pool.submit(
                         _verify_via_agent,
                         function,
@@ -1336,8 +1321,10 @@ def _build_prompt(
     preconditions being written. It also says that only runs of that command against that path
     count as attempts (in the measured runs a third of the agent's verifier calls were made on
     copies of the file the harness could not see), and that the session works in a private copy
-    of which the function's own definition, new top-level helpers and sound fixes to other
-    functions' contracts are merged back.
+    of which the function's contract, new top-level helpers and sound fixes to other functions'
+    contracts are merged back while everything else must stay as it was (the edit rules are in
+    CLAUDE.md). It ends with the exact `avocado-validate reverify` command, to be run once when
+    the agent has changed another function's contract.
 
     Args:
         function (str): The function to specify and verify.
@@ -1352,8 +1339,10 @@ def _build_prompt(
         str: The prompt text.
     """
     command = ["avocado-run-cbmc", "--function", function, "--file", file_path]
+    reverify_command = ["avocado-validate", "reverify", "--function", function, "--file", file_path]
     for include_dir in include_dirs:
         command += ["-I", include_dir]
+        reverify_command += ["-I", include_dir]
     callees = get_in_file_callees_for(function, call_graph)
     callers = get_in_file_callers_of(function, call_graph)
     callees_text = ", ".join(callees) if callees else "none"
@@ -1380,12 +1369,20 @@ def _build_prompt(
         f"{callers_text}\n"
         "\n"
         "You are working in a private copy of the source directory. When this session ends, "
-        f"your changes to {function}'s definition (its contract and body) and any new top-level "
-        "helper functions, declarations or macros you add to this file are kept. A contract you "
-        "fix on another function in this file is kept too, provided no other session is working "
-        "on that function and every function that already verified still verifies with your "
-        "change; otherwise it is discarded. Edits to other files and to headers are always "
-        "discarded."
+        f"your contract for {function} and any new top-level helper functions, declarations or "
+        "macros you add to this file are kept. A contract you fix on another function in this "
+        "file is kept too, provided no other session is working on that function and every "
+        "function that already verified still verifies with your change; otherwise it is "
+        "discarded. Everything else that was in this file when the session started must stay "
+        "exactly as it was, and the names you add must start with avocado_spec_ or "
+        "AVOCADO_SPEC_; the edit rules are in CLAUDE.md. Edits to other files and to headers are "
+        "always discarded.\n"
+        "\n"
+        f"If you change the contract of any function other than {function}, run this once, "
+        "after your last successful run of the command above. It re-verifies the functions your "
+        "change can affect and lists any of your edits that would not be merged.\n"
+        "\n"
+        f"    {shlex.join(reverify_command)}"
     )
 
 

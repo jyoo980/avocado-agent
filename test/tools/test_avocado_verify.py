@@ -190,6 +190,19 @@ def test_prompt_states_the_isolation_rule() -> None:
     assert "private copy of the source directory" in prompt
     assert "A contract you fix on another function in this file is kept too" in prompt
     assert "Edits to other files and to headers are always discarded" in prompt
+    assert "must stay exactly as it was" in prompt and "contract and body" not in prompt
+    assert prompt.endswith("avocado-validate reverify --function swap --file /tmp/copy/q.c")
+
+
+def test_prompt_reverify_command_carries_the_include_dirs() -> None:
+    prompt = _build_prompt(
+        "partition",
+        file_path="/src/quicksort.c",
+        call_graph=_quicksort_call_graph(),
+        include_dirs=["/src/include"],
+    )
+    expected = "avocado-validate reverify --function partition --file /src/quicksort.c"
+    assert f"{expected} -I /src/include" in prompt
 
 
 def test_append_jsonl_is_safe_under_threads(tmp_path: Path) -> None:

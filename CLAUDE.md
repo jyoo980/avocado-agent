@@ -56,6 +56,23 @@ You can also search the web for more CBMC documentation.
 
   Prints function names callees-first, one per line.
 
+- **To check that your edits to other functions leave every already-verified function verified**, run:
+
+  ```sh
+  avocado-validate reverify --function <FUNCTION_NAME> \
+                            --file <PATH_TO_C_FILE> \
+                            [-I <PATH_TO_INCLUDE_DIR(S)>]...
+  ```
+
+  `<FUNCTION_NAME>` is the function you were asked to verify, not the other function you edited.
+  Exits with status 0 if nothing that verified before stops verifying, 1 if something does (each
+  line names the function and which of your edits caused it), and 2 if the check could not be made.
+  It also lists any of your edits that would not be merged, with the reason.
+
+  If you edited only your own function and added helpers, it finishes at once. Otherwise it runs
+  CBMC once for each function your edits can affect, which can take several minutes, so run it once
+  rather than after every edit. It does not count as a verification attempt.
+
 ## Workflow
 
 Work in this order, and do not skip the first CBMC run:
@@ -63,11 +80,17 @@ Work in this order, and do not skip the first CBMC run:
 1. Read the function, the contracts already written for its in-file callees (they are replaced by
    their contracts during verification, so what they promise is all you get), and any callers in
    the same file, so your preconditions are satisfiable at every call site.
-2. Write the contract, then run `avocado-run-cbmc` right away. Do not run CBMC by hand, do not
-   run the tool in the background, and do not read the harness's `*.jsonl` logs: the tool's own
-   output is the source of truth and already includes the diff of every surviving mutant.
-3. Strengthen the contract using the surviving-mutant diffs and re-run. Stop as soon as every
-   decided mutant is killed, or when two consecutive runs leave the kill score unchanged.
+2. Write the contract, check your edit against the [edit rules](#edit-rules) below, then run
+   `avocado-run-cbmc` right away. Do not run CBMC by hand, do not run the tool in the background,
+   and do not read the harness's `*.jsonl` logs: the tool's own output is the source of truth and
+   already includes the diff of every surviving mutant.
+3. Strengthen the contract using the surviving-mutant diffs, check the edit rules again, and
+   re-run. Stop as soon as every decided mutant is killed, or when two consecutive runs leave the
+   kill score unchanged.
+4. If you changed the contract of any function other than the one you were asked to verify, run
+   `avocado-validate reverify` once, after your last successful `avocado-run-cbmc` run. If it
+   reports a broken function, fix or undo the edit it names, re-run `avocado-run-cbmc`, and run
+   the check again.
 
 Do not read the harness's Python sources, and do not experiment with CBMC's `--depth` or
 `--unwind` bounds or probe whether a proof is vacuous: the bounds are fixed by the harness and are
@@ -91,6 +114,69 @@ not yours to tune. Spend your turns on the contract itself.
   `__CPROVER_object_upto` for buffers); a missing target fails verification, an over-broad one
   weakens callers.
 
+## Edit rules
+
+You work in a private copy of the source directory. When your session ends, the harness merges
+your copy of the source file into the shared file that every later session builds on. The goal is
+specifications only: the program must behave exactly as it did before you touched it, and a
+function that already verified must stay verified. An edit that breaks one of the rules below is
+discarded, or causes your whole session's work to be rejected, depending on the rule, so check
+your edits against rules 1-8 before each `avocado-run-cbmc` run.
+
+In these rules, *original* means everything that was in the file when your session started,
+including helpers that earlier sessions added. *New* means what you add in this
+session.
+
+Rules for what you may edit (check these yourself before each `avocado-run-cbmc` run):
+
+1. **Original code is unchanged.** Every original top-level item -- function signatures and
+   bodies, macros, typedefs, structs, globals, includes, declarations -- must still be present, in
+   the same order, with identical text. Whitespace, comments and contract clauses do not count.
+   *Why:* changing code, a macro or a signature changes what the program does.
+2. **Insertions go in two places only.** New text may appear only in the contract slot of a
+   function (between its signature and its opening brace; this may be any function in the file),
+   or at file scope. Never insert anything inside an existing function body.
+   *Why:* this keeps every original body identical, and rules out in-body assumptions,
+   assertions, havocs and plain statements.
+3. **The function you were asked to verify is intact.** It must appear exactly once and be one
+   well-formed definition.
+   *Why:* the merge cannot place a contract on a function it cannot locate unambiguously.
+4. **New names carry the reserved prefix.** Every new top-level item must introduce a name that
+   starts with `AVOCADO_SPEC_` (macros) or `avocado_spec_` (functions, variables, types). Do not
+   add definitions of unprefixed names, `#undef`, `#pragma` or `#include`. A new `#if`/`#ifdef`
+   block is allowed only if everything inside it is new and prefixed.
+   *Why:* a prefixed addition cannot redefine or switch off existing code. An unprefixed one can:
+   a `#define` can change which branch of an `#if` is compiled, a body for `malloc` replaces the
+   model every other function is verified against, and `#pragma CPROVER check disable` turns off
+   the very checks that make a verification mean something.
+5. **No `__CPROVER_assume` in new text.** It may not appear in any new helper or macro.
+   *Why:* an assumption can make a proof pass by assuming the problem away.
+6. **Only the source file is edited.** Do not add or modify any other file in the copied
+   directory, including headers and stub files. Keep scratch files and scripts outside it.
+   *Why:* other files are never merged, so a proof that depends on them does not hold on the
+   shared file.
+7. **The file compiles.** It must compile with `goto-cc`; `avocado-run-cbmc` reports a `goto-cc`
+   failure when it does not.
+   *Why:* a file that does not compile can be neither verified nor merged.
+8. **No literally false preconditions.** Do not write a `__CPROVER_requires` clause that is
+   constant false, such as `__CPROVER_requires(0)`.
+   *Why:* a false precondition makes any contract verify while proving nothing. Subtler vacuous
+   contracts show up as a kill score of zero.
+
+Rule checked by `avocado-validate reverify` (slow; run it as the workflow says):
+
+9. **No broken verified specs.** Every function that verified before your session must still
+   verify with your edits.
+   *Why:* a merge must never turn a verified function into an unverified one. Changing a
+   function's contract changes what each of its callers was verified against.
+
+Rule about other sessions (nothing to run; `avocado-validate reverify` reports it):
+
+10. **No merge conflict.** An edit to another function is not merged if another session is working
+    on that function or has changed it since your copy was taken, and your work is not merged if a
+    name you add is already defined differently in the shared file.
+    *Why:* the shared file may have moved on since your copy was taken.
+
 ## Rules
 
 - Never hard-code any values into the specifications that are related to CBMC's command-line
@@ -101,6 +187,8 @@ not yours to tune. Spend your turns on the contract itself.
   - The specification has changed, or
   - The specification of a callee has changed, or
   - You need information from a callee's verification run to help verify a caller.
-- You must not delete any scripts if you create and use them to help you.
-- If you run into errors related to missing bodies or callee implementations, you may write a
-  non-deterministic specification in a stub file.
+- You must not delete any scripts if you create and use them to help you. Create them outside the
+  copied source directory (edit rule 6).
+- If you run into errors related to missing bodies or callee implementations, do not write a body,
+  a contract or a stub for the missing function (edit rules 4 and 6). Say which function is
+  missing in your final message and move on.

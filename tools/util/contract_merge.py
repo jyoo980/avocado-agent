@@ -37,6 +37,8 @@ if TYPE_CHECKING:
 
     from tree_sitter import Node
 
+    from tools.util.callgraph import CallGraph
+
 # Preprocessor nodes whose children are top-level items of the file; the enumerator descends into
 # them so a function inside `#ifdef ... #endif` is found and its guard recorded.
 _CONTAINER_KINDS = frozenset({"preproc_if", "preproc_ifdef", "preproc_elif", "preproc_else"})
@@ -592,6 +594,40 @@ def merge_function(
         carried=carried,
         body_changed=body_changed,
     )
+
+
+def functions_affected_by(
+    carried: Collection[str],
+    *,
+    call_graph: CallGraph | None,
+    verified: Collection[str],
+    exclude: str,
+) -> list[str]:
+    """Return the functions whose ground truth a merge carrying edits to `carried` can change.
+
+    Those are the carried functions themselves (their contracts changed) and every verified
+    in-file caller of one (a caller is verified against its callees' contracts). `exclude` is the
+    merging function, which is verified separately.
+
+    Args:
+        carried (Collection[str]): Functions whose edited definitions the merge carries.
+        call_graph (CallGraph | None): Call graph of the file; None yields no callers.
+        verified (Collection[str]): Functions currently verified on the canonical file.
+        exclude (str): The function whose session is merging.
+
+    Returns:
+        list[str]: The affected functions, sorted.
+    """
+    affected = set(carried)
+    if call_graph is not None:
+        affected.update(
+            caller
+            for caller in verified
+            if caller in call_graph
+            and any(other in call_graph.get_callees(caller).internal for other in carried)
+        )
+    affected.discard(exclude)
+    return sorted(affected)
 
 
 def _same_prefix(
