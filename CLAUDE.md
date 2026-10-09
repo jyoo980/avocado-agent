@@ -69,6 +69,18 @@ You can also search the web for more CBMC documentation.
   file and what to change), and 2 if the check could not be made. The harness runs the same check
   before it merges your copy, and a copy that fails it is not merged at all.
 
+- **To check whether other sessions' work would keep any of your edits out of the merge**, run:
+
+  ```sh
+  avocado-validate conflicts --function <FUNCTION_NAME> \
+                             --file <PATH_TO_C_FILE>
+  ```
+
+  Other sessions work on other functions at the same time and merge into the shared file while
+  you work. This compares your copy with the shared file as it is now, in about a second. Exits
+  with status 0 if all of your edits would be merged, 1 if some would not (each line names the
+  edit and why), and 2 if the check could not be made.
+
 - **To check that your edits to other functions leave every already-verified function verified**, run:
 
   ```sh
@@ -93,12 +105,12 @@ Work in this order, and do not skip the first CBMC run:
 1. Read the function, the contracts already written for its in-file callees (they are replaced by
    their contracts during verification, so what they promise is all you get), and any callers in
    the same file, so your preconditions are satisfiable at every call site.
-2. Write the contract, run `avocado-validate edits` and fix whatever it reports, then run
-   `avocado-run-cbmc` right away. Do not run CBMC by hand, do not run the tool in the background,
+2. Write the contract, run `avocado-validate edits` and `avocado-validate conflicts` and fix
+   whatever they report, then run `avocado-run-cbmc` right away. Do not run CBMC by hand, do not run the tool in the background,
    and do not read the harness's `*.jsonl` logs: the tool's own output is the source of truth and
    already includes the diff of every surviving mutant.
-3. Strengthen the contract using the surviving-mutant diffs, run `avocado-validate edits` again,
-   and re-run `avocado-run-cbmc`. Stop as soon as every decided mutant is killed, or when two
+3. Strengthen the contract using the surviving-mutant diffs, run both checks again, and re-run
+   `avocado-run-cbmc`. Stop as soon as every decided mutant is killed, or when two
    consecutive runs leave the kill score unchanged.
 4. If you changed the contract of any function other than the one you were asked to verify, run
    `avocado-validate reverify` once, after your last successful `avocado-run-cbmc` run. If it
@@ -184,12 +196,15 @@ Rule checked by `avocado-validate reverify` (slow; run it as the workflow says):
    *Why:* a merge must never turn a verified function into an unverified one. Changing a
    function's contract changes what each of its callers was verified against.
 
-Rule about other sessions (nothing to run; `avocado-validate reverify` reports it):
+Rule checked by `avocado-validate conflicts` (fast; run it before each `avocado-run-cbmc` run):
 
-10. **No merge conflict.** An edit to another function is not merged if another session is working
-    on that function or has changed it since your copy was taken, and your work is not merged if a
-    name you add is already defined differently in the shared file.
-    *Why:* the shared file may have moved on since your copy was taken.
+10. **No merge conflict.** Your edit to another function's contract is left out of the merge if
+    another live session is working on that function or calls it, or if someone else has changed
+    that contract since your copy was taken; the rest of your work still merges, so your function
+    must verify without that edit. None of your work is merged if a name you add is already
+    defined differently in the shared file; rename it.
+    *Why:* the shared file moves on while you work, and a live session's proof is built against
+    the contracts of the functions it calls, so those must not change underneath it.
 
 ## Rules
 

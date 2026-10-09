@@ -20,6 +20,7 @@ from tools.validate import (
     EXIT_CANNOT_CHECK,
     EXIT_OK,
     EXIT_VIOLATIONS,
+    check_conflicts,
     check_copy_edits,
     check_reverify,
 )
@@ -171,7 +172,10 @@ def test_reverify_notes_an_edit_to_a_function_another_session_owns(
     _write_contract(session.file, "partition", _PARTITION_CONTRACT)
     result = check_reverify("swap", session.file)
     assert result.exit_code == EXIT_OK and fake.calls == []
-    assert any("function:partition (a session is running on it)" in note for note in result.notes)
+    assert any(
+        "function:partition (a live session works on it or calls it)" in note
+        for note in result.notes
+    )
 
 
 def test_reverify_cannot_check_outside_a_session_or_without_run_state(
@@ -230,3 +234,56 @@ def test_reverify_defers_to_edits_when_the_copy_breaks_the_edit_rules(
     result = check_reverify("swap", session.file)
     assert result.exit_code == EXIT_CANNOT_CHECK
     assert "avocado-validate edits" in result.render()
+
+
+def test_conflicts_is_clean_when_nothing_else_touched_what_the_session_edited(swap_session) -> None:
+    canonical, session = swap_session
+    write_run_state(canonical, verified=set(), active={"swap"})
+    _write_contract(session.file, "swap", _SWAP_CONTRACT)
+    _write_contract(session.file, "partition", _PARTITION_CONTRACT)
+    result = check_conflicts("swap", session.file)
+    assert result.exit_code == EXIT_OK and result.violations == []
+
+
+def test_conflicts_reports_an_edit_to_a_function_a_live_session_calls(swap_session) -> None:
+    canonical, session = swap_session
+    # quickSort's session is live and calls partition, so partition's contract must not move.
+    write_run_state(canonical, verified=set(), active={"swap", "quickSort"})
+    _write_contract(session.file, "swap", _SWAP_CONTRACT)
+    _write_contract(session.file, "partition", _PARTITION_CONTRACT)
+    result = check_conflicts("swap", session.file)
+    assert result.exit_code == EXIT_VIOLATIONS and len(result.violations) == 1
+    assert result.violations[0].startswith("rule 10 (no merge conflict): your edit to ")
+    assert "function:partition (a live session works on it or calls it)" in result.violations[0]
+
+
+def test_conflicts_reports_what_another_session_merged_meanwhile(swap_session) -> None:
+    canonical, session = swap_session
+    write_run_state(canonical, verified=set(), active={"swap"})
+    _write_contract(session.file, "swap", _SWAP_CONTRACT)
+    _write_contract(session.file, "partition", _PARTITION_CONTRACT)
+    # Another session's merge lands a different contract on partition in the shared file.
+    _write_contract(canonical, "partition", b"__CPROVER_requires(low <= high)")
+    result = check_conflicts("swap", session.file)
+    assert result.exit_code == EXIT_VIOLATIONS
+    assert "function:partition (changed in the canonical file since the fork)" in result.render()
+    # Without the conflicting edit, the copy is clean against the moved file.
+    session.file.write_bytes(session.fork_base)
+    _write_contract(session.file, "swap", _SWAP_CONTRACT)
+    assert check_conflicts("swap", session.file).exit_code == EXIT_OK
+
+
+def test_conflicts_reports_a_new_name_the_shared_file_now_defines_differently(swap_session) -> None:
+    canonical, session = swap_session
+    write_run_state(canonical, verified=set(), active={"swap"})
+    source = session.file.read_bytes().replace(
+        b"void swap(", b"#define AVOCADO_SPEC_N 8\nvoid swap(", 1
+    )
+    session.file.write_bytes(source)
+    shared = canonical.read_bytes().replace(
+        b"int partition", b"#define AVOCADO_SPEC_N 4\nint partition", 1
+    )
+    canonical.write_bytes(shared)
+    result = check_conflicts("swap", session.file)
+    assert result.exit_code == EXIT_VIOLATIONS
+    assert "macro:AVOCADO_SPEC_N is already defined differently" in result.render()

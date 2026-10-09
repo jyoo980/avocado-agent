@@ -50,7 +50,7 @@ from tools.run_cbmc import RunCbmcResult, compile_with_goto_cc
 from tools.run_cbmc_and_mutation_testing import VERIFICATION_ATTEMPTS_LOG_SUFFIX, verify_function
 from tools.util import get_in_file_callees_for, get_in_file_callers_of
 from tools.util.callgraph import CallGraph
-from tools.util.contract_merge import MergeReport, functions_affected_by
+from tools.util.contract_merge import MergeReport, frozen_functions_for, functions_affected_by
 from tools.util.edit_rules import check_edits, merge_copy, stray_file_violations
 from tools.util.session_state import (
     SNAPSHOT_IGNORE,
@@ -96,10 +96,12 @@ _MIN_VERIFICATION_ATTEMPTS_PER_SESSION = 2
 # the harness proceeds anyway and records the shortfall.
 _MAX_AGENT_SESSIONS_PER_FUNCTION = 3
 
-# How many functions' sessions run at once unless `--jobs` says otherwise. Sequential by default:
-# concurrency spends the account's usage limit several times faster per wall-clock hour, and the
-# numbers recorded in WORK_SO_FAR.md were taken sequentially.
-_DEFAULT_JOBS = 1
+# How many functions' sessions run at once unless `--jobs` says otherwise. A function can only
+# start once its callees are merged, so the useful number is bounded by the shape of the call
+# graph: replaying the measured lz4 run through the scheduler, four sessions give 3.8x and no
+# number gives more than 4.3x. Concurrency spends the account's usage limit that many times faster
+# per wall-clock hour; pass `--jobs 1` for a sequential run.
+_DEFAULT_JOBS = 4
 
 # Prefixes of the temporary directories that hold a session's private copy of the source directory
 # and the consistent copy the ground-truth verification runs on.
@@ -209,6 +211,9 @@ class FunctionVerificationResult:
         reverified (dict[str, RunCbmcResult]): Ground-truth verdicts of the other functions this
             merge had to re-verify because it carried edits to them or to their callees (see
             `_merge_and_verify`); empty when it carried none.
+        merge_reruns (int): How many times the function was given another session on a fresh
+            copy because a merge left out edits its proof depended on
+            (`_note_for_rerun_after_dropped_edits`). `merge` describes the last merge.
     """
 
     function: str
@@ -221,6 +226,7 @@ class FunctionVerificationResult:
     merge: MergeReport | None = None
     stray_files: list[str] = field(default_factory=list)
     reverified: dict[str, RunCbmcResult] = field(default_factory=dict)
+    merge_reruns: int = 0
 
     def to_record(self) -> dict:
         """Return a JSON-serializable record of this result for the run log.
@@ -239,6 +245,7 @@ class FunctionVerificationResult:
             "internal_callees": self.internal_callees,
             "verification_attempts": self.verification_attempts,
             "agent_sessions": self.agent_sessions,
+            "merge_reruns": self.merge_reruns,
             "claude": claude_session_records,
             "cbmc": {
                 "verdict": str(self.cbmc),
@@ -300,7 +307,7 @@ def main() -> None:
         metavar="N",
         help=(
             "How many functions to specify concurrently; each function starts as soon as the "
-            f"callees it depends on are done (default: {_DEFAULT_JOBS}, sequential)."
+            f"callees it depends on are done (default: {_DEFAULT_JOBS}; 1 is sequential)."
         ),
     )
     parser.add_argument(
@@ -521,6 +528,11 @@ def _verify_via_agent(
     copy of the result (`_merge_and_verify`). Safe to call for several functions concurrently as
     long as their callees are already merged.
 
+    The merge may leave out the session's edits to other functions (see `merge_copy`). If the
+    function then fails its ground truth, it is given another session on a fresh copy of the
+    canonical file, which now holds its merged contract, with a note saying what was left out
+    (`_note_for_rerun_after_dropped_edits`). Nothing that merged is undone.
+
     Args:
         function (str): The function to specify and verify.
         file_path (str): Absolute path to the canonical C file defining the function.
@@ -536,30 +548,51 @@ def _verify_via_agent(
         FunctionVerificationResult: The combined Claude/CBMC outcome for the function.
     """
     canonical_file = Path(file_path)
-    session = _fork_session(function, canonical_file)
-    try:
-        sessions, attempts, session_count = _run_sessions_for(
-            function,
-            session_file=session.file,
-            call_graph=call_graph,
-            timeout=timeout,
-            include_dirs=include_dirs,
+    sessions: list[ClaudeRun] = []
+    attempts = 0
+    merge_reruns = 0
+    reverified: dict[str, RunCbmcResult] = {}
+    retry_note = ""
+    while True:
+        session = _fork_session(function, canonical_file)
+        try:
+            new_sessions, new_attempts, _ = _run_sessions_for(
+                function,
+                session_file=session.file,
+                call_graph=call_graph,
+                timeout=timeout,
+                include_dirs=include_dirs,
+                retry_note=retry_note,
+            )
+            sessions += new_sessions
+            attempts += new_attempts
+            stray_files = _report_stray_edits(session, canonical_file.parent)
+            _mirror_attempts_log(session, canonical_file)
+            report, cbmc, newly_reverified = _merge_and_verify(
+                session,
+                canonical_file,
+                include_dirs=include_dirs,
+                call_graph=call_graph,
+                state=state,
+                stray_files=stray_files,
+            )
+            reverified.update(newly_reverified)
+        finally:
+            if keep_sessions:
+                logger.info(f"{function}: session copy kept at {session.directory}")
+            else:
+                shutil.rmtree(session.directory, ignore_errors=True)
+        retry_note = _note_for_rerun_after_dropped_edits(
+            function, report=report, cbmc=cbmc, sessions=sessions, state=state
         )
-        stray_files = _report_stray_edits(session, canonical_file.parent)
-        _mirror_attempts_log(session, canonical_file)
-        report, cbmc, reverified = _merge_and_verify(
-            session,
-            canonical_file,
-            include_dirs=include_dirs,
-            call_graph=call_graph,
-            state=state,
-            stray_files=stray_files,
-        )
-    finally:
-        if keep_sessions:
-            logger.info(f"{function}: session copy kept at {session.directory}")
-        else:
-            shutil.rmtree(session.directory, ignore_errors=True)
+        if not retry_note or state is None:
+            break
+        merge_reruns += 1
+        logger.warning(f"{function}: re-running on a fresh copy: {retry_note}")
+        with _CANONICAL_LOCK:
+            # The merge released the function; it is being worked on again.
+            state.active.add(function)
+            _publish_run_state(state, canonical_file)
     return FunctionVerificationResult(
         function=function,
         outcome=_outcome_for(sessions[-1], cbmc),
@@ -567,10 +600,55 @@ def _verify_via_agent(
         cbmc=cbmc,
         internal_callees=call_graph.get_callees(function).internal,
         verification_attempts=attempts,
-        agent_sessions=session_count,
+        agent_sessions=len(sessions),
         merge=report,
         stray_files=stray_files,
         reverified=reverified,
+        merge_reruns=merge_reruns,
+    )
+
+
+def _note_for_rerun_after_dropped_edits(
+    function: str,
+    *,
+    report: MergeReport,
+    cbmc: RunCbmcResult,
+    sessions: list[ClaudeRun],
+    state: _MergeState | None,
+) -> str:
+    """Return why `function` needs another session after its merge, or "" when it does not.
+
+    A merge can leave out the session's edits to other functions: one that a live session works
+    on or calls, one that someone else changed meanwhile, or one that would have broken a
+    verified function. Usually that costs nothing, and the merge stands. But when the function
+    then fails its ground truth, its proof depended on an edit that is not in the canonical file,
+    and a session that can see the canonical file as it now is has a real chance of fixing it.
+    Its contract is already merged, so that session continues the work rather than repeating it.
+
+    No re-run is asked for when the merge kept everything, when the function verifies, when the
+    function has used up its sessions (`_MAX_AGENT_SESSIONS_PER_FUNCTION`), or when the last
+    session was stopped by a usage limit.
+
+    Args:
+        function (str): The function whose session just merged.
+        report (MergeReport): What the merge kept and left out.
+        cbmc (RunCbmcResult): The function's ground truth on the merged file.
+        sessions (list[ClaudeRun]): Every session the function has had so far.
+        state (_MergeState | None): The run's shared merge state; None never re-runs.
+
+    Returns:
+        str: The note for the next session's prompt, or "".
+    """
+    if state is None or not report.merged or not report.dropped or cbmc.is_function_verified:
+        return ""
+    if len(sessions) >= _MAX_AGENT_SESSIONS_PER_FUNCTION or _is_usage_limit_hit(sessions[-1]):
+        return ""
+    return (
+        f"your contract for {function} was merged, but the merge left out your edits to other "
+        f"functions ({'; '.join(report.dropped)}) and {function} does not verify without them. "
+        f"This copy is the shared file as it is now, with your contract for {function} already "
+        f"in it. Make {function} verify against the other functions' contracts as they are "
+        "here, and do not make those edits again"
     )
 
 
@@ -581,6 +659,7 @@ def _run_sessions_for(
     call_graph: CallGraph,
     timeout: int,
     include_dirs: list[str],
+    retry_note: str = "",
 ) -> tuple[list[ClaudeRun], int, int]:
     """Run the `claude -p` session(s) for `function` against its private copy of the file.
 
@@ -594,6 +673,8 @@ def _run_sessions_for(
         call_graph (CallGraph): Call graph of the file, for the prompt's callee/caller lists.
         timeout (int): Per-session timeout in seconds.
         include_dirs (list[str]): Include directories forwarded to the agent and the tool.
+        retry_note (str): When the function is being re-run on a fresh copy, why; it leads the
+            first session's prompt.
 
     Returns:
         tuple[list[ClaudeRun], int, int]: The sessions run, the verification attempts they made,
@@ -620,7 +701,11 @@ def _run_sessions_for(
     # `_should_rerun_session`). A re-run is never identical: its prompt says why it is happening.
     command = _build_claude_command(
         _build_prompt(
-            function, file_path=file_path, call_graph=call_graph, include_dirs=include_dirs
+            function,
+            file_path=file_path,
+            call_graph=call_graph,
+            include_dirs=include_dirs,
+            retry_note=retry_note,
         ),
         file_path=file_path,
         include_dirs=include_dirs,
@@ -756,7 +841,9 @@ def _merge_and_verify(
                     snapshot=snapshot,
                     fork_base=session.fork_base,
                     function=function,
-                    frozen_functions=None if state is None else state.active,
+                    frozen_functions=None
+                    if state is None
+                    else frozen_functions_for(function, state.active, call_graph),
                 )
         scratch_root = Path(tempfile.mkdtemp(prefix=_GROUND_TRUTH_DIR_PREFIX))
         scratch_dir = scratch_root / canonical_file.parent.name
@@ -1350,9 +1437,10 @@ def _build_prompt(
     copies of the file the harness could not see), and that the session works in a private copy
     of which the function's contract, new top-level helpers and sound fixes to other functions'
     contracts are merged back while everything else must stay as it was (the edit rules are in
-    CLAUDE.md). It ends with the two exact `avocado-validate` commands: `edits`, to be run before
-    each verifier run because a copy that breaks an edit rule is not merged, and `reverify`, to be
-    run once when the agent has changed another function's contract.
+    CLAUDE.md). It ends with the exact `avocado-validate` commands: `edits` and `conflicts`, to be
+    run before each verifier run because a copy that breaks an edit rule is not merged and other
+    sessions merge while this one works, and `reverify`, to be run once when the agent has changed
+    another function's contract.
 
     Args:
         function (str): The function to specify and verify.
@@ -1368,6 +1456,14 @@ def _build_prompt(
     """
     command = ["avocado-run-cbmc", "--function", function, "--file", file_path]
     edits_command = ["avocado-validate", "edits", "--function", function, "--file", file_path]
+    conflicts_command = [
+        "avocado-validate",
+        "conflicts",
+        "--function",
+        function,
+        "--file",
+        file_path,
+    ]
     reverify_command = ["avocado-validate", "reverify", "--function", function, "--file", file_path]
     for include_dir in include_dirs:
         command += ["-I", include_dir]
@@ -1409,10 +1505,13 @@ def _build_prompt(
         "always discarded.\n"
         "\n"
         "A copy that breaks an edit rule is not merged at all, so before each run of the command "
-        "above, run this check. It takes seconds and prints every rule your copy breaks, with "
-        "the line and the reason.\n"
+        "above, run these two checks. Each takes seconds. The first prints every rule your copy "
+        "breaks, with the line and the reason. The second prints any edit of yours that other "
+        "sessions' work would keep out of the merge; other sessions are running at the same "
+        "time and merge into the shared file while you work.\n"
         "\n"
         f"    {shlex.join(edits_command)}\n"
+        f"    {shlex.join(conflicts_command)}\n"
         "\n"
         f"If you change the contract of any function other than {function}, run this once, "
         "after your last successful run of the command above. It re-verifies the functions your "

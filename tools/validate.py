@@ -11,6 +11,13 @@ and no literally false precondition. It takes seconds and is meant to be run bef
 `avocado-run-cbmc` run. Rules 1-5 and 8 come from `tools.util.edit_rules.check_edits`, the same
 function the harness calls before it merges a copy.
 
+`conflicts` checks rule 10, *no merge conflict*: whether any of the session's edits would be left
+out of the merge because of what other sessions did since the copy was taken -- an edit to a
+function that another live session works on or calls, an edit to a function whose contract someone
+else has changed meanwhile, or a new name the canonical file now defines differently. It computes
+the same merge the harness will (`tools.util.edit_rules.merge_copy`) without committing it, and
+takes about a second.
+
 `reverify` checks rule 9, *no broken verified specs*: every function that verified before the
 session must still verify with the session's edits. It reproduces what the harness does at merge
 time (`avocado_verify._merge_and_verify`): compute the merge of the copy into the canonical file,
@@ -26,6 +33,8 @@ Usage:
     % avocado-validate edits    --function <FUNCTION_NAME> \
                                 --file <PATH_TO_C_FILE_IN_THE_SESSION_COPY> \
                                 [-I <PATH_TO_INCLUDE_DIR(S)>]...
+    % avocado-validate conflicts --function <FUNCTION_NAME> \
+                                 --file <PATH_TO_C_FILE_IN_THE_SESSION_COPY>
     % avocado-validate reverify --function <FUNCTION_NAME> \
                                 --file <PATH_TO_C_FILE_IN_THE_SESSION_COPY> \
                                 [-I <PATH_TO_INCLUDE_DIR(S)>]...
@@ -43,7 +52,7 @@ from pathlib import Path
 from tools.run_cbmc import compile_with_goto_cc
 from tools.run_cbmc_and_mutation_testing import verify_function
 from tools.util import get_call_graph
-from tools.util.contract_merge import functions_affected_by
+from tools.util.contract_merge import frozen_functions_for, functions_affected_by
 from tools.util.edit_rules import (
     RULE_TITLES,
     Violation,
@@ -113,6 +122,15 @@ def main() -> None:
             "still compiles. Takes seconds; run it before every avocado-run-cbmc run."
         ),
     )
+    conflicts = subparsers.add_parser(
+        "conflicts",
+        help="Check whether other sessions' merges would keep any of your edits out.",
+        description=(
+            "Check your copy against the shared file as it is now. Reports each of your edits "
+            "that would be left out of the merge because another session works on, calls or has "
+            "changed the same function, and any new name that now clashes. Takes about a second."
+        ),
+    )
     reverify = subparsers.add_parser(
         "reverify",
         help="Re-verify the functions that verified before and that your edits can affect.",
@@ -122,13 +140,14 @@ def main() -> None:
             "run it once, after your last successful avocado-run-cbmc run."
         ),
     )
-    for subparser in (edits, reverify):
+    for subparser in (edits, conflicts, reverify):
         subparser.add_argument(
             "--function", required=True, help="The function this session works on."
         )
         subparser.add_argument(
             "--file", required=True, help="Path to the C file in the session's private copy."
         )
+    for subparser in (edits, reverify):
         subparser.add_argument(
             "-I",
             "--include-dir",
@@ -140,8 +159,11 @@ def main() -> None:
         )
     args = parser.parse_args()
 
-    check = check_copy_edits if args.check == "edits" else check_reverify
-    result = check(args.function, Path(args.file), include_dirs=args.include_dirs)
+    if args.check == "conflicts":
+        result = check_conflicts(args.function, Path(args.file))
+    else:
+        check = check_copy_edits if args.check == "edits" else check_reverify
+        result = check(args.function, Path(args.file), include_dirs=args.include_dirs)
     print(result.render())
     sys.exit(result.exit_code)
 
@@ -194,6 +216,71 @@ def check_copy_edits(
     return CheckResult(EXIT_OK, notes=["edit rules 1-8: ok"])
 
 
+def check_conflicts(function: str, session_file: Path) -> CheckResult:
+    """Check whether the merge would leave out any of the session's edits (rule 10).
+
+    Args:
+        function (str): The function the session works on.
+        session_file (Path): The session's private copy of the source file.
+
+    Returns:
+        CheckResult: `EXIT_OK` when every edit would be merged, `EXIT_VIOLATIONS` with one line
+            per edit that would not be (or the one reason nothing would be), and
+            `EXIT_CANNOT_CHECK` when the file is not in a session copy, the run's state is
+            unavailable, or the copy breaks the edit rules.
+    """
+    info = read_session_info(session_file)
+    if info is None:
+        return _cannot_check(
+            f"{session_file} is not inside a session's private copy (no session file found "
+            "above it), so there is nothing to compare it against"
+        )
+    state = read_run_state(info.canonical_file)
+    if state is None:
+        return _cannot_check(
+            f"the run's list of live sessions is not available for {info.canonical_file.name}"
+        )
+    try:
+        snapshot = session_file.read_bytes()
+        canonical = info.canonical_file.read_bytes()
+    except OSError as error:
+        return _cannot_check(f"could not read the files to compare: {error}")
+    if check_edits(info.fork_base, snapshot, function):
+        return _cannot_check(
+            "this copy breaks the edit rules, so it would not be merged at all; run "
+            "`avocado-validate edits` and fix what it reports first"
+        )
+
+    _, report = merge_copy(
+        canonical=canonical,
+        snapshot=snapshot,
+        fork_base=info.fork_base,
+        function=function,
+        frozen_functions=frozen_functions_for(
+            function, state.active, get_call_graph(str(info.canonical_file))
+        ),
+    )
+    label = f"rule 10 ({RULE_TITLES[10]})"
+    if not report.merged:
+        violation = Violation(
+            10, f"none of your work would be merged: {report.reason}; rename what clashes"
+        )
+        return CheckResult(EXIT_VIOLATIONS, violations=[str(violation)])
+    violations = [
+        str(
+            Violation(
+                10,
+                f"your edit to {entry} would be left out of the merge; the rest of your work "
+                "still merges, so make sure your function verifies without that edit",
+            )
+        )
+        for entry in report.dropped
+    ]
+    if violations:
+        return CheckResult(EXIT_VIOLATIONS, violations=violations)
+    return CheckResult(EXIT_OK, notes=[f"{label}: ok"])
+
+
 def check_reverify(
     function: str, session_file: Path, *, include_dirs: list[str] | None = None
 ) -> CheckResult:
@@ -237,7 +324,9 @@ def check_reverify(
         snapshot=snapshot,
         fork_base=info.fork_base,
         function=function,
-        frozen_functions=state.active,
+        frozen_functions=frozen_functions_for(
+            function, state.active, get_call_graph(str(info.canonical_file))
+        ),
     )
     if not report.merged:
         return _cannot_check(f"this copy would not be merged: {report.reason}")

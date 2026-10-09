@@ -20,9 +20,9 @@ verifying) need the file system or CBMC and are checked by the callers: `tools.v
 agent and `avocado_verify._merge_and_verify` for the merge. Both call `check_edits`, so the agent's
 check and the merge agree by construction.
 
-`merge_copy` then produces the file to commit. When nothing else was merged since the copy was
-taken, a copy that passes the rules *is* the merged file, apart from edits to other functions'
-contracts that the caller does not allow; no function has to be located and spliced.
+`merge_copy` then produces the file to commit, reconciling the copy with whatever other sessions
+merged since it was taken. Because every version is the same original code plus contracts plus
+new items, that is decided item by item and no function has to be located or parsed.
 
 The comparison deliberately does not use tree-sitter. Contract clauses and
 comments are erased, both files are split into tokens and then into top-level items by brace depth
@@ -37,10 +37,11 @@ import re
 from bisect import bisect_right
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from operator import itemgetter
 from typing import TYPE_CHECKING
 
 from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
-from tools.util.contract_merge import MergeReport, merge_function
+from tools.util.contract_merge import MergeReport
 
 if TYPE_CHECKING:
     from collections.abc import Collection
@@ -61,6 +62,7 @@ RULE_TITLES = {
     7: "the file compiles",
     8: "no literally false preconditions",
     9: "no broken verified specs",
+    10: "no merge conflict",
 }
 
 _TOKEN = re.compile(
@@ -227,73 +229,196 @@ def merge_copy(
 ) -> tuple[bytes, MergeReport]:
     """Return the file to commit for a session whose copy passed `check_edits`.
 
-    When the canonical file is still the fork base -- nothing was merged since the copy was taken,
-    which is always the case with one session at a time -- the copy itself is the merged file: the
-    rules guarantee it is the base plus contract clauses and new, prefixed items. The only edits
-    that may still have to come out are those to *other* items' contracts. As in
-    `tools.util.contract_merge.merge_function`, `frozen_functions` selects the rule for them:
-    None reverts every such edit; otherwise an edit is kept (and named in `MergeReport.carried`,
-    for the caller to re-verify) unless a session is running on that function.
+    Every version of the file is the same original code plus contracts on some items plus new,
+    prefixed items, so the merge is decided item by item, with no function to locate or parse.
+    Three versions are reconciled: the fork base, the session's copy (*mine*) and the canonical
+    file as it is now (*theirs*), which other sessions may have merged into since the fork.
 
-    When the canonical file has moved on, the three-way `merge_function` is used instead.
+    - The session's own function always takes its contract from the copy.
+    - A contract the session changed on *another* item is kept, and the item named in
+      `MergeReport.carried` for the caller to re-verify, unless `frozen_functions` is None (no
+      such edit is kept), the item is frozen (a live session works on it or calls it), or the
+      item's contract also changed in the canonical file since the fork. In those cases the
+      edit is left out and named in `MergeReport.dropped`; the rest of the copy still merges.
+    - Items the session added are inserted after the original item they followed in the copy.
+      One that the canonical file already has, with the same text, is skipped; one whose name
+      the canonical file now defines differently fails the merge.
+
+    When the canonical file is still the fork base -- always the case with one session at a time
+    -- this reduces to taking the copy itself, minus the edits that are left out.
 
     Args:
         canonical (bytes): The current canonical file.
         snapshot (bytes): The session's finished copy.
         fork_base (bytes): The canonical file when the copy was taken.
         function (str): The function the session worked on.
-        frozen_functions (Collection[str] | None): Functions whose edits must not be carried
-            because a session is running on them; None carries no edit to another function.
+        frozen_functions (Collection[str] | None): Functions whose contracts this session may
+            not change; None means it may change no other function's contract.
 
     Returns:
         tuple[bytes, MergeReport]: The merged file (or `canonical` unchanged on failure) and the
             report of what was kept and dropped.
     """
-    if canonical != fork_base:
-        return merge_function(
-            canonical=canonical,
-            snapshot=snapshot,
-            fork_base=fork_base,
-            function=function,
-            frozen_functions=frozen_functions,
-        )
-    comparison = _compare(fork_base, snapshot)
-    if comparison.violations:
-        rendered = [str(violation) for violation in comparison.violations]
+    mine = _compare(fork_base, snapshot)
+    if mine.violations:
+        rendered = [str(violation) for violation in mine.violations]
         return canonical, MergeReport(
             False, f"the session copy breaks {len(rendered)} edit rule(s)", violations=rendered
         )
+    theirs = mine if canonical == fork_base else _compare(fork_base, canonical)
+    if canonical != fork_base and theirs.violations:
+        return canonical, MergeReport(
+            False,
+            "the code of the canonical file changed since the copy was taken: "
+            f"{theirs.violations[0].message}",
+        )
+    theirs_source = fork_base if canonical == fork_base else canonical
+    theirs_items = mine.base_items if canonical == fork_base else theirs.snapshot_items
+    theirs_index = (
+        {index: index for index in range(len(mine.base_items))}
+        if canonical == fork_base
+        else dict(theirs.pairs)
+    )
+
     carried: list[str] = []
     dropped: list[str] = []
-    reverts: list[tuple[int, int, bytes]] = []
-    for base_index, snapshot_index in comparison.pairs:
-        original = comparison.base_items[base_index]
-        edited = comparison.snapshot_items[snapshot_index]
-        if edited.kind == "directive" or edited.name == function:
+    edits: list[tuple[int, int, bytes]] = []  # (start, end, replacement) in `theirs_source`
+    mine_to_theirs: dict[int, _Item] = {}
+    for base_index, snapshot_index in mine.pairs:
+        original = mine.base_items[base_index]
+        edited = mine.snapshot_items[snapshot_index]
+        current = theirs_items[theirs_index[base_index]]
+        mine_to_theirs[snapshot_index] = current
+        if edited.kind == "directive":
             continue
-        original_text = fork_base[original.start : original.end]
-        if _code_text(original_text) == _code_text(snapshot[edited.start : edited.end]):
+        base_text = _code_text(fork_base[original.start : original.end])
+        my_text = _code_text(snapshot[edited.start : edited.end])
+        their_text = _code_text(theirs_source[current.start : current.end])
+        if my_text in (base_text, their_text):
             continue
-        label = f"function:{edited.name}" if edited.name else f"item at line {edited.line}"
-        if edited.name is not None and frozen_functions is not None:
-            if edited.name not in frozen_functions:
-                if edited.name not in carried:
-                    carried.append(edited.name)
+        if edited.name != function:
+            reason = _reason_not_carried(
+                edited.name, frozen_functions, their_changed=their_text != base_text
+            )
+            if reason is not None:
+                label = f"function:{edited.name}" if edited.name else f"item at line {edited.line}"
+                dropped.append(label + reason)
                 continue
-            label += " (a session is running on it)"
-        dropped.append(label)
-        reverts.append((edited.start, edited.end, original_text))
-    merged = snapshot
-    for start, end, text in sorted(reverts, reverse=True):
+            if edited.name not in carried:
+                carried.append(edited.name)
+        edits.append((current.start, current.end, snapshot[edited.start : edited.end]))
+
+    their_new = {} if canonical == fork_base else _named_items(theirs, theirs.new_indices)
+    transplanted: list[str] = []
+    skipped: list[str] = []
+    for run in _runs(mine.new_indices):
+        kept = []
+        for index in run:
+            item = mine.snapshot_items[index]
+            existing = their_new.get((item.kind, item.directive, item.name)) if item.name else None
+            if existing is None:
+                kept.append(index)
+                transplanted.append(_render_new_item(item))
+            elif _code_text(canonical[existing.start : existing.end]) == _code_text(
+                snapshot[item.start : item.end]
+            ):
+                skipped.append(_render_new_item(item))
+            else:
+                return canonical, MergeReport(
+                    False,
+                    f"{_render_new_item(item)} is already defined differently in the canonical "
+                    "file",
+                    dropped=dropped,
+                )
+        if not kept:
+            continue
+        anchor = mine_to_theirs.get(run[0] - 1)
+        position = anchor.end if anchor is not None else 0
+        preceding = mine.snapshot_items[run[0] - 1].end if run[0] > 0 else 0
+        if kept == run:
+            text = snapshot[preceding : mine.snapshot_items[run[-1]].end]
+        else:
+            text = b"".join(
+                b"\n" + snapshot[mine.snapshot_items[index].start : mine.snapshot_items[index].end]
+                for index in kept
+            )
+        edits.append((position, position, text if anchor is not None else text + b"\n"))
+
+    merged = theirs_source
+    for start, end, text in sorted(edits, key=itemgetter(0, 1), reverse=True):
         merged = merged[:start] + text + merged[end:]
+    if canonical != fork_base and _compare(canonical, merged).violations:
+        return canonical, MergeReport(
+            False, "the merge would change code of the canonical file; nothing was merged"
+        )
     return merged, MergeReport(
         True,
-        transplanted=[
-            _render_new_item(comparison.snapshot_items[index]) for index in comparison.new_indices
-        ],
+        transplanted=transplanted,
+        skipped_duplicates=skipped,
         dropped=dropped,
         carried=carried,
     )
+
+
+def _reason_not_carried(
+    name: str | None, frozen_functions: Collection[str] | None, *, their_changed: bool
+) -> str | None:
+    """Return why a contract edit to another item is left out of a merge, or None to keep it.
+
+    Args:
+        name (str | None): The item's name, when it can be told.
+        frozen_functions (Collection[str] | None): Functions the session may not change; None
+            means it may change no other function.
+        their_changed (bool): True iff the item's contract changed in the canonical file since
+            the fork.
+
+    Returns:
+        str | None: A parenthesized reason to append to the item's label ("" when the caller
+            simply allows no such edit), or None when the edit is kept.
+    """
+    if frozen_functions is None or name is None:
+        return ""
+    if name in frozen_functions:
+        return " (a live session works on it or calls it)"
+    if their_changed:
+        return " (changed in the canonical file since the fork)"
+    return None
+
+
+def _named_items(comparison: _Comparison, indices: list[int]) -> dict[tuple, _Item]:
+    """Index the named items among `indices` of a comparison's snapshot by kind and name.
+
+    Args:
+        comparison (_Comparison): A comparison.
+        indices (list[int]): Indices into its `snapshot_items`.
+
+    Returns:
+        dict[tuple, _Item]: `(kind, directive, name)` to the first such item.
+    """
+    named: dict[tuple, _Item] = {}
+    for index in indices:
+        item = comparison.snapshot_items[index]
+        if item.name:
+            named.setdefault((item.kind, item.directive, item.name), item)
+    return named
+
+
+def _runs(indices: list[int]) -> list[list[int]]:
+    """Group sorted indices into runs of consecutive values.
+
+    Args:
+        indices (list[int]): Sorted, distinct indices.
+
+    Returns:
+        list[list[int]]: The maximal runs, in order.
+    """
+    runs: list[list[int]] = []
+    for index in indices:
+        if runs and runs[-1][-1] == index - 1:
+            runs[-1].append(index)
+        else:
+            runs.append([index])
+    return runs
 
 
 def function_line(source: bytes, function: str) -> int | None:

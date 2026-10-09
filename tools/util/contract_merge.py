@@ -634,6 +634,35 @@ def functions_affected_by(
     return sorted(affected)
 
 
+def frozen_functions_for(
+    function: str, active: Collection[str], call_graph: CallGraph | None
+) -> set[str]:
+    """Return the functions whose contracts the session for `function` may not change.
+
+    Those are the functions other live sessions are working on, and the in-file callees of those
+    functions: a live session's proof is being built against its callees' contracts, so they
+    must not move underneath it. The session's own callees are not frozen on its account --
+    fixing a callee's contract in passing is exactly what a session is allowed to do.
+
+    Args:
+        function (str): The function whose session is merging.
+        active (Collection[str]): Functions with a live session, `function` included or not.
+        call_graph (CallGraph | None): Call graph of the file; None freezes only the active
+            functions themselves.
+
+    Returns:
+        set[str]: The frozen functions.
+    """
+    others = {name for name in active if name != function}
+    frozen = set(others)
+    if call_graph is not None:
+        for name in others:
+            if name in call_graph:
+                frozen.update(call_graph.get_callees(name).internal)
+    frozen.discard(function)
+    return frozen
+
+
 def _same_prefix(
     snapshot: bytes,
     snapshot_span: FunctionSpan,

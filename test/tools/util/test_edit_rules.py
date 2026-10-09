@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from tools.util.callgraph import CallGraph
+from tools.util.contract_merge import frozen_functions_for
 from tools.util.edit_rules import check_edits, function_line, merge_copy, stray_file_violations
 
 BASE = b"""#include <stdio.h>
@@ -239,7 +241,9 @@ def test_merge_of_a_clean_copy_is_the_copy_itself() -> None:
     helper = b"#define AVOCADO_SPEC_MAX 8\nstatic int avocado_spec_ok(int x) { return x < AVOCADO_SPEC_MAX; }\n"
     snapshot = _with_swap_contract().replace(b"/* swap two ints */", helper)
     merged, report = _merge(snapshot)
-    assert report.merged and merged == snapshot
+    assert report.merged and SWAP_CONTRACT in merged and helper in merged
+    # The merge is built on the canonical file, so its comments survive the session.
+    assert b"/* swap two ints */" in merged and check_edits(BASE, merged, "swap") == []
     assert report.transplanted == ["macro:AVOCADO_SPEC_MAX", "function:avocado_spec_ok"]
     assert report.carried == [] and report.dropped == []
 
@@ -253,7 +257,7 @@ def test_merge_reverts_carries_or_freezes_a_contract_on_another_function() -> No
     assert report.carried == ["clamp"] and report.dropped == [] and merged == snapshot
     merged, report = _merge(snapshot, frozen={"swap", "clamp"})
     assert report.carried == []
-    assert report.dropped == ["function:clamp (a session is running on it)"]
+    assert report.dropped == ["function:clamp (a live session works on it or calls it)"]
     assert SWAP_CONTRACT in merged and CLAMP_CONTRACT not in merged
 
 
@@ -307,3 +311,107 @@ def test_declarations_inside_an_extern_c_block_are_separate_items() -> None:
     )
     assert check_edits(base, snapshot, "second") == []
     assert _rules(base, base.replace(b"return a;", b"return a + 1;"), "second") == [2]
+
+
+SWAP_HELPER = b"#define AVOCADO_SPEC_SWAP_N 2\n"
+CLAMP_HELPER = b"static int avocado_spec_in_range(int v) { return v <= CAP; }\n"
+
+
+def _swap_session_copy() -> bytes:
+    return _with_swap_contract().replace(
+        b"/* swap two ints */", b"/* swap two ints */\n" + SWAP_HELPER
+    )
+
+
+def _clamp_session_copy(contract: bytes = CLAMP_CONTRACT) -> bytes:
+    return BASE.replace(
+        b"int clamp(int v)\n{", CLAMP_HELPER + b"int clamp(int v)\n" + contract + b"{"
+    )
+
+
+def test_two_sessions_forked_from_the_same_base_both_merge() -> None:
+    after_swap, first = merge_copy(
+        canonical=BASE, snapshot=_swap_session_copy(), fork_base=BASE, function="swap"
+    )
+    assert first.merged
+    merged, second = merge_copy(
+        canonical=after_swap, snapshot=_clamp_session_copy(), fork_base=BASE, function="clamp"
+    )
+    assert second.merged, second.reason
+    assert second.transplanted == ["function:avocado_spec_in_range"]
+    for piece in (SWAP_CONTRACT, SWAP_HELPER, CLAMP_CONTRACT, CLAMP_HELPER):
+        assert piece in merged
+    # Each helper still precedes the function whose contract uses it, and no code changed.
+    assert merged.index(SWAP_HELPER) < merged.index(b"void swap(")
+    assert merged.index(CLAMP_HELPER) < merged.index(b"int clamp(")
+    assert check_edits(BASE, merged, "clamp") == []
+
+
+def test_an_edit_to_a_contract_that_someone_else_changed_meanwhile_is_left_out() -> None:
+    theirs = _clamp_session_copy(
+        contract=b"__CPROVER_ensures(__CPROVER_return_value >= 0 || v < 0)\n"
+    )
+    canonical, _ = merge_copy(canonical=BASE, snapshot=theirs, fork_base=BASE, function="clamp")
+    mine = _with_clamp_contract(_with_swap_contract())
+    merged, report = merge_copy(
+        canonical=canonical, snapshot=mine, fork_base=BASE, function="swap", frozen_functions=set()
+    )
+    assert report.merged and report.carried == []
+    assert report.dropped == ["function:clamp (changed in the canonical file since the fork)"]
+    assert SWAP_CONTRACT in merged and CLAMP_CONTRACT not in merged
+    assert b"__CPROVER_return_value >= 0 || v < 0" in merged
+
+
+def test_the_same_edit_made_by_two_sessions_is_not_a_conflict() -> None:
+    canonical, _ = merge_copy(
+        canonical=BASE, snapshot=_with_clamp_contract(BASE), fork_base=BASE, function="clamp"
+    )
+    merged, report = merge_copy(
+        canonical=canonical,
+        snapshot=_with_clamp_contract(_with_swap_contract()),
+        fork_base=BASE,
+        function="swap",
+        frozen_functions=set(),
+    )
+    assert report.merged and report.dropped == [] and report.carried == []
+    assert merged.count(CLAMP_CONTRACT) == 1 and SWAP_CONTRACT in merged
+
+
+def test_a_new_name_two_sessions_both_add() -> None:
+    canonical, _ = merge_copy(
+        canonical=BASE, snapshot=_swap_session_copy(), fork_base=BASE, function="swap"
+    )
+    same = BASE.replace(
+        b"int clamp(int v)\n{", SWAP_HELPER + b"int clamp(int v)\n" + CLAMP_CONTRACT + b"{"
+    )
+    merged, report = merge_copy(
+        canonical=canonical, snapshot=same, fork_base=BASE, function="clamp"
+    )
+    assert report.merged and report.skipped_duplicates == ["macro:AVOCADO_SPEC_SWAP_N"]
+    assert merged.count(SWAP_HELPER) == 1
+    different = same.replace(b"AVOCADO_SPEC_SWAP_N 2", b"AVOCADO_SPEC_SWAP_N 3")
+    merged, report = merge_copy(
+        canonical=canonical, snapshot=different, fork_base=BASE, function="clamp"
+    )
+    assert not report.merged and merged == canonical
+    assert "macro:AVOCADO_SPEC_SWAP_N is already defined differently" in report.reason
+
+
+def test_frozen_functions_are_other_live_sessions_and_their_callees() -> None:
+    call_graph = CallGraph(
+        {
+            "swap": {"internal": [], "external": []},
+            "partition": {"internal": ["swap"], "external": []},
+            "quickSort": {"internal": ["partition", "quickSort"], "external": []},
+            "other": {"internal": [], "external": []},
+        }
+    )
+    assert frozen_functions_for("partition", {"partition"}, call_graph) == set()
+    assert frozen_functions_for("other", {"other", "partition"}, call_graph) == {
+        "partition",
+        "swap",
+    }
+    assert frozen_functions_for("partition", {"partition", "quickSort"}, call_graph) == {
+        "quickSort"
+    }
+    assert frozen_functions_for("swap", {"swap", "quickSort"}, None) == {"quickSort"}

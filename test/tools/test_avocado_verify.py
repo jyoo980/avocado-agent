@@ -204,6 +204,7 @@ def test_prompt_reverify_command_carries_the_include_dirs() -> None:
     for check in ("edits", "reverify"):
         expected = f"avocado-validate {check} --function partition --file /src/quicksort.c"
         assert f"{expected} -I /src/include" in prompt
+    assert "avocado-validate conflicts --function partition --file /src/quicksort.c\n" in prompt
     assert prompt.index("avocado-validate edits") < prompt.index("avocado-validate reverify")
     assert "A copy that breaks an edit rule is not merged at all" in prompt
 
@@ -595,7 +596,7 @@ def test_merge_drops_a_callee_edit_while_a_session_runs_on_the_callee(
     finally:
         shutil.rmtree(session.directory, ignore_errors=True)
     assert report.merged and report.carried == [] and reverified == {}
-    assert "function:swap (a session is running on it)" in report.dropped
+    assert "function:swap (a live session works on it or calls it)" in report.dropped
     assert _CONTRACTS["swap"] not in canonical.read_bytes()
     assert fake.calls == ["partition"]
 
@@ -616,3 +617,170 @@ def test_reverified_pass_counts_as_verified_for_recorded_functions_only(tmp_path
     )
     outcomes = avocado_verify._read_function_outcomes(log)
     assert outcomes == {"swap": "VERIFIED", "partition": "VERIFIED"}
+
+
+def test_two_overlapping_sessions_both_merge_into_the_canonical_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    original = canonical.read_bytes()
+    monkeypatch.setattr(avocado_verify, "verify_function", _FakeVerify())
+    monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
+    state = avocado_verify._MergeState(active={"swap", "quickSort"}, verified=set())
+    # Both copies are taken before either session merges.
+    first = _fork_session("swap", canonical)
+    second = _fork_session("quickSort", canonical)
+    try:
+        _write_contract(first.file, "swap", _CONTRACTS["swap"])
+        helper = b"#define AVOCADO_SPEC_BOUND 8\n"
+        second.file.write_bytes(
+            second.file.read_bytes().replace(b"void quickSort", helper + b"void quickSort", 1)
+        )
+        _write_contract(second.file, "quickSort", _CONTRACTS["quickSort"])
+        graph = _quicksort_call_graph()
+        report_first, _, _ = _merge_and_verify(
+            first, canonical, include_dirs=[], call_graph=graph, state=state
+        )
+        # The canonical file has now moved on from the second session's starting point.
+        assert canonical.read_bytes() != second.fork_base
+        report_second, _, _ = _merge_and_verify(
+            second, canonical, include_dirs=[], call_graph=graph, state=state
+        )
+    finally:
+        shutil.rmtree(first.directory, ignore_errors=True)
+        shutil.rmtree(second.directory, ignore_errors=True)
+    assert report_first.merged and report_second.merged, (report_first, report_second)
+    merged = canonical.read_bytes()
+    assert _CONTRACTS["swap"] in merged and _CONTRACTS["quickSort"] in merged and helper in merged
+    assert strip_cbmc_clauses(merged)[0].replace(helper, b"").split() == original.split()
+
+
+def test_a_session_may_not_change_the_contract_of_a_function_a_live_session_calls(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    fake = _FakeVerify()
+    monkeypatch.setattr(avocado_verify, "verify_function", fake)
+    monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
+    # quickSort's session is live and calls partition; swap's session edits partition's contract.
+    state = avocado_verify._MergeState(active={"swap", "quickSort"}, verified={"partition"})
+    session = _fork_session("swap", canonical)
+    try:
+        _write_contract(session.file, "swap", _CONTRACTS["swap"])
+        _write_contract(session.file, "partition", _CONTRACTS["partition"])
+        report, _, reverified = _merge_and_verify(
+            session, canonical, include_dirs=[], call_graph=_quicksort_call_graph(), state=state
+        )
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    assert report.merged and report.carried == [] and reverified == {}
+    assert report.dropped == ["function:partition (a live session works on it or calls it)"]
+    merged = canonical.read_bytes()
+    assert _CONTRACTS["swap"] in merged and _CONTRACTS["partition"] not in merged
+
+
+class _ClaudeThatEditsACallerToo:
+    """A `_run_claude` stand-in: its first session for `swap` also edits `partition`."""
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    def __call__(self, command: list[str], timeout: int) -> ClaudeRun:
+        del timeout
+        prompt = command[2]
+        self.prompts.append(prompt)
+        match = re.search(r"Verify (\w+) in (\S+?)\.\n", prompt)
+        assert match, prompt[:80]
+        path = Path(match.group(2))
+        if len(self.prompts) == 1:
+            _write_contract(path, "swap", _CONTRACTS["swap"])
+            _write_contract(path, "partition", _CONTRACTS["partition"])
+        _log_attempts(path, "swap")
+        return _session()
+
+
+def _run_swap_whose_edit_to_partition_is_left_out(tmp_path, monkeypatch, swap_verdicts):
+    """Run `swap` while a live `quickSort` session freezes `partition`; return what happened."""
+    canonical = _stripped_quicksort(tmp_path)
+    verdicts = iter(swap_verdicts)
+
+    def ground_truth(function: str, file_path: str, include_dirs=None) -> RunCbmcResult:
+        del file_path, include_dirs
+        returncode = 0 if next(verdicts) else 10
+        return RunCbmcResult(
+            function=function, failed_step=None, timed_out=False, returncode=returncode, response=""
+        )
+
+    claude = _ClaudeThatEditsACallerToo()
+    monkeypatch.setattr(avocado_verify, "_run_claude", claude)
+    monkeypatch.setattr(avocado_verify, "verify_function", ground_truth)
+    monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
+    monkeypatch.setattr(
+        avocado_verify, "is_spec_improvable_with_mutation_testing", lambda *a, **k: False
+    )
+    state = avocado_verify._MergeState(active={"swap", "quickSort"}, verified=set())
+    result = avocado_verify._verify_via_agent(
+        "swap",
+        file_path=str(canonical),
+        call_graph=_quicksort_call_graph(),
+        timeout=10,
+        include_dirs=[],
+        state=state,
+    )
+    return canonical, claude, state, result
+
+
+def test_a_function_broken_by_a_left_out_edit_gets_another_session_on_a_fresh_copy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical, claude, state, result = _run_swap_whose_edit_to_partition_is_left_out(
+        tmp_path, monkeypatch, swap_verdicts=[False, True]
+    )
+    assert result.merge_reruns == 1 and result.agent_sessions == 2
+    assert result.outcome is avocado_verify.GroundTruthVerificationResult.VERIFIED
+    # The second session is told what was left out, and starts from the merged contract.
+    rerun = claude.prompts[1]
+    assert rerun.startswith("This is a re-run: your contract for swap was merged")
+    assert "function:partition (a live session works on it or calls it)" in rerun
+    merged = canonical.read_bytes()
+    assert _CONTRACTS["swap"] in merged and _CONTRACTS["partition"] not in merged
+    assert state.active == {"quickSort"} and "swap" in state.verified
+    assert result.to_record()["merge_reruns"] == 1
+
+
+def test_a_left_out_edit_that_breaks_nothing_does_not_cause_a_rerun(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _canonical, claude, _state, result = _run_swap_whose_edit_to_partition_is_left_out(
+        tmp_path, monkeypatch, swap_verdicts=[True]
+    )
+    assert result.merge_reruns == 0 and len(claude.prompts) == 1
+    assert result.merge is not None and result.merge.dropped
+
+
+def test_a_rerun_is_not_repeated_when_nothing_more_is_left_out(tmp_path: Path, monkeypatch) -> None:
+    _canonical, claude, _state, result = _run_swap_whose_edit_to_partition_is_left_out(
+        tmp_path, monkeypatch, swap_verdicts=[False, False, False, False, False]
+    )
+    # The first merge leaves the edit out; later copies no longer contain it, so nothing is left
+    # out again and the function is not re-run a second time.
+    assert result.merge_reruns == 1 and len(claude.prompts) == 2
+    assert result.outcome is avocado_verify.GroundTruthVerificationResult.UNVERIFIED
+
+
+def test_no_rerun_after_left_out_edits_at_the_session_cap_or_a_usage_limit() -> None:
+    note = avocado_verify._note_for_rerun_after_dropped_edits
+    report = avocado_verify.MergeReport(True, dropped=["function:partition (reason)"])
+    failed = RunCbmcResult(
+        function="swap", failed_step=None, timed_out=False, returncode=10, response=""
+    )
+    state = avocado_verify._MergeState()
+    arguments = {"report": report, "cbmc": failed, "state": state}
+    assert note("swap", sessions=[_session()], **arguments)
+    assert not note("swap", sessions=[_session()] * 3, **arguments)
+    limited = _session(is_error=True, text="Usage limit reached; resets at 3pm")
+    assert not note("swap", sessions=[limited], **arguments)
+    assert not note("swap", sessions=[_session()], report=report, cbmc=failed, state=None)
+    assert not note(
+        "swap", sessions=[_session()], report=report, cbmc=_verified_cbmc("swap"), state=state
+    )
