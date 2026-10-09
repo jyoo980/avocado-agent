@@ -16,7 +16,13 @@ from tools.util.session_state import (
     run_state_path,
     write_run_state,
 )
-from tools.validate import EXIT_CANNOT_CHECK, EXIT_OK, EXIT_VIOLATIONS, check_reverify
+from tools.validate import (
+    EXIT_CANNOT_CHECK,
+    EXIT_OK,
+    EXIT_VIOLATIONS,
+    check_copy_edits,
+    check_reverify,
+)
 
 _SWAP_CONTRACT = b"__CPROVER_requires(__CPROVER_w_ok(a, sizeof(int)))\n__CPROVER_assigns(*a, *b)"
 _PARTITION_CONTRACT = (
@@ -139,7 +145,7 @@ def test_reverify_reports_a_verified_caller_that_stops_verifying(swap_session, m
     assert result.exit_code == EXIT_VIOLATIONS
     assert len(result.violations) == 1
     violation = result.violations[0]
-    assert violation.startswith("no-broken-verified-specs: quickSort verified before")
+    assert violation.startswith("rule 9 (no broken verified specs): quickSort verified before")
     line = session.file.read_bytes().split(b"int partition")[0].count(b"\n") + 1
     assert f"your edits to partition (line {line})" in violation
 
@@ -178,3 +184,49 @@ def test_reverify_cannot_check_outside_a_session_or_without_run_state(
     result = check_reverify("swap", session.file)
     assert result.exit_code == EXIT_CANNOT_CHECK
     assert "list of verified functions is not available" in result.render()
+
+
+def test_edits_passes_a_contract_and_a_prefixed_helper(swap_session, monkeypatch) -> None:
+    _canonical, session = swap_session
+    monkeypatch.setattr(validate, "compile_with_goto_cc", lambda *a, **k: 0)
+    _write_contract(session.file, "swap", _SWAP_CONTRACT)
+    source = session.file.read_bytes().replace(
+        b"void swap(", b"#define AVOCADO_SPEC_N 8\nvoid swap(", 1
+    )
+    session.file.write_bytes(source)
+    result = check_copy_edits("swap", session.file)
+    assert result.exit_code == EXIT_OK and result.violations == []
+
+
+def test_edits_reports_every_broken_rule_with_its_line(swap_session, monkeypatch) -> None:
+    _canonical, session = swap_session
+    monkeypatch.setattr(validate, "compile_with_goto_cc", lambda *a, **k: 1)
+    source = session.file.read_bytes()
+    source = source.replace(b"void swap(", b"#undef NULL\nvoid swap(", 1)
+    source = source.replace(b"int t = *a;", b"int t = *a; t = t;", 1)
+    session.file.write_bytes(source)
+    (session.file.parent / "scratch.c").write_text("int x;\n")
+    result = check_copy_edits("swap", session.file)
+    assert result.exit_code == EXIT_VIOLATIONS
+    rules = [int(line.split()[1]) for line in result.violations]
+    assert sorted(rules) == [2, 4, 6, 7], result.violations
+    undef_line = source.split(b"#undef NULL")[0].count(b"\n") + 1
+    assert any(f"line {undef_line}: new `#undef`" in line for line in result.violations)
+
+
+def test_edits_cannot_check_outside_a_session(tmp_path: Path) -> None:
+    outside = tmp_path / "loose.c"
+    outside.write_text("int f(void) { return 0; }\n")
+    assert check_copy_edits("f", outside).exit_code == EXIT_CANNOT_CHECK
+
+
+def test_reverify_defers_to_edits_when_the_copy_breaks_the_edit_rules(
+    swap_session, monkeypatch
+) -> None:
+    canonical, session = swap_session
+    monkeypatch.setattr(validate, "verify_function", _FakeVerify())
+    write_run_state(canonical, verified={"partition"}, active={"swap"})
+    session.file.write_bytes(session.file.read_bytes().replace(b"int t = *a;", b"int t = *b;", 1))
+    result = check_reverify("swap", session.file)
+    assert result.exit_code == EXIT_CANNOT_CHECK
+    assert "avocado-validate edits" in result.render()

@@ -56,6 +56,19 @@ You can also search the web for more CBMC documentation.
 
   Prints function names callees-first, one per line.
 
+- **To check your edits against the edit rules**, run:
+
+  ```sh
+  avocado-validate edits --function <FUNCTION_NAME> \
+                         --file <PATH_TO_C_FILE> \
+                         [-I <PATH_TO_INCLUDE_DIR(S)>]...
+  ```
+
+  Checks [edit rules](#edit-rules) 1-8 in a few seconds, without running CBMC. Exits with status 0
+  if your copy breaks none of them, 1 if it breaks one (each line gives the rule, the line of your
+  file and what to change), and 2 if the check could not be made. The harness runs the same check
+  before it merges your copy, and a copy that fails it is not merged at all.
+
 - **To check that your edits to other functions leave every already-verified function verified**, run:
 
   ```sh
@@ -80,13 +93,13 @@ Work in this order, and do not skip the first CBMC run:
 1. Read the function, the contracts already written for its in-file callees (they are replaced by
    their contracts during verification, so what they promise is all you get), and any callers in
    the same file, so your preconditions are satisfiable at every call site.
-2. Write the contract, check your edit against the [edit rules](#edit-rules) below, then run
+2. Write the contract, run `avocado-validate edits` and fix whatever it reports, then run
    `avocado-run-cbmc` right away. Do not run CBMC by hand, do not run the tool in the background,
    and do not read the harness's `*.jsonl` logs: the tool's own output is the source of truth and
    already includes the diff of every surviving mutant.
-3. Strengthen the contract using the surviving-mutant diffs, check the edit rules again, and
-   re-run. Stop as soon as every decided mutant is killed, or when two consecutive runs leave the
-   kill score unchanged.
+3. Strengthen the contract using the surviving-mutant diffs, run `avocado-validate edits` again,
+   and re-run `avocado-run-cbmc`. Stop as soon as every decided mutant is killed, or when two
+   consecutive runs leave the kill score unchanged.
 4. If you changed the contract of any function other than the one you were asked to verify, run
    `avocado-validate reverify` once, after your last successful `avocado-run-cbmc` run. If it
    reports a broken function, fix or undo the edit it names, re-run `avocado-run-cbmc`, and run
@@ -119,15 +132,15 @@ not yours to tune. Spend your turns on the contract itself.
 You work in a private copy of the source directory. When your session ends, the harness merges
 your copy of the source file into the shared file that every later session builds on. The goal is
 specifications only: the program must behave exactly as it did before you touched it, and a
-function that already verified must stay verified. An edit that breaks one of the rules below is
-discarded, or causes your whole session's work to be rejected, depending on the rule, so check
-your edits against rules 1-8 before each `avocado-run-cbmc` run.
+function that already verified must stay verified. A copy that breaks any of rules 1-8 is not
+merged at all: none of the session's work is kept. Run `avocado-validate edits` before each
+`avocado-run-cbmc` run so that never comes as a surprise.
 
 In these rules, *original* means everything that was in the file when your session started,
 including helpers that earlier sessions added. *New* means what you add in this
 session.
 
-Rules for what you may edit (check these yourself before each `avocado-run-cbmc` run):
+Rules checked by `avocado-validate edits` (fast; run it before each `avocado-run-cbmc` run):
 
 1. **Original code is unchanged.** Every original top-level item -- function signatures and
    bodies, macros, typedefs, structs, globals, includes, declarations -- must still be present, in
@@ -138,9 +151,9 @@ Rules for what you may edit (check these yourself before each `avocado-run-cbmc`
    or at file scope. Never insert anything inside an existing function body.
    *Why:* this keeps every original body identical, and rules out in-body assumptions,
    assertions, havocs and plain statements.
-3. **The function you were asked to verify is intact.** It must appear exactly once and be one
-   well-formed definition.
-   *Why:* the merge cannot place a contract on a function it cannot locate unambiguously.
+3. **The function you were asked to verify is intact.** It must still be defined, as many times
+   as it was when your session started (once, unless it is defined per preprocessor branch).
+   *Why:* a contract can only be kept on a function that is still there to carry it.
 4. **New names carry the reserved prefix.** Every new top-level item must introduce a name that
    starts with `AVOCADO_SPEC_` (macros) or `avocado_spec_` (functions, variables, types). Do not
    add definitions of unprefixed names, `#undef`, `#pragma` or `#include`. A new `#if`/`#ifdef`
@@ -166,7 +179,8 @@ Rules for what you may edit (check these yourself before each `avocado-run-cbmc`
 Rule checked by `avocado-validate reverify` (slow; run it as the workflow says):
 
 9. **No broken verified specs.** Every function that verified before your session must still
-   verify with your edits.
+   verify with your edits. If one does not, your edits to other functions' contracts are
+   discarded and only the rest of your work is merged.
    *Why:* a merge must never turn a verified function into an unverified one. Changing a
    function's contract changes what each of its callers was verified against.
 

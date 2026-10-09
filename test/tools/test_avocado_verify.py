@@ -201,8 +201,11 @@ def test_prompt_reverify_command_carries_the_include_dirs() -> None:
         call_graph=_quicksort_call_graph(),
         include_dirs=["/src/include"],
     )
-    expected = "avocado-validate reverify --function partition --file /src/quicksort.c"
-    assert f"{expected} -I /src/include" in prompt
+    for check in ("edits", "reverify"):
+        expected = f"avocado-validate {check} --function partition --file /src/quicksort.c"
+        assert f"{expected} -I /src/include" in prompt
+    assert prompt.index("avocado-validate edits") < prompt.index("avocado-validate reverify")
+    assert "A copy that breaks an edit rule is not merged at all" in prompt
 
 
 def test_append_jsonl_is_safe_under_threads(tmp_path: Path) -> None:
@@ -449,7 +452,11 @@ def test_merge_failure_is_logged_and_canonical_untouched(tmp_path: Path, monkeyp
         keep_sessions=False,
     )
     assert results[0].merge is not None and not results[0].merge.merged
-    assert "swap" in results[0].merge.reason
+    # Renaming the function breaks the edit rules, and each broken rule is reported.
+    assert "edit rule" in results[0].merge.reason
+    violations = results[0].merge.violations
+    assert any(v.startswith("rule 1 ") and "function swap" in v for v in violations), violations
+    assert any(v.startswith("rule 3 ") and "swap is missing" in v for v in violations), violations
     assert canonical.read_bytes() == original
 
 
@@ -458,18 +465,17 @@ def test_merge_and_verify_rejects_a_merge_that_does_not_compile(tmp_path: Path) 
     original = canonical.read_bytes()
     session = _fork_session("swap", canonical)
     try:
-        # A helper that includes a header that exists only in the session copy.
-        (session.file.parent / "nope.h").write_text("int nope(void);\n")
+        # A helper that every edit rule allows but that the compiler rejects.
         source = session.file.read_bytes().replace(
             b"void swap(",
-            b'#include "nope.h"\nstatic int uses_nope(void) { return nope(); }\nvoid swap(',
+            b"static int avocado_spec_bad(void) { return no_such_variable; }\nvoid swap(",
             1,
         )
         session.file.write_bytes(source)
         report, cbmc, reverified = _merge_and_verify(session, canonical, include_dirs=[])
     finally:
         shutil.rmtree(session.directory, ignore_errors=True)
-    assert not report.merged and "goto-cc" in report.reason
+    assert not report.merged and "goto-cc" in report.reason and report.violations == []
     assert reverified == {}
     assert canonical.read_bytes() == original
     assert cbmc.function == "swap"

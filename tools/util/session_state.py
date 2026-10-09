@@ -178,3 +178,33 @@ def read_run_state(canonical_file: Path) -> RunState | None:
         return RunState(verified=frozenset(record["verified"]), active=frozenset(record["active"]))
     except (OSError, ValueError, KeyError, TypeError):
         return None
+
+
+def find_stray_files(session_file: Path, canonical_dir: Path) -> list[str]:
+    """Return the files other than the source file that were added or changed in a session copy.
+
+    Headers, other sources and new files in the private copy are never merged. A file is compared
+    to the canonical directory's copy of it, which no session ever writes; logs, caches, CBMC
+    intermediates and mutant sources (`SNAPSHOT_IGNORE`) do not count.
+
+    Args:
+        session_file (Path): The session's private copy of the source file.
+        canonical_dir (Path): The canonical source directory.
+
+    Returns:
+        list[str]: Relative paths tagged `added:` or `modified:`, in sorted order.
+    """
+    stray: list[str] = []
+    session_dir = session_file.parent
+    for path in sorted(session_dir.rglob("*")):
+        if not path.is_file() or path == session_file:
+            continue
+        if SNAPSHOT_IGNORE(str(path.parent), [path.name]):
+            continue
+        relative = path.relative_to(session_dir)
+        original = canonical_dir / relative
+        if not original.is_file():
+            stray.append(f"added:{relative}")
+        elif original.read_bytes() != path.read_bytes():
+            stray.append(f"modified:{relative}")
+    return stray

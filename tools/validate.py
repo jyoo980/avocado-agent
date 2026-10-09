@@ -4,7 +4,14 @@ This is the `avocado-validate` entry point that the inner agent calls from insid
 of the source directory. Each check is a subcommand that prints every violation with the rule it
 breaks and a reason the agent can act on, and exits non-zero if there is one.
 
-`reverify` checks the rule *no broken verified specs*: every function that verified before the
+`edits` checks the edit rules that need no verifier (rules 1-8 of CLAUDE.md): original code
+unchanged, insertions only in contract slots or at file scope, the session's function intact,
+reserved-prefix names, no `__CPROVER_assume` in new text, no other file touched, the file compiles,
+and no literally false precondition. It takes seconds and is meant to be run before every
+`avocado-run-cbmc` run. Rules 1-5 and 8 come from `tools.util.edit_rules.check_edits`, the same
+function the harness calls before it merges a copy.
+
+`reverify` checks rule 9, *no broken verified specs*: every function that verified before the
 session must still verify with the session's edits. It reproduces what the harness does at merge
 time (`avocado_verify._merge_and_verify`): compute the merge of the copy into the canonical file,
 and, if the merge would carry the agent's edits to other functions, re-run CBMC on those functions
@@ -16,6 +23,9 @@ A pass is the tool's best prediction, not a guarantee, because the canonical fil
 between the agent's run and the real merge.
 
 Usage:
+    % avocado-validate edits    --function <FUNCTION_NAME> \
+                                --file <PATH_TO_C_FILE_IN_THE_SESSION_COPY> \
+                                [-I <PATH_TO_INCLUDE_DIR(S)>]...
     % avocado-validate reverify --function <FUNCTION_NAME> \
                                 --file <PATH_TO_C_FILE_IN_THE_SESSION_COPY> \
                                 [-I <PATH_TO_INCLUDE_DIR(S)>]...
@@ -30,18 +40,33 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from tools.run_cbmc import compile_with_goto_cc
 from tools.run_cbmc_and_mutation_testing import verify_function
 from tools.util import get_call_graph
-from tools.util.contract_merge import find_function_span, functions_affected_by, merge_function
-from tools.util.session_state import SNAPSHOT_IGNORE, read_run_state, read_session_info
+from tools.util.contract_merge import functions_affected_by
+from tools.util.edit_rules import (
+    RULE_TITLES,
+    Violation,
+    check_edits,
+    function_line,
+    merge_copy,
+    stray_file_violations,
+)
+from tools.util.session_state import (
+    SNAPSHOT_IGNORE,
+    find_stray_files,
+    read_run_state,
+    read_session_info,
+)
 
 # Exit codes: the copy passes the check, the copy breaks the rule, or the check could not be made.
 EXIT_OK = 0
 EXIT_VIOLATIONS = 1
 EXIT_CANNOT_CHECK = 2
 
-# The name violations of the `reverify` check are reported under.
-_RULE_NO_BROKEN_VERIFIED_SPECS = "no-broken-verified-specs"
+# The rule the `reverify` check enforces, and how its passing result is labelled.
+_REVERIFY_RULE = 9
+_REVERIFY_LABEL = f"rule {_REVERIFY_RULE} ({RULE_TITLES[_REVERIFY_RULE]})"
 
 _SCRATCH_DIR_PREFIX = "avocado-validate-"
 
@@ -79,6 +104,15 @@ def main() -> None:
         )
     )
     subparsers = parser.add_subparsers(dest="check", required=True)
+    edits = subparsers.add_parser(
+        "edits",
+        help="Check your edits against the edit rules that need no verifier (rules 1-8).",
+        description=(
+            "Check that your copy changes no original code, inserts text only in contract slots "
+            "or at file scope, uses the reserved prefix for new names, touches no other file and "
+            "still compiles. Takes seconds; run it before every avocado-run-cbmc run."
+        ),
+    )
     reverify = subparsers.add_parser(
         "reverify",
         help="Re-verify the functions that verified before and that your edits can affect.",
@@ -88,24 +122,76 @@ def main() -> None:
             "run it once, after your last successful avocado-run-cbmc run."
         ),
     )
-    reverify.add_argument("--function", required=True, help="The function this session works on.")
-    reverify.add_argument(
-        "--file", required=True, help="Path to the C file in the session's private copy."
-    )
-    reverify.add_argument(
-        "-I",
-        "--include-dir",
-        action="append",
-        default=[],
-        dest="include_dirs",
-        metavar="DIR",
-        help="Directory to add to the include search path. May be repeated.",
-    )
+    for subparser in (edits, reverify):
+        subparser.add_argument(
+            "--function", required=True, help="The function this session works on."
+        )
+        subparser.add_argument(
+            "--file", required=True, help="Path to the C file in the session's private copy."
+        )
+        subparser.add_argument(
+            "-I",
+            "--include-dir",
+            action="append",
+            default=[],
+            dest="include_dirs",
+            metavar="DIR",
+            help="Directory to add to the include search path. May be repeated.",
+        )
     args = parser.parse_args()
 
-    result = check_reverify(args.function, Path(args.file), include_dirs=args.include_dirs)
+    check = check_copy_edits if args.check == "edits" else check_reverify
+    result = check(args.function, Path(args.file), include_dirs=args.include_dirs)
     print(result.render())
     sys.exit(result.exit_code)
+
+
+def check_copy_edits(
+    function: str, session_file: Path, *, include_dirs: list[str] | None = None
+) -> CheckResult:
+    """Check the session's copy against the edit rules that need no verifier (rules 1-8).
+
+    Args:
+        function (str): The function the session works on.
+        session_file (Path): The session's private copy of the source file.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+
+    Returns:
+        CheckResult: `EXIT_OK` when the copy breaks no rule, `EXIT_VIOLATIONS` with one line per
+            broken rule, and `EXIT_CANNOT_CHECK` when the file is not in a session copy or cannot
+            be read.
+    """
+    info = read_session_info(session_file)
+    if info is None:
+        return _cannot_check(
+            f"{session_file} is not inside a session's private copy (no session file found "
+            "above it), so there is nothing to compare it against"
+        )
+    try:
+        snapshot = session_file.read_bytes()
+    except OSError as error:
+        return _cannot_check(f"could not read {session_file}: {error}")
+
+    violations = check_edits(info.fork_base, snapshot, function)
+    violations += stray_file_violations(find_stray_files(session_file, info.canonical_file.parent))
+    with tempfile.TemporaryDirectory(prefix=_SCRATCH_DIR_PREFIX) as scratch_dir:
+        returncode = compile_with_goto_cc(
+            function,
+            str(session_file.resolve()),
+            include_dirs=[str(Path(directory).resolve()) for directory in include_dirs or []],
+            cwd=scratch_dir,
+        )
+    if returncode != 0:
+        violations.append(
+            Violation(
+                7,
+                f"the file does not compile with goto-cc (exit code {returncode}); run "
+                "avocado-run-cbmc to see the compiler's message",
+            )
+        )
+    if violations:
+        return CheckResult(EXIT_VIOLATIONS, violations=[str(entry) for entry in violations])
+    return CheckResult(EXIT_OK, notes=["edit rules 1-8: ok"])
 
 
 def check_reverify(
@@ -140,8 +226,13 @@ def check_reverify(
         canonical = info.canonical_file.read_bytes()
     except OSError as error:
         return _cannot_check(f"could not read the files to compare: {error}")
+    if check_edits(info.fork_base, snapshot, function):
+        return _cannot_check(
+            "this copy breaks the edit rules, so it would not be merged at all; run "
+            "`avocado-validate edits` and fix what it reports first"
+        )
 
-    merged, report = merge_function(
+    merged, report = merge_copy(
         canonical=canonical,
         snapshot=snapshot,
         fork_base=info.fork_base,
@@ -153,8 +244,8 @@ def check_reverify(
     notes = [f"note: this edit would not be merged: {entry}" for entry in report.dropped]
     if not report.carried:
         notes.append(
-            f"{_RULE_NO_BROKEN_VERIFIED_SPECS}: ok; no other function's definition would "
-            "change, so nothing needs re-verifying"
+            f"{_REVERIFY_LABEL}: ok; no other function's definition would change, so nothing "
+            "needs re-verifying"
         )
         return CheckResult(EXIT_OK, notes=notes)
 
@@ -185,9 +276,14 @@ def check_reverify(
             if name == other or name in call_graph.get_callees(other).internal
         ]
         violations.append(
-            f"{_RULE_NO_BROKEN_VERIFIED_SPECS}: {other} verified before this session and no "
-            f"longer verifies ({verdicts[other]!s}) with your edits to "
-            f"{', '.join(_with_line(name, snapshot) for name in causes)}"
+            str(
+                Violation(
+                    _REVERIFY_RULE,
+                    f"{other} verified before this session and no longer verifies "
+                    f"({verdicts[other]!s}) with your edits to "
+                    f"{', '.join(_with_line(name, snapshot) for name in causes)}",
+                )
+            )
         )
     summary = ", ".join(f"{other} {verdicts[other]!s}" for other in affected)
     notes.append(f"re-verified {len(affected)} function(s): {summary}")
@@ -197,7 +293,7 @@ def check_reverify(
             "session is merged. Fix or undo them, then re-run avocado-run-cbmc and this check."
         )
         return CheckResult(EXIT_VIOLATIONS, violations=violations, notes=notes)
-    notes.append(f"{_RULE_NO_BROKEN_VERIFIED_SPECS}: ok")
+    notes.append(f"{_REVERIFY_LABEL}: ok")
     return CheckResult(EXIT_OK, notes=notes)
 
 
@@ -223,10 +319,9 @@ def _with_line(function: str, source: bytes) -> str:
     Returns:
         str: `name (line N)`, or the bare name when the definition cannot be located.
     """
-    span = find_function_span(source, function)
-    if span is None:
+    line = function_line(source, function)
+    if line is None:
         return function
-    line = source.count(b"\n", 0, span.start_byte) + 1
     return f"{function} (line {line})"
 
 

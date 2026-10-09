@@ -124,8 +124,10 @@ class MergeReport:
             parentheses when there is a specific one.
         carried (list[str]): Other existing functions whose edited definitions were spliced in
             alongside the function's own (see `merge_function`).
-        body_changed (bool): True iff the function's body differs from the fork base. Body
-            edits are carried, as they are today; this is a diagnostic.
+        body_changed (bool): True iff the function's body differs from the fork base. A
+            diagnostic: `avocado_verify` rejects such a copy before merging it (edit rule 1).
+        violations (list[str]): The edit rules the session's copy broke, one rendered line each
+            (see `tools.util.edit_rules`); non-empty only when they are why the merge failed.
     """
 
     merged: bool
@@ -135,6 +137,7 @@ class MergeReport:
     dropped: list[str] = field(default_factory=list)
     carried: list[str] = field(default_factory=list)
     body_changed: bool = False
+    violations: list[str] = field(default_factory=list)
 
     def to_record(self) -> dict:
         """Return a JSON-serializable form of this report for the run log.
@@ -150,6 +153,7 @@ class MergeReport:
             "dropped": list(self.dropped),
             "carried": list(self.carried),
             "body_changed": self.body_changed,
+            "violations": list(self.violations),
         }
 
 

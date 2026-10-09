@@ -1,0 +1,309 @@
+"""Tests for `tools.util.edit_rules`: which edits to a session's copy the merge may keep."""
+
+from pathlib import Path
+
+from tools.util.edit_rules import check_edits, function_line, merge_copy, stray_file_violations
+
+BASE = b"""#include <stdio.h>
+#define CAP 16
+typedef unsigned char BYTE;
+struct S { int a; };
+static const int table[] = { 1, 2, 3 };
+#ifdef FAST
+static int pick(int x) { return x; }
+#else
+static int pick(int x) { return x + 1; }
+#endif
+/* swap two ints */
+void swap(int *a, int *b) {
+    int t = *a;
+    *a = *b;
+    *b = t;
+}
+
+int clamp(int v)
+{
+    if (v > CAP) { return CAP; }
+    return v;
+}
+"""
+
+SWAP_CONTRACT = (
+    b"__CPROVER_requires(__CPROVER_w_ok(a, sizeof(int)))\n"
+    b"__CPROVER_assigns(*a, *b)\n"
+    b"__CPROVER_ensures(*a == __CPROVER_old(*b))\n"
+)
+
+
+def _rules(base: bytes, snapshot: bytes, function: str = "swap") -> list[int]:
+    return [violation.rule for violation in check_edits(base, snapshot, function)]
+
+
+def _with_swap_contract(source: bytes = BASE, contract: bytes = SWAP_CONTRACT) -> bytes:
+    return source.replace(
+        b"void swap(int *a, int *b) {", b"void swap(int *a, int *b)\n" + contract + b"{"
+    )
+
+
+def test_an_unmodified_file_breaks_no_rule() -> None:
+    assert check_edits(BASE, BASE, "swap") == []
+
+
+def test_a_contract_in_the_slot_is_allowed_even_when_it_splits_the_signature_line() -> None:
+    assert check_edits(BASE, _with_swap_contract(), "swap") == []
+
+
+def test_a_contract_on_another_function_and_comments_and_whitespace_are_allowed() -> None:
+    snapshot = _with_swap_contract().replace(
+        b"int clamp(int v)\n{",
+        b"int clamp(int v)\n/* never above CAP */\n__CPROVER_ensures(__CPROVER_return_value <= CAP)\n{",
+    )
+    snapshot = snapshot.replace(b"    int t = *a;", b"\tint   t = *a;  // temporary")
+    assert check_edits(BASE, snapshot, "swap") == []
+
+
+def test_prefixed_helpers_macros_and_types_at_file_scope_are_allowed() -> None:
+    helpers = (
+        b"#define AVOCADO_SPEC_MAX 8\n"
+        b"typedef struct { int lo; int hi; } avocado_spec_range_t;\n"
+        b"struct avocado_spec_pair { int a; int b; };\n"
+        b"static int avocado_spec_limit = 4;\n"
+        b"static int avocado_spec_sorted(const int *p, int n);\n"
+        b"static int avocado_spec_same(const int *p, const int *q)\n"
+        b"{ return __CPROVER_forall { int k; (0 <= k && k < AVOCADO_SPEC_MAX) ==> p[k] == q[k] }; }\n"
+    )
+    snapshot = _with_swap_contract().replace(b"/* swap two ints */", helpers)
+    assert check_edits(BASE, snapshot, "swap") == []
+
+
+def test_a_new_conditional_block_around_new_items_is_allowed() -> None:
+    block = b"#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__\n#define AVOCADO_SPEC_LE 1\n#else\n#define AVOCADO_SPEC_LE 0\n#endif\n"
+    snapshot = BASE.replace(b"/* swap two ints */", block)
+    assert check_edits(BASE, snapshot, "swap") == []
+
+
+def test_rule_1_a_changed_body_is_reported_with_its_line() -> None:
+    snapshot = BASE.replace(b"*a = *b;", b"*a = *a;")
+    violations = check_edits(BASE, snapshot, "swap")
+    assert [violation.rule for violation in violations] == [1]
+    assert violations[0].line == 14 and "function swap changed" in violations[0].message
+
+
+def test_rule_1_changed_macro_signature_and_removed_or_moved_items() -> None:
+    assert _rules(BASE, BASE.replace(b"#define CAP 16", b"#define CAP 32")) == [1]
+    assert _rules(
+        BASE, BASE.replace(b"void swap(int *a, int *b)", b"void swap(int *a, long *b)")
+    ) == [1]
+    assert _rules(BASE, BASE.replace(b"typedef unsigned char BYTE;\n", b"")) == [1]
+    moved = BASE.replace(b"struct S { int a; };\n", b"").replace(
+        b"/* swap", b"struct S { int a; };\n/* swap"
+    )
+    violations = check_edits(BASE, moved, "swap")
+    assert [violation.rule for violation in violations] == [1] and "moved" in violations[0].message
+
+
+def test_rule_1_distinguishes_operators_that_differ_only_in_spacing() -> None:
+    base = b"int f(int a, int b) { return a - -b; }\n"
+    assert _rules(base, base.replace(b"a - -b", b"a--b"), "f") == [1]
+    assert _rules(base, base.replace(b"a - -b", b"a  -  -b"), "f") == []
+
+
+def test_rule_2_text_inserted_in_a_body_and_clauses_in_a_body() -> None:
+    statement = BASE.replace(
+        b"    int t = *a;", b'    __CPROVER_assert(a != b, "distinct");\n    int t = *a;'
+    )
+    violations = check_edits(BASE, statement, "swap")
+    assert [violation.rule for violation in violations] == [2]
+    assert violations[0].line == 13 and "inserted inside function swap" in violations[0].message
+    clause = BASE.replace(b"    int t = *a;", b"    __CPROVER_requires(a != b)\n    int t = *a;")
+    assert _rules(BASE, clause) == [2]
+
+
+def test_rule_2_a_macro_definition_in_the_contract_slot() -> None:
+    snapshot = BASE.replace(
+        b"int clamp(int v)\n{", b"int clamp(int v)\n#define AVOCADO_SPEC_X 1\n{"
+    )
+    assert _rules(BASE, snapshot) == [2]
+
+
+def test_rule_3_the_target_is_renamed_or_duplicated() -> None:
+    renamed = BASE.replace(b"void swap(", b"void renamed_swap(")
+    assert set(_rules(BASE, renamed)) == {1, 3, 4}
+    duplicated = BASE + b"void swap(int *a, int *b) { }\n"
+    assert 3 in _rules(BASE, duplicated)
+
+
+def test_rule_4_unprefixed_names_and_library_models() -> None:
+    for addition in (
+        b"static int helper(int x) { return x; }\n",
+        b"#define LIMIT 8\n",
+        b"void* malloc(unsigned long s) { return __CPROVER_allocate(s, 0); }\n",
+        b"static int counter;\n",
+        b"typedef int word_t;\n",
+    ):
+        violations = check_edits(BASE, BASE.replace(b"/* swap two ints */", addition), "swap")
+        assert [violation.rule for violation in violations] == [4], addition
+        assert violations[0].line == 11, addition
+
+
+def test_rule_4_new_undef_pragma_and_include() -> None:
+    for directive in (
+        b"#undef CAP\n",
+        b'#pragma CPROVER check disable "pointer"\n',
+        b"#include <stdlib.h>\n",
+    ):
+        snapshot = BASE.replace(b"/* swap two ints */", directive)
+        assert _rules(BASE, snapshot) == [4], directive
+    in_helper = b'static int avocado_spec_h(int x)\n{\n#pragma CPROVER check disable "bounds"\n return x; }\n'
+    assert _rules(BASE, BASE.replace(b"/* swap two ints */", in_helper)) == [4]
+
+
+def test_rule_4_a_new_conditional_may_not_enclose_or_extend_original_code() -> None:
+    enclosing = BASE.replace(b"/* swap two ints */", b"#ifndef AVOCADO_SPEC_OFF").replace(
+        b"int clamp(int v)", b"#endif\nint clamp(int v)"
+    )
+    violations = check_edits(BASE, enclosing, "swap")
+    assert [violation.rule for violation in violations] == [4]
+    assert "encloses original code" in violations[0].message
+    extending = BASE.replace(b"#endif\n", b"#elif defined(AVOCADO_SPEC_X)\n#endif\n")
+    assert _rules(BASE, extending) == [4]
+
+
+def test_rule_4_a_prefixed_name_that_already_exists() -> None:
+    base = BASE.replace(b"/* swap two ints */", b"#define AVOCADO_SPEC_N 4")
+    snapshot = base.replace(b"void swap(", b"#define AVOCADO_SPEC_N 4\nvoid swap(")
+    violations = check_edits(base, snapshot, "swap")
+    assert [violation.rule for violation in violations] == [4]
+    assert "already exists" in violations[0].message
+
+
+def test_rule_5_assume_in_a_new_helper_or_macro() -> None:
+    helper = b"static int avocado_spec_bind(int *p) { __CPROVER_assume(p != 0); return 1; }\n"
+    assert _rules(BASE, BASE.replace(b"/* swap two ints */", helper)) == [5]
+    macro = b"#define AVOCADO_SPEC_BIND(p) __CPROVER_assume((p) != 0)\n"
+    assert _rules(BASE, BASE.replace(b"/* swap two ints */", macro)) == [5]
+
+
+def test_rule_8_literally_false_preconditions_only() -> None:
+    for argument in (b"0", b"false", b"( (0) )", b"1 == 0", b"/* never */ 0"):
+        snapshot = _with_swap_contract(contract=b"__CPROVER_requires(" + argument + b")\n")
+        assert _rules(BASE, snapshot) == [8], argument
+    assert _rules(BASE, _with_swap_contract(contract=b"__CPROVER_requires(a != 0)\n")) == []
+    # A false precondition that was already in the file is not this session's doing.
+    base = _with_swap_contract(contract=b"__CPROVER_requires(0)\n")
+    assert check_edits(base, base, "swap") == []
+
+
+def test_violations_render_with_rule_number_title_and_line() -> None:
+    snapshot = BASE.replace(b"/* swap two ints */", b"#undef CAP")
+    rendered = [str(violation) for violation in check_edits(BASE, snapshot, "swap")]
+    assert rendered == [
+        "rule 4 (new names carry the reserved prefix): line 11: new `#undef` is not allowed: "
+        "it can change which branch of an existing #if is compiled"
+    ]
+
+
+def test_stray_files_become_rule_6_violations() -> None:
+    violations = stray_file_violations(["added:scratch.c", "modified:q.h"])
+    assert [violation.rule for violation in violations] == [6, 6]
+    assert "scratch.c was added" in violations[0].message
+    assert "q.h was modified" in violations[1].message
+
+
+def test_quicksort_with_quantified_contracts_matches_its_contract_free_form() -> None:
+    from tools.util.cbmc_clause_stripper import strip_cbmc_clauses  # noqa: PLC0415
+
+    annotated = Path("test/data/quicksort_with_forall.c").read_bytes()
+    bare, _ = strip_cbmc_clauses(annotated)
+    assert check_edits(bare, annotated, "partition") == []
+
+
+CLAMP_CONTRACT = b"__CPROVER_ensures(__CPROVER_return_value <= CAP)\n"
+
+
+def _with_clamp_contract(source: bytes) -> bytes:
+    return source.replace(b"int clamp(int v)\n{", b"int clamp(int v)\n" + CLAMP_CONTRACT + b"{")
+
+
+def _merge(snapshot: bytes, frozen=None, canonical: bytes = BASE):
+    return merge_copy(
+        canonical=canonical,
+        snapshot=snapshot,
+        fork_base=BASE,
+        function="swap",
+        frozen_functions=frozen,
+    )
+
+
+def test_merge_of_a_clean_copy_is_the_copy_itself() -> None:
+    helper = b"#define AVOCADO_SPEC_MAX 8\nstatic int avocado_spec_ok(int x) { return x < AVOCADO_SPEC_MAX; }\n"
+    snapshot = _with_swap_contract().replace(b"/* swap two ints */", helper)
+    merged, report = _merge(snapshot)
+    assert report.merged and merged == snapshot
+    assert report.transplanted == ["macro:AVOCADO_SPEC_MAX", "function:avocado_spec_ok"]
+    assert report.carried == [] and report.dropped == []
+
+
+def test_merge_reverts_carries_or_freezes_a_contract_on_another_function() -> None:
+    snapshot = _with_clamp_contract(_with_swap_contract())
+    merged, report = _merge(snapshot)
+    assert report.merged and report.carried == [] and report.dropped == ["function:clamp"]
+    assert merged == _with_swap_contract()
+    merged, report = _merge(snapshot, frozen={"swap"})
+    assert report.carried == ["clamp"] and report.dropped == [] and merged == snapshot
+    merged, report = _merge(snapshot, frozen={"swap", "clamp"})
+    assert report.carried == []
+    assert report.dropped == ["function:clamp (a session is running on it)"]
+    assert SWAP_CONTRACT in merged and CLAMP_CONTRACT not in merged
+
+
+def test_merge_refuses_a_copy_that_changes_code() -> None:
+    merged, report = _merge(BASE.replace(b"*a = *b;", b"*a = *a;"))
+    assert not report.merged and merged == BASE
+    assert len(report.violations) == 1 and report.violations[0].startswith("rule 1 ")
+
+
+def test_merge_does_not_need_the_file_to_parse_as_c() -> None:
+    # A quantifier in a helper's body, and an attribute macro before a return type, are what made
+    # the tree-sitter based locator lose every function that follows them.
+    hostile = (
+        b"static int avocado_spec_all(const int *p)\n"
+        b"{ return __CPROVER_forall { int k; (0 <= k && k < 4) ==> p[k] == 0 }; }\n"
+    )
+    base = BASE.replace(b"/* swap two ints */", hostile).replace(
+        b"int clamp(", b"FORCE_INLINE int clamp("
+    )
+    snapshot = _with_swap_contract(base).replace(
+        b"FORCE_INLINE int clamp(int v)\n{",
+        b"FORCE_INLINE int clamp(int v)\n" + CLAMP_CONTRACT + b"{",
+    )
+    assert check_edits(base, snapshot, "swap") == []
+    merged, report = merge_copy(
+        canonical=base,
+        snapshot=snapshot,
+        fork_base=base,
+        function="swap",
+        frozen_functions={"swap"},
+    )
+    assert report.merged and merged == snapshot and report.carried == ["clamp"]
+
+
+def test_merge_falls_back_to_the_three_way_merge_when_the_canonical_file_moved() -> None:
+    canonical = BASE.replace(b"/* swap two ints */", b"#define AVOCADO_SPEC_OTHER 1")
+    merged, report = _merge(_with_swap_contract(), canonical=canonical)
+    assert report.merged, report.reason
+    assert SWAP_CONTRACT in merged and b"#define AVOCADO_SPEC_OTHER 1" in merged
+
+
+def test_declarations_inside_an_extern_c_block_are_separate_items() -> None:
+    base = (
+        b'#if defined (__cplusplus)\nextern "C" {\n#endif\n'
+        b"int first(int a);\nint second(int a) { return a; }\n"
+        b"#if defined (__cplusplus)\n}\n#endif\n"
+    )
+    assert function_line(base, "second") == 5
+    snapshot = base.replace(
+        b"int second(int a) {", b"int second(int a)\n__CPROVER_ensures(1 == 1)\n{"
+    )
+    assert check_edits(base, snapshot, "second") == []
+    assert _rules(base, base.replace(b"return a;", b"return a + 1;"), "second") == [2]

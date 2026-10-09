@@ -50,8 +50,14 @@ from tools.run_cbmc import RunCbmcResult, compile_with_goto_cc
 from tools.run_cbmc_and_mutation_testing import VERIFICATION_ATTEMPTS_LOG_SUFFIX, verify_function
 from tools.util import get_in_file_callees_for, get_in_file_callers_of
 from tools.util.callgraph import CallGraph
-from tools.util.contract_merge import MergeReport, functions_affected_by, merge_function
-from tools.util.session_state import SNAPSHOT_IGNORE, write_run_state, write_session_info
+from tools.util.contract_merge import MergeReport, functions_affected_by
+from tools.util.edit_rules import check_edits, merge_copy, stray_file_violations
+from tools.util.session_state import (
+    SNAPSHOT_IGNORE,
+    find_stray_files,
+    write_run_state,
+    write_session_info,
+)
 
 # Per-function wall-clock budget for a single `claude -p` session. A session may run CBMC
 # several times (each with its own multi-minute timeout) across the coverage and quality
@@ -542,7 +548,12 @@ def _verify_via_agent(
         stray_files = _report_stray_edits(session, canonical_file.parent)
         _mirror_attempts_log(session, canonical_file)
         report, cbmc, reverified = _merge_and_verify(
-            session, canonical_file, include_dirs=include_dirs, call_graph=call_graph, state=state
+            session,
+            canonical_file,
+            include_dirs=include_dirs,
+            call_graph=call_graph,
+            state=state,
+            stray_files=stray_files,
         )
     finally:
         if keep_sessions:
@@ -671,11 +682,18 @@ def _merge_and_verify(
     include_dirs: list[str],
     call_graph: CallGraph | None = None,
     state: _MergeState | None = None,
+    stray_files: list[str] | None = None,
 ) -> tuple[MergeReport, RunCbmcResult, dict[str, RunCbmcResult]]:
     """Merge the session's copy into the canonical file, then run the independent ground truth.
 
+    The copy is first checked against the edit rules (`tools.util.edit_rules.check_edits`, the
+    same check the agent runs with `avocado-validate edits`): original code unchanged, insertions
+    only in contract slots or at file scope, reserved-prefix names, no `__CPROVER_assume`, no
+    false precondition, and no other file touched. A copy that breaks a rule is not merged at
+    all; the violations are logged and returned in `MergeReport.violations`.
+
     Under `_CANONICAL_LOCK`: read the canonical file, compute the merge
-    (`tools.util.contract_merge.merge_function`), copy the canonical directory to a scratch
+    (`tools.util.edit_rules.merge_copy`), copy the canonical directory to a scratch
     directory, write the merged bytes into that copy and check that `goto-cc` still accepts the
     file. Only then is the canonical file replaced (atomically, via `os.replace`); a merge that
     does not compile is rejected and the canonical file left untouched. The lock is released
@@ -697,6 +715,8 @@ def _merge_and_verify(
         call_graph (CallGraph | None): Call graph of the file, to find the callers a carried edit
             can affect; None finds none.
         state (_MergeState | None): The run's shared merge state; None carries nothing.
+        stray_files (list[str] | None): Files other than the source file that the session added
+            or changed (`_report_stray_edits`); any of them blocks the merge (edit rule 6).
 
     Returns:
         tuple[MergeReport, RunCbmcResult, dict[str, RunCbmcResult]]: What the merge did, the
@@ -714,13 +734,30 @@ def _merge_and_verify(
             snapshot = None
             merged, report = canonical, MergeReport(False, f"session copy unreadable: {error}")
         else:
-            merged, report = merge_function(
-                canonical=canonical,
-                snapshot=snapshot,
-                fork_base=session.fork_base,
-                function=function,
-                frozen_functions=None if state is None else state.active,
-            )
+            violations = [
+                str(violation)
+                for violation in (
+                    *check_edits(session.fork_base, snapshot, function),
+                    *stray_file_violations(stray_files or []),
+                )
+            ]
+            if violations:
+                merged, report = (
+                    canonical,
+                    MergeReport(
+                        False,
+                        f"the session copy breaks {len(violations)} edit rule(s)",
+                        violations=violations,
+                    ),
+                )
+            else:
+                merged, report = merge_copy(
+                    canonical=canonical,
+                    snapshot=snapshot,
+                    fork_base=session.fork_base,
+                    function=function,
+                    frozen_functions=None if state is None else state.active,
+                )
         scratch_root = Path(tempfile.mkdtemp(prefix=_GROUND_TRUTH_DIR_PREFIX))
         scratch_dir = scratch_root / canonical_file.parent.name
         shutil.copytree(canonical_file.parent, scratch_dir, ignore=_SNAPSHOT_IGNORE)
@@ -740,7 +777,7 @@ def _merge_and_verify(
             logger.warning(
                 f"{function}: reverting carried edits to {', '.join(report.carried)}: {why}"
             )
-            strict, strict_report = merge_function(
+            strict, strict_report = merge_copy(
                 canonical=canonical,
                 snapshot=snapshot,
                 fork_base=session.fork_base,
@@ -805,6 +842,8 @@ def _merge_and_verify(
             )
     else:
         logger.warning(f"{function}: merge rejected: {report.reason}")
+        for violation in report.violations:
+            logger.warning(f"{function}:   {violation}")
     try:
         cbmc = verify_function(function, str(scratch_file), include_dirs=include_dirs)
     finally:
@@ -847,19 +886,7 @@ def _report_stray_edits(session: _Session, canonical_dir: Path) -> list[str]:
     Returns:
         list[str]: Relative paths tagged `added:` or `modified:`, in sorted order.
     """
-    stray: list[str] = []
-    session_dir = session.file.parent
-    for path in sorted(session_dir.rglob("*")):
-        if not path.is_file() or path == session.file:
-            continue
-        relative = path.relative_to(session_dir)
-        if _SNAPSHOT_IGNORE(str(path.parent), [path.name]):
-            continue
-        original = canonical_dir / relative
-        if not original.is_file():
-            stray.append(f"added:{relative}")
-        elif original.read_bytes() != path.read_bytes():
-            stray.append(f"modified:{relative}")
+    stray = find_stray_files(session.file, canonical_dir)
     if stray:
         logger.warning(
             f"{session.function}: files changed in the session copy are not merged: {stray}"
@@ -1323,8 +1350,9 @@ def _build_prompt(
     copies of the file the harness could not see), and that the session works in a private copy
     of which the function's contract, new top-level helpers and sound fixes to other functions'
     contracts are merged back while everything else must stay as it was (the edit rules are in
-    CLAUDE.md). It ends with the exact `avocado-validate reverify` command, to be run once when
-    the agent has changed another function's contract.
+    CLAUDE.md). It ends with the two exact `avocado-validate` commands: `edits`, to be run before
+    each verifier run because a copy that breaks an edit rule is not merged, and `reverify`, to be
+    run once when the agent has changed another function's contract.
 
     Args:
         function (str): The function to specify and verify.
@@ -1339,9 +1367,11 @@ def _build_prompt(
         str: The prompt text.
     """
     command = ["avocado-run-cbmc", "--function", function, "--file", file_path]
+    edits_command = ["avocado-validate", "edits", "--function", function, "--file", file_path]
     reverify_command = ["avocado-validate", "reverify", "--function", function, "--file", file_path]
     for include_dir in include_dirs:
         command += ["-I", include_dir]
+        edits_command += ["-I", include_dir]
         reverify_command += ["-I", include_dir]
     callees = get_in_file_callees_for(function, call_graph)
     callers = get_in_file_callers_of(function, call_graph)
@@ -1377,6 +1407,12 @@ def _build_prompt(
         "exactly as it was, and the names you add must start with avocado_spec_ or "
         "AVOCADO_SPEC_; the edit rules are in CLAUDE.md. Edits to other files and to headers are "
         "always discarded.\n"
+        "\n"
+        "A copy that breaks an edit rule is not merged at all, so before each run of the command "
+        "above, run this check. It takes seconds and prints every rule your copy breaks, with "
+        "the line and the reason.\n"
+        "\n"
+        f"    {shlex.join(edits_command)}\n"
         "\n"
         f"If you change the contract of any function other than {function}, run this once, "
         "after your last successful run of the command above. It re-verifies the functions your "
