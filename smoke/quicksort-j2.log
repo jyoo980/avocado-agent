@@ -1,0 +1,97 @@
+2026-10-09 19:46:35.251 | INFO     | avocado_verify:main:362 - 3 function(s) to verify in callees-first order: swap, partition, quickSort
+2026-10-09 19:46:35.252 | INFO     | avocado_verify:_verify_functions:1101 - [1/3] swap: generating spec via claude -p
+2026-10-09 19:46:35.256 | DEBUG    | avocado_verify:_run_claude:1572 - running: claude --print 'Verify swap in /tmp/avocado-session-j10e01rn/quicksort-j2/quicksort.c.
+
+Run exactly this command to verify it; on success it also reports the mutation kill score and the diff of every surviving mutant. Only runs of this command against exactly this path are recorded as verification attempts; runs on copies of the file are not.
+
+    avocado-run-cbmc --function swap --file /tmp/avocado-session-j10e01rn/quicksort-j2/quicksort.c
+
+In-file callees (verified earlier; their contracts replace their bodies while this function is verified): none
+In-file callers (their call sites must satisfy the preconditions you write): partition
+
+You are working in a private copy of the source directory. When this session ends, your contract for swap and any new top-level helper functions, declarations or macros you add to this file are kept. A contract you fix on another function in this file is kept too, provided no other session is working on that function and every function that already verified still verifies with your change; otherwise it is discarded. Everything else that was in this file when the session started must stay exactly as it was, and the names you add must start with avocado_spec_ or AVOCADO_SPEC_; the edit rules are in CLAUDE.md. Edits to other files and to headers are always discarded.
+
+A copy that breaks an edit rule is not merged at all, so before each run of the command above, run these two checks. Each takes seconds. The first prints every rule your copy breaks, with the line and the reason. The second prints any edit of yours that other sessions'"'"' work would keep out of the merge; other sessions are running at the same time and merge into the shared file while you work.
+
+    avocado-validate edits --function swap --file /tmp/avocado-session-j10e01rn/quicksort-j2/quicksort.c
+    avocado-validate conflicts --function swap --file /tmp/avocado-session-j10e01rn/quicksort-j2/quicksort.c
+
+If you change the contract of any function other than swap, run this once, after your last successful run of the command above. It re-verifies the functions your change can affect and lists any of your edits that would not be merged.
+
+    avocado-validate reverify --function swap --file /tmp/avocado-session-j10e01rn/quicksort-j2/quicksort.c' --output-format json --dangerously-skip-permissions --add-dir /tmp/avocado-session-j10e01rn/quicksort-j2
+2026-10-09 19:47:03.467 | INFO     | avocado_verify:_run_sessions_for:750 - swap: verified with no mutants after 1 session(s); skipping the attempt-count floor (no kill score to raise)
+2026-10-09 19:47:03.664 | INFO     | avocado_verify:_verify_functions:1127 - [1/3] swap: VERIFIED
+2026-10-09 19:47:03.664 | INFO     | avocado_verify:_verify_functions:1101 - [2/3] partition: generating spec via claude -p
+2026-10-09 19:47:03.666 | DEBUG    | avocado_verify:_run_claude:1572 - running: claude --print 'Verify partition in /tmp/avocado-session-eiigb0m0/quicksort-j2/quicksort.c.
+
+Run exactly this command to verify it; on success it also reports the mutation kill score and the diff of every surviving mutant. Only runs of this command against exactly this path are recorded as verification attempts; runs on copies of the file are not.
+
+    avocado-run-cbmc --function partition --file /tmp/avocado-session-eiigb0m0/quicksort-j2/quicksort.c
+
+In-file callees (verified earlier; their contracts replace their bodies while this function is verified): swap
+In-file callers (their call sites must satisfy the preconditions you write): quickSort
+
+You are working in a private copy of the source directory. When this session ends, your contract for partition and any new top-level helper functions, declarations or macros you add to this file are kept. A contract you fix on another function in this file is kept too, provided no other session is working on that function and every function that already verified still verifies with your change; otherwise it is discarded. Everything else that was in this file when the session started must stay exactly as it was, and the names you add must start with avocado_spec_ or AVOCADO_SPEC_; the edit rules are in CLAUDE.md. Edits to other files and to headers are always discarded.
+
+A copy that breaks an edit rule is not merged at all, so before each run of the command above, run these two checks. Each takes seconds. The first prints every rule your copy breaks, with the line and the reason. The second prints any edit of yours that other sessions'"'"' work would keep out of the merge; other sessions are running at the same time and merge into the shared file while you work.
+
+    avocado-validate edits --function partition --file /tmp/avocado-session-eiigb0m0/quicksort-j2/quicksort.c
+    avocado-validate conflicts --function partition --file /tmp/avocado-session-eiigb0m0/quicksort-j2/quicksort.c
+
+If you change the contract of any function other than partition, run this once, after your last successful run of the command above. It re-verifies the functions your change can affect and lists any of your edits that would not be merged.
+
+    avocado-validate reverify --function partition --file /tmp/avocado-session-eiigb0m0/quicksort-j2/quicksort.c' --output-format json --dangerously-skip-permissions --add-dir /tmp/avocado-session-eiigb0m0/quicksort-j2
+2026-10-09 19:58:44.069 | INFO     | avocado_verify:_run_sessions_for:750 - partition: verified with no mutants after 1 session(s); skipping the attempt-count floor (no kill score to raise)
+2026-10-09 19:58:47.653 | INFO     | avocado_verify:_verify_functions:1127 - [2/3] partition: VERIFIED
+2026-10-09 19:58:47.653 | INFO     | avocado_verify:_verify_functions:1101 - [3/3] quickSort: generating spec via claude -p
+2026-10-09 19:58:47.657 | DEBUG    | avocado_verify:_run_claude:1572 - running: claude --print 'Verify quickSort in /tmp/avocado-session-iif_9gtn/quicksort-j2/quicksort.c.
+
+Run exactly this command to verify it; on success it also reports the mutation kill score and the diff of every surviving mutant. Only runs of this command against exactly this path are recorded as verification attempts; runs on copies of the file are not.
+
+    avocado-run-cbmc --function quickSort --file /tmp/avocado-session-iif_9gtn/quicksort-j2/quicksort.c
+
+In-file callees (verified earlier; their contracts replace their bodies while this function is verified): partition
+In-file callers (their call sites must satisfy the preconditions you write): none
+
+You are working in a private copy of the source directory. When this session ends, your contract for quickSort and any new top-level helper functions, declarations or macros you add to this file are kept. A contract you fix on another function in this file is kept too, provided no other session is working on that function and every function that already verified still verifies with your change; otherwise it is discarded. Everything else that was in this file when the session started must stay exactly as it was, and the names you add must start with avocado_spec_ or AVOCADO_SPEC_; the edit rules are in CLAUDE.md. Edits to other files and to headers are always discarded.
+
+A copy that breaks an edit rule is not merged at all, so before each run of the command above, run these two checks. Each takes seconds. The first prints every rule your copy breaks, with the line and the reason. The second prints any edit of yours that other sessions'"'"' work would keep out of the merge; other sessions are running at the same time and merge into the shared file while you work.
+
+    avocado-validate edits --function quickSort --file /tmp/avocado-session-iif_9gtn/quicksort-j2/quicksort.c
+    avocado-validate conflicts --function quickSort --file /tmp/avocado-session-iif_9gtn/quicksort-j2/quicksort.c
+
+If you change the contract of any function other than quickSort, run this once, after your last successful run of the command above. It re-verifies the functions your change can affect and lists any of your edits that would not be merged.
+
+    avocado-validate reverify --function quickSort --file /tmp/avocado-session-iif_9gtn/quicksort-j2/quicksort.c' --output-format json --dangerously-skip-permissions --add-dir /tmp/avocado-session-iif_9gtn/quicksort-j2
+2026-10-09 20:28:47.907 | WARNING  | avocado_verify:_run_sessions_for:726 - quickSort: re-running session (2/3): the previous session was stopped by the harness after 1800 s after recording 1 verification attempt(s) on this file, short of the 2 required; the function does not verify yet
+2026-10-09 20:28:47.911 | DEBUG    | avocado_verify:_run_claude:1572 - running: claude --print 'This is a re-run: the previous session was stopped by the harness after 1800 s after recording 1 verification attempt(s) on this file, short of the 2 required; the function does not verify yet. Run the command below on this file before anything else.
+
+Verify quickSort in /tmp/avocado-session-iif_9gtn/quicksort-j2/quicksort.c.
+
+Run exactly this command to verify it; on success it also reports the mutation kill score and the diff of every surviving mutant. Only runs of this command against exactly this path are recorded as verification attempts; runs on copies of the file are not.
+
+    avocado-run-cbmc --function quickSort --file /tmp/avocado-session-iif_9gtn/quicksort-j2/quicksort.c
+
+In-file callees (verified earlier; their contracts replace their bodies while this function is verified): partition
+In-file callers (their call sites must satisfy the preconditions you write): none
+
+You are working in a private copy of the source directory. When this session ends, your contract for quickSort and any new top-level helper functions, declarations or macros you add to this file are kept. A contract you fix on another function in this file is kept too, provided no other session is working on that function and every function that already verified still verifies with your change; otherwise it is discarded. Everything else that was in this file when the session started must stay exactly as it was, and the names you add must start with avocado_spec_ or AVOCADO_SPEC_; the edit rules are in CLAUDE.md. Edits to other files and to headers are always discarded.
+
+A copy that breaks an edit rule is not merged at all, so before each run of the command above, run these two checks. Each takes seconds. The first prints every rule your copy breaks, with the line and the reason. The second prints any edit of yours that other sessions'"'"' work would keep out of the merge; other sessions are running at the same time and merge into the shared file while you work.
+
+    avocado-validate edits --function quickSort --file /tmp/avocado-session-iif_9gtn/quicksort-j2/quicksort.c
+    avocado-validate conflicts --function quickSort --file /tmp/avocado-session-iif_9gtn/quicksort-j2/quicksort.c
+
+If you change the contract of any function other than quickSort, run this once, after your last successful run of the command above. It re-verifies the functions your change can affect and lists any of your edits that would not be merged.
+
+    avocado-validate reverify --function quickSort --file /tmp/avocado-session-iif_9gtn/quicksort-j2/quicksort.c' --output-format json --dangerously-skip-permissions --add-dir /tmp/avocado-session-iif_9gtn/quicksort-j2
+2026-10-09 20:49:04.196 | INFO     | avocado_verify:_run_sessions_for:750 - quickSort: verified with no mutants after 2 session(s); skipping the attempt-count floor (no kill score to raise)
+2026-10-09 20:49:04.266 | INFO     | avocado_verify:_merge_and_verify:886 - quickSort: carried edits to partition; re-verifying partition
+2026-10-09 20:49:04.441 | INFO     | avocado_verify:_merge_and_verify:923 - quickSort: transplanted macro:AVOCADO_SPEC_OLDAT, macro:AVOCADO_SPEC_FRAME, macro:AVOCADO_SPEC_UBOUND, macro:AVOCADO_SPEC_LBOUND
+2026-10-09 20:49:04.441 | INFO     | avocado_verify:_merge_and_verify:925 - quickSort: carried edits to partition
+2026-10-09 20:49:04.667 | INFO     | avocado_verify:_verify_functions:1127 - [3/3] quickSort: VERIFIED
+2026-10-09 20:49:04.669 | INFO     | avocado_verify:_log_summary:1705 - avocado-verify summary:
+2026-10-09 20:49:04.669 | INFO     | avocado_verify:_log_summary:1707 -   VERIFIED          swap
+2026-10-09 20:49:04.669 | INFO     | avocado_verify:_log_summary:1707 -   VERIFIED          partition
+2026-10-09 20:49:04.669 | INFO     | avocado_verify:_log_summary:1707 -   VERIFIED          quickSort
+2026-10-09 20:49:04.670 | INFO     | avocado_verify:_log_summary:1711 - 3/3 function(s) verified; log written to /app/smoke/quicksort-j2/quicksort-avocado-verify.jsonl
