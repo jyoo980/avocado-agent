@@ -1,8 +1,6 @@
-"""Check a session's private copy against the rules its merge must satisfy.
+"""Check a session's snapshot copy against the rules its merge must satisfy.
 
-This is the `avocado-validate` entry point that the inner agent calls from inside its private copy
-of the source directory. Each check is a subcommand that prints every violation with the rule it
-breaks and a reason the agent can act on, and exits non-zero if there is one.
+This is the `avocado-validate` entry point called by an agent inside its snapshot copy.
 
 `edits` checks the edit rules that need no verifier (rules 1-8 of CLAUDE.md): original code
 unchanged, insertions only in contract slots or at file scope, the session's function intact,
