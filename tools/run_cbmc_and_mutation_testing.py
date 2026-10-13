@@ -8,6 +8,7 @@ the kill score plus any surviving mutants.
 Usage:
     % avocado-run-cbmc --function <FUNCTION_NAME> \
                        --file <PATH_TO_C_FILE> \
+                       [--depth <DEPTH>] \
                        [-I <PATH_TO_INCLUDE_DIR(S)>]...
 """
 
@@ -20,7 +21,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from tools.run_cbmc import RunCbmcResult, run_cbmc
+from tools.run_cbmc import _CBMC_DEPTH, RunCbmcResult, run_cbmc
 from tools.util.mutation import (
     generate_mutants_and_compute_score,
     get_mutation_testing_results_for_client,
@@ -57,6 +58,15 @@ def main() -> None:
     parser.add_argument("--function", required=True, help="Name of the function to verify.")
     parser.add_argument("--file", required=True, help="Path to the C file defining the function.")
     parser.add_argument(
+        "--depth",
+        required=False,
+        type=int,
+        default=_CBMC_DEPTH,
+        help=(
+            "The integer value of the '--depth' parameter passed to CBMC. Defaults to _CBMC_DEPTH."
+        ),
+    )
+    parser.add_argument(
         "-I",
         "--include-dir",
         action="append",
@@ -76,7 +86,17 @@ def main() -> None:
         filter=lambda record: "failed to compile" in record["message"],
     )
 
-    result = verify_function(args.function, args.file, include_dirs=args.include_dirs)
+    user_provided_depth = args.depth
+    if user_provided_depth < _CBMC_DEPTH:
+        print(
+            f"Unable to run CBMC with '--depth' value = {user_provided_depth}"
+            f"lower than the default = {_CBMC_DEPTH}"
+        )
+        sys.exit(1)
+
+    result = verify_function(
+        args.function, args.file, include_dirs=args.include_dirs, depth=user_provided_depth
+    )
     # Record this top-level verification attempt (pass or fail) so `avocado-verify` can gate its
     # per-function loop on the agent having actually attempted verification often enough.
     _log_verification_attempt(args.file, args.function, result)
@@ -100,7 +120,7 @@ def main() -> None:
 
 
 def verify_function(
-    function: str, file_path: str, include_dirs: list[str] | None = None
+    function: str, file_path: str, depth: int, include_dirs: list[str] | None = None
 ) -> RunCbmcResult:
     """Run the CBMC pipeline on `function` in a private scratch directory.
 
@@ -114,6 +134,7 @@ def verify_function(
     Args:
         function (str): Name of the function to verify.
         file_path (str): Path to the C file defining the function.
+        depth (int): The depth parameter passed to CBMC.
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
 
     Returns:
@@ -123,7 +144,8 @@ def verify_function(
         return run_cbmc(
             function_to_verify=function,
             file_containing_function_to_verify=str(Path(file_path).resolve()),
-            include_dirs=[str(Path(d).resolve()) for d in include_dirs or []],
+            depth=depth,
+            includu_dirs=[str(Path(d).resolve()) for d in include_dirs or []],
             cwd=scratch_dir,
         )
 

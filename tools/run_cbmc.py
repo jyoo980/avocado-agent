@@ -59,7 +59,7 @@ _TIMEOUT_RETURNCODE = 124
 # `--unwind` argument to CBMC.
 _CBMC_UNWIND = 5
 
-# `--depth` argument to CBMC.
+# Default `--depth` argument to CBMC.
 _CBMC_DEPTH = 200
 
 # Process-wide cap on how many pipeline subprocesses (`goto-cc`, `goto-instrument`, `cbmc`) may run
@@ -219,6 +219,7 @@ def main() -> None:
 def run_cbmc(
     function_to_verify: str,
     file_containing_function_to_verify: str,
+    depth: int,
     include_dirs: list[str] | None = None,
     call_graph: CallGraph | None = None,
     cwd: str | None = None,
@@ -236,6 +237,7 @@ def run_cbmc(
     Args:
         function_to_verify (str): Name of the function to verify.
         file_containing_function_to_verify (str): Path to the C file defining the function.
+        depth (int): The value of the '--depth' parameter passed to CBMC.
         include_dirs (list[str] | None): Directories to add to the C preprocessor's include
             search path. Forwarded to `goto-cc` as `-I` flags.
         call_graph (CallGraph | None): When provided, this pre-built call graph is used instead
@@ -275,6 +277,7 @@ def run_cbmc(
         function_to_verify,
         callees,
         file_containing_function_to_verify,
+        depth=depth,
         stub_paths=stub_paths,
         include_dirs=include_dirs,
         prevent_macro_expansion=False,
@@ -321,6 +324,7 @@ def run_cbmc(
             function_to_verify,
             callees,
             file_containing_function_to_verify,
+            depth=depth,
             stub_paths=stub_paths,
             include_dirs=include_dirs,
             prevent_macro_expansion=True,
