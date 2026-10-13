@@ -304,6 +304,9 @@ def merge_copy(
                 label = f"function:{edited.name}" if edited.name else f"item at line {edited.line}"
                 dropped.append(label + reason)
                 continue
+            if not edited.name:
+                # TODO: What should happen here?
+                continue
             if edited.name not in carried:
                 carried.append(edited.name)
         edits.append((current.start, current.end, snapshot[edited.start : edited.end]))
