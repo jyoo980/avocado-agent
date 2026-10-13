@@ -124,6 +124,11 @@ class MergeReport:
             parentheses when there is a specific one.
         carried (list[str]): Other existing functions whose edited definitions were spliced in
             alongside the function's own (see `merge_function`).
+        changed_since_fork (list[str]): Functions whose contracts differ between the file the
+            session's copy was taken from and the canonical file the session's function was last
+            verified on, because other sessions merged meanwhile. The session never saw those
+            contracts, so a function that calls one of them and then fails its ground truth is
+            given another session (see `avocado_verify._note_for_rerun_after_merge`).
         body_changed (bool): True iff the function's body differs from the fork base. A
             diagnostic: `avocado_verify` rejects such a copy before merging it (edit rule 1).
         violations (list[str]): The edit rules the session's copy broke, one rendered line each
@@ -136,6 +141,7 @@ class MergeReport:
     skipped_duplicates: list[str] = field(default_factory=list)
     dropped: list[str] = field(default_factory=list)
     carried: list[str] = field(default_factory=list)
+    changed_since_fork: list[str] = field(default_factory=list)
     body_changed: bool = False
     violations: list[str] = field(default_factory=list)
 
@@ -152,6 +158,7 @@ class MergeReport:
             "skipped_duplicates": list(self.skipped_duplicates),
             "dropped": list(self.dropped),
             "carried": list(self.carried),
+            "changed_since_fork": list(self.changed_since_fork),
             "body_changed": self.body_changed,
             "violations": list(self.violations),
         }
@@ -634,33 +641,23 @@ def functions_affected_by(
     return sorted(affected)
 
 
-def frozen_functions_for(
-    function: str, active: Collection[str], call_graph: CallGraph | None
-) -> set[str]:
+def frozen_functions_for(function: str, active: Collection[str]) -> set[str]:
     """Return the functions whose contracts the session for `function` may not change.
 
-    Those are the functions other live sessions are working on, and the in-file callees of those
-    functions: a live session's proof is being built against its callees' contracts, so they
-    must not move underneath it. The session's own callees are not frozen on its account --
-    fixing a callee's contract in passing is exactly what a session is allowed to do.
+    Those are the functions other live sessions are working on: each is its session's to
+    specify, and that session's copy replaces whatever contract it has when it merges. The
+    functions a live session *calls* are not frozen. Any session may fix a callee's contract;
+    a live caller that then fails against the new contract is given another session on the file
+    as it now is (see `avocado_verify._note_for_rerun_after_merge`).
 
     Args:
         function (str): The function whose session is merging.
         active (Collection[str]): Functions with a live session, `function` included or not.
-        call_graph (CallGraph | None): Call graph of the file; None freezes only the active
-            functions themselves.
 
     Returns:
         set[str]: The frozen functions.
     """
-    others = {name for name in active if name != function}
-    frozen = set(others)
-    if call_graph is not None:
-        for name in others:
-            if name in call_graph:
-                frozen.update(call_graph.get_callees(name).internal)
-    frozen.discard(function)
-    return frozen
+    return {name for name in active if name != function}
 
 
 def _same_prefix(

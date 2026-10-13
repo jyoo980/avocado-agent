@@ -79,7 +79,10 @@ You can also search the web for more CBMC documentation.
   Other sessions work on other functions at the same time and merge into the shared file while
   you work. This compares your copy with the shared file as it is now, in about a second. Exits
   with status 0 if all of your edits would be merged, 1 if some would not (each line names the
-  edit and why), and 2 if the check could not be made.
+  edit and why), and 2 if the check could not be made. It also prints a note, without failing,
+  when another session has changed the contract of a function yours calls, followed by the new
+  contract. Your function is verified against that contract when your session is merged, so copy
+  it into your file exactly as printed and make your function verify against it.
 
 - **To check that your edits to other functions leave every already-verified function verified**, run:
 
@@ -199,12 +202,14 @@ Rule checked by `avocado-validate reverify` (slow; run it as the workflow says):
 Rule checked by `avocado-validate conflicts` (fast; run it before each `avocado-run-cbmc` run):
 
 10. **No merge conflict.** Your edit to another function's contract is left out of the merge if
-    another live session is working on that function or calls it, or if someone else has changed
-    that contract since your copy was taken; the rest of your work still merges, so your function
-    must verify without that edit. None of your work is merged if a name you add is already
-    defined differently in the shared file; rename it.
-    *Why:* the shared file moves on while you work, and a live session's proof is built against
-    the contracts of the functions it calls, so those must not change underneath it.
+    another live session is working on that function, or if someone else has changed that
+    contract since your copy was taken; the rest of your work still merges, so your function
+    must verify without that edit. You may change the contract of a function that other sessions
+    only call. None of your work is merged if a name you add is already defined differently in
+    the shared file; rename it.
+    *Why:* the shared file moves on while you work. A function with a live session is that
+    session's to specify, and a contract that changed since your copy was taken is one you have
+    not seen.
 
 ## Rules
 

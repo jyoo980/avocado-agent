@@ -237,7 +237,7 @@ def merge_copy(
     - The session's own function always takes its contract from the copy.
     - A contract the session changed on *another* item is kept, and the item named in
       `MergeReport.carried` for the caller to re-verify, unless `frozen_functions` is None (no
-      such edit is kept), the item is frozen (a live session works on it or calls it), or the
+      such edit is kept), the item is frozen (a live session is working on it), or the
       item's contract also changed in the canonical file since the fork. In those cases the
       edit is left out and named in `MergeReport.dropped`; the rest of the copy still merges.
     - Items the session added are inserted after the original item they followed in the copy.
@@ -246,6 +246,9 @@ def merge_copy(
 
     When the canonical file is still the fork base -- always the case with one session at a time
     -- this reduces to taking the copy itself, minus the edits that are left out.
+
+    `MergeReport.changed_since_fork` names every function whose contract changed in the canonical
+    file since the fork, whether or not the session edited it too.
 
     Args:
         canonical (bytes): The current canonical file.
@@ -282,6 +285,7 @@ def merge_copy(
 
     carried: list[str] = []
     dropped: list[str] = []
+    changed_since_fork: list[str] = []
     edits: list[tuple[int, int, bytes]] = []  # (start, end, replacement) in `theirs_source`
     mine_to_theirs: dict[int, _Item] = {}
     for base_index, snapshot_index in mine.pairs:
@@ -294,6 +298,13 @@ def merge_copy(
         base_text = _code_text(fork_base[original.start : original.end])
         my_text = _code_text(snapshot[edited.start : edited.end])
         their_text = _code_text(theirs_source[current.start : current.end])
+        if (
+            their_text != base_text
+            and current.kind == "function"
+            and current.name
+            and current.name not in changed_since_fork
+        ):
+            changed_since_fork.append(current.name)
         if my_text in (base_text, their_text):
             continue
         if edited.name != function:
@@ -357,7 +368,56 @@ def merge_copy(
         skipped_duplicates=skipped,
         dropped=dropped,
         carried=carried,
+        changed_since_fork=changed_since_fork,
     )
+
+
+def functions_with_changed_contracts(before: bytes, after: bytes) -> list[str]:
+    """Return the functions whose contracts differ between two versions of a file.
+
+    Both versions must hold the same code, as any two versions of the canonical file do. A
+    function that only one of them has is not reported.
+
+    Args:
+        before (bytes): One version of the file.
+        after (bytes): Another version of it.
+
+    Returns:
+        list[str]: The names of the functions, in source order.
+    """
+    if before == after:
+        return []
+    comparison = _compare(before, after)
+    changed: list[str] = []
+    for before_index, after_index in comparison.pairs:
+        old = comparison.base_items[before_index]
+        new = comparison.snapshot_items[after_index]
+        if old.kind != "function" or not old.name or old.name in changed:
+            continue
+        if _code_text(before[old.start : old.end]) != _code_text(after[new.start : new.end]):
+            changed.append(old.name)
+    return changed
+
+
+def function_header(source: bytes, function: str) -> bytes | None:
+    """Return a function definition's text before its body: its signature and its contract.
+
+    Args:
+        source (bytes): A C source.
+        function (str): The function's name.
+
+    Returns:
+        bytes | None: The text from the start of the first definition of `function` up to the
+            opening brace of its body, or None when the definition is not found.
+    """
+    tokens = _tokenize(source)
+    for item in _split_items(tokens):
+        if item.kind != "function" or item.name != function:
+            continue
+        for token in tokens:
+            if token.offset >= item.start and token.depth == 0 and token.text == "{":
+                return source[item.start : token.offset].rstrip()
+    return None
 
 
 def _reason_not_carried(
@@ -379,7 +439,7 @@ def _reason_not_carried(
     if frozen_functions is None or name is None:
         return ""
     if name in frozen_functions:
-        return " (a live session works on it or calls it)"
+        return " (a live session is working on it)"
     if their_changed:
         return " (changed in the canonical file since the fork)"
     return None

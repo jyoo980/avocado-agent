@@ -173,8 +173,7 @@ def test_reverify_notes_an_edit_to_a_function_another_session_owns(
     result = check_reverify("swap", session.file)
     assert result.exit_code == EXIT_OK and fake.calls == []
     assert any(
-        "function:partition (a live session works on it or calls it)" in note
-        for note in result.notes
+        "function:partition (a live session is working on it)" in note for note in result.notes
     )
 
 
@@ -245,16 +244,51 @@ def test_conflicts_is_clean_when_nothing_else_touched_what_the_session_edited(sw
     assert result.exit_code == EXIT_OK and result.violations == []
 
 
-def test_conflicts_reports_an_edit_to_a_function_a_live_session_calls(swap_session) -> None:
+def test_conflicts_allows_an_edit_to_a_function_a_live_session_only_calls(swap_session) -> None:
     canonical, session = swap_session
-    # quickSort's session is live and calls partition, so partition's contract must not move.
+    # quickSort's session is live and calls partition; only quickSort itself is frozen.
     write_run_state(canonical, verified=set(), active={"swap", "quickSort"})
+    _write_contract(session.file, "swap", _SWAP_CONTRACT)
+    _write_contract(session.file, "partition", _PARTITION_CONTRACT)
+    result = check_conflicts("swap", session.file)
+    assert result.exit_code == EXIT_OK and result.violations == []
+
+
+def test_conflicts_reports_an_edit_to_another_live_sessions_function(swap_session) -> None:
+    canonical, session = swap_session
+    write_run_state(canonical, verified=set(), active={"swap", "partition"})
     _write_contract(session.file, "swap", _SWAP_CONTRACT)
     _write_contract(session.file, "partition", _PARTITION_CONTRACT)
     result = check_conflicts("swap", session.file)
     assert result.exit_code == EXIT_VIOLATIONS and len(result.violations) == 1
     assert result.violations[0].startswith("rule 10 (no merge conflict): your edit to ")
-    assert "function:partition (a live session works on it or calls it)" in result.violations[0]
+    assert "function:partition (a live session is working on it)" in result.violations[0]
+
+
+def test_conflicts_notes_a_callee_whose_contract_another_session_changed(tmp_path: Path) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    session = _fork_session("quickSort", canonical)
+    try:
+        write_run_state(canonical, verified={"partition"}, active={"quickSort"})
+        # Another session's merge lands a contract on partition, which quickSort calls, and one
+        # on swap, which it does not.
+        _write_contract(canonical, "partition", _PARTITION_CONTRACT)
+        _write_contract(canonical, "swap", _SWAP_CONTRACT)
+        result = check_conflicts("quickSort", session.file)
+        # A note, not a violation: nothing of the session's would be left out.
+        assert result.exit_code == EXIT_OK and result.violations == []
+        notes = [note for note in result.notes if note.startswith("note: ")]
+        assert len(notes) == 1
+        assert "changed the contract of partition, which quickSort calls" in notes[0]
+        # The note carries the new contract, so the agent need not open the shared file.
+        assert _PARTITION_CONTRACT.decode() in notes[0] and "int partition (" in notes[0]
+        # Once the copy holds the new contract there is nothing left to say.
+        _write_contract(session.file, "partition", _PARTITION_CONTRACT)
+        result = check_conflicts("quickSort", session.file)
+        assert result.exit_code == EXIT_OK
+        assert not any(note.startswith("note: ") for note in result.notes)
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
 
 
 def test_conflicts_reports_what_another_session_merged_meanwhile(swap_session) -> None:

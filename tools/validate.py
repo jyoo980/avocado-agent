@@ -11,10 +11,12 @@ function the harness calls before it merges a copy.
 
 `conflicts` checks rule 10, *no merge conflict*: whether any of the session's edits would be left
 out of the merge because of what other sessions did since the copy was taken -- an edit to a
-function that another live session works on or calls, an edit to a function whose contract someone
+function that another live session is working on, an edit to a function whose contract someone
 else has changed meanwhile, or a new name the canonical file now defines differently. It computes
 the same merge the harness will (`tools.util.edit_rules.merge_copy`) without committing it, and
-takes about a second.
+takes about a second. It also notes, without failing, each function the session's function calls
+whose contract another session has changed in the canonical file meanwhile, and prints the new
+contract: the function will be verified against it when the session is merged.
 
 `reverify` checks rule 9, *no broken verified specs*: every function that verified before the
 session must still verify with the session's edits. It reproduces what the harness does at merge
@@ -55,7 +57,9 @@ from tools.util.edit_rules import (
     RULE_TITLES,
     Violation,
     check_edits,
+    function_header,
     function_line,
+    functions_with_changed_contracts,
     merge_copy,
     stray_file_violations,
 )
@@ -125,8 +129,9 @@ def main() -> None:
         help="Check whether other sessions' merges would keep any of your edits out.",
         description=(
             "Check your copy against the shared file as it is now. Reports each of your edits "
-            "that would be left out of the merge because another session works on, calls or has "
-            "changed the same function, and any new name that now clashes. Takes about a second."
+            "that would be left out of the merge because another session is working on or has "
+            "changed the same function, and any new name that now clashes. Also notes each "
+            "function yours calls whose contract has changed there. Takes about a second."
         ),
     )
     reverify = subparsers.add_parser(
@@ -225,7 +230,9 @@ def check_conflicts(function: str, session_file: Path) -> CheckResult:
         CheckResult: `EXIT_OK` when every edit would be merged, `EXIT_VIOLATIONS` with one line
             per edit that would not be (or the one reason nothing would be), and
             `EXIT_CANNOT_CHECK` when the file is not in a session copy, the run's state is
-            unavailable, or the copy breaks the edit rules.
+            unavailable, or the copy breaks the edit rules. Either of the first two also carries
+            a note for each callee whose contract changed in the canonical file (see
+            `_changed_callee_notes`).
     """
     info = read_session_info(session_file)
     if info is None:
@@ -254,9 +261,7 @@ def check_conflicts(function: str, session_file: Path) -> CheckResult:
         snapshot=snapshot,
         fork_base=info.fork_base,
         function=function,
-        frozen_functions=frozen_functions_for(
-            function, state.active, get_call_graph(str(info.canonical_file))
-        ),
+        frozen_functions=frozen_functions_for(function, state.active),
     )
     label = f"rule 10 ({RULE_TITLES[10]})"
     if not report.merged:
@@ -274,9 +279,72 @@ def check_conflicts(function: str, session_file: Path) -> CheckResult:
         )
         for entry in report.dropped
     ]
+    notes = _changed_callee_notes(
+        function,
+        snapshot=snapshot,
+        canonical=canonical,
+        changed_since_fork=report.changed_since_fork,
+        dropped=report.dropped,
+        canonical_file=info.canonical_file,
+    )
     if violations:
-        return CheckResult(EXIT_VIOLATIONS, violations=violations)
-    return CheckResult(EXIT_OK, notes=[f"{label}: ok"])
+        return CheckResult(EXIT_VIOLATIONS, violations=violations, notes=notes)
+    return CheckResult(EXIT_OK, notes=[*notes, f"{label}: ok"])
+
+
+def _changed_callee_notes(
+    function: str,
+    *,
+    snapshot: bytes,
+    canonical: bytes,
+    changed_since_fork: list[str],
+    dropped: list[str],
+    canonical_file: Path,
+) -> list[str]:
+    """Return a note for each callee whose contract other sessions changed since the copy.
+
+    The session's function is verified against its callees' contracts as they are in the
+    canonical file when the session is merged, not as they are in the copy. A callee is noted
+    when its contract changed in the canonical file since the copy was taken and the copy does
+    not hold the new contract yet. One whose contract the session edited too is left to the
+    violation that already names it.
+
+    Args:
+        function (str): The function the session works on.
+        snapshot (bytes): The session's copy.
+        canonical (bytes): The canonical file as it is now.
+        changed_since_fork (list[str]): Functions whose contracts changed in the canonical file
+            since the copy was taken (`MergeReport.changed_since_fork`).
+        dropped (list[str]): The session's edits the merge would leave out.
+        canonical_file (Path): The canonical source file, for its call graph.
+
+    Returns:
+        list[str]: One note per such callee, each ending with the callee's new signature and
+            contract.
+    """
+    if not changed_since_fork:
+        return []
+    call_graph = get_call_graph(str(canonical_file))
+    if function not in call_graph:
+        return []
+    callees = call_graph.get_callees(function).internal
+    not_yet_in_copy = set(functions_with_changed_contracts(snapshot, canonical))
+    notes = []
+    for callee in changed_since_fork:
+        if callee == function or callee not in callees or callee not in not_yet_in_copy:
+            continue
+        if any(entry.startswith(f"function:{callee} ") for entry in dropped):
+            continue
+        header = function_header(canonical, callee)
+        contract = "" if header is None else "\n" + header.decode("utf-8", errors="replace")
+        notes.append(
+            f"note: another session changed the contract of {callee}, which {function} calls, "
+            f"in the shared file since your copy was taken. {function} will be verified against "
+            "the new contract when your session is merged, so replace your copy's contract for "
+            f"{callee} with it, exactly as it is below, and make {function} verify against it:"
+            f"{contract}"
+        )
+    return notes
 
 
 def check_reverify(
@@ -322,9 +390,7 @@ def check_reverify(
         snapshot=snapshot,
         fork_base=info.fork_base,
         function=function,
-        frozen_functions=frozen_functions_for(
-            function, state.active, get_call_graph(str(info.canonical_file))
-        ),
+        frozen_functions=frozen_functions_for(function, state.active),
     )
     if not report.merged:
         return _cannot_check(f"this copy would not be merged: {report.reason}")

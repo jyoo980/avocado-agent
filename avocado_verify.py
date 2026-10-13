@@ -51,7 +51,12 @@ from tools.run_cbmc_and_mutation_testing import VERIFICATION_ATTEMPTS_LOG_SUFFIX
 from tools.util import get_in_file_callees_for, get_in_file_callers_of
 from tools.util.callgraph import CallGraph
 from tools.util.contract_merge import MergeReport, frozen_functions_for, functions_affected_by
-from tools.util.edit_rules import check_edits, merge_copy, stray_file_violations
+from tools.util.edit_rules import (
+    check_edits,
+    functions_with_changed_contracts,
+    merge_copy,
+    stray_file_violations,
+)
 from tools.util.session_state import (
     SNAPSHOT_IGNORE,
     find_stray_files,
@@ -126,6 +131,14 @@ _RUN_LOG_LOCK = threading.Lock()
 # one function that reached this point burned two full 1800 s sessions without an attempt before
 # a third succeeded, and that third session had copied another run's finished contract.
 _MAX_SESSIONS_WITHOUT_ATTEMPT = 1
+
+# Upper bound on how many times a function is given a fresh copy and another round of sessions
+# because its merge left it unverified through no fault of its last session: an edit it relied on
+# was left out, or another session changed the contract of a function it calls
+# (`_note_for_rerun_after_merge`). Counted separately from `_MAX_AGENT_SESSIONS_PER_FUNCTION`,
+# which bounds the sessions run on one copy: that cap is about a session that barely tried, this
+# one about the shared file moving underneath a session that did.
+_MAX_MERGE_RERUNS_PER_FUNCTION = 2
 
 
 class GroundTruthVerificationResult(StrEnum):
@@ -212,8 +225,9 @@ class FunctionVerificationResult:
             merge had to re-verify because it carried edits to them or to their callees (see
             `_merge_and_verify`); empty when it carried none.
         merge_reruns (int): How many times the function was given another session on a fresh
-            copy because a merge left out edits its proof depended on
-            (`_note_for_rerun_after_dropped_edits`). `merge` describes the last merge.
+            copy because a merge left out edits its proof depended on, or because another
+            session changed the contract of a function it calls
+            (`_note_for_rerun_after_merge`). `merge` describes the last merge.
     """
 
     function: str
@@ -528,10 +542,12 @@ def _verify_via_agent(
     copy of the result (`_merge_and_verify`). Safe to call for several functions concurrently as
     long as their callees are already merged.
 
-    The merge may leave out the session's edits to other functions (see `merge_copy`). If the
+    The merge may leave out the session's edits to other functions (see `merge_copy`), and other
+    sessions may have changed the contracts of functions this one calls while it worked. If the
     function then fails its ground truth, it is given another session on a fresh copy of the
     canonical file, which now holds its merged contract, with a note saying what was left out
-    (`_note_for_rerun_after_dropped_edits`). Nothing that merged is undone.
+    or what changed (`_note_for_rerun_after_merge`), at most
+    `_MAX_MERGE_RERUNS_PER_FUNCTION` times. Nothing that merged is undone.
 
     Args:
         function (str): The function to specify and verify.
@@ -582,8 +598,14 @@ def _verify_via_agent(
                 logger.info(f"{function}: session copy kept at {session.directory}")
             else:
                 shutil.rmtree(session.directory, ignore_errors=True)
-        retry_note = _note_for_rerun_after_dropped_edits(
-            function, report=report, cbmc=cbmc, sessions=sessions, state=state
+        retry_note = _note_for_rerun_after_merge(
+            function,
+            report=report,
+            cbmc=cbmc,
+            sessions=sessions,
+            state=state,
+            callees=call_graph.get_callees(function).internal,
+            merge_reruns=merge_reruns,
         )
         if not retry_note or state is None:
             break
@@ -608,47 +630,82 @@ def _verify_via_agent(
     )
 
 
-def _note_for_rerun_after_dropped_edits(
+def _note_for_rerun_after_merge(
     function: str,
     *,
     report: MergeReport,
     cbmc: RunCbmcResult,
     sessions: list[ClaudeRun],
     state: _MergeState | None,
+    callees: list[str] | None = None,
+    merge_reruns: int = 0,
 ) -> str:
     """Return why `function` needs another session after its merge, or "" when it does not.
 
-    A merge can leave out the session's edits to other functions: one that a live session works
-    on or calls, one that someone else changed meanwhile, or one that would have broken a
-    verified function. Usually that costs nothing, and the merge stands. But when the function
-    then fails its ground truth, its proof depended on an edit that is not in the canonical file,
-    and a session that can see the canonical file as it now is has a real chance of fixing it.
-    Its contract is already merged, so that session continues the work rather than repeating it.
+    Two things can make a function fail its ground truth although its session did its work:
 
-    No re-run is asked for when the merge kept everything, when the function verifies, when the
-    function has used up its sessions (`_MAX_AGENT_SESSIONS_PER_FUNCTION`), or when the last
-    session was stopped by a usage limit.
+    - The merge left out the session's edits to other functions: one that a live session is
+      working on, one that someone else changed meanwhile, or one that would have broken a
+      verified function. The function's proof depended on an edit that is not in the canonical
+      file.
+    - Another session changed the contract of a function this one calls, and merged it, after
+      this session's copy was taken (`MergeReport.changed_since_fork`). The function was proved
+      against a contract that is no longer the one in the canonical file.
+
+    Usually neither costs anything, and the merge stands. But when the function then fails, a
+    session that can see the canonical file as it now is has a real chance of fixing it. Its
+    contract is already merged, so that session continues the work rather than repeating it. It
+    may change a callee's contract again: the merge still keeps such an edit only when every
+    verified function survives it.
+
+    No re-run is asked for when the merge was rejected, when the function verifies, when neither
+    of the two causes applies, when the function has used up its re-runs
+    (`_MAX_MERGE_RERUNS_PER_FUNCTION`), or when the last session was stopped by a usage limit.
 
     Args:
         function (str): The function whose session just merged.
-        report (MergeReport): What the merge kept and left out.
+        report (MergeReport): What the merge kept and left out, and which contracts other
+            sessions changed.
         cbmc (RunCbmcResult): The function's ground truth on the merged file.
         sessions (list[ClaudeRun]): Every session the function has had so far.
         state (_MergeState | None): The run's shared merge state; None never re-runs.
+        callees (list[str] | None): The function's in-file callees.
+        merge_reruns (int): How many times the function has been re-run this way already.
 
     Returns:
         str: The note for the next session's prompt, or "".
     """
-    if state is None or not report.merged or not report.dropped or cbmc.is_function_verified:
+    if state is None or not report.merged or cbmc.is_function_verified:
         return ""
-    if len(sessions) >= _MAX_AGENT_SESSIONS_PER_FUNCTION or _is_usage_limit_hit(sessions[-1]):
+    if merge_reruns >= _MAX_MERGE_RERUNS_PER_FUNCTION or _is_usage_limit_hit(sessions[-1]):
+        return ""
+    # A callee that this session also edited is already named among the dropped edits.
+    changed_callees = [
+        callee
+        for callee in callees or []
+        if callee != function
+        and callee in report.changed_since_fork
+        and not any(entry.startswith(f"function:{callee} ") for entry in report.dropped)
+    ]
+    causes = []
+    if report.dropped:
+        causes.append(
+            f"the merge left out your edits to other functions ({'; '.join(report.dropped)})"
+        )
+    if changed_callees:
+        causes.append(
+            f"other sessions changed the contract(s) of {', '.join(changed_callees)}, which "
+            f"{function} calls, while you worked"
+        )
+    if not causes:
         return ""
     return (
-        f"your contract for {function} was merged, but the merge left out your edits to other "
-        f"functions ({'; '.join(report.dropped)}) and {function} does not verify without them. "
-        f"This copy is the shared file as it is now, with your contract for {function} already "
-        f"in it. Make {function} verify against the other functions' contracts as they are "
-        "here, and do not make those edits again"
+        f"your contract for {function} was merged, but {' and '.join(causes)}, and {function} "
+        "does not verify on the shared file as it is now. This copy is that file, with your "
+        f"contract for {function} already in it. Read the other functions' contracts as they "
+        f"are here and make {function} verify against them. You may change a callee's contract "
+        f"if {function} cannot verify otherwise, but an edit that was left out because a "
+        "verified function would no longer verify will be left out again"
     )
 
 
@@ -784,6 +841,14 @@ def _merge_and_verify(
     does not compile is rejected and the canonical file left untouched. The lock is released
     before the function's own CBMC run, on the scratch copy, so other sessions can merge meanwhile.
 
+    One of those merges may change the contract of a function this one calls: only the functions
+    live sessions work on are frozen, not their callees, and this function is not yet in
+    `state.verified`, so that merge does not re-verify it. The verdict of the CBMC run would
+    then be for a file that no longer exists. So when the run is over the lock is taken again,
+    and if a callee's contract has changed in the canonical file since the merge, the function
+    is verified once more on the file as it now is, with the lock held, and that verdict is the
+    one recorded. The callees that changed are added to `MergeReport.changed_since_fork`.
+
     With `state`, the merge also carries the agent's edits to other functions that no live
     session owns (`MergeReport.carried`) -- typically a callee's contract fixed in passing, which
     the function's own proof depends on. Before such a merge is committed, every carried function
@@ -805,8 +870,9 @@ def _merge_and_verify(
 
     Returns:
         tuple[MergeReport, RunCbmcResult, dict[str, RunCbmcResult]]: What the merge did, the
-            ground-truth verdict for the function, and the verdicts of the functions re-verified
-            because of carried edits (empty when there were none).
+            ground-truth verdict for the function on the canonical file as it is when this
+            returns, and the verdicts of the functions re-verified because of carried edits
+            (empty when there were none).
     """
     function = session.function
     absolute_include_dirs = [str(Path(directory).resolve()) for directory in include_dirs]
@@ -843,7 +909,7 @@ def _merge_and_verify(
                     function=function,
                     frozen_functions=None
                     if state is None
-                    else frozen_functions_for(function, state.active, call_graph),
+                    else frozen_functions_for(function, state.active),
                 )
         scratch_root = Path(tempfile.mkdtemp(prefix=_GROUND_TRUTH_DIR_PREFIX))
         scratch_dir = scratch_root / canonical_file.parent.name
@@ -931,18 +997,45 @@ def _merge_and_verify(
         logger.warning(f"{function}: merge rejected: {report.reason}")
         for violation in report.violations:
             logger.warning(f"{function}:   {violation}")
+    # What the scratch copy holds, and so what the function's verdict is a verdict on.
+    verified_on = merged if report.merged else canonical
+    callees = (
+        call_graph.get_callees(function).internal
+        if call_graph is not None and function in call_graph
+        else []
+    )
     try:
         cbmc = verify_function(function, str(scratch_file), include_dirs=include_dirs)
+        with _CANONICAL_LOCK:
+            current = canonical_file.read_bytes()
+            moved = [
+                name
+                for name in functions_with_changed_contracts(verified_on, current)
+                if name in callees and name != function
+            ]
+            if moved:
+                logger.info(
+                    f"{function}: {', '.join(moved)} changed in the canonical file while "
+                    f"{function} was being verified; verifying it again on the file as it is now"
+                )
+                scratch_file.write_bytes(current)
+                cbmc = verify_function(function, str(scratch_file), include_dirs=include_dirs)
+                report = replace(
+                    report,
+                    changed_since_fork=[
+                        *report.changed_since_fork,
+                        *(name for name in moved if name not in report.changed_since_fork),
+                    ],
+                )
+            if state is not None:
+                state.active.discard(function)
+                if cbmc.is_function_verified:
+                    state.verified.add(function)
+                else:
+                    state.verified.discard(function)
+                _publish_run_state(state, canonical_file)
     finally:
         shutil.rmtree(scratch_root, ignore_errors=True)
-    if state is not None:
-        with _CANONICAL_LOCK:
-            state.active.discard(function)
-            if cbmc.is_function_verified:
-                state.verified.add(function)
-            else:
-                state.verified.discard(function)
-            _publish_run_state(state, canonical_file)
     return report, cbmc, reverified
 
 

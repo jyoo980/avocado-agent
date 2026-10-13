@@ -2,9 +2,15 @@
 
 from pathlib import Path
 
-from tools.util.callgraph import CallGraph
 from tools.util.contract_merge import frozen_functions_for
-from tools.util.edit_rules import check_edits, function_line, merge_copy, stray_file_violations
+from tools.util.edit_rules import (
+    check_edits,
+    function_header,
+    function_line,
+    functions_with_changed_contracts,
+    merge_copy,
+    stray_file_violations,
+)
 
 BASE = b"""#include <stdio.h>
 #define CAP 16
@@ -257,7 +263,7 @@ def test_merge_reverts_carries_or_freezes_a_contract_on_another_function() -> No
     assert report.carried == ["clamp"] and report.dropped == [] and merged == snapshot
     merged, report = _merge(snapshot, frozen={"swap", "clamp"})
     assert report.carried == []
-    assert report.dropped == ["function:clamp (a live session works on it or calls it)"]
+    assert report.dropped == ["function:clamp (a live session is working on it)"]
     assert SWAP_CONTRACT in merged and CLAMP_CONTRACT not in merged
 
 
@@ -397,21 +403,42 @@ def test_a_new_name_two_sessions_both_add() -> None:
     assert "macro:AVOCADO_SPEC_SWAP_N is already defined differently" in report.reason
 
 
-def test_frozen_functions_are_other_live_sessions_and_their_callees() -> None:
-    call_graph = CallGraph(
-        {
-            "swap": {"internal": [], "external": []},
-            "partition": {"internal": ["swap"], "external": []},
-            "quickSort": {"internal": ["partition", "quickSort"], "external": []},
-            "other": {"internal": [], "external": []},
-        }
+def test_frozen_functions_are_the_other_live_sessions_and_not_their_callees() -> None:
+    assert frozen_functions_for("partition", {"partition"}) == set()
+    assert frozen_functions_for("other", {"other", "partition"}) == {"partition"}
+    # quickSort calls partition and swap, and neither is frozen on its account.
+    assert frozen_functions_for("partition", {"partition", "quickSort"}) == {"quickSort"}
+    assert frozen_functions_for("swap", {"swap", "quickSort"}) == {"quickSort"}
+
+
+def test_merge_reports_the_contracts_other_sessions_changed_since_the_fork() -> None:
+    canonical = _with_clamp_contract(BASE)
+    # The session never touched clamp: the canonical contract stands, and is reported as new.
+    merged, report = _merge(_with_swap_contract(), frozen=set(), canonical=canonical)
+    assert report.merged and report.dropped == [] and report.changed_since_fork == ["clamp"]
+    assert SWAP_CONTRACT in merged and CLAMP_CONTRACT in merged
+    assert report.to_record()["changed_since_fork"] == ["clamp"]
+    # A copy that already holds the new contract merges the same way.
+    merged, report = _merge(
+        _with_clamp_contract(_with_swap_contract()), frozen=set(), canonical=canonical
     )
-    assert frozen_functions_for("partition", {"partition"}, call_graph) == set()
-    assert frozen_functions_for("other", {"other", "partition"}, call_graph) == {
-        "partition",
-        "swap",
-    }
-    assert frozen_functions_for("partition", {"partition", "quickSort"}, call_graph) == {
-        "quickSort"
-    }
-    assert frozen_functions_for("swap", {"swap", "quickSort"}, None) == {"quickSort"}
+    assert report.merged and report.dropped == [] and report.changed_since_fork == ["clamp"]
+    _merged, report = _merge(_with_swap_contract(), frozen=set())
+    assert report.changed_since_fork == []
+
+
+def test_functions_with_changed_contracts_ignores_comments_helpers_and_whitespace() -> None:
+    assert functions_with_changed_contracts(BASE, BASE) == []
+    helper = b"#define AVOCADO_SPEC_MAX 8\n"
+    reformatted = BASE.replace(b"/* swap two ints */", helper).replace(b"int v)\n{", b"int v) {")
+    assert functions_with_changed_contracts(BASE, reformatted) == []
+    both = _with_clamp_contract(_with_swap_contract())
+    assert functions_with_changed_contracts(BASE, both) == ["swap", "clamp"]
+    assert functions_with_changed_contracts(both, _with_swap_contract()) == ["clamp"]
+
+
+def test_function_header_is_the_signature_and_the_contract() -> None:
+    assert function_header(BASE, "clamp") == b"int clamp(int v)"
+    header = function_header(_with_clamp_contract(BASE), "clamp")
+    assert header == b"int clamp(int v)\n" + CLAMP_CONTRACT.rstrip()
+    assert function_header(BASE, "missing") is None

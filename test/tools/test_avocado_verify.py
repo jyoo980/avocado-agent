@@ -129,6 +129,7 @@ import shutil
 import tempfile
 import threading
 import time
+from functools import partial
 from pathlib import Path
 
 import avocado_verify
@@ -596,7 +597,7 @@ def test_merge_drops_a_callee_edit_while_a_session_runs_on_the_callee(
     finally:
         shutil.rmtree(session.directory, ignore_errors=True)
     assert report.merged and report.carried == [] and reverified == {}
-    assert "function:swap (a live session works on it or calls it)" in report.dropped
+    assert "function:swap (a live session is working on it)" in report.dropped
     assert _CONTRACTS["swap"] not in canonical.read_bytes()
     assert fake.calls == ["partition"]
 
@@ -655,7 +656,7 @@ def test_two_overlapping_sessions_both_merge_into_the_canonical_file(
     assert strip_cbmc_clauses(merged)[0].replace(helper, b"").split() == original.split()
 
 
-def test_a_session_may_not_change_the_contract_of_a_function_a_live_session_calls(
+def test_a_session_may_change_the_contract_of_a_function_a_live_session_only_calls(
     tmp_path: Path, monkeypatch
 ) -> None:
     canonical = _stripped_quicksort(tmp_path)
@@ -673,8 +674,31 @@ def test_a_session_may_not_change_the_contract_of_a_function_a_live_session_call
         )
     finally:
         shutil.rmtree(session.directory, ignore_errors=True)
+    # Only quickSort itself is frozen, so the edit to its callee is kept, and re-verified.
+    assert report.merged and report.carried == ["partition"] and report.dropped == []
+    assert list(reverified) == ["partition"]
+    merged = canonical.read_bytes()
+    assert _CONTRACTS["swap"] in merged and _CONTRACTS["partition"] in merged
+
+
+def test_a_session_may_not_change_the_contract_of_another_live_sessions_function(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    monkeypatch.setattr(avocado_verify, "verify_function", _FakeVerify())
+    monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
+    state = avocado_verify._MergeState(active={"swap", "partition"}, verified=set())
+    session = _fork_session("swap", canonical)
+    try:
+        _write_contract(session.file, "swap", _CONTRACTS["swap"])
+        _write_contract(session.file, "partition", _CONTRACTS["partition"])
+        report, _, reverified = _merge_and_verify(
+            session, canonical, include_dirs=[], call_graph=_quicksort_call_graph(), state=state
+        )
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
     assert report.merged and report.carried == [] and reverified == {}
-    assert report.dropped == ["function:partition (a live session works on it or calls it)"]
+    assert report.dropped == ["function:partition (a live session is working on it)"]
     merged = canonical.read_bytes()
     assert _CONTRACTS["swap"] in merged and _CONTRACTS["partition"] not in merged
 
@@ -700,7 +724,7 @@ class _ClaudeThatEditsACallerToo:
 
 
 def _run_swap_whose_edit_to_partition_is_left_out(tmp_path, monkeypatch, swap_verdicts):
-    """Run `swap` while a live `quickSort` session freezes `partition`; return what happened."""
+    """Run `swap` while `partition` has a live session of its own; return what happened."""
     canonical = _stripped_quicksort(tmp_path)
     verdicts = iter(swap_verdicts)
 
@@ -718,7 +742,7 @@ def _run_swap_whose_edit_to_partition_is_left_out(tmp_path, monkeypatch, swap_ve
     monkeypatch.setattr(
         avocado_verify, "is_spec_improvable_with_mutation_testing", lambda *a, **k: False
     )
-    state = avocado_verify._MergeState(active={"swap", "quickSort"}, verified=set())
+    state = avocado_verify._MergeState(active={"swap", "partition"}, verified=set())
     result = avocado_verify._verify_via_agent(
         "swap",
         file_path=str(canonical),
@@ -741,10 +765,10 @@ def test_a_function_broken_by_a_left_out_edit_gets_another_session_on_a_fresh_co
     # The second session is told what was left out, and starts from the merged contract.
     rerun = claude.prompts[1]
     assert rerun.startswith("This is a re-run: your contract for swap was merged")
-    assert "function:partition (a live session works on it or calls it)" in rerun
+    assert "function:partition (a live session is working on it)" in rerun
     merged = canonical.read_bytes()
     assert _CONTRACTS["swap"] in merged and _CONTRACTS["partition"] not in merged
-    assert state.active == {"quickSort"} and "swap" in state.verified
+    assert state.active == {"partition"} and "swap" in state.verified
     assert result.to_record()["merge_reruns"] == 1
 
 
@@ -768,19 +792,202 @@ def test_a_rerun_is_not_repeated_when_nothing_more_is_left_out(tmp_path: Path, m
     assert result.outcome is avocado_verify.GroundTruthVerificationResult.UNVERIFIED
 
 
-def test_no_rerun_after_left_out_edits_at_the_session_cap_or_a_usage_limit() -> None:
-    note = avocado_verify._note_for_rerun_after_dropped_edits
+def test_no_rerun_after_left_out_edits_at_the_rerun_cap_or_a_usage_limit() -> None:
     report = avocado_verify.MergeReport(True, dropped=["function:partition (reason)"])
     failed = RunCbmcResult(
         function="swap", failed_step=None, timed_out=False, returncode=10, response=""
     )
     state = avocado_verify._MergeState()
-    arguments = {"report": report, "cbmc": failed, "state": state}
-    assert note("swap", sessions=[_session()], **arguments)
-    assert not note("swap", sessions=[_session()] * 3, **arguments)
+    note = avocado_verify._note_for_rerun_after_merge
+    failed_note = partial(note, report=report, cbmc=failed, state=state)
+    assert failed_note("swap", sessions=[_session()])
+    # The sessions run on one copy have their own cap; only merge re-runs count here.
+    assert failed_note("swap", sessions=[_session()] * 5, merge_reruns=1)
+    assert not failed_note("swap", sessions=[_session()], merge_reruns=2)
     limited = _session(is_error=True, text="Usage limit reached; resets at 3pm")
-    assert not note("swap", sessions=[limited], **arguments)
+    assert not failed_note("swap", sessions=[limited])
     assert not note("swap", sessions=[_session()], report=report, cbmc=failed, state=None)
     assert not note(
         "swap", sessions=[_session()], report=report, cbmc=_verified_cbmc("swap"), state=state
     )
+
+
+def test_a_callee_contract_changed_by_another_session_causes_a_rerun_only_on_failure() -> None:
+    failed = RunCbmcResult(
+        function="quickSort", failed_step=None, timed_out=False, returncode=10, response=""
+    )
+    report = avocado_verify.MergeReport(True, changed_since_fork=["partition", "swap"])
+    note = partial(
+        avocado_verify._note_for_rerun_after_merge,
+        sessions=[_session()],
+        state=avocado_verify._MergeState(),
+        callees=["partition", "quickSort"],
+    )
+    text = note("quickSort", report=report, cbmc=failed)
+    # Only the function it calls is named, and it may change that contract again.
+    assert "changed the contract(s) of partition, which quickSort calls" in text
+    assert "swap" not in text and "You may change a callee's contract" in text
+    assert not note("quickSort", report=report, cbmc=_verified_cbmc("quickSort"))
+    # A change to a function it does not call explains nothing.
+    elsewhere = avocado_verify.MergeReport(True, changed_since_fork=["swap"])
+    assert not note("quickSort", report=elsewhere, cbmc=failed)
+    # A callee the session edited too is named once, as a left-out edit.
+    both = avocado_verify.MergeReport(
+        True,
+        dropped=["function:partition (changed in the canonical file since the fork)"],
+        changed_since_fork=["partition"],
+    )
+    text = note("quickSort", report=both, cbmc=failed)
+    assert "left out your edits" in text and "which quickSort calls" not in text
+
+
+class _ClaudeForQuickSortWhilePartitionMoves:
+    """A `_run_claude` stand-in for `quickSort`; another session merges into `partition` first."""
+
+    def __init__(self, canonical: Path) -> None:
+        self.canonical = canonical
+        self.prompts: list[str] = []
+        self.partition_seen: list[bool] = []
+
+    def __call__(self, command: list[str], timeout: int) -> ClaudeRun:
+        del timeout
+        prompt = command[2]
+        self.prompts.append(prompt)
+        match = re.search(r"Verify (\w+) in (\S+?)\.\n", prompt)
+        assert match, prompt[:80]
+        path = Path(match.group(2))
+        self.partition_seen.append(_CONTRACTS["partition"] in path.read_bytes())
+        if len(self.prompts) == 1:
+            _write_contract(path, "quickSort", _CONTRACTS["quickSort"])
+            # Meanwhile another session's merge changes the contract of a function it calls.
+            _write_contract(self.canonical, "partition", _CONTRACTS["partition"])
+        _log_attempts(path, "quickSort")
+        return _session()
+
+
+def test_a_function_broken_by_another_sessions_edit_to_its_callee_gets_another_session(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    verdicts = iter([False, True])
+
+    def ground_truth(function: str, file_path: str, include_dirs=None) -> RunCbmcResult:
+        del file_path, include_dirs
+        returncode = 0 if next(verdicts) else 10
+        return RunCbmcResult(
+            function=function, failed_step=None, timed_out=False, returncode=returncode, response=""
+        )
+
+    claude = _ClaudeForQuickSortWhilePartitionMoves(canonical)
+    monkeypatch.setattr(avocado_verify, "_run_claude", claude)
+    monkeypatch.setattr(avocado_verify, "verify_function", ground_truth)
+    monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
+    monkeypatch.setattr(
+        avocado_verify, "is_spec_improvable_with_mutation_testing", lambda *a, **k: False
+    )
+    state = avocado_verify._MergeState(active={"quickSort"}, verified={"partition"})
+    result = avocado_verify._verify_via_agent(
+        "quickSort",
+        file_path=str(canonical),
+        call_graph=_quicksort_call_graph(),
+        timeout=10,
+        include_dirs=[],
+        state=state,
+    )
+    assert result.merge_reruns == 1 and result.agent_sessions == 2
+    assert result.outcome is avocado_verify.GroundTruthVerificationResult.VERIFIED
+    # Nothing of the session's was left out; the re-run is for the callee that moved.
+    rerun = claude.prompts[1]
+    assert rerun.startswith("This is a re-run: your contract for quickSort was merged")
+    assert "changed the contract(s) of partition, which quickSort calls" in rerun
+    # The first copy predates the other session's merge; the second one holds it.
+    assert claude.partition_seen == [False, True]
+    merged = canonical.read_bytes()
+    assert _CONTRACTS["quickSort"] in merged and _CONTRACTS["partition"] in merged
+
+
+def test_merge_reruns_stop_at_their_own_cap(tmp_path: Path, monkeypatch) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+
+    def ground_truth(function: str, file_path: str, include_dirs=None) -> RunCbmcResult:
+        del file_path, include_dirs
+        return RunCbmcResult(
+            function=function, failed_step=None, timed_out=False, returncode=10, response=""
+        )
+
+    class _ClaudeWhoseCalleeKeepsMoving:
+        def __init__(self) -> None:
+            self.sessions = 0
+
+        def __call__(self, command: list[str], timeout: int) -> ClaudeRun:
+            del timeout
+            self.sessions += 1
+            match = re.search(r"Verify (\w+) in (\S+?)\.\n", command[2])
+            assert match
+            path = Path(match.group(2))
+            # Every session finds that partition's contract has been changed again meanwhile.
+            _write_contract(
+                canonical, "partition", b"__CPROVER_requires(%d > 0)" % self.sessions
+            )
+            _log_attempts(path, "quickSort")
+            return _session()
+
+    claude = _ClaudeWhoseCalleeKeepsMoving()
+    monkeypatch.setattr(avocado_verify, "_run_claude", claude)
+    monkeypatch.setattr(avocado_verify, "verify_function", ground_truth)
+    monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
+    monkeypatch.setattr(
+        avocado_verify, "is_spec_improvable_with_mutation_testing", lambda *a, **k: False
+    )
+    state = avocado_verify._MergeState(active={"quickSort"}, verified=set())
+    result = avocado_verify._verify_via_agent(
+        "quickSort",
+        file_path=str(canonical),
+        call_graph=_quicksort_call_graph(),
+        timeout=10,
+        include_dirs=[],
+        state=state,
+    )
+    assert result.merge_reruns == avocado_verify._MAX_MERGE_RERUNS_PER_FUNCTION == 2
+    assert claude.sessions == 3
+    assert result.outcome is avocado_verify.GroundTruthVerificationResult.UNVERIFIED
+
+
+def test_a_callee_changed_during_the_ground_truth_run_is_verified_against_again(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    seen: list[bool] = []
+
+    def ground_truth(function: str, file_path: str, include_dirs=None) -> RunCbmcResult:
+        del include_dirs
+        has_new_contract = _CONTRACTS["partition"] in Path(file_path).read_bytes()
+        seen.append(has_new_contract)
+        if not has_new_contract:
+            # While this run is under way, another session's merge lands on a callee.
+            _write_contract(canonical, "partition", _CONTRACTS["partition"])
+        # quickSort holds against the old contract of partition and not against the new one.
+        return RunCbmcResult(
+            function=function,
+            failed_step=None,
+            timed_out=False,
+            returncode=10 if has_new_contract else 0,
+            response="",
+        )
+
+    monkeypatch.setattr(avocado_verify, "verify_function", ground_truth)
+    monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
+    state = avocado_verify._MergeState(active={"quickSort"}, verified={"partition"})
+    session = _fork_session("quickSort", canonical)
+    try:
+        _write_contract(session.file, "quickSort", _CONTRACTS["quickSort"])
+        report, cbmc, _ = _merge_and_verify(
+            session, canonical, include_dirs=[], call_graph=_quicksort_call_graph(), state=state
+        )
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    # The stale pass is not recorded: the function is verified again on the file as it now is.
+    assert seen == [False, True]
+    assert report.merged and report.changed_since_fork == ["partition"]
+    assert not cbmc.is_function_verified and "quickSort" not in state.verified
+    assert state.active == set()
