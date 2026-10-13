@@ -48,7 +48,12 @@ from loguru import logger
 from eval.mutants.mutate_function import get_mutants
 from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
-from tools.run_cbmc import RunCbmcResult, compile_with_goto_cc
+from tools.run_cbmc import (
+    CbmcStep,
+    RunCbmcResult,
+    compile_with_goto_cc,
+    list_compiled_functions,
+)
 from tools.run_cbmc_and_mutation_testing import (
     MUTATION_FEEDBACK_LOG_SUFFIX,
     VERIFICATION_ATTEMPTS_LOG_SUFFIX,
@@ -239,6 +244,13 @@ class FunctionVerificationResult:
             copy because a merge left out edits its proof depended on, or because another
             session changed the contract of a function it calls
             (`_note_for_rerun_after_merge`). `merge` describes the last merge.
+        unverified_callees (dict[str, str]): The in-file callees whose contracts were not
+            verified when this function's ground truth was taken, each with why (for example
+            `VACUOUS (unsatisfiable_preconditions)` or `CBMC_FAILED`). The function's own verdict
+            assumes those contracts, so a pass here is a pass only if they are right.
+        not_in_build (bool): True iff the function is in the source text but not in the compiled
+            program (the preprocessor removes it), so it was given no session and no CBMC run
+            (see `_functions_not_in_build`). It is recorded as unverified.
     """
 
     function: str
@@ -252,6 +264,8 @@ class FunctionVerificationResult:
     stray_files: list[str] = field(default_factory=list)
     reverified: dict[str, RunCbmcResult] = field(default_factory=dict)
     merge_reruns: int = 0
+    unverified_callees: dict[str, str] = field(default_factory=dict)
+    not_in_build: bool = False
 
     def to_record(self) -> dict:
         """Return a JSON-serializable record of this result for the run log.
@@ -280,7 +294,10 @@ class FunctionVerificationResult:
                 "failed_step": None
                 if self.cbmc.failed_step is None
                 else self.cbmc.failed_step.value,
+                "vacuity": None if self.cbmc.vacuity is None else str(self.cbmc.vacuity),
             },
+            "unverified_callees": dict(self.unverified_callees),
+            "not_in_build": self.not_in_build,
             "total_cost_to_verify_usd": total_cost_to_verify_usd,
             "merge": None
             if self.merge is None
@@ -370,6 +387,20 @@ def main() -> None:
         already_done = set()
         log_path.write_text("", encoding="utf-8")  # Fresh run: truncate any prior log.
 
+    # Functions the preprocessor removes cannot be verified and are never really called, so they
+    # get no session and are taken out of every other function's callees.
+    not_in_build = _functions_not_in_build(functions, str(file_path), include_dirs)
+    if not_in_build:
+        logger.warning(
+            f"{len(not_in_build)} function(s) are in the source but not in the compiled program "
+            f"and are recorded as unverified without a session: {', '.join(not_in_build)}"
+        )
+        call_graph = _without_functions(call_graph, not_in_build)
+        for function in not_in_build:
+            if function not in already_done:
+                _append_jsonl(log_path, _not_in_build_result(function).to_record())
+                already_done.add(function)
+
     num_functions = len(functions)
     pending = [function for function in functions if function not in already_done]
     if args.resume_from and already_done:
@@ -381,7 +412,13 @@ def main() -> None:
     if not pending:
         logger.info(f"Nothing to do; all {num_functions} function(s) already complete.")
         _finalize_run(
-            log_path, functions=functions, remaining=[], status="completed", stopped_early=False
+            log_path,
+            functions=functions,
+            remaining=[],
+            status="completed",
+            stopped_early=False,
+            call_graph=call_graph,
+            not_in_build=not_in_build,
         )
 
     logger.info(
@@ -417,11 +454,101 @@ def main() -> None:
             remaining=remaining,
             status="usage_limited",
             stopped_early=True,
+            call_graph=call_graph,
+            not_in_build=not_in_build,
         )
 
     _log_summary(results, log_path)
     _finalize_run(
-        log_path, functions=functions, remaining=[], status="completed", stopped_early=False
+        log_path,
+        functions=functions,
+        remaining=[],
+        status="completed",
+        stopped_early=False,
+        call_graph=call_graph,
+        not_in_build=not_in_build,
+    )
+
+
+def _functions_not_in_build(
+    functions: list[str], file_path: str, include_dirs: list[str]
+) -> list[str]:
+    """Return the functions that are in the source text but not in the compiled program.
+
+    The call graph is read from the source without preprocessing, so it lists functions inside
+    conditional blocks that this build leaves out. CBMC has no such function: a session for one
+    cannot succeed, and a caller whose callee list names one fails at `goto-instrument`.
+
+    Args:
+        functions (list[str]): The verifiable functions found in the source text.
+        file_path (str): Absolute path to the C file.
+        include_dirs (list[str]): Include directories forwarded to `goto-cc`.
+
+    Returns:
+        list[str]: The functions the compiler does not build, in the order of `functions`; empty
+            when the file could not be compiled, since nothing is then known.
+    """
+    compiled = list_compiled_functions(file_path, include_dirs)
+    if compiled is None:
+        logger.warning(
+            f"could not list the functions compiled from {file_path}; treating every function "
+            "in the source as part of the build"
+        )
+        return []
+    return [function for function in functions if function not in compiled]
+
+
+def _without_functions(call_graph: CallGraph, removed: list[str]) -> CallGraph:
+    """Return a call graph without the given functions, as nodes and as callees.
+
+    Args:
+        call_graph (CallGraph): A call graph.
+        removed (list[str]): Functions to take out.
+
+    Returns:
+        CallGraph: A new call graph in which no function is, or calls, one of `removed`.
+    """
+    gone = set(removed)
+    return CallGraph(
+        {
+            function: {
+                "internal": [callee for callee in callees.internal if callee not in gone],
+                "external": list(callees.external),
+            }
+            for function, callees in call_graph.items()
+            if function not in gone
+        }
+    )
+
+
+def _not_in_build_result(function: str) -> FunctionVerificationResult:
+    """Return the result recorded for a function that is not in the compiled program.
+
+    It is recorded the way such a function ended up before it was recognised -- unverified,
+    because goto-cc finds no such function -- but without the session that used to be spent
+    finding that out, and marked `not_in_build`.
+
+    Args:
+        function (str): A function the compiler does not build.
+
+    Returns:
+        FunctionVerificationResult: An unverified result with no sessions and no cost.
+    """
+    return FunctionVerificationResult(
+        function=function,
+        outcome=GroundTruthVerificationResult.UNVERIFIED,
+        claude_sessions=[],
+        cbmc=RunCbmcResult(
+            function=function,
+            failed_step=CbmcStep.GOTO_CC,
+            timed_out=False,
+            returncode=1,
+            response=f"{function} is not in the compiled program: the preprocessor removes it",
+        ),
+        internal_callees=[],
+        verification_attempts=0,
+        agent_sessions=0,
+        not_in_build=True,
     )
 
 
@@ -441,6 +568,8 @@ def _finalize_run(
     remaining: list[str],
     status: str,
     stopped_early: bool,
+    call_graph: CallGraph | None = None,
+    not_in_build: list[str] | None = None,
 ) -> None:
     """Append the terminal run-summary record and exit with the appropriate code.
 
@@ -453,14 +582,30 @@ def _finalize_run(
         remaining (list[str]): Functions still pending (empty on normal completion).
         status (str): "usage_limited" or "completed" for the summary record.
         stopped_early (bool): True iff the run stopped on a usage limit; selects the exit code.
+        call_graph (CallGraph | None): Call graph of the file, to tell which verified functions
+            were verified against a callee contract that is not itself verified.
+        not_in_build (list[str] | None): Functions that are not in the compiled program. They
+            are part of `functions` and count as unverified; the summary names them.
     """
     verified_set = _verified_functions(log_path)
     verified = sum(1 for function in functions if function in verified_set)
     done = [function for function in functions if function not in remaining]
+    assuming = _verified_assuming_unverified_callees(functions, verified_set, call_graph)
+    if assuming:
+        logger.warning(
+            f"{len(assuming)} of the {verified} verified function(s) were verified against a "
+            f"callee contract that is not itself verified: {', '.join(assuming)}"
+        )
     _append_jsonl(
         log_path,
         _run_summary_record(
-            status, done=done, remaining=remaining, verified=verified, total=len(functions)
+            status,
+            done=done,
+            remaining=remaining,
+            verified=verified,
+            total=len(functions),
+            verified_assuming_unverified_callees=assuming,
+            not_in_build=not_in_build,
         ),
     )
     if stopped_early:
@@ -496,10 +641,55 @@ class _MergeState:
             definitions, so another session's edit to one of them is dropped at merge time.
         verified (set[str]): Functions whose latest ground truth on the canonical file passed. A
             merge that would make one of them stop verifying is not committed as is.
+        unverified (dict[str, str]): Functions whose latest ground truth did not pass, each with
+            why (`_status_of`). Their contracts are in the canonical file all the same, because
+            a caller cannot be verified against a callee that has no contract; a session for a
+            caller is told about them, and a function verified against one records it.
     """
 
     active: set[str] = field(default_factory=set)
     verified: set[str] = field(default_factory=set)
+    unverified: dict[str, str] = field(default_factory=dict)
+
+    def record(self, function: str, cbmc: RunCbmcResult) -> None:
+        """Record a function's latest ground truth; the caller holds `_CANONICAL_LOCK`.
+
+        Args:
+            function (str): The function.
+            cbmc (RunCbmcResult): Its ground truth on the canonical file.
+        """
+        if cbmc.is_function_verified:
+            self.verified.add(function)
+            self.unverified.pop(function, None)
+        else:
+            self.verified.discard(function)
+            self.unverified[function] = _status_of(cbmc)
+
+    def unverified_among(self, functions: list[str]) -> dict[str, str]:
+        """Return those of `functions` whose contracts are not verified, each with why.
+
+        Args:
+            functions (list[str]): Function names, typically a function's in-file callees.
+
+        Returns:
+            dict[str, str]: Name to status, in the order given.
+        """
+        return {name: self.unverified[name] for name in functions if name in self.unverified}
+
+
+def _status_of(cbmc: RunCbmcResult) -> str:
+    """Return a short description of a ground truth that did not pass.
+
+    Args:
+        cbmc (RunCbmcResult): A ground truth.
+
+    Returns:
+        str: The verdict, with the kind of vacuity for a vacuous pass, for example
+            `VACUOUS (unsatisfiable_preconditions)` or `CBMC_FAILED`.
+    """
+    if cbmc.is_vacuous:
+        return f"{cbmc!s} ({cbmc.vacuity})"
+    return str(cbmc)
 
 
 def _fork_session(function: str, canonical_file: Path) -> _Session:
@@ -580,8 +770,11 @@ def _verify_via_agent(
     merge_reruns = 0
     reverified: dict[str, RunCbmcResult] = {}
     retry_note = ""
+    callees = [callee for callee in call_graph.get_callees(function).internal if callee != function]
     while True:
         session = _fork_session(function, canonical_file)
+        with _CANONICAL_LOCK:
+            callee_status = {} if state is None else state.unverified_among(callees)
         try:
             new_sessions, new_attempts, _ = _run_sessions_for(
                 function,
@@ -590,6 +783,7 @@ def _verify_via_agent(
                 timeout=timeout,
                 include_dirs=include_dirs,
                 retry_note=retry_note,
+                callee_status=callee_status,
             )
             sessions += _keep_transcripts_of_timed_out_sessions(
                 function, new_sessions, canonical_file
@@ -628,6 +822,13 @@ def _verify_via_agent(
             # The merge released the function; it is being worked on again.
             state.active.add(function)
             _publish_run_state(state, canonical_file)
+    with _CANONICAL_LOCK:
+        unverified_callees = {} if state is None else state.unverified_among(callees)
+    if unverified_callees and cbmc.is_function_verified:
+        logger.warning(
+            f"{function}: verified against callee contracts that are not verified: "
+            f"{', '.join(f'{name} ({why})' for name, why in unverified_callees.items())}"
+        )
     return FunctionVerificationResult(
         function=function,
         outcome=_outcome_for(sessions[-1], cbmc),
@@ -640,6 +841,7 @@ def _verify_via_agent(
         stray_files=stray_files,
         reverified=reverified,
         merge_reruns=merge_reruns,
+        unverified_callees=unverified_callees,
     )
 
 
@@ -730,6 +932,7 @@ def _run_sessions_for(
     timeout: int,
     include_dirs: list[str],
     retry_note: str = "",
+    callee_status: dict[str, str] | None = None,
 ) -> tuple[list[ClaudeRun], int, int]:
     """Run the `claude -p` session(s) for `function` against its private copy of the file.
 
@@ -745,6 +948,8 @@ def _run_sessions_for(
         include_dirs (list[str]): Include directories forwarded to the agent and the tool.
         retry_note (str): When the function is being re-run on a fresh copy, why; it leads the
             first session's prompt.
+        callee_status (dict[str, str] | None): The in-file callees whose contracts are not
+            verified, each with why, for the prompt.
 
     Returns:
         tuple[list[ClaudeRun], int, int]: The sessions run, the verification attempts they made,
@@ -776,6 +981,7 @@ def _run_sessions_for(
             call_graph=call_graph,
             include_dirs=include_dirs,
             retry_note=retry_note,
+            callee_status=callee_status,
         ),
         file_path=file_path,
         include_dirs=include_dirs,
@@ -804,6 +1010,7 @@ def _run_sessions_for(
                 call_graph=call_graph,
                 include_dirs=include_dirs,
                 retry_note=decision.rationale,
+                callee_status=callee_status,
             ),
             file_path=file_path,
             include_dirs=include_dirs,
@@ -981,9 +1188,8 @@ def _merge_and_verify(
                     )
                     returncode = compiles(merged)
                 else:
-                    state.verified.update(
-                        other for other, result in reverified.items() if result.is_function_verified
-                    )
+                    for other, result in reverified.items():
+                        state.record(other, result)
             if returncode != 0:
                 report = replace(
                     report,
@@ -1042,10 +1248,7 @@ def _merge_and_verify(
                 )
             if state is not None:
                 state.active.discard(function)
-                if cbmc.is_function_verified:
-                    state.verified.add(function)
-                else:
-                    state.verified.discard(function)
+                state.record(function, cbmc)
                 _publish_run_state(state, canonical_file)
     finally:
         shutil.rmtree(scratch_root, ignore_errors=True)
@@ -1062,7 +1265,9 @@ def _publish_run_state(state: _MergeState, canonical_file: Path) -> None:
         state (_MergeState): The run's shared merge state.
         canonical_file (Path): Absolute path to the canonical source file.
     """
-    write_run_state(canonical_file, verified=state.verified, active=state.active)
+    write_run_state(
+        canonical_file, verified=state.verified, active=state.active, unverified=state.unverified
+    )
 
 
 def _report_stray_edits(session: _Session, canonical_dir: Path) -> list[str]:
@@ -1239,7 +1444,12 @@ def _verify_functions(
     """
     done: set[str] = {function for function in order if function not in pending}
     state = _MergeState(
-        verified={function for function in _verified_functions(log_path) if function in done}
+        verified={function for function in _verified_functions(log_path) if function in done},
+        unverified={
+            function: why
+            for function, why in _unverified_functions(log_path).items()
+            if function in done
+        },
     )
     with _CANONICAL_LOCK:
         _publish_run_state(state, Path(file_path))
@@ -1548,8 +1758,84 @@ def _verified_functions(log_path: Path) -> set[str]:
     }
 
 
+def _unverified_functions(log_path: Path) -> dict[str, str]:
+    """Return the functions whose most recent recorded outcome is not VERIFIED, each with why.
+
+    Used to rebuild `_MergeState.unverified` when a run is resumed.
+
+    Args:
+        log_path (Path): Path to the `<stem>-avocado-verify.jsonl` run log.
+
+    Returns:
+        dict[str, str]: Function to the verdict of its last recorded ground truth (with the kind
+            of vacuity for a vacuous pass), or to its outcome when no verdict was recorded.
+    """
+    verdicts: dict[str, str] = {}
+    try:
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict) or "type" in record or "function" not in record:
+            continue
+        cbmc = record.get("cbmc") or {}
+        verdict = cbmc.get("verdict")
+        if verdict:
+            vacuity = cbmc.get("vacuity")
+            vacuous = verdict == "VACUOUS" and vacuity
+            verdicts[record["function"]] = f"{verdict} ({vacuity})" if vacuous else verdict
+    return {
+        function: verdicts.get(function, outcome)
+        for function, outcome in _read_function_outcomes(log_path).items()
+        if outcome != GroundTruthVerificationResult.VERIFIED
+    }
+
+
+def _verified_assuming_unverified_callees(
+    functions: list[str], verified: set[str], call_graph: CallGraph | None
+) -> list[str]:
+    """Return the verified functions that call a function whose contract is not verified.
+
+    Such a function was verified with that callee's body replaced by its contract, so its
+    verdict holds only if the unverified contract is right. Only direct in-file callees are
+    looked at; a function that calls one of *these* functions is not listed on that account.
+
+    Args:
+        functions (list[str]): All verifiable functions in the file.
+        verified (set[str]): The functions verified at the end of the run.
+        call_graph (CallGraph | None): Call graph of the file; None yields no functions.
+
+    Returns:
+        list[str]: The functions, in the order of `functions`.
+    """
+    if call_graph is None:
+        return []
+    verifiable = set(functions)
+    return [
+        function
+        for function in functions
+        if function in verified
+        and function in call_graph
+        and any(
+            callee != function and callee in verifiable and callee not in verified
+            for callee in call_graph.get_callees(function).internal
+        )
+    ]
+
+
 def _run_summary_record(
-    status: str, *, done: list[str], remaining: list[str], verified: int, total: int
+    status: str,
+    *,
+    done: list[str],
+    remaining: list[str],
+    verified: int,
+    total: int,
+    verified_assuming_unverified_callees: list[str] | None = None,
+    not_in_build: list[str] | None = None,
 ) -> dict:
     """Build the terminal run-summary record appended to the run log.
 
@@ -1562,6 +1848,11 @@ def _run_summary_record(
         remaining (list[str]): Functions still pending, in topological order.
         verified (int): Count of functions verified across all runs.
         total (int): Total verifiable functions in the file.
+        verified_assuming_unverified_callees (list[str] | None): Those of the verified functions
+            that call a function whose contract is not verified (see
+            `_verified_assuming_unverified_callees`). They are included in `verified`.
+        not_in_build (list[str] | None): Functions that are in the source but not in the
+            compiled program. They are included in `total` and are not verified.
 
     Returns:
         dict: A JSON-serializable terminal run-summary record.
@@ -1574,6 +1865,8 @@ def _run_summary_record(
         "remaining": remaining,
         "verified": verified,
         "total": total,
+        "verified_assuming_unverified_callees": list(verified_assuming_unverified_callees or []),
+        "not_in_build": list(not_in_build or []),
     }
 
 
@@ -1584,6 +1877,7 @@ def _build_prompt(
     call_graph: CallGraph,
     include_dirs: list[str],
     retry_note: str = "",
+    callee_status: dict[str, str] | None = None,
 ) -> str:
     """Build the per-function prompt for a `claude -p` session.
 
@@ -1609,6 +1903,9 @@ def _build_prompt(
         retry_note (str): When this session is a re-run, why the previous one was not enough. It
             is put in front of the agent so the re-run starts differently from the session that
             failed.
+        callee_status (dict[str, str] | None): The in-file callees whose contracts are in the
+            file but are not verified, each with why (`_status_of`). The prompt names them, so
+            the agent does not build on a contract that proves nothing, and repairs it first.
 
     Returns:
         str: The prompt text.
@@ -1638,6 +1935,16 @@ def _build_prompt(
         if retry_note
         else ""
     )
+    unverified_text = (
+        "These callees' contracts are NOT verified, so what they promise is not established: "
+        f"{', '.join(f'{name} ({why})' for name, why in callee_status.items())}. Read each of "
+        "them before you rely on it, and repair it if your proof needs it (a contract you fix "
+        "on another function is kept, as described below). A callee marked VACUOUS has a "
+        "contract that passes CBMC while proving nothing; CLAUDE.md says what that means and "
+        "how to fix it.\n"
+        if callee_status
+        else ""
+    )
     return (
         f"{retry_text}"
         f"Verify {function} in {file_path}.\n"
@@ -1648,8 +1955,9 @@ def _build_prompt(
         "\n"
         f"    {shlex.join(command)}\n"
         "\n"
-        "In-file callees (verified earlier; their contracts replace their bodies while this "
-        f"function is verified): {callees_text}\n"
+        "In-file callees (their contracts replace their bodies while this function is "
+        f"verified): {callees_text}\n"
+        f"{unverified_text}"
         "In-file callers (their call sites must satisfy the preconditions you write): "
         f"{callers_text}\n"
         "\n"

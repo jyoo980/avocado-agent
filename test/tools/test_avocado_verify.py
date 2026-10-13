@@ -141,7 +141,7 @@ from avocado_verify import (
     _ready_functions,
     _verify_functions,
 )
-from tools.run_cbmc import CbmcStep, RunCbmcResult
+from tools.run_cbmc import CbmcStep, RunCbmcResult, Vacuity
 from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
 from tools.util.contract_merge import find_function_span
 
@@ -1057,3 +1057,146 @@ def test_the_transcript_of_a_timed_out_session_is_kept_beside_the_canonical_file
         assert {path.name for path in session.file.parent.iterdir()} == {"quicksort.c"}
     finally:
         shutil.rmtree(session.directory, ignore_errors=True)
+
+
+def test_prompt_names_the_callees_whose_contracts_are_not_verified() -> None:
+    build = partial(
+        _build_prompt,
+        "quickSort",
+        file_path="/src/quicksort.c",
+        call_graph=_quicksort_call_graph(),
+        include_dirs=[],
+    )
+    prompt = build(callee_status={"partition": "VACUOUS (unsatisfiable_preconditions)"})
+    assert "verified): partition\n" in prompt and "verified earlier" not in prompt
+    assert "NOT verified" in prompt
+    assert "partition (VACUOUS (unsatisfiable_preconditions))" in prompt
+    # With every callee verified there is nothing to warn about.
+    assert "NOT verified" not in build(callee_status={})
+    assert "NOT verified" not in build()
+
+
+def _vacuous_cbmc(function: str) -> RunCbmcResult:
+    return RunCbmcResult(
+        function=function,
+        failed_step=None,
+        timed_out=False,
+        returncode=0,
+        response="vacuous",
+        vacuity=Vacuity.UNSATISFIABLE_PRECONDITIONS,
+    )
+
+
+def test_merge_state_keeps_why_a_function_is_not_verified() -> None:
+    state = avocado_verify._MergeState(verified={"partition"})
+    state.record("partition", _vacuous_cbmc("partition"))
+    failed = RunCbmcResult(
+        function="swap", failed_step=CbmcStep.CBMC, timed_out=False, returncode=10, response=""
+    )
+    state.record("swap", failed)
+    assert state.verified == set()
+    assert state.unverified == {
+        "partition": "VACUOUS (unsatisfiable_preconditions)",
+        "swap": "CBMC_FAILED",
+    }
+    assert state.unverified_among(["swap", "quickSort"]) == {"swap": "CBMC_FAILED"}
+    # A later pass, for instance after another session repaired the contract, clears it.
+    state.record("swap", _verified_cbmc("swap"))
+    assert state.verified == {"swap"} and "swap" not in state.unverified
+
+
+def test_a_vacuous_contract_is_merged_but_its_function_is_not_verified(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    monkeypatch.setattr(avocado_verify, "verify_function", lambda f, *a, **k: _vacuous_cbmc(f))
+    monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
+    state = avocado_verify._MergeState(active={"partition"}, verified=set())
+    session = _fork_session("partition", canonical)
+    try:
+        _write_contract(session.file, "partition", _CONTRACTS["partition"])
+        report, cbmc, _ = _merge_and_verify(
+            session, canonical, include_dirs=[], call_graph=_quicksort_call_graph(), state=state
+        )
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    # Callers cannot be verified against a callee with no contract, so the contract stays.
+    assert report.merged and _CONTRACTS["partition"] in canonical.read_bytes()
+    assert str(cbmc) == "VACUOUS" and not cbmc.is_function_verified
+    assert state.verified == set()
+    assert state.unverified == {"partition": "VACUOUS (unsatisfiable_preconditions)"}
+    published = json.loads(canonical.with_name("quicksort-avocado-run-state.json").read_text())
+    assert published["unverified"] == {"partition": "VACUOUS (unsatisfiable_preconditions)"}
+
+
+def test_a_function_verified_against_an_unverified_callee_says_so(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    claude = _fake_claude()
+    monkeypatch.setattr(avocado_verify, "_run_claude", claude)
+    monkeypatch.setattr(avocado_verify, "verify_function", _FakeVerify())
+    monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
+    monkeypatch.setattr(
+        avocado_verify, "is_spec_improvable_with_mutation_testing", lambda *a, **k: False
+    )
+    state = avocado_verify._MergeState(
+        active={"quickSort"}, unverified={"partition": "VACUOUS (end_unreachable)"}
+    )
+    result = avocado_verify._verify_via_agent(
+        "quickSort",
+        file_path=str(canonical),
+        call_graph=_quicksort_call_graph(),
+        timeout=10,
+        include_dirs=[],
+        state=state,
+    )
+    assert result.outcome is avocado_verify.GroundTruthVerificationResult.VERIFIED
+    assert result.unverified_callees == {"partition": "VACUOUS (end_unreachable)"}
+    record = result.to_record()
+    assert record["unverified_callees"] == {"partition": "VACUOUS (end_unreachable)"}
+    assert record["cbmc"]["vacuity"] is None
+
+
+def test_the_summary_counts_functions_verified_against_unverified_callees() -> None:
+    assuming = avocado_verify._verified_assuming_unverified_callees
+    order = ["swap", "partition", "quickSort"]
+    graph = _quicksort_call_graph()
+    assert assuming(order, {"swap", "partition", "quickSort"}, graph) == []
+    # partition calls swap, which is not verified; quickSort's callees are.
+    assert assuming(order, {"partition", "quickSort"}, graph) == ["partition"]
+    # quickSort calls itself, which does not make it depend on an unverified callee.
+    assert assuming(order, {"swap", "quickSort"}, graph) == ["quickSort"]
+    assert assuming(order, {"partition"}, None) == []
+    record = avocado_verify._run_summary_record(
+        "completed",
+        done=order,
+        remaining=[],
+        verified=2,
+        total=3,
+        verified_assuming_unverified_callees=["partition"],
+    )
+    assert record["verified"] == 2
+    assert record["verified_assuming_unverified_callees"] == ["partition"]
+
+
+def test_a_resumed_run_recalls_why_functions_were_not_verified(tmp_path: Path) -> None:
+    log = tmp_path / "run.jsonl"
+    _append_jsonl(
+        log,
+        {
+            "function": "swap",
+            "outcome": "UNVERIFIED",
+            "cbmc": {"verdict": "VACUOUS", "vacuity": "end_unreachable"},
+        },
+    )
+    _append_jsonl(
+        log, {"function": "partition", "outcome": "UNVERIFIED", "cbmc": {"verdict": "CBMC_FAILED"}}
+    )
+    _append_jsonl(log, {"function": "quickSort", "outcome": "VERIFIED", "cbmc": {"verdict": "PASS"}})
+    _append_jsonl(log, {"function": "other", "outcome": "CLAUDE_TIMED_OUT"})
+    assert avocado_verify._unverified_functions(log) == {
+        "swap": "VACUOUS (end_unreachable)",
+        "partition": "CBMC_FAILED",
+        "other": "CLAUDE_TIMED_OUT",
+    }

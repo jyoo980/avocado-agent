@@ -18,12 +18,12 @@ from __future__ import annotations
 
 import json
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
 # Name of the session file, and of the fork base saved next to it (the source file's suffix is
 # appended to the latter).
@@ -80,10 +80,13 @@ class RunState:
         verified (frozenset[str]): Functions whose latest ground truth on the canonical file
             passed.
         active (frozenset[str]): Functions with a live session.
+        unverified (dict[str, str]): Functions whose latest ground truth did not pass, each with
+            why (for example `VACUOUS (unsatisfiable_preconditions)`).
     """
 
     verified: frozenset[str]
     active: frozenset[str]
+    unverified: dict[str, str] = field(default_factory=dict)
 
 
 def write_session_info(
@@ -149,7 +152,11 @@ def run_state_path(canonical_file: Path) -> Path:
 
 
 def write_run_state(
-    canonical_file: Path, *, verified: Iterable[str], active: Iterable[str]
+    canonical_file: Path,
+    *,
+    verified: Iterable[str],
+    active: Iterable[str],
+    unverified: Mapping[str, str] | None = None,
 ) -> None:
     """Publish the run's merge state beside the canonical file, atomically.
 
@@ -160,10 +167,16 @@ def write_run_state(
         canonical_file (Path): The canonical source file.
         verified (Iterable[str]): Functions currently verified on the canonical file.
         active (Iterable[str]): Functions with a live session.
+        unverified (Mapping[str, str] | None): Functions whose latest ground truth did not pass,
+            each with why.
     """
     target = run_state_path(canonical_file)
     staged = target.with_name(f"{target.name}.tmp")
-    record = {"verified": sorted(verified), "active": sorted(active)}
+    record = {
+        "verified": sorted(verified),
+        "active": sorted(active),
+        "unverified": dict(sorted((unverified or {}).items())),
+    }
     try:
         staged.write_text(json.dumps(record), encoding="utf-8")
         staged.replace(target)
@@ -182,7 +195,11 @@ def read_run_state(canonical_file: Path) -> RunState | None:
     """
     try:
         record = json.loads(run_state_path(canonical_file).read_text(encoding="utf-8"))
-        return RunState(verified=frozenset(record["verified"]), active=frozenset(record["active"]))
+        return RunState(
+            verified=frozenset(record["verified"]),
+            active=frozenset(record["active"]),
+            unverified=dict(record.get("unverified") or {}),
+        )
     except (OSError, ValueError, KeyError, TypeError):
         return None
 

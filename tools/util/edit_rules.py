@@ -420,6 +420,29 @@ def function_header(source: bytes, function: str) -> bytes | None:
     return None
 
 
+def function_body_offsets(source: bytes, function: str) -> list[int]:
+    """Return the offset of the opening brace of the body of each definition of a function.
+
+    Args:
+        source (bytes): A C source.
+        function (str): The function's name.
+
+    Returns:
+        list[int]: One offset per definition (a function may be defined once per preprocessor
+            branch), in source order; empty when the function is not defined.
+    """
+    tokens = _tokenize(source)
+    offsets = []
+    for item in _split_items(tokens):
+        if item.kind != "function" or item.name != function:
+            continue
+        for token in tokens:
+            if token.offset >= item.start and token.depth == 0 and token.text == "{":
+                offsets.append(token.offset)
+                break
+    return offsets
+
+
 def _reason_not_carried(
     name: str | None, frozen_functions: Collection[str] | None, *, their_changed: bool
 ) -> str | None:
