@@ -991,3 +991,69 @@ def test_a_callee_changed_during_the_ground_truth_run_is_verified_against_again(
     assert report.merged and report.changed_since_fork == ["partition"]
     assert not cbmc.is_function_verified and "quickSort" not in state.verified
     assert state.active == set()
+
+
+def test_the_tools_logs_are_mirrored_beside_the_canonical_file(tmp_path: Path) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    session = _fork_session("swap", canonical)
+    try:
+        _log_attempts(session.file, "swap")
+        feedback = session.file.with_name("quicksort-mutation-feedback.jsonl")
+        feedback.write_text(json.dumps({"function": "swap", "kill_score": 0.5}) + "\n")
+        avocado_verify._mirror_tool_logs(session, canonical)
+        avocado_verify._mirror_tool_logs(session, canonical)
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    attempts = canonical.with_name("quicksort-verification-attempts.jsonl")
+    mirrored = canonical.with_name("quicksort-mutation-feedback.jsonl")
+    assert len(attempts.read_text().splitlines()) == 4
+    assert [json.loads(line)["kill_score"] for line in mirrored.read_text().splitlines()] == [
+        0.5,
+        0.5,
+    ]
+
+
+def test_run_claude_names_the_session_so_a_timed_out_one_can_be_found(monkeypatch) -> None:
+    commands: list[list[str]] = []
+
+    def times_out(command, **kwargs):
+        commands.append(command)
+        raise avocado_verify.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(avocado_verify.subprocess, "run", times_out)
+    run = avocado_verify._run_claude(["claude", "--print", "prompt"], 7)
+    assert run.timed_out and run.transcript_path is None
+    assert commands[0][:3] == ["claude", "--print", "prompt"]
+    assert commands[0][-2] == "--session-id" and commands[0][-1] == run.session_id
+    # Every session gets an id of its own.
+    assert avocado_verify._run_claude(["claude"], 7).session_id != run.session_id
+
+
+def test_the_transcript_of_a_timed_out_session_is_kept_beside_the_canonical_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    config_dir = tmp_path / "claude-config"
+    project_dir = config_dir / "projects" / "-tmp-avocado-session-x-bench"
+    project_dir.mkdir(parents=True)
+    (project_dir / "timed-out-id.jsonl").write_text('{"type": "user"}\n')
+    (project_dir / "sid.jsonl").write_text('{"type": "user"}\n')
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    timed_out = avocado_verify.replace(_session(timed_out=True), session_id="timed-out-id")
+    lost = avocado_verify.replace(_session(timed_out=True), session_id="no-such-id")
+    finished = _session()
+    kept = avocado_verify._keep_transcripts_of_timed_out_sessions(
+        "partition", [timed_out, finished, lost], canonical
+    )
+    target = tmp_path / "bench" / "quicksort-avocado-transcripts" / "partition-timed-out-id.jsonl"
+    assert target.read_text() == '{"type": "user"}\n'
+    assert kept[0].transcript_path == str(target)
+    # Only timed-out sessions are kept, and a transcript that cannot be found changes nothing.
+    assert kept[1:] == [finished, lost]
+    assert [path.name for path in target.parent.iterdir()] == ["partition-timed-out-id.jsonl"]
+    # The kept transcripts are not copied into later sessions' private copies.
+    session = _fork_session("swap", canonical)
+    try:
+        assert {path.name for path in session.file.parent.iterdir()} == {"quicksort.c"}
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)

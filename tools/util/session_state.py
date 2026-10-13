@@ -33,12 +33,16 @@ _FORK_BASE_STEM = ".avocado-fork-base"
 # Suffix of the run-state file that sits beside the canonical file.
 RUN_STATE_SUFFIX = "-avocado-run-state.json"
 
+# Suffix of the directory beside the canonical file in which the harness keeps the transcripts of
+# the sessions it had to stop at the session timeout.
+TRANSCRIPTS_DIR_SUFFIX = "-avocado-transcripts"
+
 # What is left out when the source directory is copied for a session or a ground-truth run, and
 # what is not counted as an edit by the agent: the harness's and the tool's own logs, state and
 # caches (including the compile-failure log the tool writes into whatever directory the agent runs
-# it from), CBMC intermediates, mutant sources, and the folder metadata macOS writes whenever a
-# directory is opened in Finder. Each copy then starts clean and, in particular,
-# gets its own `<stem>-verification-attempts.jsonl`.
+# it from), kept session transcripts, CBMC intermediates, mutant sources, and the folder metadata
+# macOS writes whenever a directory is opened in Finder. Each copy then starts clean and, in
+# particular, gets its own `<stem>-verification-attempts.jsonl`.
 SNAPSHOT_IGNORE = shutil.ignore_patterns(
     ".git",
     ".DS_Store",
@@ -46,6 +50,7 @@ SNAPSHOT_IGNORE = shutil.ignore_patterns(
     "*-callgraph.json",
     "*.jsonl",
     f"*{RUN_STATE_SUFFIX}",
+    f"*{TRANSCRIPTS_DIR_SUFFIX}",
     "*__mutant_*.c",
     "*__clause_drop_*.c",
     "mutation_compile_failures.log",

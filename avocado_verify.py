@@ -28,12 +28,14 @@ Usage:
 
 import argparse
 import json
+import os
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+import uuid
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
@@ -47,7 +49,11 @@ from eval.mutants.mutate_function import get_mutants
 from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
 from tools.run_cbmc import RunCbmcResult, compile_with_goto_cc
-from tools.run_cbmc_and_mutation_testing import VERIFICATION_ATTEMPTS_LOG_SUFFIX, verify_function
+from tools.run_cbmc_and_mutation_testing import (
+    MUTATION_FEEDBACK_LOG_SUFFIX,
+    VERIFICATION_ATTEMPTS_LOG_SUFFIX,
+    verify_function,
+)
 from tools.util import get_in_file_callees_for, get_in_file_callers_of
 from tools.util.callgraph import CallGraph
 from tools.util.contract_merge import MergeReport, frozen_functions_for, functions_affected_by
@@ -59,6 +65,7 @@ from tools.util.edit_rules import (
 )
 from tools.util.session_state import (
     SNAPSHOT_IGNORE,
+    TRANSCRIPTS_DIR_SUFFIX,
     find_stray_files,
     write_run_state,
     write_session_info,
@@ -179,7 +186,8 @@ class ClaudeRun:
         timed_out (bool): True iff the session hit the per-function timeout.
         is_error (bool): True iff claude reported an error result, or its output could
             not be parsed as JSON.
-        session_id (str | None): claude's session id, when reported.
+        session_id (str | None): claude's session id: the one the harness asked for, or the one
+            claude reported.
         result_text (str): claude's final message (or a diagnostic on failure).
         total_cost_usd (float | None): Per-session cost in USD, when reported.
         num_turns (int | None): number of turns taken, when reported.
@@ -190,6 +198,8 @@ class ClaudeRun:
             finer-grained companion to `is_error`. Recorded in the run log for diagnostics
             only; not consulted by any control flow (usage-limit detection matches on
             `result_text`, see `_is_usage_limit_hit`).
+        transcript_path (str | None): Where the harness kept the session's transcript, for a
+            session it stopped at the timeout (see `_keep_transcripts_of_timed_out_sessions`).
     """
 
     returncode: int
@@ -201,6 +211,7 @@ class ClaudeRun:
     num_turns: int | None
     duration_ms: int | None
     subtype: str | None
+    transcript_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -580,10 +591,12 @@ def _verify_via_agent(
                 include_dirs=include_dirs,
                 retry_note=retry_note,
             )
-            sessions += new_sessions
+            sessions += _keep_transcripts_of_timed_out_sessions(
+                function, new_sessions, canonical_file
+            )
             attempts += new_attempts
             stray_files = _report_stray_edits(session, canonical_file.parent)
-            _mirror_attempts_log(session, canonical_file)
+            _mirror_tool_logs(session, canonical_file)
             report, cbmc, newly_reverified = _merge_and_verify(
                 session,
                 canonical_file,
@@ -1074,33 +1087,86 @@ def _report_stray_edits(session: _Session, canonical_dir: Path) -> list[str]:
     return stray
 
 
-def _mirror_attempts_log(session: _Session, canonical_file: Path) -> None:
-    """Append the session copy's verification-attempt records to the canonical-side log.
+def _mirror_tool_logs(session: _Session, canonical_file: Path) -> None:
+    """Append the logs `avocado-run-cbmc` wrote beside the session copy to the canonical-side logs.
 
-    The harness itself reads attempts from the session copy; the canonical-side log is kept for
-    post-hoc analysis of a run, where readers expect one log beside the source file. Failures to
-    read or write are swallowed so logging never affects a run.
+    Those are the verification-attempts log and the mutation-feedback log (the kill score of each
+    passing attempt). The harness itself reads attempts from the session copy; the canonical-side
+    logs are kept for post-hoc analysis of a run, where readers expect one log beside the source
+    file and the session copy is gone. Failures to read or write are swallowed so logging never
+    affects a run.
 
     Args:
         session (_Session): The finished session.
         canonical_file (Path): Absolute path to the canonical source file.
     """
-    source_log = session.file.with_name(f"{session.file.stem}{VERIFICATION_ATTEMPTS_LOG_SUFFIX}")
-    target_log = canonical_file.with_name(
-        f"{canonical_file.stem}{VERIFICATION_ATTEMPTS_LOG_SUFFIX}"
-    )
-    try:
-        records = source_log.read_text(encoding="utf-8")
-    except OSError:
-        return
-    if not records.strip():
-        return
-    with _RUN_LOG_LOCK:
+    for suffix in (VERIFICATION_ATTEMPTS_LOG_SUFFIX, MUTATION_FEEDBACK_LOG_SUFFIX):
+        source_log = session.file.with_name(f"{session.file.stem}{suffix}")
+        target_log = canonical_file.with_name(f"{canonical_file.stem}{suffix}")
         try:
-            with target_log.open("a", encoding="utf-8") as log_file:
-                log_file.write(records if records.endswith("\n") else records + "\n")
+            records = source_log.read_text(encoding="utf-8")
         except OSError:
-            pass
+            continue
+        if not records.strip():
+            continue
+        with _RUN_LOG_LOCK:
+            try:
+                with target_log.open("a", encoding="utf-8") as log_file:
+                    log_file.write(records if records.endswith("\n") else records + "\n")
+            except OSError:
+                pass
+
+
+def _keep_transcripts_of_timed_out_sessions(
+    function: str, sessions: list[ClaudeRun], canonical_file: Path
+) -> list[ClaudeRun]:
+    """Copy the transcript of each session stopped at the timeout beside the canonical file.
+
+    A session the harness stops never prints its result, so all that is otherwise known about it
+    is that it ran out of time. Claude Code writes every session's transcript, as the session
+    goes, to `<its configuration directory>/projects/<working directory>/<session id>.jsonl`,
+    and `_run_claude` chooses the session id, so the transcript can be found. It is copied to
+    `<stem>-avocado-transcripts/<function>-<session id>.jsonl` beside the canonical file, where
+    it outlives the container the run was made in. A transcript that cannot be found or copied
+    is logged and otherwise ignored.
+
+    Args:
+        function (str): The function the sessions worked on.
+        sessions (list[ClaudeRun]): Sessions that have just ended.
+        canonical_file (Path): Absolute path to the canonical source file.
+
+    Returns:
+        list[ClaudeRun]: The same sessions, each timed-out one carrying the path its transcript
+            was kept at.
+    """
+    kept: list[ClaudeRun] = []
+    for run in sessions:
+        if not run.timed_out or run.session_id is None:
+            kept.append(run)
+            continue
+        config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+        found = sorted((config_dir / "projects").glob(f"*/{run.session_id}.jsonl"))
+        if not found:
+            logger.warning(
+                f"{function}: no transcript found under {config_dir} for timed-out session "
+                f"{run.session_id}"
+            )
+            kept.append(run)
+            continue
+        target_dir = canonical_file.with_name(f"{canonical_file.stem}{TRANSCRIPTS_DIR_SUFFIX}")
+        target = target_dir / f"{function}-{run.session_id}.jsonl"
+        try:
+            target_dir.mkdir(exist_ok=True)
+            shutil.copyfile(found[0], target)
+        except OSError as error:
+            logger.warning(
+                f"{function}: could not keep the transcript of a timed-out session: {error}"
+            )
+            kept.append(run)
+            continue
+        logger.info(f"{function}: transcript of the timed-out session kept at {target}")
+        kept.append(replace(run, transcript_path=str(target)))
+    return kept
 
 
 def _ready_functions(
@@ -1655,6 +1721,10 @@ def _build_claude_command(prompt: str, *, file_path: str, include_dirs: list[str
 def _run_claude(command: list[str], timeout: int) -> ClaudeRun:
     """Run a `claude -p` session as a subprocess and parse its JSON result.
 
+    The session is given an id chosen here (`--session-id`). A session that runs out of time
+    prints nothing, so this is the only way to know its id afterwards, and with it to find the
+    transcript Claude Code wrote (see `_keep_transcripts_of_timed_out_sessions`).
+
     Args:
         command (list[str]): The claude argument vector.
         timeout (int): Per-session timeout in seconds.
@@ -1662,6 +1732,8 @@ def _run_claude(command: list[str], timeout: int) -> ClaudeRun:
     Returns:
         ClaudeRun: The parsed outcome, or a timeout sentinel if the session ran long.
     """
+    session_id = str(uuid.uuid4())
+    command = [*command, "--session-id", session_id]
     logger.debug(f"running: {shlex.join(command)}")
     try:
         completed = subprocess.run(
@@ -1679,7 +1751,7 @@ def _run_claude(command: list[str], timeout: int) -> ClaudeRun:
             returncode=_TIMEOUT_RETURNCODE,
             timed_out=True,
             is_error=True,
-            session_id=None,
+            session_id=session_id,
             result_text=f"claude -p timed out after {timeout}s",
             total_cost_usd=None,
             num_turns=None,
