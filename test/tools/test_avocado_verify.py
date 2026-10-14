@@ -143,7 +143,7 @@ from avocado_verify import (
 )
 from tools.run_cbmc import CbmcStep, RunCbmcResult, Vacuity
 from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
-from tools.util.contract_merge import find_function_span
+from tools.util.edit_rules import function_body_offsets, function_line
 
 
 def test_ready_functions_waits_only_for_earlier_callees() -> None:
@@ -252,14 +252,10 @@ def test_fork_session_copies_the_directory_outside_the_tree_without_artifacts(
 def _write_contract(session_file: Path, function: str, contract: bytes) -> None:
     """Insert `contract` between `function`'s declarator and body in `session_file`."""
     source = session_file.read_bytes()
-    span = find_function_span(source, function)
-    assert span is not None
+    bodies = function_body_offsets(source, function)
+    assert len(bodies) == 1, bodies
     session_file.write_bytes(
-        source[: span.body_start_byte].rstrip(b" \t")
-        + b"\n"
-        + contract
-        + b"\n"
-        + source[span.body_start_byte :]
+        source[: bodies[0]].rstrip(b" \t") + b"\n" + contract + b"\n" + source[bodies[0] :]
     )
 
 
@@ -575,7 +571,7 @@ def test_merge_and_verify_reverts_carried_edits_that_break_a_verified_caller(
     merged = canonical.read_bytes()
     assert _CONTRACTS["partition"] in merged
     assert _CONTRACTS["swap"] not in merged
-    assert find_function_span(merged, "swap") is not None
+    assert function_line(merged, "swap") is not None
     assert not reverified["quickSort"].is_function_verified
     # Nothing that was verified before is lost.
     assert {"swap", "quickSort"} <= state.verified

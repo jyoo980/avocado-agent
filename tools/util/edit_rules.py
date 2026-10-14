@@ -1,6 +1,6 @@
 """Decide whether a session's local edits to a C file are ones the merge may keep.
 
-A session's job is to add specifications. check_edits` compares the session's finished copy (the 
+A session's job is to add specifications. check_edits` compares the session's finished copy (the
 *snapshot*) with the file as it was when it was forked. Returns one `Violation` per broken rule:
 
 1. Original code is unchanged: every original top-level item is still present, in the same order,
@@ -24,14 +24,17 @@ or when its contract changed in the shared file since the fork, and nothing merg
 is already defined differently there.
 
 `merge_copy` then produces the file to commit, reconciling the copy with whatever other sessions
-merged since it was taken. Because every version is the same original code plus contracts plus
-new items, that is decided item by item and no function has to be located or parsed.
+merged since it was taken, and returns a `MergeReport` for the run log. Because every version is
+the same original code plus contracts plus new items, that is decided item by item and no function
+has to be located or parsed. `frozen_functions_for` and `functions_affected_by` give the merge's
+callers the two sets that rules 10 and 9 are about: the functions whose contracts a session may not
+change, and the functions a kept change can break.
 
-The comparison deliberately does not use tree-sitter. Contract clauses and
-comments are erased, both files are split into tokens and then into top-level items by brace depth
-alone, and the two item sequences are aligned. That is robust to constructs the C grammar cannot
-parse (`__CPROVER_forall { ... }` in a helper, attribute macros, operator macros), which made an
-AST comparison reject merges that had changed no code.
+The comparison deliberately does not use tree-sitter. Contract clauses and comments are erased,
+both files are split into tokens and then into top-level items by brace depth alone, and the two
+item sequences are aligned. That is robust to constructs the C grammar cannot parse
+(`__CPROVER_forall { ... }` in a helper, attribute macros, operator macros), which made an AST
+comparison reject merges that had changed no code.
 """
 
 from __future__ import annotations
@@ -44,10 +47,11 @@ from operator import itemgetter
 from typing import TYPE_CHECKING
 
 from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
-from tools.util.contract_merge import MergeReport
 
 if TYPE_CHECKING:
     from collections.abc import Collection
+
+    from tools.util.callgraph import CallGraph
 
 # The prefixes a new top-level name must start with: the first for macros, the second for
 # functions, variables and types. Either is accepted for any kind of name; what matters is that no
@@ -120,6 +124,58 @@ class Violation:
         """
         where = f"line {self.line}: " if self.line is not None else ""
         return f"rule {self.rule} ({RULE_TITLES[self.rule]}): {where}{self.message}"
+
+
+@dataclass(frozen=True)
+class MergeReport:
+    """What a merge kept, what it left out, and why it failed, for the run log.
+
+    Attributes:
+        merged (bool): True iff the canonical file was updated.
+        reason (str): Why the merge failed; empty on success.
+        transplanted (list[str]): New top-level items carried into the canonical file, rendered
+            as `kind:name`.
+        skipped_duplicates (list[str]): New items that another session had already added with
+            identical text, so nothing needed doing.
+        dropped (list[str]): The session's edits to the contracts of other functions that the
+            merge left out (rule 10, or rule 9 when the harness reverts them), rendered as
+            `function:name` with the reason in parentheses when there is a specific one.
+        carried (list[str]): Other functions whose contracts the session changed and the merge
+            kept; the caller re-verifies what they can affect before committing.
+        changed_since_fork (list[str]): Functions whose contracts differ between the file the
+            session's copy was taken from and the canonical file the session's function was last
+            verified on, because other sessions merged meanwhile. The session never saw those
+            contracts, so a function that calls one of them and then fails its ground truth is
+            given another session (see `avocado_verify._note_for_rerun_after_merge`).
+        violations (list[str]): The edit rules the session's copy broke, one rendered line each;
+            non-empty only when they are why the merge failed.
+    """
+
+    merged: bool
+    reason: str = ""
+    transplanted: list[str] = field(default_factory=list)
+    skipped_duplicates: list[str] = field(default_factory=list)
+    dropped: list[str] = field(default_factory=list)
+    carried: list[str] = field(default_factory=list)
+    changed_since_fork: list[str] = field(default_factory=list)
+    violations: list[str] = field(default_factory=list)
+
+    def to_record(self) -> dict:
+        """Return a JSON-serializable form of this report for the run log.
+
+        Returns:
+            dict: The report's fields.
+        """
+        return {
+            "merged": self.merged,
+            "reason": self.reason,
+            "transplanted": list(self.transplanted),
+            "skipped_duplicates": list(self.skipped_duplicates),
+            "dropped": list(self.dropped),
+            "carried": list(self.carried),
+            "changed_since_fork": list(self.changed_since_fork),
+            "violations": list(self.violations),
+        }
 
 
 @dataclass(frozen=True)
@@ -318,7 +374,7 @@ def merge_copy(
                 label = f"function:{edited.name}" if edited.name else f"item at line {edited.line}"
                 dropped.append(label + reason)
                 continue
-            if edited.name not in carried:
+            if edited.name is not None and edited.name not in carried:
                 carried.append(edited.name)
         edits.append((current.start, current.end, snapshot[edited.start : edited.end]))
 
@@ -469,6 +525,59 @@ def _reason_not_carried(
     if their_changed:
         return " (changed in the canonical file since the fork)"
     return None
+
+
+def functions_affected_by(
+    carried: Collection[str],
+    *,
+    call_graph: CallGraph | None,
+    verified: Collection[str],
+    exclude: str,
+) -> list[str]:
+    """Return the functions whose ground truth a merge carrying edits to `carried` can change.
+
+    Those are the carried functions themselves (their contracts changed) and every verified
+    in-file caller of one (a caller is verified against its callees' contracts). `exclude` is the
+    merging function, which is verified separately.
+
+    Args:
+        carried (Collection[str]): Functions whose edited definitions the merge carries.
+        call_graph (CallGraph | None): Call graph of the file; None yields no callers.
+        verified (Collection[str]): Functions currently verified on the canonical file.
+        exclude (str): The function whose session is merging.
+
+    Returns:
+        list[str]: The affected functions, sorted.
+    """
+    affected = set(carried)
+    if call_graph is not None:
+        affected.update(
+            caller
+            for caller in verified
+            if caller in call_graph
+            and any(other in call_graph.get_callees(caller).internal for other in carried)
+        )
+    affected.discard(exclude)
+    return sorted(affected)
+
+
+def frozen_functions_for(function: str, active: Collection[str]) -> set[str]:
+    """Return the functions whose contracts the session for `function` may not change.
+
+    Those are the functions other live sessions are working on: each is its session's to
+    specify, and that session's copy replaces whatever contract it has when it merges. The
+    functions a live session *calls* are not frozen. Any session may fix a callee's contract;
+    a live caller that then fails against the new contract is given another session on the file
+    as it now is (see `avocado_verify._note_for_rerun_after_merge`).
+
+    Args:
+        function (str): The function whose session is merging.
+        active (Collection[str]): Functions with a live session, `function` included or not.
+
+    Returns:
+        set[str]: The frozen functions.
+    """
+    return {name for name in active if name != function}
 
 
 def _named_items(comparison: _Comparison, indices: list[int]) -> dict[tuple, _Item]:

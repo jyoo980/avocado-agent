@@ -9,7 +9,7 @@ from avocado_verify import _fork_session
 from tools import validate
 from tools.run_cbmc import RunCbmcResult
 from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
-from tools.util.contract_merge import find_function_span
+from tools.util.edit_rules import function_body_offsets
 from tools.util.session_state import (
     read_run_state,
     read_session_info,
@@ -60,14 +60,10 @@ def _stripped_quicksort(tmp_path: Path) -> Path:
 def _write_contract(session_file: Path, function: str, contract: bytes) -> None:
     """Insert `contract` between `function`'s declarator and body in `session_file`."""
     source = session_file.read_bytes()
-    span = find_function_span(source, function)
-    assert span is not None
+    bodies = function_body_offsets(source, function)
+    assert len(bodies) == 1, bodies
     session_file.write_bytes(
-        source[: span.body_start_byte].rstrip(b" \t")
-        + b"\n"
-        + contract
-        + b"\n"
-        + source[span.body_start_byte :]
+        source[: bodies[0]].rstrip(b" \t") + b"\n" + contract + b"\n" + source[bodies[0] :]
     )
 
 

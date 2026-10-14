@@ -11,12 +11,13 @@ For each function the harness runs a fresh `claude -p` session prompting Claude 
 specification for a function. Once Claude reports it is finished, this harness independently runs
 CBMC to record a ground-truth verification result.
 
-Every session works in a private copy of the source file's directory (see `_fork_session`), and
-when it ends the harness splices the function's definition -- and any new top-level helpers the
-agent added for its contract -- back into the canonical file (`tools.util.contract_merge`). That
-isolation is what allows `--jobs N` to run several functions' sessions at once: a function starts
-as soon as the callees it depends on are merged, so a file's wall-clock is bounded by its longest
-dependency chain rather than by the sum over its functions.
+Every session works in a private copy of the source file's directory (see `_fork_session`). When
+it ends, the harness checks the copy against the edit rules and merges it into the canonical file
+(`tools.util.edit_rules.check_edits` and `merge_copy`): the function's contract, the new top-level
+helpers the agent added for it, and the agent's fixes to other functions' contracts when they are
+allowed. That isolation is what allows `--jobs N` to run several functions' sessions at once: a
+function starts as soon as the callees it depends on are merged, so a file's wall-clock is bounded
+by its longest dependency chain rather than by the sum over its functions.
 
 Usage:
     % avocado-verify --file <PATH_TO_C_FILE> \
@@ -61,9 +62,11 @@ from tools.run_cbmc_and_mutation_testing import (
 )
 from tools.util import get_in_file_callees_for, get_in_file_callers_of
 from tools.util.callgraph import CallGraph
-from tools.util.contract_merge import MergeReport, frozen_functions_for, functions_affected_by
 from tools.util.edit_rules import (
+    MergeReport,
     check_edits,
+    frozen_functions_for,
+    functions_affected_by,
     functions_with_changed_contracts,
     merge_copy,
     stray_file_violations,
@@ -738,8 +741,8 @@ def _verify_via_agent(
     """Specify `function` in a private copy, merge the result back, and re-verify it with CBMC.
 
     Runs one or more `claude -p` sessions against a fresh copy of the source directory
-    (`_fork_session`, `_run_sessions_for`), then splices the function's finished definition and
-    any new helpers into the canonical file and runs the independent ground truth on a consistent
+    (`_fork_session`, `_run_sessions_for`), then merges the function's finished contract and any
+    new helpers into the canonical file and runs the independent ground truth on a consistent
     copy of the result (`_merge_and_verify`). Safe to call for several functions concurrently as
     long as their callees are already merged.
 

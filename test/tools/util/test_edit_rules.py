@@ -2,9 +2,9 @@
 
 from pathlib import Path
 
-from tools.util.contract_merge import frozen_functions_for
 from tools.util.edit_rules import (
     check_edits,
+    frozen_functions_for,
     function_header,
     function_line,
     functions_with_changed_contracts,

@@ -52,13 +52,14 @@ from pathlib import Path
 from tools.run_cbmc import compile_with_goto_cc
 from tools.run_cbmc_and_mutation_testing import verify_function
 from tools.util import get_call_graph
-from tools.util.contract_merge import frozen_functions_for, functions_affected_by
 from tools.util.edit_rules import (
     RULE_TITLES,
     Violation,
     check_edits,
+    frozen_functions_for,
     function_header,
     function_line,
+    functions_affected_by,
     functions_with_changed_contracts,
     merge_copy,
     stray_file_violations,
