@@ -1,24 +1,27 @@
-"""Decide whether a session's edits to a C file are ones the merge may keep.
+"""Decide whether a session's local edits to a C file are ones the merge may keep.
 
-A session's job is to add specifications. Everything that was in the file when the session started
-must still be there, unchanged, and what the session adds must not be able to change what that
-original code means. `check_edits` compares the session's finished copy (the *snapshot*) with the
-file as it was when the copy was taken (the *base*) and returns one `Violation` per broken rule:
+A session's job is to add specifications. check_edits` compares the session's finished copy (the 
+*snapshot*) with the file as it was when it was forked. Returns one `Violation` per broken rule:
 
 1. Original code is unchanged: every original top-level item is still present, in the same order,
    with the same text. Whitespace, comments and contract clauses do not count.
 2. Insertions go in two places only: the contract slot of a function, or file scope. Nothing is
    inserted inside an existing item, and no contract clause sits inside a function body.
-3. The session's function is intact: it appears exactly once, as one well-formed definition.
-4. New names carry the reserved prefix. No new `#undef`, `#pragma` or `#include`, and a new
-   `#if` block may enclose only new items.
+3. The session's function is intact: it is defined as many times as it was when the session
+   started (once, unless it is defined per preprocessor branch).
+4. New names carry the reserved prefix and do not already exist in the file. No new `#undef`,
+   `#pragma` or `#include`, and a new `#if` block may enclose only new items.
 5. No `__CPROVER_assume` in new text.
 8. No literally false precondition.
 
 Rules 6 (only the source file is edited), 7 (the file compiles) and 9 (no verified function stops
-verifying) need the file system or CBMC and are checked by the callers: `tools.validate` for the
-agent and `avocado_verify._merge_and_verify` for the merge. Both call `check_edits`, so the agent's
-check and the merge agree by construction.
+verifying, where a vacuous pass does not count as verifying) need the file system or CBMC and are
+checked by the callers: `tools.validate` for the agent and `avocado_verify._merge_and_verify` for
+the merge. Both call `check_edits`, so the agent's check and the merge agree by construction.
+Rule 10 (no merge conflict) is decided by `merge_copy` below, which both callers also use: an edit
+to another function's contract is left out when another live session is working on that function
+or when its contract changed in the shared file since the fork, and nothing merges when a new name
+is already defined differently there.
 
 `merge_copy` then produces the file to commit, reconciling the copy with whatever other sessions
 merged since it was taken. Because every version is the same original code plus contracts plus

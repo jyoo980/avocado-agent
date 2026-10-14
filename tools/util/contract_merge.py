@@ -1,5 +1,12 @@
 """Splice one function's finished contract from a session's private copy into the canonical file.
 
+Note: the harness no longer merges with `merge_function`. It checks a copy with
+`tools.util.edit_rules.check_edits` and merges it with `tools.util.edit_rules.merge_copy`, which
+reject every edit to an existing body (edit rule 1) and work item by item without parsing. What
+this module still provides to the harness is `MergeReport`, `frozen_functions_for` and
+`functions_affected_by`. `merge_function`, `find_function_span` and the description below are used
+only by tests (`find_function_span` locates a function so a test can write a contract onto it).
+
 `avocado_verify` can run several `claude -p` sessions at once, each on a private copy of the source
 directory. When a session for function F ends, only F's definition (its contract clauses and,
 exactly as today, anything the agent did inside F's body) and the *new* top-level items the agent

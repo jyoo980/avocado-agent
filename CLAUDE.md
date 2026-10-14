@@ -98,6 +98,7 @@ You can also search the web for more CBMC documentation.
   `<FUNCTION_NAME>` is the function you were asked to verify, not the other function you edited.
   Exits with status 0 if nothing that verified before stops verifying, 1 if something does (each
   line names the function and which of your edits caused it), and 2 if the check could not be made.
+  A function whose proof becomes vacuous has stopped verifying.
   It also lists any of your edits that would not be merged, with the reason.
 
   If you edited only your own function and added helpers, it finishes at once. Otherwise it runs
@@ -112,9 +113,10 @@ Work in this order, and do not skip the first CBMC run:
    their contracts during verification, so what they promise is all you get), and any callers in
    the same file, so your preconditions are satisfiable at every call site.
 2. Write the contract, run `avocado-validate edits` and `avocado-validate conflicts` and fix
-   whatever they report, then run `avocado-run-cbmc` right away. Do not run CBMC by hand, do not run the tool in the background,
-   and do not read the harness's `*.jsonl` logs: the tool's own output is the source of truth and
-   already includes the diff of every surviving mutant.
+   whatever they report, then run `avocado-run-cbmc` right away. Do not run CBMC by hand, do not
+   run the tool in the background, and do not read the harness's `*.jsonl` logs: the tool's own
+   output is the source of truth and already includes the diff of every surviving mutant. A
+   `VACUOUS` result is a failed run: fix the contract as [Vacuous proofs](#vacuous-proofs) says.
 3. Strengthen the contract using the surviving-mutant diffs, run both checks again, and re-run
    `avocado-run-cbmc`. Stop as soon as every decided mutant is killed, or when two
    consecutive runs leave the kill score unchanged.
@@ -181,7 +183,10 @@ your proof depends on it.
 - `__CPROVER_is_fresh(p, n)` demands a *separate* object for every such pointer at each call
   site. A helper that callers invoke with two pointers into the same array (e.g.
   `swap(&arr[i], &arr[j])`) must use `__CPROVER_w_ok(p, n)` / `__CPROVER_r_ok(p, n)` instead,
-  or its callers can never verify.
+  or its callers can never verify. For a `void *` parameter, or whenever `n` is more than one
+  element of the pointed-to type, `w_ok` / `r_ok` alone is vacuous; use the
+  `__CPROVER_w_ok(p, n) || __CPROVER_is_fresh(p, n)` form from
+  [Vacuous proofs](#vacuous-proofs), which callers can still satisfy with pointers into one array.
 - A mutant survives when no clause distinguishes the mutated behaviour. Postconditions that state
   the exact result -- `__CPROVER_return_value == <expression over the inputs>`, `*out ==
   __CPROVER_old(...)`-based equalities, and `__CPROVER_forall` over the whole affected range --
@@ -222,8 +227,9 @@ Rules checked by `avocado-validate edits` (fast; run it before each `avocado-run
    as it was when your session started (once, unless it is defined per preprocessor branch).
    *Why:* a contract can only be kept on a function that is still there to carry it.
 4. **New names carry the reserved prefix.** Every new top-level item must introduce a name that
-   starts with `AVOCADO_SPEC_` (macros) or `avocado_spec_` (functions, variables, types). Do not
-   add definitions of unprefixed names, `#undef`, `#pragma` or `#include`. A new `#if`/`#ifdef`
+   starts with `AVOCADO_SPEC_` (macros) or `avocado_spec_` (functions, variables, types) and is not
+   already defined in the file. Do not add definitions of unprefixed names, `#undef`, `#pragma` or
+   `#include`. A new `#if`/`#ifdef`
    block is allowed only if everything inside it is new and prefixed.
    *Why:* a prefixed addition cannot redefine or switch off existing code. An unprefixed one can:
    a `#define` can change which branch of an `#if` is compiled, a body for `malloc` replaces the
@@ -241,13 +247,14 @@ Rules checked by `avocado-validate edits` (fast; run it before each `avocado-run
 8. **No literally false preconditions.** Do not write a `__CPROVER_requires` clause that is
    constant false, such as `__CPROVER_requires(0)`.
    *Why:* a false precondition makes any contract verify while proving nothing. Subtler vacuous
-   contracts show up as a kill score of zero.
+   contracts are caught by `avocado-run-cbmc`, which reports them as `VACUOUS` (see
+   [Vacuous proofs](#vacuous-proofs)).
 
 Rule checked by `avocado-validate reverify` (slow; run it as the workflow says):
 
 9. **No broken verified specs.** Every function that verified before your session must still
-   verify with your edits. If one does not, your edits to other functions' contracts are
-   discarded and only the rest of your work is merged.
+   verify with your edits, and not vacuously. If one does not, your edits to other functions'
+   contracts are discarded and only the rest of your work is merged.
    *Why:* a merge must never turn a verified function into an unverified one. Changing a
    function's contract changes what each of its callers was verified against.
 
@@ -277,4 +284,6 @@ Rule checked by `avocado-validate conflicts` (fast; run it before each `avocado-
   copied source directory (edit rule 6).
 - If you run into errors related to missing bodies or callee implementations, do not write a body,
   a contract or a stub for the missing function (edit rules 4 and 6). Say which function is
-  missing in your final message and move on.
+  missing in your final message and move on. A function inside a preprocessor block that this
+  build leaves out is not part of the program: the harness gives it no session and leaves it out
+  of its callers' callees, so you need neither a contract for it nor a `#define` to switch it on.
