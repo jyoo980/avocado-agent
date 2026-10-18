@@ -1196,3 +1196,96 @@ def test_a_resumed_run_recalls_why_functions_were_not_verified(tmp_path: Path) -
         "partition": "CBMC_FAILED",
         "other": "CLAUDE_TIMED_OUT",
     }
+
+
+def test_a_vacuous_proof_counts_as_verified_in_the_final_tally_only() -> None:
+    vacuous = _vacuous_cbmc("partition")
+    assert not vacuous.is_function_verified
+    assert avocado_verify._outcome_for(_session(), vacuous) is (
+        avocado_verify.GroundTruthVerificationResult.VERIFIED
+    )
+    # Also when the session ran out of time; but a usage-limited session is retried instead.
+    assert avocado_verify._outcome_for(_session(timed_out=True), vacuous) is (
+        avocado_verify.GroundTruthVerificationResult.VERIFIED
+    )
+    limited = _session(is_error=True, text="Usage limit reached; resets at 3pm")
+    assert avocado_verify._outcome_for(limited, vacuous) is (
+        avocado_verify.GroundTruthVerificationResult.USAGE_LIMITED
+    )
+    assert avocado_verify._outcome_for(limited, _verified_cbmc("partition")) is (
+        avocado_verify.GroundTruthVerificationResult.VERIFIED
+    )
+    no_contract = RunCbmcResult("swap", None, False, 0, "ok", no_contract=True)
+    assert avocado_verify._outcome_for(_session(), no_contract) is (
+        avocado_verify.GroundTruthVerificationResult.UNVERIFIED
+    )
+    # While the run is going, the vacuous function is still not trusted by its callers.
+    state = avocado_verify._MergeState()
+    state.record("partition", vacuous)
+    assert "partition" not in state.verified and "partition" in state.unverified
+
+
+def test_the_log_tells_a_vacuous_verified_function_from_a_real_one(tmp_path: Path) -> None:
+    log = tmp_path / "run.jsonl"
+    _append_jsonl(log, {"function": "swap", "outcome": "VERIFIED", "cbmc": {"verdict": "PASS"}})
+    _append_jsonl(
+        log,
+        {
+            "function": "partition",
+            "outcome": "VERIFIED",
+            "cbmc": {"verdict": "VACUOUS", "vacuity": "unsatisfiable_preconditions"},
+        },
+    )
+    _append_jsonl(
+        log, {"function": "other", "outcome": "UNVERIFIED", "cbmc": {"verdict": "NO_CONTRACT"}}
+    )
+    assert avocado_verify._verified_functions(log) == {"swap", "partition"}
+    assert avocado_verify._vacuous_functions(log) == {"partition"}
+    # A resumed run treats the vacuous function as not verified, with the reason.
+    assert avocado_verify._unverified_functions(log) == {
+        "partition": "VACUOUS (unsatisfiable_preconditions)",
+        "other": "NO_CONTRACT",
+    }
+    # A later re-verification that passes for real clears it.
+    _append_jsonl(
+        log,
+        {
+            "function": "quickSort",
+            "outcome": "VERIFIED",
+            "cbmc": {"verdict": "PASS"},
+            "reverified": {"partition": {"verdict": "PASS", "is_function_verified": True}},
+        },
+    )
+    assert avocado_verify._vacuous_functions(log) == set()
+
+
+def test_the_summary_counts_vacuous_proofs_as_verified_and_names_them(
+    tmp_path: Path, monkeypatch
+) -> None:
+    log = tmp_path / "run.jsonl"
+    _append_jsonl(log, {"function": "swap", "outcome": "VERIFIED", "cbmc": {"verdict": "PASS"}})
+    _append_jsonl(
+        log,
+        {
+            "function": "partition",
+            "outcome": "VERIFIED",
+            "cbmc": {"verdict": "VACUOUS", "vacuity": "end_unreachable"},
+        },
+    )
+    _append_jsonl(log, {"function": "quickSort", "outcome": "VERIFIED", "cbmc": {"verdict": "PASS"}})
+    exits: list[int] = []
+    monkeypatch.setattr(avocado_verify.sys, "exit", exits.append)
+    avocado_verify._finalize_run(
+        log,
+        functions=["swap", "partition", "quickSort"],
+        remaining=[],
+        status="completed",
+        stopped_early=False,
+        call_graph=_quicksort_call_graph(),
+    )
+    summary = json.loads(log.read_text().splitlines()[-1])
+    assert (summary["verified"], summary["total"]) == (3, 3)
+    assert summary["vacuous"] == ["partition"]
+    # quickSort verified against partition's vacuous contract, so its pass depends on it.
+    assert summary["verified_assuming_unverified_callees"] == ["quickSort"]
+    assert exits == [avocado_verify._EXIT_ALL_VERIFIED]

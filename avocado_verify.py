@@ -592,8 +592,17 @@ def _finalize_run(
     """
     verified_set = _verified_functions(log_path)
     verified = sum(1 for function in functions if function in verified_set)
+    vacuous_set = _vacuous_functions(log_path)
+    vacuous = [function for function in functions if function in vacuous_set]
     done = [function for function in functions if function not in remaining]
-    assuming = _verified_assuming_unverified_callees(functions, verified_set, call_graph)
+    assuming = _verified_assuming_unverified_callees(
+        functions, verified_set, call_graph, trusted=verified_set - vacuous_set
+    )
+    if vacuous:
+        logger.warning(
+            f"{len(vacuous)} of the {verified} verified function(s) verified vacuously: "
+            f"{', '.join(vacuous)}"
+        )
     if assuming:
         logger.warning(
             f"{len(assuming)} of the {verified} verified function(s) were verified against a "
@@ -609,6 +618,7 @@ def _finalize_run(
             total=len(functions),
             verified_assuming_unverified_callees=assuming,
             not_in_build=not_in_build,
+            vacuous=vacuous,
         ),
     )
     if stopped_early:
@@ -1446,8 +1456,13 @@ def _verify_functions(
             the functions whose sessions were stopped by a usage limit.
     """
     done: set[str] = {function for function in order if function not in pending}
+    vacuous = _vacuous_functions(log_path)
     state = _MergeState(
-        verified={function for function in _verified_functions(log_path) if function in done},
+        verified={
+            function
+            for function in _verified_functions(log_path)
+            if function in done and function not in vacuous
+        },
         unverified={
             function: why
             for function, why in _unverified_functions(log_path).items()
@@ -1680,25 +1695,27 @@ def _last_attempt_verified(log_path: Path, function: str) -> bool:
     return verified
 
 
-def _read_function_outcomes(log_path: Path) -> dict[str, str]:
-    """Return the last recorded outcome for each function in the run log.
+def _read_function_verdicts(log_path: Path) -> dict[str, tuple[str, str]]:
+    """Return the last recorded outcome and ground-truth verdict of each function in the run log.
 
     Reads `<stem>-avocado-verify.jsonl`, ignoring blank/malformed lines and the terminal
-    run-summary record (identified by a `"type"` key). Later records win, so the returned outcome
-    reflects each function's most recent attempt, including a later merge's re-verification of it
+    run-summary record (identified by a `"type"` key). Later records win, so each entry reflects
+    the function's most recent attempt, including a later merge's re-verification of it
     (`reverified`). Never raises; a missing log yields an empty map.
 
     Args:
         log_path (Path): Path to the `<stem>-avocado-verify.jsonl` run log.
 
     Returns:
-        dict[str, str]: Map of function name to its last recorded outcome string.
+        dict[str, tuple[str, str]]: Function to `(outcome, verdict)`. The verdict is the CBMC
+            verdict of the last ground truth, with the kind of vacuity for a vacuous pass (for
+            example `VACUOUS (end_unreachable)`), or the outcome when no verdict was recorded.
     """
-    outcomes: dict[str, str] = {}
+    verdicts: dict[str, tuple[str, str]] = {}
     try:
         lines = log_path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return outcomes
+        return verdicts
     for line in lines:
         stripped = line.strip()
         if not stripped:
@@ -1707,19 +1724,38 @@ def _read_function_outcomes(log_path: Path) -> dict[str, str]:
             record = json.loads(stripped)
         except json.JSONDecodeError:
             continue
-        if "type" in record:  # terminal run-summary record, not a per-function result
-            continue
+        if not isinstance(record, dict) or "type" in record:
+            continue  # the terminal run-summary record, not a per-function result
         function = record.get("function")
         outcome = record.get("outcome")
         if function is not None and outcome is not None:
-            outcomes[function] = outcome
+            cbmc = record.get("cbmc") or {}
+            verdict = cbmc.get("verdict") or outcome
+            if verdict == "VACUOUS" and cbmc.get("vacuity"):
+                verdict = f"VACUOUS ({cbmc['vacuity']})"
+            verdicts[function] = (outcome, verdict)
         # A merge that carried edits re-verified other, already recorded functions on the result;
         # a pass there is that function's latest verdict. Functions not yet recorded are left
         # alone so a resumed run still gives them their own session.
-        for other, verdict in (record.get("reverified") or {}).items():
-            if other in outcomes and verdict.get("is_function_verified"):
-                outcomes[other] = str(GroundTruthVerificationResult.VERIFIED)
-    return outcomes
+        for other, result in (record.get("reverified") or {}).items():
+            if other in verdicts and result.get("is_function_verified"):
+                verdicts[other] = (str(GroundTruthVerificationResult.VERIFIED), "PASS")
+    return verdicts
+
+
+def _read_function_outcomes(log_path: Path) -> dict[str, str]:
+    """Return the last recorded outcome for each function in the run log.
+
+    Args:
+        log_path (Path): Path to the `<stem>-avocado-verify.jsonl` run log.
+
+    Returns:
+        dict[str, str]: Map of function name to its last recorded outcome string (see
+            `_read_function_verdicts`).
+    """
+    return {
+        function: outcome for function, (outcome, _) in _read_function_verdicts(log_path).items()
+    }
 
 
 def _get_processed_functions(log_path: Path) -> set[str]:
@@ -1745,8 +1781,10 @@ def _get_processed_functions(log_path: Path) -> set[str]:
 def _verified_functions(log_path: Path) -> set[str]:
     """Return the set of functions whose most recent recorded outcome is VERIFIED.
 
-    Used for cross-run final accounting on resume, where the in-memory results of a single
-    invocation do not reflect functions verified by earlier runs.
+    This is the final tally, so it includes functions whose proof is vacuous: they are recorded
+    as VERIFIED (see `_outcome_for`) and named separately by `_vacuous_functions`. Used for
+    cross-run final accounting on resume, where the in-memory results of a single invocation do
+    not reflect functions verified by earlier runs.
 
     Args:
         log_path (Path): Path to the `<stem>-avocado-verify.jsonl` run log.
@@ -1761,10 +1799,28 @@ def _verified_functions(log_path: Path) -> set[str]:
     }
 
 
-def _unverified_functions(log_path: Path) -> dict[str, str]:
-    """Return the functions whose most recent recorded outcome is not VERIFIED, each with why.
+def _vacuous_functions(log_path: Path) -> set[str]:
+    """Return the functions recorded as VERIFIED whose last ground truth was a vacuous pass.
 
-    Used to rebuild `_MergeState.unverified` when a run is resumed.
+    Args:
+        log_path (Path): Path to the `<stem>-avocado-verify.jsonl` run log.
+
+    Returns:
+        set[str]: Those functions.
+    """
+    return {
+        function
+        for function, (outcome, verdict) in _read_function_verdicts(log_path).items()
+        if outcome == GroundTruthVerificationResult.VERIFIED and verdict.startswith("VACUOUS")
+    }
+
+
+def _unverified_functions(log_path: Path) -> dict[str, str]:
+    """Return the functions whose last ground truth did not verify non-vacuously, each with why.
+
+    Used to rebuild `_MergeState.unverified` when a run is resumed. A function whose proof is
+    vacuous is among them, although the final tally counts it as verified: while a run is going,
+    callers are told its contract proves nothing, and rule 9 protects only real proofs.
 
     Args:
         log_path (Path): Path to the `<stem>-avocado-verify.jsonl` run log.
@@ -1773,33 +1829,19 @@ def _unverified_functions(log_path: Path) -> dict[str, str]:
         dict[str, str]: Function to the verdict of its last recorded ground truth (with the kind
             of vacuity for a vacuous pass), or to its outcome when no verdict was recorded.
     """
-    verdicts: dict[str, str] = {}
-    try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        lines = []
-    for line in lines:
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(record, dict) or "type" in record or "function" not in record:
-            continue
-        cbmc = record.get("cbmc") or {}
-        verdict = cbmc.get("verdict")
-        if verdict:
-            vacuity = cbmc.get("vacuity")
-            vacuous = verdict == "VACUOUS" and vacuity
-            verdicts[record["function"]] = f"{verdict} ({vacuity})" if vacuous else verdict
     return {
-        function: verdicts.get(function, outcome)
-        for function, outcome in _read_function_outcomes(log_path).items()
-        if outcome != GroundTruthVerificationResult.VERIFIED
+        function: verdict
+        for function, (outcome, verdict) in _read_function_verdicts(log_path).items()
+        if outcome != GroundTruthVerificationResult.VERIFIED or verdict.startswith("VACUOUS")
     }
 
 
 def _verified_assuming_unverified_callees(
-    functions: list[str], verified: set[str], call_graph: CallGraph | None
+    functions: list[str],
+    verified: set[str],
+    call_graph: CallGraph | None,
+    *,
+    trusted: set[str] | None = None,
 ) -> list[str]:
     """Return the verified functions that call a function whose contract is not verified.
 
@@ -1811,12 +1853,16 @@ def _verified_assuming_unverified_callees(
         functions (list[str]): All verifiable functions in the file.
         verified (set[str]): The functions verified at the end of the run.
         call_graph (CallGraph | None): Call graph of the file; None yields no functions.
+        trusted (set[str] | None): The callees whose contracts count as verified here; defaults
+            to `verified`. The final tally passes the verified functions without the vacuous
+            ones, since a vacuous contract is not established.
 
     Returns:
         list[str]: The functions, in the order of `functions`.
     """
     if call_graph is None:
         return []
+    trusted = verified if trusted is None else trusted
     verifiable = set(functions)
     return [
         function
@@ -1824,7 +1870,7 @@ def _verified_assuming_unverified_callees(
         if function in verified
         and function in call_graph
         and any(
-            callee != function and callee in verifiable and callee not in verified
+            callee != function and callee in verifiable and callee not in trusted
             for callee in call_graph.get_callees(function).internal
         )
     ]
@@ -1839,6 +1885,7 @@ def _run_summary_record(
     total: int,
     verified_assuming_unverified_callees: list[str] | None = None,
     not_in_build: list[str] | None = None,
+    vacuous: list[str] | None = None,
 ) -> dict:
     """Build the terminal run-summary record appended to the run log.
 
@@ -1856,6 +1903,9 @@ def _run_summary_record(
             `_verified_assuming_unverified_callees`). They are included in `verified`.
         not_in_build (list[str] | None): Functions that are in the source but not in the
             compiled program. They are included in `total` and are not verified.
+        vacuous (list[str] | None): Those of the verified functions whose proof is vacuous.
+            They are included in `verified`; `verified` minus their number is the count of
+            functions verified non-vacuously.
 
     Returns:
         dict: A JSON-serializable terminal run-summary record.
@@ -1870,6 +1920,7 @@ def _run_summary_record(
         "total": total,
         "verified_assuming_unverified_callees": list(verified_assuming_unverified_callees or []),
         "not_in_build": list(not_in_build or []),
+        "vacuous": list(vacuous or []),
     }
 
 
@@ -2135,8 +2186,13 @@ def _is_usage_limit_hit(claude: ClaudeRun) -> bool:
 def _outcome_for(claude: ClaudeRun, cbmc: RunCbmcResult) -> GroundTruthVerificationResult:
     """Combine the Claude session and CBMC verdict into a single outcome.
 
-    A passing CBMC run is authoritative; otherwise a Claude-side timeout, usage limit, or error is
-    surfaced ahead of a plain verification failure.
+    A passing CBMC run is authoritative, and so is a vacuous pass: in the final tally a vacuous
+    proof counts as verified (its kill score is whatever its mutants give, usually 0), and the
+    record's CBMC verdict says `VACUOUS`. While the run is going it is still treated as not
+    verified (`_MergeState`), and the agent is told to fix it. A pass on a function with no
+    contract is not a pass. A session stopped by a usage limit is reported as such unless it
+    verified for real, so that it is retried on resume. Otherwise a Claude-side timeout or error
+    is surfaced ahead of a plain verification failure.
 
     Args:
         claude (ClaudeRun): The Claude session outcome.
@@ -2147,10 +2203,14 @@ def _outcome_for(claude: ClaudeRun, cbmc: RunCbmcResult) -> GroundTruthVerificat
     """
     if cbmc.is_function_verified:
         return GroundTruthVerificationResult.VERIFIED
+    if _is_usage_limit_hit(claude):
+        # The session was cut short, so the function is retried on resume instead of being
+        # tallied with whatever vacuous contract it had reached.
+        return GroundTruthVerificationResult.USAGE_LIMITED
+    if cbmc.is_vacuous:
+        return GroundTruthVerificationResult.VERIFIED
     if claude.timed_out:
         return GroundTruthVerificationResult.CLAUDE_TIMED_OUT
-    if _is_usage_limit_hit(claude):
-        return GroundTruthVerificationResult.USAGE_LIMITED
     if claude.is_error:
         return GroundTruthVerificationResult.CLAUDE_ERROR
     return GroundTruthVerificationResult.UNVERIFIED
@@ -2181,11 +2241,16 @@ def _log_summary(results: list[FunctionVerificationResult], log_path: Path) -> N
     """
     logger.info("avocado-verify summary:")
     for result in results:
-        logger.info(f"  {result.outcome!s:<17} {result.function}")
+        vacuous = " (vacuous)" if result.cbmc.is_vacuous else ""
+        logger.info(f"  {result.outcome!s:<17} {result.function}{vacuous}")
     verified = sum(
         1 for result in results if result.outcome is GroundTruthVerificationResult.VERIFIED
     )
-    logger.info(f"{verified}/{len(results)} function(s) verified; log written to {log_path}")
+    vacuous_count = sum(1 for result in results if result.cbmc.is_vacuous)
+    logger.info(
+        f"{verified}/{len(results)} function(s) verified ({vacuous_count} vacuously); log written "
+        f"to {log_path}"
+    )
 
 
 def _autodetect_include_dirs(source_file: str) -> list[str]:

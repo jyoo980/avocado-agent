@@ -154,6 +154,9 @@ class RunCbmcResult:
             for mutants).
         variant (PipelineVariant | None): The variant of the pipeline that produced this result,
             when it came from `run_cbmc`.
+        no_contract (bool): True iff the pipeline passed but the function has no contract in the
+            compiled program. CBMC then checks an empty contract, which nothing can violate, so
+            such a pass proves nothing about the function and does not count as verified.
     """
 
     function: str
@@ -163,6 +166,7 @@ class RunCbmcResult:
     response: str
     vacuity: Vacuity | None = None
     variant: PipelineVariant | None = None
+    no_contract: bool = False
 
     @property
     def cbmc_ran_successfully(self) -> bool:
@@ -179,10 +183,15 @@ class RunCbmcResult:
         """True iff the function for this verification run is successfully verified.
 
         A function is successfully verified if all components of the CBMC pipeline ran successfully,
-        the return code is 0, and the vacuity check (when one was made) did not find the proof
-        vacuous.
+        the return code is 0, the function has a contract, and the vacuity check (when one was
+        made) did not find the proof vacuous.
         """
-        return self.cbmc_ran_successfully and self.returncode == 0 and not self.is_vacuous
+        return (
+            self.cbmc_ran_successfully
+            and self.returncode == 0
+            and not self.no_contract
+            and not self.is_vacuous
+        )
 
     @property
     def is_vacuous(self) -> bool:
@@ -199,6 +208,8 @@ class RunCbmcResult:
             return "TIMED_OUT"
         if self.failed_step:
             return f"{self.failed_step.value.upper()}_FAILED"
+        if self.no_contract:
+            return "NO_CONTRACT"
         if self.is_vacuous:
             return "VACUOUS"
         if self.is_function_verified:
@@ -979,6 +990,45 @@ def list_compiled_functions(
         set[str] | None: The functions that have a body in the compiled program, or None when
             the file could not be compiled or listed, in which case nothing is known.
     """
+    listing = _list_goto_functions(file_path, include_dirs)
+    return None if listing is None else listing[0]
+
+
+def has_contract(
+    function: str, file_path: str, include_dirs: list[str] | None = None
+) -> bool | None:
+    """Return whether `function`, as compiled from `file_path`, has a contract.
+
+    Asked of the compiled program rather than of the source text, so a function defined once per
+    preprocessor branch is judged by the definition that is actually built. goto-cc records a
+    `contract::<name>` symbol for a function iff that definition carries at least one contract
+    clause (`__CPROVER_requires`, `__CPROVER_ensures`, `__CPROVER_assigns`, ...).
+
+    Args:
+        function (str): The function.
+        file_path (str): Path to the C source file.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+
+    Returns:
+        bool | None: True or False, or None when the file could not be compiled or listed.
+    """
+    listing = _list_goto_functions(file_path, include_dirs)
+    return None if listing is None else function in listing[1]
+
+
+def _list_goto_functions(
+    file_path: str, include_dirs: list[str] | None
+) -> tuple[set[str], set[str]] | None:
+    """Compile `file_path` and list its functions and the functions that have contracts.
+
+    Args:
+        file_path (str): Path to the C source file.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+
+    Returns:
+        tuple[set[str], set[str]] | None: The functions with a body, and the functions with a
+            contract, in the compiled program; None when it could not be compiled or listed.
+    """
     include_flags = " ".join(f"-I {shlex.quote(d)}" for d in include_dirs or [])
     source = shlex.quote(str(Path(file_path).resolve()))
     try:
@@ -1003,12 +1053,18 @@ def list_compiled_functions(
                 listing = completed.stdout
     except (OSError, TimeoutExpired):
         return None
-    compiled = set()
+    compiled: set[str] = set()
+    contracted: set[str] = set()
     for line in listing.splitlines():
         listed = _LISTED_FUNCTION.match(line.strip())
-        if listed and listed.group(1) == listed.group(2) and listed.group(3) is None:
-            compiled.add(listed.group(1))
-    return compiled
+        if listed is None:
+            continue
+        name, identifier, no_body = listed.groups()
+        if identifier == name and no_body is None:
+            compiled.add(name)
+        elif identifier == f"contract::{name}":
+            contracted.add(name)
+    return compiled, contracted
 
 
 def compile_with_goto_cc(

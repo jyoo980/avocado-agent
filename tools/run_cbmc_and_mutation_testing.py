@@ -25,7 +25,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from tools.run_cbmc import RunCbmcResult, Vacuity, run_cbmc
+from tools.run_cbmc import RunCbmcResult, Vacuity, has_contract, run_cbmc
 from tools.util.mutation import (
     MutationScore,
     MutationTestingResult,
@@ -43,8 +43,9 @@ from tools.util.vacuity import check_vacuity, describe_vacuous_result
 # mutant that exceeds this budget is reported as timed out -- never as killed.
 _AGENT_MUTANT_TIMEOUT_SEC = 120
 
-# Exit status of the tool when the pipeline passes but the proof is vacuous.
-_EXIT_VACUOUS = 1
+# Exit status of the tool when the pipeline passes but that does not count as verified: the proof
+# is vacuous, or the function has no contract.
+_EXIT_NOT_VERIFIED = 1
 
 # Suffix of the sibling JSONL log in which `main` records one entry per top-level verification
 # attempt (i.e., per `avocado-run-cbmc` invocation). Public because `avocado-verify` reads this
@@ -118,8 +119,8 @@ def main() -> None:
         sys.exit(0)
     else:
         print(result.response)
-        # A vacuous pass carries the pipeline's own exit code, which is 0.
-        sys.exit(result.returncode or _EXIT_VACUOUS)
+        # A vacuous or contract-less pass carries the pipeline's own exit code, which is 0.
+        sys.exit(result.returncode or _EXIT_NOT_VERIFIED)
 
 
 def verify_function(
@@ -138,12 +139,16 @@ def verify_function(
     clobbering one another. Paths are resolved first because the pipeline's commands are executed
     relative to the scratch directory.
 
-    A run that passes is then checked for vacuity (`tools.util.vacuity.check_vacuity`), with one
-    more run of the pipeline. A vacuous pass is returned with `RunCbmcResult.vacuity` set, so it
-    does not count as verified (`is_function_verified` is False and it prints as `VACUOUS`), and
-    with a response that says what was found. This is the one function through which the agent's
-    tool, the harness's ground truth and both re-verification checks verify a function, so they
-    all agree on what a vacuous proof is. When the check itself gives no answer the pass stands,
+    A run that passes is then checked for a contract: a function without one is checked against
+    an empty contract, which nothing can violate, so it is returned with
+    `RunCbmcResult.no_contract` set (printing as `NO_CONTRACT`) and does not count as verified.
+    A run that passes and has a contract is then checked for vacuity
+    (`tools.util.vacuity.check_vacuity`), with one more run of the pipeline. A vacuous pass is
+    returned with `RunCbmcResult.vacuity` set, so it does not count as verified
+    (`is_function_verified` is False and it prints as `VACUOUS`), and with a response that says
+    what was found. This is the one function through which the agent's tool, the harness's ground
+    truth and both re-verification checks verify a function, so they all agree on what a
+    contract-less or vacuous proof is. When the check itself gives no answer the pass stands,
     with `vacuity` set to `Vacuity.UNKNOWN`.
 
     Args:
@@ -162,7 +167,20 @@ def verify_function(
             include_dirs=[str(Path(d).resolve()) for d in include_dirs or []],
             cwd=scratch_dir,
         )
-    if not vacuity_check or not result.is_function_verified:
+    if not result.is_function_verified:
+        return result
+    if has_contract(function, file_path, include_dirs) is False:
+        return replace(
+            result,
+            no_contract=True,
+            response=(
+                f"{function} has no contract, which does not count as verified: with no "
+                "__CPROVER_requires, __CPROVER_ensures or __CPROVER_assigns clause on the "
+                "definition that is compiled, CBMC checks an empty contract that nothing can "
+                "violate. Write the function's contract between its signature and its body."
+            ),
+        )
+    if not vacuity_check:
         return result
     vacuity, why_unknown = check_vacuity(function, file_path, include_dirs, variant=result.variant)
     if vacuity is Vacuity.UNKNOWN:

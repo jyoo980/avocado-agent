@@ -37,6 +37,8 @@ You can also search the web for more CBMC documentation.
   If CBMC reports no failure but the proof is *vacuous* (see [Vacuous proofs](#vacuous-proofs)),
   exits with non-zero status and prints `VACUOUS` with the cause. A vacuous proof does not count
   as verified.
+  If the function has no contract at all, exits with non-zero status and prints `NO_CONTRACT`:
+  CBMC would check an empty contract, which nothing can violate.
 
   You should always prefer `avocado-run-cbmc` over invoking CBMC directly.
 
