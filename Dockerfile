@@ -45,5 +45,8 @@ VOLUME ["/app"]
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# Quality-of-life
+RUN echo 'alias ..="cd ../"' >> ~/.bashrc
+
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["bash"]
