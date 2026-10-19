@@ -317,3 +317,21 @@ def test_conflicts_reports_a_new_name_the_shared_file_now_defines_differently(sw
     result = check_conflicts("swap", session.file)
     assert result.exit_code == EXIT_VIOLATIONS
     assert "macro:AVOCADO_SPEC_N is already defined differently" in result.render()
+
+
+def test_reverify_rechecks_a_vacuous_caller_but_does_not_count_it_as_broken(
+    swap_session, monkeypatch
+) -> None:
+    canonical, session = swap_session
+    fake = _FakeVerify(failing={"quickSort"})
+    monkeypatch.setattr(validate, "verify_function", fake)
+    write_run_state(
+        canonical,
+        verified={"partition"},
+        active={"swap"},
+        unverified={"quickSort": "VACUOUS (end_unreachable)"},
+    )
+    _write_contract(session.file, "partition", _PARTITION_CONTRACT)
+    result = check_reverify("swap", session.file)
+    assert sorted(fake.calls) == ["partition", "quickSort"]
+    assert result.exit_code == EXIT_OK and result.violations == []

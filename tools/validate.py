@@ -410,8 +410,11 @@ def check_reverify(
         scratch_file = scratch_dir / info.canonical_file.name
         scratch_file.write_bytes(merged)
         call_graph = get_call_graph(str(scratch_file))
+        rechecked = state.verified | {
+            name for name, why in state.unverified.items() if why.startswith("VACUOUS")
+        }
         affected = functions_affected_by(
-            report.carried, call_graph=call_graph, verified=state.verified, exclude=function
+            report.carried, call_graph=call_graph, verified=rechecked, exclude=function
         )
         verdicts = {
             other: verify_function(other, str(scratch_file), include_dirs=include_dirs)

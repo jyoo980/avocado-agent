@@ -309,6 +309,7 @@ class FunctionVerificationResult:
                 function: {
                     "verdict": str(result),
                     "is_function_verified": result.is_function_verified,
+                    "vacuity": None if result.vacuity is None else str(result.vacuity),
                 }
                 for function, result in self.reverified.items()
             },
@@ -677,6 +678,20 @@ class _MergeState:
         else:
             self.verified.discard(function)
             self.unverified[function] = _status_of(cbmc)
+
+    def rechecked_on_change(self) -> set[str]:
+        """Return the functions to re-verify when a merge changes one of their callees' contracts.
+
+        Those are the verified functions and the ones whose proof is vacuous. A vacuous proof
+        counts as verified in the final tally, so it must not keep a verdict that the new
+        contract has made stale; but only the verified ones are protected by rule 9.
+
+        Returns:
+            set[str]: The functions.
+        """
+        return self.verified | {
+            name for name, why in self.unverified.items() if why.startswith("VACUOUS")
+        }
 
     def unverified_among(self, functions: list[str]) -> dict[str, str]:
         """Return those of `functions` whose contracts are not verified, each with why.
@@ -1085,11 +1100,14 @@ def _merge_and_verify(
     With `state`, the merge also carries the agent's edits to other functions that no live
     session owns (`MergeReport.carried`) -- typically a callee's contract fixed in passing, which
     the function's own proof depends on. Before such a merge is committed, every carried function
-    and every already-verified in-file caller of one is re-verified on the scratch copy, still
-    under the lock; if a function that verified before would stop verifying, or the file no
+    and every in-file caller of one that is verified, or whose proof is vacuous
+    (`_MergeState.rechecked_on_change`), is re-verified on the scratch copy, still under the
+    lock; if a function that verified before would stop verifying, or the file no
     longer compiles, the merge is redone without the carried edits and the reason is appended to
     `MergeReport.dropped`. A merge therefore never turns a verified function into an unverified
-    one, and the re-verification verdicts are returned for the run log.
+    one, and the re-verification verdicts are returned for the run log. A vacuous caller is
+    re-verified so that its verdict is not left stale, but is not protected: if the kept edits
+    make it fail, its new verdict is recorded.
 
     Args:
         session (_Session): The finished session.
@@ -1180,7 +1198,10 @@ def _merge_and_verify(
             if returncode == 0 and report.carried:
                 assert state is not None
                 affected = functions_affected_by(
-                    report.carried, call_graph=call_graph, verified=state.verified, exclude=function
+                    report.carried,
+                    call_graph=call_graph,
+                    verified=state.rechecked_on_change(),
+                    exclude=function,
                 )
                 logger.info(
                     f"{function}: carried edits to {', '.join(report.carried)}; re-verifying "
@@ -1734,12 +1755,21 @@ def _read_function_verdicts(log_path: Path) -> dict[str, tuple[str, str]]:
             if verdict == "VACUOUS" and cbmc.get("vacuity"):
                 verdict = f"VACUOUS ({cbmc['vacuity']})"
             verdicts[function] = (outcome, verdict)
-        # A merge that carried edits re-verified other, already recorded functions on the result;
-        # a pass there is that function's latest verdict. Functions not yet recorded are left
-        # alone so a resumed run still gives them their own session.
+        kept = bool((record.get("merge") or {}).get("carried"))
         for other, result in (record.get("reverified") or {}).items():
-            if other in verdicts and result.get("is_function_verified"):
+            if other not in verdicts:
+                continue
+            if result.get("is_function_verified"):
                 verdicts[other] = (str(GroundTruthVerificationResult.VERIFIED), "PASS")
+            elif kept and result.get("verdict") == "VACUOUS":
+                vacuity = result.get("vacuity")
+                verdict = f"VACUOUS ({vacuity})" if vacuity else "VACUOUS"
+                verdicts[other] = (str(GroundTruthVerificationResult.VERIFIED), verdict)
+            elif kept and result.get("verdict"):
+                verdicts[other] = (
+                    str(GroundTruthVerificationResult.UNVERIFIED),
+                    str(result["verdict"]),
+                )
     return verdicts
 
 

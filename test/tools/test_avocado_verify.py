@@ -1289,3 +1289,75 @@ def test_the_summary_counts_vacuous_proofs_as_verified_and_names_them(
     # quickSort verified against partition's vacuous contract, so its pass depends on it.
     assert summary["verified_assuming_unverified_callees"] == ["quickSort"]
     assert exits == [avocado_verify._EXIT_ALL_VERIFIED]
+
+
+def test_a_vacuous_caller_is_reverified_when_a_merge_changes_its_callee(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    # quickSort's proof was vacuous; partition's session now fixes swap, which quickSort calls,
+    # and with the new contract quickSort fails.
+    fake = _FakeVerify(failing={"quickSort"})
+    monkeypatch.setattr(avocado_verify, "verify_function", fake)
+    state = avocado_verify._MergeState(
+        active={"partition"},
+        verified={"swap"},
+        unverified={"quickSort": "VACUOUS (end_unreachable)"},
+    )
+    assert state.rechecked_on_change() == {"swap", "quickSort"}
+    session = _partition_session_that_fixes_swap(canonical)
+    try:
+        report, _cbmc, reverified = _merge_and_verify(
+            session,
+            canonical,
+            include_dirs=[],
+            call_graph=_call_graph_where_quicksort_also_calls_swap(),
+            state=state,
+        )
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    assert set(reverified) == {"swap", "quickSort"}
+    # Rule 9 protects only real proofs, so the edit is kept and quickSort's new verdict recorded.
+    assert report.merged and report.carried == ["swap"] and report.dropped == []
+    assert _CONTRACTS["swap"] in canonical.read_bytes()
+    assert state.unverified["quickSort"] == "FAIL" and "quickSort" not in state.verified
+
+
+def test_a_kept_reverification_updates_the_final_tally(tmp_path: Path) -> None:
+    log = tmp_path / "run.jsonl"
+    vacuous = {"verdict": "VACUOUS", "vacuity": "end_unreachable"}
+    _append_jsonl(log, {"function": "quickSort", "outcome": "VERIFIED", "cbmc": vacuous})
+    _append_jsonl(log, {"function": "swap", "outcome": "VERIFIED", "cbmc": {"verdict": "PASS"}})
+    assert avocado_verify._vacuous_functions(log) == {"quickSort"}
+    # A merge that was reverted (it carried nothing) does not change anyone's verdict.
+    _append_jsonl(
+        log,
+        {
+            "function": "partition",
+            "outcome": "VERIFIED",
+            "cbmc": {"verdict": "PASS"},
+            "merge": {"carried": []},
+            "reverified": {
+                "quickSort": {"verdict": "CBMC_FAILED", "is_function_verified": False},
+                "swap": {"verdict": "CBMC_FAILED", "is_function_verified": False},
+            },
+        },
+    )
+    assert avocado_verify._verified_functions(log) == {"quickSort", "swap", "partition"}
+    # One that kept its edits does: the vacuous caller now fails and leaves the tally.
+    _append_jsonl(
+        log,
+        {
+            "function": "partition",
+            "outcome": "VERIFIED",
+            "cbmc": {"verdict": "PASS"},
+            "merge": {"carried": ["swap"]},
+            "reverified": {
+                "quickSort": {"verdict": "CBMC_FAILED", "is_function_verified": False},
+                "swap": {"verdict": "PASS", "is_function_verified": True},
+            },
+        },
+    )
+    assert avocado_verify._verified_functions(log) == {"swap", "partition"}
+    assert avocado_verify._vacuous_functions(log) == set()
+    assert avocado_verify._unverified_functions(log) == {"quickSort": "CBMC_FAILED"}
