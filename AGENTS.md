@@ -29,6 +29,7 @@ You can also search the web for more CBMC documentation.
   ```sh
   avocado-run-cbmc --function <FUNCTION_NAME> \
                    --file <PATH_TO_C_FILE> \
+                   [--depth <DEPTH>] \
                    [-I <PATH_TO_INCLUDE_DIR(S)>]...
   ```
 
@@ -126,10 +127,18 @@ Work in this order, and do not skip the first CBMC run:
    reports a broken function, fix or undo the edit it names, re-run `avocado-run-cbmc`, and run
    the check again.
 
-Do not read the harness's Python sources, and do not experiment with CBMC's `--depth` or
-`--unwind` bounds: the bounds are fixed by the harness and are not yours to tune. Do not probe
-whether a proof is vacuous by hand either: `avocado-run-cbmc` checks every passing run and tells
-you. Spend your turns on the contract itself.
+Do not read the harness's Python sources, and do not experiment with CBMC's `--unwind` bound: it
+is fixed by the harness and is not yours to tune. The `--depth` bound you may raise, for this
+function only, by passing `--depth N` to `avocado-run-cbmc` with N above the default of 200 (the
+default is also the floor: a lower value is rejected). Do so only when surviving mutants cannot be
+killed within the default bound. A deeper analysis explores longer executions, so each run, its
+vacuity check and every mutant run take longer (raising it tenfold made one benchmark ten times
+slower and another hit the ten-minute timeout), and a contract that verified at 200 may stop
+verifying until it is strengthened. The vacuity check and mutation testing use the depth you pass.
+The depth of your last passing run on the final contract is the one the harness holds the
+function to from then on, so keep using it once you raise it; you may back off to a lower value
+between runs, never below 200. Do not probe whether a proof is vacuous by hand either:
+`avocado-run-cbmc` checks every passing run and tells you. Spend your turns on the contract itself.
 
 ## Vacuous proofs
 

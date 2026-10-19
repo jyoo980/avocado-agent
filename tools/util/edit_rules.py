@@ -39,6 +39,7 @@ comparison reject merges that had changed no code.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from bisect import bisect_right
 from dataclasses import dataclass, field
@@ -477,6 +478,32 @@ def function_header(source: bytes, function: str) -> bytes | None:
             if token.offset >= item.start and token.depth == 0 and token.text == "{":
                 return source[item.start : token.offset].rstrip()
     return None
+
+
+def hash_for_function_definition(source: bytes, function: str) -> str | None:
+    """Return a hash of the definition of a function: its signature, contract and body.
+
+    The hash is over the normalised text of every definition of `function` (a function may be
+    defined once per preprocessor branch), with comments removed and whitespace collapsed, the
+    same normalisation `functions_with_changed_contracts` compares items by. Two versions of a
+    file give the same hash iff the function's definition is the same in both, so a verification
+    attempt recorded with the hash can be matched later to the definition it was made on.
+
+    Args:
+        source (bytes): A C source.
+        function (str): The function's name.
+
+    Returns:
+        str | None: The SHA-256 hex digest, or None when the function is not defined.
+    """
+    definitions = [
+        _code_text(source[item.start : item.end])
+        for item in _split_items(_tokenize(source))
+        if item.kind == "function" and item.name == function
+    ]
+    if not definitions:
+        return None
+    return hashlib.sha256(b"\n".join(definitions)).hexdigest()
 
 
 def function_body_offsets(source: bytes, function: str) -> list[int]:

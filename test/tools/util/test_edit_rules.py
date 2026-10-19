@@ -8,6 +8,7 @@ from tools.util.edit_rules import (
     function_header,
     function_line,
     functions_with_changed_contracts,
+    hash_for_function_definition,
     merge_copy,
     stray_file_violations,
 )
@@ -442,3 +443,21 @@ def test_function_header_is_the_signature_and_the_contract() -> None:
     header = function_header(_with_clamp_contract(BASE), "clamp")
     assert header == b"int clamp(int v)\n" + CLAMP_CONTRACT.rstrip()
     assert function_header(BASE, "missing") is None
+
+
+def test_hash_for_function_definition_ignores_layout_and_sees_contracts_and_bodies() -> None:
+    base = hash_for_function_definition(BASE, "swap")
+    assert base is not None
+    reformatted = BASE.replace(b"int t = *a;", b"/* keep */  int  t = *a;")
+    assert hash_for_function_definition(reformatted, "swap") == base
+    with_contract = BASE.replace(b"void swap(int *a, int *b) {", b"void swap(int *a, int *b) " + SWAP_CONTRACT + b" {")
+    assert hash_for_function_definition(with_contract, "swap") != base
+    new_body = BASE.replace(b"*b = t;", b"*b = t + 0;")
+    assert hash_for_function_definition(new_body, "swap") != base
+    # Other functions do not take part, and a function defined per preprocessor branch is
+    # hashed over all of its definitions.
+    assert hash_for_function_definition(BASE.replace(b"return v;", b"return v + 1;"), "swap") == base
+    assert hash_for_function_definition(BASE, "pick") != hash_for_function_definition(
+        BASE.replace(b"return x + 1;", b"return x + 2;"), "pick"
+    )
+    assert hash_for_function_definition(BASE, "missing") is None

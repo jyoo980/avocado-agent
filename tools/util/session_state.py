@@ -8,7 +8,9 @@ process and can only learn those things from disk, so the harness writes them do
 - a *session file* in the root of each session's temporary directory, beside (not inside) the
   copied source directory, naming the canonical file and holding the fork base; and
 - a *run-state file* beside the canonical file, rewritten whenever the set of verified functions
-  or of functions with a live session changes.
+  or of functions with a live session changes, or a function's ground truth is taken. It also
+  holds the `--depth` each function was last verified at, so a tool that re-verifies a function
+  does so at that function's own depth.
 
 Both are advisory copies. The harness never reads them back: its own merge works from memory, so
 nothing an agent does to these files can change what is merged.
@@ -82,11 +84,14 @@ class RunState:
         active (frozenset[str]): Functions with a live session.
         unverified (dict[str, str]): Functions whose latest ground truth did not pass, each with
             why (for example `VACUOUS (unsatisfiable_preconditions)`).
+        depths (dict[str, int]): The CBMC `--depth` each function's latest ground truth was taken
+            at. A function with no entry has had none, and is verified at the default depth.
     """
 
     verified: frozenset[str]
     active: frozenset[str]
     unverified: dict[str, str] = field(default_factory=dict)
+    depths: dict[str, int] = field(default_factory=dict)
 
 
 # The CBMC verdict of a proof that passed vacuously, as it opens the status of such a function
@@ -210,6 +215,7 @@ def write_run_state(
     verified: Iterable[str],
     active: Iterable[str],
     unverified: Mapping[str, str] | None = None,
+    depths: Mapping[str, int] | None = None,
 ) -> None:
     """Publish the run's merge state beside the canonical file, atomically.
 
@@ -222,6 +228,8 @@ def write_run_state(
         active (Iterable[str]): Functions with a live session.
         unverified (Mapping[str, str] | None): Functions whose latest ground truth did not pass,
             each with why.
+        depths (Mapping[str, int] | None): The `--depth` each function's latest ground truth was
+            taken at.
     """
     target = run_state_path(canonical_file)
     staged = target.with_name(f"{target.name}.tmp")
@@ -229,6 +237,7 @@ def write_run_state(
         "verified": sorted(verified),
         "active": sorted(active),
         "unverified": dict(sorted((unverified or {}).items())),
+        "depths": dict(sorted((depths or {}).items())),
     }
     try:
         staged.write_text(json.dumps(record), encoding="utf-8")
@@ -252,6 +261,7 @@ def read_run_state(canonical_file: Path) -> RunState | None:
             verified=frozenset(record["verified"]),
             active=frozenset(record["active"]),
             unverified=dict(record.get("unverified") or {}),
+            depths={name: int(depth) for name, depth in (record.get("depths") or {}).items()},
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None

@@ -26,7 +26,8 @@ from pathlib import Path
 
 from loguru import logger
 
-from tools.run_cbmc import _CBMC_DEPTH, RunCbmcResult, Vacuity, has_contract, run_cbmc
+from tools.run_cbmc import DEFAULT_CBMC_DEPTH, RunCbmcResult, Vacuity, has_contract, run_cbmc
+from tools.util.edit_rules import hash_for_function_definition
 from tools.util.mutation import (
     MutationScore,
     MutationTestingResult,
@@ -65,7 +66,8 @@ def main() -> None:
     """Run CBMC on a function."""
     parser = argparse.ArgumentParser(
         description=(
-            "Run CBMC on a function with loop unwinding = _CBMC_UNWIND, depth = _CBMC_DEPTH. "
+            f"Run CBMC on a function with the given --depth (default {DEFAULT_CBMC_DEPTH}, "
+            "which is also the lowest value accepted). "
             "Exits with status 0 on verification success. A run that passes is checked for "
             "vacuity with one more CBMC run; a vacuous pass is reported as VACUOUS and exits "
             "with a non-zero status. "
@@ -80,11 +82,12 @@ def main() -> None:
     parser.add_argument("--file", required=True, help="Path to the C file defining the function.")
     parser.add_argument(
         "--depth",
-        required=False,
         type=int,
-        default=_CBMC_DEPTH,
+        default=DEFAULT_CBMC_DEPTH,
         help=(
-            "The integer value of the '--depth' parameter passed to CBMC. Defaults to _CBMC_DEPTH."
+            f"The '--depth' value passed to CBMC; defaults to {DEFAULT_CBMC_DEPTH}. It may be "
+            f"raised, never lowered below {DEFAULT_CBMC_DEPTH}. The vacuity check and every "
+            "mutant run use the same value."
         ),
     )
     parser.add_argument(
@@ -97,6 +100,13 @@ def main() -> None:
         help="Directory to add to the include search path. May be repeated.",
     )
     args = parser.parse_args()
+    if args.depth < DEFAULT_CBMC_DEPTH:
+        # The floor is the harness's bound; a shallower analysis would be less sound than the
+        # one every other function is held to. Rejected before anything is run or logged.
+        parser.error(
+            f"--depth {args.depth} is below the floor of {DEFAULT_CBMC_DEPTH}; the depth may be "
+            f"raised, never lowered below {DEFAULT_CBMC_DEPTH}"
+        )
 
     # Tee mutation-testing compile failures into a file. Leaves loguru's default stderr sink
     # untouched; the filter keys on the warning emitted by `_verify_mutant` in
@@ -107,16 +117,8 @@ def main() -> None:
         filter=lambda record: "failed to compile" in record["message"],
     )
 
-    user_provided_depth = args.depth
-    if user_provided_depth < _CBMC_DEPTH:
-        print(
-            f"Unable to run CBMC with '--depth' value = {user_provided_depth}"
-            f"lower than the default = {_CBMC_DEPTH}"
-        )
-        sys.exit(1)
-
     result = verify_function(
-        args.function, args.file, include_dirs=args.include_dirs, depth=user_provided_depth
+        args.function, args.file, include_dirs=args.include_dirs, depth=args.depth
     )
     # Record this top-level verification attempt (pass or fail) so `avocado-verify` can gate its
     # per-function loop on the agent having actually attempted verification often enough.
@@ -124,6 +126,8 @@ def main() -> None:
     if result.is_function_verified:
         # The function verified, so run mutation testing to assess the strength of its
         # specification and report the kill score (plus any surviving mutants) to the client.
+        # Mutants are judged at the depth the function verified at, so the score is about the
+        # same analysis as the verdict.
         started = time.monotonic()
         score = generate_mutants_and_compute_score(
             file_path=args.file,
@@ -131,6 +135,7 @@ def main() -> None:
             include_dirs=args.include_dirs,
             skip_reverification=True,
             mutant_timeout_sec=_AGENT_MUTANT_TIMEOUT_SEC,
+            depth=args.depth,
         )
         _log_mutation_feedback(args.file, args.function, score, seconds=time.monotonic() - started)
         if score:
@@ -146,9 +151,9 @@ def main() -> None:
 def verify_function(
     function: str,
     file_path: str,
-    depth: int,
     include_dirs: list[str] | None = None,
     *,
+    depth: int,
     vacuity_check: bool = True,
 ) -> RunCbmcResult:
     """Run the CBMC pipeline on `function` in a private scratch directory.
@@ -175,8 +180,11 @@ def verify_function(
     Args:
         function (str): Name of the function to verify.
         file_path (str): Path to the C file defining the function.
-        depth (int): The depth parameter passed to CBMC.
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+        depth (int): The `--depth` to verify at. Required, with no default, because every
+            caller has a specific depth the function must be held to: the one the agent chose,
+            or the one the harness recorded for the function. The vacuity check is made at the
+            same depth.
         vacuity_check (bool): When False, a passing run is returned as is, unchecked.
 
     Returns:
@@ -186,9 +194,9 @@ def verify_function(
         result = run_cbmc(
             function_to_verify=function,
             file_containing_function_to_verify=str(Path(file_path).resolve()),
-            depth=depth,
-            includu_dirs=[str(Path(d).resolve()) for d in include_dirs or []],
+            include_dirs=[str(Path(d).resolve()) for d in include_dirs or []],
             cwd=scratch_dir,
+            depth=depth,
         )
     if not result.is_function_verified:
         return result
@@ -205,7 +213,9 @@ def verify_function(
         )
     if not vacuity_check:
         return result
-    vacuity, why_unknown = check_vacuity(function, file_path, include_dirs, variant=result.variant)
+    vacuity, why_unknown = check_vacuity(
+        function, file_path, include_dirs, variant=result.variant, depth=depth
+    )
     if vacuity is Vacuity.UNKNOWN:
         logger.warning(f"{function}: vacuity could not be checked ({why_unknown}); the pass stands")
         return replace(result, vacuity=vacuity)
@@ -224,11 +234,24 @@ def _log_verification_attempt(
     for a given function (not how many times it passed). `avocado-verify` reads this log to gate
     its per-function loop. Failures to write are swallowed so attempt logging never breaks a run.
 
+    The record also carries the `--depth` of the attempt and a hash of the function's definition
+    as it was when the attempt was made (`hash_for_function_definition`). The harness uses the
+    two together to find the depth at which the function's final definition last verified, which
+    is the depth it then holds the function to; the agent may change the contract, or the
+    depth, between attempts, so neither the last attempt nor the last passing one is that on
+    its own.
+
     Args:
         file_under_verification (str): The file that contains the function under verification.
         function (str): The function whose verification was attempted.
         result (RunCbmcResult): The outcome of the verification attempt.
     """
+    try:
+        definition_hash = hash_for_function_definition(
+            Path(file_under_verification).read_bytes(), function
+        )
+    except OSError:
+        definition_hash = None
     record = {
         "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "function": function,
@@ -236,6 +259,8 @@ def _log_verification_attempt(
         "verified": result.is_function_verified,
         "verdict": str(result),
         "vacuity": None if result.vacuity is None else str(result.vacuity),
+        "depth": result.depth,
+        "definition_sha256": definition_hash,
     }
     _append_to_sibling_log(file_under_verification, VERIFICATION_ATTEMPTS_LOG_SUFFIX, record)
 

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import tools.run_cbmc
-from tools.run_cbmc import CbmcStep, PipelineVariant, RunCbmcResult, Vacuity, run_cbmc
+from tools.run_cbmc import DEFAULT_CBMC_DEPTH, CbmcStep, PipelineVariant, RunCbmcResult, Vacuity, run_cbmc
 from tools.run_cbmc_and_mutation_testing import verify_function
 from tools.util.vacuity import (
     add_probes,
@@ -110,9 +110,9 @@ def test_a_vacuous_result_does_not_count_as_verified() -> None:
 def test_cbmc_tells_the_three_cases_apart(tmp_path: Path) -> None:
     source = tmp_path / "vacuity.c"
     source.write_bytes(SOURCE)
-    assert check_vacuity("clamp", str(source))[0] is Vacuity.NOT_VACUOUS
-    assert check_vacuity("contradictory", str(source))[0] is Vacuity.UNSATISFIABLE_PRECONDITIONS
-    assert check_vacuity("never_returns", str(source))[0] is Vacuity.END_UNREACHABLE
+    assert check_vacuity("clamp", str(source), depth=DEFAULT_CBMC_DEPTH)[0] is Vacuity.NOT_VACUOUS
+    assert check_vacuity("contradictory", str(source), depth=DEFAULT_CBMC_DEPTH)[0] is Vacuity.UNSATISFIABLE_PRECONDITIONS
+    assert check_vacuity("never_returns", str(source), depth=DEFAULT_CBMC_DEPTH)[0] is Vacuity.END_UNREACHABLE
     # The probes go into a copy elsewhere: the file and its directory are as they were.
     assert source.read_bytes() == SOURCE
     assert [path.name for path in tmp_path.iterdir()] == ["vacuity.c"]
@@ -121,17 +121,17 @@ def test_cbmc_tells_the_three_cases_apart(tmp_path: Path) -> None:
 def test_verify_function_reports_a_vacuous_pass_as_vacuous(tmp_path: Path) -> None:
     source = tmp_path / "vacuity.c"
     source.write_bytes(SOURCE)
-    real = verify_function("clamp", str(source))
+    real = verify_function("clamp", str(source), depth=DEFAULT_CBMC_DEPTH)
     assert real.is_function_verified and real.vacuity is Vacuity.NOT_VACUOUS
-    vacuous = verify_function("contradictory", str(source))
+    vacuous = verify_function("contradictory", str(source), depth=DEFAULT_CBMC_DEPTH)
     assert not vacuous.is_function_verified and str(vacuous) == "VACUOUS"
     assert vacuous.vacuity is Vacuity.UNSATISFIABLE_PRECONDITIONS
     assert "no execution even enters the body" in vacuous.response
-    stuck = verify_function("never_returns", str(source))
+    stuck = verify_function("never_returns", str(source), depth=DEFAULT_CBMC_DEPTH)
     assert str(stuck) == "VACUOUS" and stuck.vacuity is Vacuity.END_UNREACHABLE
     assert "none reaches the end of the function" in stuck.response
     # Without the check, the false postcondition of `contradictory` passes unnoticed.
-    unchecked = verify_function("contradictory", str(source), vacuity_check=False)
+    unchecked = verify_function("contradictory", str(source), depth=DEFAULT_CBMC_DEPTH, vacuity_check=False)
     assert unchecked.is_function_verified and unchecked.vacuity is None
 
 
@@ -167,7 +167,7 @@ def test_the_probe_run_uses_the_variant_that_passed_and_is_never_retried(
     probe = run_cbmc("clamp", str(source), cwd=str(tmp_path), variant=PipelineVariant())
     assert runs == [False] and probe.variant == PipelineVariant()
     runs.clear()
-    assert check_vacuity("clamp", str(source), variant=PipelineVariant(True, True))[0] is (
+    assert check_vacuity("clamp", str(source), variant=PipelineVariant(True, True), depth=DEFAULT_CBMC_DEPTH)[0] is (
         Vacuity.END_UNREACHABLE
     )
     assert runs == [True]
