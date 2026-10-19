@@ -1,34 +1,40 @@
-"""Decide whether a session's edits to a C file are ones the merge may keep.
+"""Decide whether a session's local edits to a C file are ones the merge may keep.
 
-A session's job is to add specifications. Everything that was in the file when the session started
-must still be there, unchanged, and what the session adds must not be able to change what that
-original code means. `check_edits` compares the session's finished copy (the *snapshot*) with the
-file as it was when the copy was taken (the *base*) and returns one `Violation` per broken rule:
+A session's job is to add specifications. check_edits` compares the session's finished copy (the
+*snapshot*) with the file as it was when it was forked. Returns one `Violation` per broken rule:
 
 1. Original code is unchanged: every original top-level item is still present, in the same order,
    with the same text. Whitespace, comments and contract clauses do not count.
 2. Insertions go in two places only: the contract slot of a function, or file scope. Nothing is
    inserted inside an existing item, and no contract clause sits inside a function body.
-3. The session's function is intact: it appears exactly once, as one well-formed definition.
-4. New names carry the reserved prefix. No new `#undef`, `#pragma` or `#include`, and a new
-   `#if` block may enclose only new items.
+3. The session's function is intact: it is defined as many times as it was when the session
+   started (once, unless it is defined per preprocessor branch).
+4. New names carry the reserved prefix and do not already exist in the file. No new `#undef`,
+   `#pragma` or `#include`, and a new `#if` block may enclose only new items.
 5. No `__CPROVER_assume` in new text.
 8. No literally false precondition.
 
 Rules 6 (only the source file is edited), 7 (the file compiles) and 9 (no verified function stops
-verifying) need the file system or CBMC and are checked by the callers: `tools.validate` for the
-agent and `avocado_verify._merge_and_verify` for the merge. Both call `check_edits`, so the agent's
-check and the merge agree by construction.
+verifying, where a vacuous pass does not count as verifying) need the file system or CBMC and are
+checked by the callers: `tools.validate` for the agent and `avocado_verify._merge_and_verify` for
+the merge. Both call `check_edits`, so the agent's check and the merge agree by construction.
+Rule 10 (no merge conflict) is decided by `merge_copy` below, which both callers also use: an edit
+to another function's contract is left out when another live session is working on that function
+or when its contract changed in the shared file since the fork, and nothing merges when a new name
+is already defined differently there.
 
 `merge_copy` then produces the file to commit, reconciling the copy with whatever other sessions
-merged since it was taken. Because every version is the same original code plus contracts plus
-new items, that is decided item by item and no function has to be located or parsed.
+merged since it was taken, and returns a `MergeReport` for the run log. Because every version is
+the same original code plus contracts plus new items, that is decided item by item and no function
+has to be located or parsed. `frozen_functions_for` and `functions_affected_by` give the merge's
+callers the two sets that rules 10 and 9 are about: the functions whose contracts a session may not
+change, and the functions a kept change can break.
 
-The comparison deliberately does not use tree-sitter. Contract clauses and
-comments are erased, both files are split into tokens and then into top-level items by brace depth
-alone, and the two item sequences are aligned. That is robust to constructs the C grammar cannot
-parse (`__CPROVER_forall { ... }` in a helper, attribute macros, operator macros), which made an
-AST comparison reject merges that had changed no code.
+The comparison deliberately does not use tree-sitter. Contract clauses and comments are erased,
+both files are split into tokens and then into top-level items by brace depth alone, and the two
+item sequences are aligned. That is robust to constructs the C grammar cannot parse
+(`__CPROVER_forall { ... }` in a helper, attribute macros, operator macros), which made an AST
+comparison reject merges that had changed no code.
 """
 
 from __future__ import annotations
@@ -41,10 +47,11 @@ from operator import itemgetter
 from typing import TYPE_CHECKING
 
 from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
-from tools.util.contract_merge import MergeReport
 
 if TYPE_CHECKING:
     from collections.abc import Collection
+
+    from tools.util.callgraph import CallGraph
 
 # The prefixes a new top-level name must start with: the first for macros, the second for
 # functions, variables and types. Either is accepted for any kind of name; what matters is that no
@@ -117,6 +124,58 @@ class Violation:
         """
         where = f"line {self.line}: " if self.line is not None else ""
         return f"rule {self.rule} ({RULE_TITLES[self.rule]}): {where}{self.message}"
+
+
+@dataclass(frozen=True)
+class MergeReport:
+    """What a merge kept, what it left out, and why it failed, for the run log.
+
+    Attributes:
+        merged (bool): True iff the canonical file was updated.
+        reason (str): Why the merge failed; empty on success.
+        transplanted (list[str]): New top-level items carried into the canonical file, rendered
+            as `kind:name`.
+        skipped_duplicates (list[str]): New items that another session had already added with
+            identical text, so nothing needed doing.
+        dropped (list[str]): The session's edits to the contracts of other functions that the
+            merge left out (rule 10, or rule 9 when the harness reverts them), rendered as
+            `function:name` with the reason in parentheses when there is a specific one.
+        carried (list[str]): Other functions whose contracts the session changed and the merge
+            kept; the caller re-verifies what they can affect before committing.
+        changed_since_fork (list[str]): Functions whose contracts differ between the file the
+            session's copy was taken from and the canonical file the session's function was last
+            verified on, because other sessions merged meanwhile. The session never saw those
+            contracts, so a function that calls one of them and then fails its ground truth is
+            given another session (see `avocado_verify._note_for_rerun_after_merge`).
+        violations (list[str]): The edit rules the session's copy broke, one rendered line each;
+            non-empty only when they are why the merge failed.
+    """
+
+    merged: bool
+    reason: str = ""
+    transplanted: list[str] = field(default_factory=list)
+    skipped_duplicates: list[str] = field(default_factory=list)
+    dropped: list[str] = field(default_factory=list)
+    carried: list[str] = field(default_factory=list)
+    changed_since_fork: list[str] = field(default_factory=list)
+    violations: list[str] = field(default_factory=list)
+
+    def to_record(self) -> dict:
+        """Return a JSON-serializable form of this report for the run log.
+
+        Returns:
+            dict: The report's fields.
+        """
+        return {
+            "merged": self.merged,
+            "reason": self.reason,
+            "transplanted": list(self.transplanted),
+            "skipped_duplicates": list(self.skipped_duplicates),
+            "dropped": list(self.dropped),
+            "carried": list(self.carried),
+            "changed_since_fork": list(self.changed_since_fork),
+            "violations": list(self.violations),
+        }
 
 
 @dataclass(frozen=True)
@@ -237,7 +296,7 @@ def merge_copy(
     - The session's own function always takes its contract from the copy.
     - A contract the session changed on *another* item is kept, and the item named in
       `MergeReport.carried` for the caller to re-verify, unless `frozen_functions` is None (no
-      such edit is kept), the item is frozen (a live session works on it or calls it), or the
+      such edit is kept), the item is frozen (a live session is working on it), or the
       item's contract also changed in the canonical file since the fork. In those cases the
       edit is left out and named in `MergeReport.dropped`; the rest of the copy still merges.
     - Items the session added are inserted after the original item they followed in the copy.
@@ -246,6 +305,9 @@ def merge_copy(
 
     When the canonical file is still the fork base -- always the case with one session at a time
     -- this reduces to taking the copy itself, minus the edits that are left out.
+
+    `MergeReport.changed_since_fork` names every function whose contract changed in the canonical
+    file since the fork, whether or not the session edited it too.
 
     Args:
         canonical (bytes): The current canonical file.
@@ -282,6 +344,7 @@ def merge_copy(
 
     carried: list[str] = []
     dropped: list[str] = []
+    changed_since_fork: list[str] = []
     edits: list[tuple[int, int, bytes]] = []  # (start, end, replacement) in `theirs_source`
     mine_to_theirs: dict[int, _Item] = {}
     for base_index, snapshot_index in mine.pairs:
@@ -294,6 +357,13 @@ def merge_copy(
         base_text = _code_text(fork_base[original.start : original.end])
         my_text = _code_text(snapshot[edited.start : edited.end])
         their_text = _code_text(theirs_source[current.start : current.end])
+        if (
+            their_text != base_text
+            and current.kind == "function"
+            and current.name
+            and current.name not in changed_since_fork
+        ):
+            changed_since_fork.append(current.name)
         if my_text in (base_text, their_text):
             continue
         if edited.name != function:
@@ -304,7 +374,7 @@ def merge_copy(
                 label = f"function:{edited.name}" if edited.name else f"item at line {edited.line}"
                 dropped.append(label + reason)
                 continue
-            if edited.name not in carried:
+            if edited.name is not None and edited.name not in carried:
                 carried.append(edited.name)
         edits.append((current.start, current.end, snapshot[edited.start : edited.end]))
 
@@ -357,7 +427,79 @@ def merge_copy(
         skipped_duplicates=skipped,
         dropped=dropped,
         carried=carried,
+        changed_since_fork=changed_since_fork,
     )
+
+
+def functions_with_changed_contracts(before: bytes, after: bytes) -> list[str]:
+    """Return the functions whose contracts differ between two versions of a file.
+
+    Both versions must hold the same code, as any two versions of the canonical file do. A
+    function that only one of them has is not reported.
+
+    Args:
+        before (bytes): One version of the file.
+        after (bytes): Another version of it.
+
+    Returns:
+        list[str]: The names of the functions, in source order.
+    """
+    if before == after:
+        return []
+    comparison = _compare(before, after)
+    changed: list[str] = []
+    for before_index, after_index in comparison.pairs:
+        old = comparison.base_items[before_index]
+        new = comparison.snapshot_items[after_index]
+        if old.kind != "function" or not old.name or old.name in changed:
+            continue
+        if _code_text(before[old.start : old.end]) != _code_text(after[new.start : new.end]):
+            changed.append(old.name)
+    return changed
+
+
+def function_header(source: bytes, function: str) -> bytes | None:
+    """Return a function definition's text before its body: its signature and its contract.
+
+    Args:
+        source (bytes): A C source.
+        function (str): The function's name.
+
+    Returns:
+        bytes | None: The text from the start of the first definition of `function` up to the
+            opening brace of its body, or None when the definition is not found.
+    """
+    tokens = _tokenize(source)
+    for item in _split_items(tokens):
+        if item.kind != "function" or item.name != function:
+            continue
+        for token in tokens:
+            if token.offset >= item.start and token.depth == 0 and token.text == "{":
+                return source[item.start : token.offset].rstrip()
+    return None
+
+
+def function_body_offsets(source: bytes, function: str) -> list[int]:
+    """Return the offset of the opening brace of the body of each definition of a function.
+
+    Args:
+        source (bytes): A C source.
+        function (str): The function's name.
+
+    Returns:
+        list[int]: One offset per definition (a function may be defined once per preprocessor
+            branch), in source order; empty when the function is not defined.
+    """
+    tokens = _tokenize(source)
+    offsets = []
+    for item in _split_items(tokens):
+        if item.kind != "function" or item.name != function:
+            continue
+        for token in tokens:
+            if token.offset >= item.start and token.depth == 0 and token.text == "{":
+                offsets.append(token.offset)
+                break
+    return offsets
 
 
 def _reason_not_carried(
@@ -379,10 +521,65 @@ def _reason_not_carried(
     if frozen_functions is None or name is None:
         return ""
     if name in frozen_functions:
-        return " (a live session works on it or calls it)"
+        return " (a live session is working on it)"
     if their_changed:
         return " (changed in the canonical file since the fork)"
     return None
+
+
+def functions_affected_by(
+    carried: Collection[str],
+    *,
+    call_graph: CallGraph | None,
+    candidates: Collection[str],
+    exclude: str,
+) -> list[str]:
+    """Return the functions whose ground truth a merge carrying edits to `carried` can change.
+
+    Those are the carried functions themselves (their contracts changed) and every in-file caller
+    of one among `candidates` (a caller is verified against its callees' contracts). `exclude` is
+    the merging function, which is verified separately.
+
+    Args:
+        carried (Collection[str]): Functions whose edited definitions the merge carries.
+        call_graph (CallGraph | None): Call graph of the file; None yields no callers.
+        candidates (Collection[str]): The functions whose verdicts a change to a callee can make
+            stale (`tools.util.session_state.rechecked_on_change`): those verified on the
+            canonical file and those whose proof is vacuous.
+        exclude (str): The function whose session is merging.
+
+    Returns:
+        list[str]: The affected functions, sorted.
+    """
+    affected = set(carried)
+    if call_graph is not None:
+        affected.update(
+            caller
+            for caller in candidates
+            if caller in call_graph
+            and any(other in call_graph.get_callees(caller).internal for other in carried)
+        )
+    affected.discard(exclude)
+    return sorted(affected)
+
+
+def frozen_functions_for(function: str, active: Collection[str]) -> set[str]:
+    """Return the functions whose contracts the session for `function` may not change.
+
+    Those are the functions other live sessions are working on: each is its session's to
+    specify, and that session's copy replaces whatever contract it has when it merges. The
+    functions a live session *calls* are not frozen. Any session may fix a callee's contract;
+    a live caller that then fails against the new contract is given another session on the file
+    as it now is (see `avocado_verify._note_for_rerun_after_merge`).
+
+    Args:
+        function (str): The function whose session is merging.
+        active (Collection[str]): Functions with a live session, `function` included or not.
+
+    Returns:
+        set[str]: The frozen functions.
+    """
+    return {name for name in active if name != function}
 
 
 def _named_items(comparison: _Comparison, indices: list[int]) -> dict[tuple, _Item]:

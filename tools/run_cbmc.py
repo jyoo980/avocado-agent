@@ -9,12 +9,14 @@ Usage:
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -62,6 +64,15 @@ _CBMC_UNWIND = 5
 # Default `--depth` argument to CBMC.
 _CBMC_DEPTH = 200
 
+# What goto-instrument prints when `--replace-call-with-contract` names a function the compiled
+# program does not contain. The call graph is read from the source text without preprocessing, so
+# it also lists callees that the preprocessor removes (a call inside an `#ifdef` that is off).
+_CALLEE_NOT_COMPILED = re.compile(r"Function '([^']+)' was not found in the GOTO program")
+
+# One line of `goto-instrument --list-goto-functions`: `<name> /* <identifier>[, body not
+# available] */`. A contract is listed under the function's name with a `contract::` identifier.
+_LISTED_FUNCTION = re.compile(r"^(\S+) /\* (\S+?)(, body not available)? \*/$")
+
 # Process-wide cap on how many pipeline subprocesses (`goto-cc`, `goto-instrument`, `cbmc`) may run
 # at once. Several layers spawn pipelines concurrently -- mutants of one function run in a thread
 # pool, and the evaluation driver scores several functions at once -- and without a shared bound
@@ -89,6 +100,43 @@ class CbmcStep(StrEnum):
     CBMC = "cbmc"
 
 
+class Vacuity(StrEnum):
+    """Whether a passing verification says anything about the function.
+
+    A function verifies *vacuously* when no execution CBMC explores reaches the end of the
+    function, so its postconditions are never checked: the run would pass whatever they said.
+    `tools.util.vacuity` decides this with one extra run of the pipeline.
+    """
+
+    # At least one execution enters the body and reaches the end of the function.
+    NOT_VACUOUS = "not_vacuous"
+    # No execution enters the body: the preconditions cannot all hold at once.
+    UNSATISFIABLE_PRECONDITIONS = "unsatisfiable_preconditions"
+    # Executions enter the body, but none reaches the end of the function.
+    END_UNREACHABLE = "end_unreachable"
+    # The extra run did not give an answer (it timed out or failed); the pass stands.
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class PipelineVariant:
+    """Which of the pipeline's variants a run used.
+
+    `run_cbmc` first runs the plain pipeline and, when that fails in one of two recognisable
+    ways, runs it again differently. A result says which variant produced it, so that a later
+    run that must be comparable with it (the vacuity check) can be made the same way.
+
+    Attributes:
+        replace_self_call (bool): True iff a self-recursive function's own contract was
+            substituted for its recursive calls (the recursion-inlining retry).
+        prevent_macro_expansion (bool): True iff macros CBMC cannot model were disabled and the
+            bundled C-library models were added (the missing-body retry).
+    """
+
+    replace_self_call: bool = False
+    prevent_macro_expansion: bool = False
+
+
 @dataclass(frozen=True)
 class RunCbmcResult:
     """The outcome of running CBMC on a function.
@@ -101,6 +149,14 @@ class RunCbmcResult:
             exit code of the failing subprocess (cbmc's verification exit code when
             `failed_step` is CBMC).
         response (str): Printable summary — a success line or a truncated failure block.
+        vacuity (Vacuity | None): The result of the vacuity check on a run that passed, or None
+            when no check was made (the run did not pass, or the caller did not ask for one, as
+            for mutants).
+        variant (PipelineVariant | None): The variant of the pipeline that produced this result,
+            when it came from `run_cbmc`.
+        no_contract (bool): True iff the pipeline passed but the function has no contract in the
+            compiled program. CBMC then checks an empty contract, which nothing can violate, so
+            such a pass proves nothing about the function and does not count as verified.
     """
 
     function: str
@@ -108,6 +164,9 @@ class RunCbmcResult:
     timed_out: bool
     returncode: int
     response: str
+    vacuity: Vacuity | None = None
+    variant: PipelineVariant | None = None
+    no_contract: bool = False
 
     @property
     def cbmc_ran_successfully(self) -> bool:
@@ -123,10 +182,21 @@ class RunCbmcResult:
     def is_function_verified(self) -> bool:
         """True iff the function for this verification run is successfully verified.
 
-        A function is successfully verified if all components of the CBMC pipeline ran successfully
-        and the return code is 0.
+        A function is successfully verified if all components of the CBMC pipeline ran successfully,
+        the return code is 0, the function has a contract, and the vacuity check (when one was
+        made) did not find the proof vacuous.
         """
-        return self.cbmc_ran_successfully and self.returncode == 0
+        return (
+            self.cbmc_ran_successfully
+            and self.returncode == 0
+            and not self.no_contract
+            and not self.is_vacuous
+        )
+
+    @property
+    def is_vacuous(self) -> bool:
+        """True iff the pipeline passed but the vacuity check found that it proves nothing."""
+        return self.vacuity in (Vacuity.UNSATISFIABLE_PRECONDITIONS, Vacuity.END_UNREACHABLE)
 
     def __str__(self) -> str:
         """Return the string representation of this result, used for logging.
@@ -138,6 +208,10 @@ class RunCbmcResult:
             return "TIMED_OUT"
         if self.failed_step:
             return f"{self.failed_step.value.upper()}_FAILED"
+        if self.no_contract:
+            return "NO_CONTRACT"
+        if self.is_vacuous:
+            return "VACUOUS"
         if self.is_function_verified:
             return "PASS"
         return "FAIL"
@@ -224,6 +298,7 @@ def run_cbmc(
     call_graph: CallGraph | None = None,
     cwd: str | None = None,
     timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
+    variant: PipelineVariant | None = None,
 ) -> RunCbmcResult:
     """Run CBMC on the given function with loop unwinding = `_UNWIND`, depth = `_DEPTH`.
 
@@ -255,6 +330,10 @@ def run_cbmc(
             `_DEFAULT_RUN_CBMC_TIMEOUT_SEC`; callers that only need a quick verdict (e.g. mutation
             feedback for the agent) may pass a smaller budget. A timed-out run is reported as such
             and is never mistaken for a verification result.
+        variant (PipelineVariant | None): When given, the pipeline is run exactly once, in this
+            variant, and nothing is retried. The vacuity check passes the variant of the run it
+            is checking: its own run fails by design, and a failure must not be allowed to
+            trigger a retry that would judge a different pipeline from the one that passed.
 
     Returns:
         RunCbmcResult: The outcome of the run, naming the failed step (if any) and carrying
@@ -272,6 +351,31 @@ def run_cbmc(
 
     subprocess_results: list[dict] = []
 
+    if variant is not None:
+        if variant.replace_self_call:
+            callees = get_in_file_callees_for(
+                function_to_verify,
+                call_graph,
+                include_self=call_graph.is_self_recursive(function_to_verify),
+            )
+        result, _, _ = _run_pipeline(
+            function_to_verify,
+            callees,
+            file_containing_function_to_verify,
+            stub_paths=stub_paths,
+            include_dirs=include_dirs,
+            prevent_macro_expansion=variant.prevent_macro_expansion,
+            subprocess_results=subprocess_results,
+            cwd=cwd,
+            timeout_sec=timeout_sec,
+        )
+        result = replace(result, variant=variant)
+        _log_invocation(
+            file_containing_function_to_verify, result, subprocess_results, nondet_callees
+        )
+        return result
+
+    used = PipelineVariant()
     # Initial attempt.
     result, combined_stdout, combined_stderr = _run_pipeline(
         function_to_verify,
@@ -287,6 +391,7 @@ def run_cbmc(
     )
     # First, check if the run was successful or if it timed out.
     if result.cbmc_ran_successfully or result.timed_out:
+        result = replace(result, variant=used)
         _log_invocation(
             file_containing_function_to_verify,
             result,
@@ -302,6 +407,7 @@ def run_cbmc(
             call_graph,
             include_self=call_graph.is_self_recursive(function_to_verify),
         )
+        used = replace(used, replace_self_call=True)
         result, combined_stdout, combined_stderr = _run_pipeline(
             function_to_verify,
             callees,
@@ -320,6 +426,7 @@ def run_cbmc(
         and not result.timed_out
         and has_missing_body_for_callee_or_function_message(combined_stdout, combined_stderr)
     ):
+        used = replace(used, prevent_macro_expansion=True)
         result, combined_stdout, combined_stderr = _run_pipeline(
             function_to_verify,
             callees,
@@ -333,6 +440,7 @@ def run_cbmc(
             timeout_sec=timeout_sec,
         )
 
+    result = replace(result, variant=used)
     _log_invocation(file_containing_function_to_verify, result, subprocess_results, nondet_callees)
     return result
 
@@ -408,12 +516,34 @@ def _run_pipeline(
 
     per_step_stdout = []
     per_step_stderr = []
+    contract_command = _get_goto_instrument_contract_command(function_to_verify, callees)
     for step, command in commands:
         subprocess_result = _run_command(
             step, command, subprocess_results, cwd=cwd, timeout_sec=timeout_sec
         )
         per_step_stdout.append(subprocess_result.stdout)
         per_step_stderr.append(subprocess_result.stderr)
+        if command == contract_command:
+            # A callee that the preprocessor removed is not in the compiled program, so its
+            # contract cannot be substituted, and need not be: the function does not call it in
+            # this build. Leave such callees out and run the step again.
+            compiled_callees = list(callees)
+            while not subprocess_result.succeeded and not subprocess_result.timed_out:
+                missing = _CALLEE_NOT_COMPILED.search(
+                    subprocess_result.stderr + subprocess_result.stdout
+                )
+                if missing is None or missing.group(1) not in compiled_callees:
+                    break
+                compiled_callees.remove(missing.group(1))
+                subprocess_result = _run_command(
+                    step,
+                    _get_goto_instrument_contract_command(function_to_verify, compiled_callees),
+                    subprocess_results,
+                    cwd=cwd,
+                    timeout_sec=timeout_sec,
+                )
+                per_step_stdout.append(subprocess_result.stdout)
+                per_step_stderr.append(subprocess_result.stderr)
         if not subprocess_result.succeeded:
             combined_stdout = "".join(per_step_stdout)
             combined_stderr = "".join(per_step_stderr)
@@ -844,6 +974,101 @@ def _get_cbmc_check_command(function: str) -> str:
         f"cbmc checking-{quoted_function}-contracts.goto "
         f"--function {quoted_function} --depth {_CBMC_DEPTH}"
     )
+
+
+def list_compiled_functions(
+    file_path: str, include_dirs: list[str] | None = None
+) -> set[str] | None:
+    """Return the names of the functions that are compiled when `file_path` is built.
+
+    The harness finds a file's functions by reading its text, without running the preprocessor,
+    so it also finds the ones inside conditional blocks that this build leaves out. Such a
+    function does not exist as far as CBMC is concerned: it cannot be verified, and its contract
+    cannot be substituted at a call site. This asks the compiler, once, which functions do exist.
+
+    Args:
+        file_path (str): Path to the C source file.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+
+    Returns:
+        set[str] | None: The functions that have a body in the compiled program, or None when
+            the file could not be compiled or listed, in which case nothing is known.
+    """
+    listing = _list_goto_functions(file_path, include_dirs)
+    return None if listing is None else listing[0]
+
+
+def has_contract(
+    function: str, file_path: str, include_dirs: list[str] | None = None
+) -> bool | None:
+    """Return whether `function`, as compiled from `file_path`, has a contract.
+
+    Asked of the compiled program rather than of the source text, so a function defined once per
+    preprocessor branch is judged by the definition that is actually built. goto-cc records a
+    `contract::<name>` symbol for a function iff that definition carries at least one contract
+    clause (`__CPROVER_requires`, `__CPROVER_ensures`, `__CPROVER_assigns`, ...).
+
+    Args:
+        function (str): The function.
+        file_path (str): Path to the C source file.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+
+    Returns:
+        bool | None: True or False, or None when the file could not be compiled or listed.
+    """
+    listing = _list_goto_functions(file_path, include_dirs)
+    return None if listing is None else function in listing[1]
+
+
+def _list_goto_functions(
+    file_path: str, include_dirs: list[str] | None
+) -> tuple[set[str], set[str]] | None:
+    """Compile `file_path` and list its functions and the functions that have contracts.
+
+    Args:
+        file_path (str): Path to the C source file.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+
+    Returns:
+        tuple[set[str], set[str]] | None: The functions with a body, and the functions with a
+            contract, in the compiled program; None when it could not be compiled or listed.
+    """
+    include_flags = " ".join(f"-I {shlex.quote(d)}" for d in include_dirs or [])
+    source = shlex.quote(str(Path(file_path).resolve()))
+    try:
+        with tempfile.TemporaryDirectory(prefix="avocado-compiled-") as scratch_dir:
+            commands = (
+                f"goto-cc -o compiled.goto {include_flags} {source}",
+                "goto-instrument --list-goto-functions compiled.goto",
+            )
+            listing = ""
+            for command in commands:
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    shell=True,
+                    check=False,
+                    timeout=_GOTO_CC_TIMEOUT_SEC,
+                    cwd=scratch_dir,
+                )
+                if completed.returncode != 0:
+                    return None
+                listing = completed.stdout
+    except (OSError, TimeoutExpired):
+        return None
+    compiled: set[str] = set()
+    contracted: set[str] = set()
+    for line in listing.splitlines():
+        listed = _LISTED_FUNCTION.match(line.strip())
+        if listed is None:
+            continue
+        name, identifier, no_body = listed.groups()
+        if identifier == name and no_body is None:
+            compiled.add(name)
+        elif identifier == f"contract::{name}":
+            contracted.add(name)
+    return compiled, contracted
 
 
 def compile_with_goto_cc(

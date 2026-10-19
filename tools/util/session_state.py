@@ -18,12 +18,12 @@ from __future__ import annotations
 
 import json
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
 # Name of the session file, and of the fork base saved next to it (the source file's suffix is
 # appended to the latter).
@@ -33,12 +33,16 @@ _FORK_BASE_STEM = ".avocado-fork-base"
 # Suffix of the run-state file that sits beside the canonical file.
 RUN_STATE_SUFFIX = "-avocado-run-state.json"
 
+# Suffix of the directory beside the canonical file in which the harness keeps the transcripts of
+# the sessions it had to stop at the session timeout.
+TRANSCRIPTS_DIR_SUFFIX = "-avocado-transcripts"
+
 # What is left out when the source directory is copied for a session or a ground-truth run, and
 # what is not counted as an edit by the agent: the harness's and the tool's own logs, state and
 # caches (including the compile-failure log the tool writes into whatever directory the agent runs
-# it from), CBMC intermediates, mutant sources, and the folder metadata macOS writes whenever a
-# directory is opened in Finder. Each copy then starts clean and, in particular,
-# gets its own `<stem>-verification-attempts.jsonl`.
+# it from), kept session transcripts, CBMC intermediates, mutant sources, and the folder metadata
+# macOS writes whenever a directory is opened in Finder. Each copy then starts clean and, in
+# particular, gets its own `<stem>-verification-attempts.jsonl`.
 SNAPSHOT_IGNORE = shutil.ignore_patterns(
     ".git",
     ".DS_Store",
@@ -46,6 +50,7 @@ SNAPSHOT_IGNORE = shutil.ignore_patterns(
     "*-callgraph.json",
     "*.jsonl",
     f"*{RUN_STATE_SUFFIX}",
+    f"*{TRANSCRIPTS_DIR_SUFFIX}",
     "*__mutant_*.c",
     "*__clause_drop_*.c",
     "mutation_compile_failures.log",
@@ -75,10 +80,66 @@ class RunState:
         verified (frozenset[str]): Functions whose latest ground truth on the canonical file
             passed.
         active (frozenset[str]): Functions with a live session.
+        unverified (dict[str, str]): Functions whose latest ground truth did not pass, each with
+            why (for example `VACUOUS (unsatisfiable_preconditions)`).
     """
 
     verified: frozenset[str]
     active: frozenset[str]
+    unverified: dict[str, str] = field(default_factory=dict)
+
+
+# The CBMC verdict of a proof that passed vacuously, as it opens the status of such a function
+# in `RunState.unverified` and in the harness's run log.
+VACUOUS_VERDICT = "VACUOUS"
+
+
+def vacuous_status(vacuity: str | None) -> str:
+    """Return the status of a function whose proof is vacuous.
+
+    This is the one place that builds the status, and `is_vacuous_status` the one place that
+    reads it, so the harness, which writes it, and the agent-side tools, which read it back from
+    the run-state file, cannot drift apart.
+
+    Args:
+        vacuity (str | None): The kind of vacuity, if known.
+
+    Returns:
+        str: `VACUOUS (<vacuity>)`, or `VACUOUS` when the kind is not known.
+    """
+    return f"{VACUOUS_VERDICT} ({vacuity})" if vacuity else VACUOUS_VERDICT
+
+
+def is_vacuous_status(why: str) -> bool:
+    """Return whether a function's status says its proof is vacuous.
+
+    Args:
+        why (str): A status as `RunState.unverified` holds it, or a verdict from the run log.
+
+    Returns:
+        bool: True iff it is one `vacuous_status` builds.
+    """
+    return why.startswith(VACUOUS_VERDICT)
+
+
+def rechecked_on_change(verified: Iterable[str], unverified: Mapping[str, str]) -> set[str]:
+    """Return the functions to re-verify when a merge changes one of their callees' contracts.
+
+    Those are the verified functions and the ones whose proof is vacuous. A vacuous proof counts
+    as verified in the final tally, so it must not keep a verdict that the new contract has made
+    stale; but only the verified ones are protected by rule 9 (`avocado-validate reverify` and
+    the harness's merge both use this set, and both report only the verified ones as broken).
+
+    Args:
+        verified (Iterable[str]): Functions whose latest ground truth on the canonical file
+            passed (`RunState.verified`, or the harness's own copy of it).
+        unverified (Mapping[str, str]): Functions whose latest ground truth did not pass, each
+            with why (`RunState.unverified`, or the harness's own copy of it).
+
+    Returns:
+        set[str]: The functions.
+    """
+    return set(verified) | {name for name, why in unverified.items() if is_vacuous_status(why)}
 
 
 def write_session_info(
@@ -144,7 +205,11 @@ def run_state_path(canonical_file: Path) -> Path:
 
 
 def write_run_state(
-    canonical_file: Path, *, verified: Iterable[str], active: Iterable[str]
+    canonical_file: Path,
+    *,
+    verified: Iterable[str],
+    active: Iterable[str],
+    unverified: Mapping[str, str] | None = None,
 ) -> None:
     """Publish the run's merge state beside the canonical file, atomically.
 
@@ -155,10 +220,16 @@ def write_run_state(
         canonical_file (Path): The canonical source file.
         verified (Iterable[str]): Functions currently verified on the canonical file.
         active (Iterable[str]): Functions with a live session.
+        unverified (Mapping[str, str] | None): Functions whose latest ground truth did not pass,
+            each with why.
     """
     target = run_state_path(canonical_file)
     staged = target.with_name(f"{target.name}.tmp")
-    record = {"verified": sorted(verified), "active": sorted(active)}
+    record = {
+        "verified": sorted(verified),
+        "active": sorted(active),
+        "unverified": dict(sorted((unverified or {}).items())),
+    }
     try:
         staged.write_text(json.dumps(record), encoding="utf-8")
         staged.replace(target)
@@ -177,7 +248,11 @@ def read_run_state(canonical_file: Path) -> RunState | None:
     """
     try:
         record = json.loads(run_state_path(canonical_file).read_text(encoding="utf-8"))
-        return RunState(verified=frozenset(record["verified"]), active=frozenset(record["active"]))
+        return RunState(
+            verified=frozenset(record["verified"]),
+            active=frozenset(record["active"]),
+            unverified=dict(record.get("unverified") or {}),
+        )
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
