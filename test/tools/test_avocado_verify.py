@@ -922,9 +922,7 @@ def test_merge_reruns_stop_at_their_own_cap(tmp_path: Path, monkeypatch) -> None
             assert match
             path = Path(match.group(2))
             # Every session finds that partition's contract has been changed again meanwhile.
-            _write_contract(
-                canonical, "partition", b"__CPROVER_requires(%d > 0)" % self.sessions
-            )
+            _write_contract(canonical, "partition", b"__CPROVER_requires(%d > 0)" % self.sessions)
             _log_attempts(path, "quickSort")
             return _session()
 
@@ -1189,7 +1187,9 @@ def test_a_resumed_run_recalls_why_functions_were_not_verified(tmp_path: Path) -
     _append_jsonl(
         log, {"function": "partition", "outcome": "UNVERIFIED", "cbmc": {"verdict": "CBMC_FAILED"}}
     )
-    _append_jsonl(log, {"function": "quickSort", "outcome": "VERIFIED", "cbmc": {"verdict": "PASS"}})
+    _append_jsonl(
+        log, {"function": "quickSort", "outcome": "VERIFIED", "cbmc": {"verdict": "PASS"}}
+    )
     _append_jsonl(log, {"function": "other", "outcome": "CLAUDE_TIMED_OUT"})
     assert avocado_verify._unverified_functions(log) == {
         "swap": "VACUOUS (end_unreachable)",
@@ -1272,7 +1272,9 @@ def test_the_summary_counts_vacuous_proofs_as_verified_and_names_them(
             "cbmc": {"verdict": "VACUOUS", "vacuity": "end_unreachable"},
         },
     )
-    _append_jsonl(log, {"function": "quickSort", "outcome": "VERIFIED", "cbmc": {"verdict": "PASS"}})
+    _append_jsonl(
+        log, {"function": "quickSort", "outcome": "VERIFIED", "cbmc": {"verdict": "PASS"}}
+    )
     exits: list[int] = []
     monkeypatch.setattr(avocado_verify.sys, "exit", exits.append)
     avocado_verify._finalize_run(
