@@ -144,6 +144,7 @@ from avocado_verify import (
 from tools.run_cbmc import CbmcStep, RunCbmcResult, Vacuity
 from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
 from tools.util.edit_rules import function_body_offsets, function_line
+from tools.util.session_state import is_vacuous_status, rechecked_on_change
 
 
 def test_ready_functions_waits_only_for_earlier_callees() -> None:
@@ -1363,3 +1364,23 @@ def test_a_kept_reverification_updates_the_final_tally(tmp_path: Path) -> None:
     assert avocado_verify._verified_functions(log) == {"swap", "partition"}
     assert avocado_verify._vacuous_functions(log) == set()
     assert avocado_verify._unverified_functions(log) == {"quickSort": "CBMC_FAILED"}
+
+
+def test_status_of_a_vacuous_proof_is_recognised_by_the_shared_predicate() -> None:
+    """The status the harness writes is the one `tools.util.session_state` reads back."""
+    status = avocado_verify._status_of(_vacuous_cbmc("partition"))
+    assert status == "VACUOUS (unsatisfiable_preconditions)"
+    assert is_vacuous_status(status)
+    assert rechecked_on_change(set(), {"partition": status}) == {"partition"}
+
+
+def test_merge_state_rechecked_on_change_matches_the_shared_rule() -> None:
+    """The harness's in-memory state and the published run state agree on what to recheck."""
+    state = avocado_verify._MergeState(verified={"quickSort"})
+    state.record("partition", _vacuous_cbmc("partition"))
+    failed = RunCbmcResult(
+        function="swap", failed_step=CbmcStep.CBMC, timed_out=False, returncode=10, response=""
+    )
+    state.record("swap", failed)
+    assert state.rechecked_on_change() == {"quickSort", "partition"}
+    assert state.rechecked_on_change() == rechecked_on_change(state.verified, state.unverified)

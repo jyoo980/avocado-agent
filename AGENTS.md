@@ -35,8 +35,7 @@ You can also search the web for more CBMC documentation.
   If verification succeeds, exits with status 0 and prints mutation-testing related information to stdout.
   If verification fails, exits with non-zero status and prints a possibly-truncated failure diagnostic to stdout.
   If CBMC reports no failure but the proof is *vacuous* (see [Vacuous proofs](#vacuous-proofs)),
-  exits with non-zero status and prints `VACUOUS` with the cause. A vacuous proof does not count
-  as verified.
+  exits with non-zero status and prints `VACUOUS` with the cause.
   If the function has no contract at all, exits with non-zero status and prints `NO_CONTRACT`:
   CBMC would check an empty contract, which nothing can violate.
 

@@ -89,6 +89,59 @@ class RunState:
     unverified: dict[str, str] = field(default_factory=dict)
 
 
+# The CBMC verdict of a proof that passed vacuously, as it opens the status of such a function
+# in `RunState.unverified` and in the harness's run log.
+VACUOUS_VERDICT = "VACUOUS"
+
+
+def vacuous_status(vacuity: str | None) -> str:
+    """Return the status of a function whose proof is vacuous.
+
+    This is the one place that builds the status, and `is_vacuous_status` the one place that
+    reads it, so the harness, which writes it, and the agent-side tools, which read it back from
+    the run-state file, cannot drift apart.
+
+    Args:
+        vacuity (str | None): The kind of vacuity, if known.
+
+    Returns:
+        str: `VACUOUS (<vacuity>)`, or `VACUOUS` when the kind is not known.
+    """
+    return f"{VACUOUS_VERDICT} ({vacuity})" if vacuity else VACUOUS_VERDICT
+
+
+def is_vacuous_status(why: str) -> bool:
+    """Return whether a function's status says its proof is vacuous.
+
+    Args:
+        why (str): A status as `RunState.unverified` holds it, or a verdict from the run log.
+
+    Returns:
+        bool: True iff it is one `vacuous_status` builds.
+    """
+    return why.startswith(VACUOUS_VERDICT)
+
+
+def rechecked_on_change(verified: Iterable[str], unverified: Mapping[str, str]) -> set[str]:
+    """Return the functions to re-verify when a merge changes one of their callees' contracts.
+
+    Those are the verified functions and the ones whose proof is vacuous. A vacuous proof counts
+    as verified in the final tally, so it must not keep a verdict that the new contract has made
+    stale; but only the verified ones are protected by rule 9 (`avocado-validate reverify` and
+    the harness's merge both use this set, and both report only the verified ones as broken).
+
+    Args:
+        verified (Iterable[str]): Functions whose latest ground truth on the canonical file
+            passed (`RunState.verified`, or the harness's own copy of it).
+        unverified (Mapping[str, str]): Functions whose latest ground truth did not pass, each
+            with why (`RunState.unverified`, or the harness's own copy of it).
+
+    Returns:
+        set[str]: The functions.
+    """
+    return set(verified) | {name for name, why in unverified.items() if is_vacuous_status(why)}
+
+
 def write_session_info(
     session_root: Path, *, function: str, canonical_file: Path, fork_base: bytes
 ) -> None:

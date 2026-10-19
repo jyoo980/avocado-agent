@@ -74,7 +74,11 @@ from tools.util.edit_rules import (
 from tools.util.session_state import (
     SNAPSHOT_IGNORE,
     TRANSCRIPTS_DIR_SUFFIX,
+    VACUOUS_VERDICT,
     find_stray_files,
+    is_vacuous_status,
+    rechecked_on_change,
+    vacuous_status,
     write_run_state,
     write_session_info,
 )
@@ -682,16 +686,13 @@ class _MergeState:
     def rechecked_on_change(self) -> set[str]:
         """Return the functions to re-verify when a merge changes one of their callees' contracts.
 
-        Those are the verified functions and the ones whose proof is vacuous. A vacuous proof
-        counts as verified in the final tally, so it must not keep a verdict that the new
-        contract has made stale; but only the verified ones are protected by rule 9.
+        The rule lives in `tools.util.session_state.rechecked_on_change`, which
+        `avocado-validate reverify` applies to the published copy of this state.
 
         Returns:
             set[str]: The functions.
         """
-        return self.verified | {
-            name for name, why in self.unverified.items() if why.startswith("VACUOUS")
-        }
+        return rechecked_on_change(self.verified, self.unverified)
 
     def unverified_among(self, functions: list[str]) -> dict[str, str]:
         """Return those of `functions` whose contracts are not verified, each with why.
@@ -716,7 +717,7 @@ def _status_of(cbmc: RunCbmcResult) -> str:
             `VACUOUS (unsatisfiable_preconditions)` or `CBMC_FAILED`.
     """
     if cbmc.is_vacuous:
-        return f"{cbmc!s} ({cbmc.vacuity})"
+        return vacuous_status(str(cbmc.vacuity))
     return str(cbmc)
 
 
@@ -1200,7 +1201,7 @@ def _merge_and_verify(
                 affected = functions_affected_by(
                     report.carried,
                     call_graph=call_graph,
-                    verified=state.rechecked_on_change(),
+                    candidates=state.rechecked_on_change(),
                     exclude=function,
                 )
                 logger.info(
@@ -1752,8 +1753,8 @@ def _read_function_verdicts(log_path: Path) -> dict[str, tuple[str, str]]:
         if function is not None and outcome is not None:
             cbmc = record.get("cbmc") or {}
             verdict = cbmc.get("verdict") or outcome
-            if verdict == "VACUOUS" and cbmc.get("vacuity"):
-                verdict = f"VACUOUS ({cbmc['vacuity']})"
+            if verdict == VACUOUS_VERDICT and cbmc.get("vacuity"):
+                verdict = vacuous_status(cbmc["vacuity"])
             verdicts[function] = (outcome, verdict)
         kept = bool((record.get("merge") or {}).get("carried"))
         for other, result in (record.get("reverified") or {}).items():
@@ -1761,9 +1762,8 @@ def _read_function_verdicts(log_path: Path) -> dict[str, tuple[str, str]]:
                 continue
             if result.get("is_function_verified"):
                 verdicts[other] = (str(GroundTruthVerificationResult.VERIFIED), "PASS")
-            elif kept and result.get("verdict") == "VACUOUS":
-                vacuity = result.get("vacuity")
-                verdict = f"VACUOUS ({vacuity})" if vacuity else "VACUOUS"
+            elif kept and result.get("verdict") == VACUOUS_VERDICT:
+                verdict = vacuous_status(result.get("vacuity"))
                 verdicts[other] = (str(GroundTruthVerificationResult.VERIFIED), verdict)
             elif kept and result.get("verdict"):
                 verdicts[other] = (
@@ -1841,7 +1841,7 @@ def _vacuous_functions(log_path: Path) -> set[str]:
     return {
         function
         for function, (outcome, verdict) in _read_function_verdicts(log_path).items()
-        if outcome == GroundTruthVerificationResult.VERIFIED and verdict.startswith("VACUOUS")
+        if outcome == GroundTruthVerificationResult.VERIFIED and is_vacuous_status(verdict)
     }
 
 
@@ -1862,7 +1862,7 @@ def _unverified_functions(log_path: Path) -> dict[str, str]:
     return {
         function: verdict
         for function, (outcome, verdict) in _read_function_verdicts(log_path).items()
-        if outcome != GroundTruthVerificationResult.VERIFIED or verdict.startswith("VACUOUS")
+        if outcome != GroundTruthVerificationResult.VERIFIED or is_vacuous_status(verdict)
     }
 
 

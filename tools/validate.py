@@ -69,6 +69,7 @@ from tools.util.session_state import (
     find_stray_files,
     read_run_state,
     read_session_info,
+    rechecked_on_change,
 )
 
 # Exit codes: the copy passes the check, the copy breaks the rule, or the check could not be made.
@@ -410,11 +411,11 @@ def check_reverify(
         scratch_file = scratch_dir / info.canonical_file.name
         scratch_file.write_bytes(merged)
         call_graph = get_call_graph(str(scratch_file))
-        rechecked = state.verified | {
-            name for name, why in state.unverified.items() if why.startswith("VACUOUS")
-        }
         affected = functions_affected_by(
-            report.carried, call_graph=call_graph, verified=rechecked, exclude=function
+            report.carried,
+            call_graph=call_graph,
+            candidates=rechecked_on_change(state.verified, state.unverified),
+            exclude=function,
         )
         verdicts = {
             other: verify_function(other, str(scratch_file), include_dirs=include_dirs)
