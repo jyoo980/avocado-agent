@@ -44,7 +44,7 @@ _DECLARATOR_TYPES = _WRAPPING_DECLARATOR_TYPES | {"function_declarator", "identi
 _MAX_REPORTED_ERROR_LINES = 20
 
 
-def get_call_graph(path_to_file: str) - CallGraph:
+def get_call_graph(path_to_file: str) -> CallGraph:
     """Return a call graph comprising functions parsed from the given file.
 
     Each caller's callees are split into `internal` (defined in the same file) and `external`
