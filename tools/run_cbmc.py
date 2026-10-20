@@ -32,6 +32,7 @@ from tools.util import (
     get_unstubbed_external_callees_for,
 )
 from tools.util.callgraph import CallGraph
+from tools.util.vacuity_check_result import Vacuity, VacuityCheckResult
 
 # Character budget for failure responses. The harness persists full tool output to a file but
 # previews only the head inline, so we keep responses bounded (a pathological CBMC run can
@@ -100,24 +101,6 @@ class CbmcStep(StrEnum):
     CBMC = "cbmc"
 
 
-class Vacuity(StrEnum):
-    """Whether a passing verification says anything about the function.
-
-    A function verifies *vacuously* when no execution CBMC explores reaches the end of the
-    function, so its postconditions are never checked: the run would pass whatever they said.
-    `tools.util.vacuity` decides this with one extra run of the pipeline.
-    """
-
-    # At least one execution enters the body and reaches the end of the function.
-    NOT_VACUOUS = "not_vacuous"
-    # No execution enters the body: the preconditions cannot all hold at once.
-    UNSATISFIABLE_PRECONDITIONS = "unsatisfiable_preconditions"
-    # Executions enter the body, but none reaches the end of the function.
-    END_UNREACHABLE = "end_unreachable"
-    # The extra run did not give an answer (it timed out or failed); the pass stands.
-    UNKNOWN = "unknown"
-
-
 @dataclass(frozen=True)
 class PipelineVariant:
     """Which of the pipeline's variants a run used.
@@ -149,9 +132,9 @@ class RunCbmcResult:
             exit code of the failing subprocess (cbmc's verification exit code when
             `failed_step` is CBMC).
         response (str): Printable summary — a success line or a truncated failure block.
-        vacuity (Vacuity | None): The result of the vacuity check on a run that passed, or None
-            when no check was made (the run did not pass, or the caller did not ask for one, as
-            for mutants).
+        vacuity_check_result (VacuityCheckResult | None): The result of the vacuity check on a run
+            that passed, or None when no check was made (the run did not pass, or the caller did not
+            ask for one, as for mutants).
         variant (PipelineVariant | None): The variant of the pipeline that produced this result,
             when it came from `run_cbmc`.
         no_contract (bool): True iff the pipeline passed but the function has no contract in the
@@ -164,7 +147,7 @@ class RunCbmcResult:
     timed_out: bool
     returncode: int
     response: str
-    vacuity: Vacuity | None = None
+    vacuity_check_result: VacuityCheckResult | None = None
     variant: PipelineVariant | None = None
     no_contract: bool = False
 
@@ -196,7 +179,12 @@ class RunCbmcResult:
     @property
     def is_vacuous(self) -> bool:
         """True iff the pipeline passed but the vacuity check found that it proves nothing."""
-        return self.vacuity in (Vacuity.UNSATISFIABLE_PRECONDITIONS, Vacuity.END_UNREACHABLE)
+        if vacuity_check := self.vacuity_check_result:
+            return vacuity_check.vacuity in {
+                Vacuity.UNSATISFIABLE_PRECONDITIONS,
+                Vacuity.END_UNREACHABLE,
+            }
+        return False
 
     def __str__(self) -> str:
         """Return the string representation of this result, used for logging.
