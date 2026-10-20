@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
+
 class Vacuity(StrEnum):
     """Whether a passing verification says anything about the function.
 
@@ -31,5 +32,6 @@ class VacuityCheckResult:
         vacuity (Vacuity): The status of a vacuity check on a function.
         message (str): Additional information for the status of the vacuity check.
     """
+
     vacuity: Vacuity
     message: str

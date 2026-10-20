@@ -142,6 +142,9 @@ def test_verify_function_reports_a_vacuous_pass_as_vacuous(tmp_path: Path) -> No
     assert vacuous_cbmc_run.vacuity_check_result.vacuity is Vacuity.UNSATISFIABLE_PRECONDITIONS
     assert "no execution even enters the body" in vacuous_cbmc_run.response
     stuck = verify_function("never_returns", str(source))
+    assert stuck.vacuity_check_result, f"{stuck} was missing a 'VacuityCheckResult"
+
+
     assert str(stuck) == "VACUOUS" and stuck.vacuity_check_result.vacuity is Vacuity.END_UNREACHABLE
     assert "none reaches the end of the function" in stuck.response
     # Without the check, the false postcondition of `contradictory` passes unnoticed.
