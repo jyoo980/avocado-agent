@@ -29,6 +29,7 @@ the true run time. Below is this script's summary JSON file output:
           "cost": <float usd>,                  # total_cost_to_verify_usd
           "time_taken_to_verify": <int ms>,     # wall-clock span for this function
           "is_verified": <bool>,
+          "is_vacuous": <bool|null>,
           "timed_out": <bool>,                  # agent session or CBMC step timed out
           "verification_attempts": <int|null>,
           "first_attempt_verified": <bool|null> # did CBMC pass first try when run in agent sandbox?
@@ -216,7 +217,8 @@ def build_report(
 
     Returns:
         dict: The timing report, with keys ``file_name``, ``total_time_to_verify``,
-            ``functions_verified``, ``functions_total``, and ``functions``.
+            ``functions_verified``, ``functions_total``, ``functions_vacuous``,
+            and ``functions``.
     """
     attempts = attempts or {}
 
@@ -241,6 +243,7 @@ def build_report(
                     "name": name,
                     "cost": None,
                     "is_verified": status == "VERIFIED",
+                    "is_vacuous": None,
                     "completion_ts": ts,
                     "verification_attempts": None,
                     "agent_duration_ms": None,
@@ -273,8 +276,8 @@ def build_report(
     else:
         file_name = file_name_hint
 
-    verified_count, total_count = (
-        _get_verification_counts_from_summary(run_summary, console, functions)
+    verified_count, total_count, vacuous_count = _get_verification_counts_from_summary(
+        run_summary, console, functions
     )
 
     return {
@@ -282,6 +285,7 @@ def build_report(
         "total_time_to_verify": total_ms,
         "functions_verified": verified_count,
         "functions_total": total_count,
+        "functions_vacuous": vacuous_count,
         "functions": functions,
     }
 
@@ -299,6 +303,8 @@ def _construct_row(rec: dict) -> dict:
         "name": name,
         "cost": rec.get("total_cost_to_verify_usd"),
         "is_verified": rec.get("outcome") == "VERIFIED",
+        "is_vacuous": (rec.get("cbmc") or {}).get("vacuity")
+        in ("unsatisfiable_preconditions", "end_unreachable"),
         "completion_ts": parse_iso(rec["timestamp"]),
         "verification_attempts": rec.get("verification_attempts"),
         "agent_duration_ms": agent_ms,
@@ -354,6 +360,7 @@ def _construct_function_record(
         "cost": None if row["cost"] is None else round(row["cost"], 3),
         "time_taken_to_verify": span_ms,
         "is_verified": row["is_verified"],
+        "is_vacuous": row["is_vacuous"],
         "timed_out": row["timed_out"],
         "verification_attempts": n_attempts,
         "first_attempt_verified": first_attempt_verified,
@@ -362,7 +369,7 @@ def _construct_function_record(
 
 def _get_verification_counts_from_summary(
     run_summary: dict | None, console: ConsoleLog | None, functions: list[dict]
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """Return the count of verified functions and the number of all functions in a summary.
 
     Args:
@@ -371,19 +378,22 @@ def _get_verification_counts_from_summary(
         functions (list[dict]): The functions.
 
     Returns:
-        tuple[int, int]: The count of verified functions and the number of all functions in a
-            summary
+        tuple[int, int, int]: The count of verified functions, the number of all functions in a
+            summary, and the number of vacuously verified functions.
     """
     verified_count = sum(1 for f in functions if f["is_verified"])
     total_count = len(functions)
+    vacuous_count = sum(1 for f in functions if f["is_vacuous"])
     if run_summary is not None and "verified" in run_summary and "total" in run_summary:
         verified_count = run_summary["verified"]
         total_count = run_summary["total"]
+        if "vacuous" in run_summary:
+            vacuous_count = len(run_summary["vacuous"] or [])
     elif console and console.verified_count is not None and console.total_count is not None:
         verified_count = console.verified_count
         total_count = console.total_count
 
-    return verified_count, total_count
+    return verified_count, total_count, vacuous_count
 
 
 if __name__ == "__main__":
