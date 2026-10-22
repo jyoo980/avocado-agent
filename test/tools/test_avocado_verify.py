@@ -145,7 +145,7 @@ from avocado_verify import (
     _recorded_depths,
     _verify_functions,
 )
-from tools.run_cbmc import DEFAULT_CBMC_DEPTH, CbmcStep, RunCbmcResult, Vacuity
+from tools.run_cbmc import DEFAULT_CBMC_DEPTH, CbmcStep, RunCbmcResult
 from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
 from tools.util.edit_rules import (
     function_body_offsets,
@@ -153,6 +153,11 @@ from tools.util.edit_rules import (
     hash_for_function_definition,
 )
 from tools.util.session_state import is_vacuous_status, read_run_state, rechecked_on_change
+from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
+from tools.util.edit_rules import function_body_offsets, function_line
+from tools.util.session_state import is_vacuous_status, rechecked_on_change
+from tools.util.vacuity_check_result import Vacuity, VacuityCheckResult
+
 
 
 def test_ready_functions_waits_only_for_earlier_callees() -> None:
@@ -1114,7 +1119,7 @@ def _vacuous_cbmc(function: str) -> RunCbmcResult:
         timed_out=False,
         returncode=0,
         response="vacuous",
-        vacuity=Vacuity.UNSATISFIABLE_PRECONDITIONS,
+        vacuity_check_result=VacuityCheckResult(Vacuity.UNSATISFIABLE_PRECONDITIONS, "")
     )
 
 

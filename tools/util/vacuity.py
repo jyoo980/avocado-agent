@@ -24,8 +24,9 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from tools.run_cbmc import CbmcStep, PipelineVariant, RunCbmcResult, Vacuity, run_cbmc
+from tools.run_cbmc import CbmcStep, PipelineVariant, RunCbmcResult, run_cbmc
 from tools.util.edit_rules import function_body_offsets
+from tools.util.vacuity_check_result import Vacuity, VacuityCheckResult
 
 # The message of the assertion added as the first statement of the body. CBMC prints it on the
 # line that reports the assertion, which is how the two probes are told apart.
@@ -41,7 +42,7 @@ def check_vacuity(
     *,
     variant: PipelineVariant | None = None,
     depth: int,
-) -> tuple[Vacuity, str]:
+) -> VacuityCheckResult:
     """Return whether `function`, which verifies in `file_path`, does so vacuously.
 
     The probed copy is run through the same variant of the pipeline as the run that verified,
@@ -59,15 +60,17 @@ def check_vacuity(
         depth (int): The `--depth` at which the function verified (`RunCbmcResult.depth`).
 
     Returns:
-        tuple[Vacuity, str]: The verdict, and for `Vacuity.UNKNOWN` why there is none.
+        VacuityCheckResult: The result of checking the function specification for vacuity.
     """
     source_path = Path(file_path).resolve()
     try:
         probed = add_probes(source_path.read_bytes(), function)
     except OSError as error:
-        return Vacuity.UNKNOWN, f"could not read {source_path}: {error}"
+        return VacuityCheckResult(Vacuity.UNKNOWN, f"could not read {source_path}: {error}")
     if probed is None:
-        return Vacuity.UNKNOWN, f"no definition of {function} was found to probe"
+        return VacuityCheckResult(
+            Vacuity.UNKNOWN, f"no definition of {function} was found to probe"
+        )
     with tempfile.TemporaryDirectory(prefix=_TEMP_DIR_PREFIX) as scratch:
         probe_dir = Path(scratch) / "source"
         work_dir = Path(scratch) / "work"
@@ -116,7 +119,7 @@ def add_probes(source: bytes, function: str) -> bytes | None:
     return probed
 
 
-def classify_probe_run(result: RunCbmcResult) -> tuple[Vacuity, str]:
+def classify_probe_run(result: RunCbmcResult) -> VacuityCheckResult:
     """Return what a run of the pipeline on a probed copy says about vacuity.
 
     The function verified without the probes, so every property the probed run reports as failed
@@ -126,35 +129,42 @@ def classify_probe_run(result: RunCbmcResult) -> tuple[Vacuity, str]:
         result (RunCbmcResult): The outcome of running the pipeline on the probed copy.
 
     Returns:
-        tuple[Vacuity, str]: The verdict, and for `Vacuity.UNKNOWN` why there is none.
+        VacuityCheckResult: The result of checking the function specification for vacuity.
     """
     if result.timed_out:
-        return Vacuity.UNKNOWN, "the vacuity run timed out"
+        return VacuityCheckResult(Vacuity.UNKNOWN, "the vacuity run timed out")
     if result.cbmc_ran_successfully and result.returncode == 0:
         # Not even the assertion at the top of the body was reached.
-        return Vacuity.UNSATISFIABLE_PRECONDITIONS, ""
+        return VacuityCheckResult(Vacuity.UNSATISFIABLE_PRECONDITIONS, "")
     if result.failed_step is not CbmcStep.CBMC:
-        return Vacuity.UNKNOWN, f"the vacuity run ended with {result!s}"
+        return VacuityCheckResult(Vacuity.UNKNOWN, f"the vacuity run ended with {result!s}")
     failures = [line for line in result.response.splitlines() if line.rstrip().endswith("FAILURE")]
     entered = any(_ENTRY_PROBE in line for line in failures)
     left = any(_ENTRY_PROBE not in line for line in failures)
     if entered and left:
-        return Vacuity.NOT_VACUOUS, ""
+        return VacuityCheckResult(Vacuity.NOT_VACUOUS, "")
     if entered:
-        return Vacuity.END_UNREACHABLE, ""
-    return Vacuity.UNKNOWN, "the vacuity run failed without reporting either probe"
+        return VacuityCheckResult(Vacuity.END_UNREACHABLE, "")
+    return VacuityCheckResult(
+        Vacuity.UNKNOWN, "the vacuity run failed without reporting either probe"
+    )
 
 
-def describe_vacuous_result(function: str, vacuity: Vacuity) -> str:
+def describe_vacuous_result(function: str, vacuity_check_result: VacuityCheckResult) -> str:
     """Return the message the agent is shown when `function` verifies vacuously.
 
     Args:
         function (str): The function.
-        vacuity (Vacuity): `UNSATISFIABLE_PRECONDITIONS` or `END_UNREACHABLE`.
+        vacuity_check_result (VacuityCheckResult): The vacuity in the result must be one of
+            `UNSATISFIABLE_PRECONDITIONS` or `END_UNREACHABLE`.
 
     Returns:
         str: What was found, why it means the proof is worthless, and what usually causes it.
     """
+    vacuity_type = vacuity_check_result.vacuity
+    if vacuity_type not in {Vacuity.UNSATISFIABLE_PRECONDITIONS, Vacuity.END_UNREACHABLE}:
+        msg = f"Attempted to describe a non-vacuous result: {vacuity_check_result}"
+        raise Exception(msg)
     header = (
         f"{function} verified VACUOUSLY, which does not count as verified: CBMC reported no "
         "failure, but the same run still reports none when a false postcondition "
@@ -162,7 +172,7 @@ def describe_vacuous_result(function: str, vacuity: Vacuity) -> str:
         "function, so none of your postconditions was actually checked, and every mutant would "
         "survive. Mutation testing was skipped.\n\n"
     )
-    if vacuity is Vacuity.UNSATISFIABLE_PRECONDITIONS:
+    if vacuity_type is Vacuity.UNSATISFIABLE_PRECONDITIONS:
         return header + (
             "Cause: no execution even enters the body (a false assertion placed as its first "
             "statement is never reached). The __CPROVER_requires clauses cannot all hold at "

@@ -26,7 +26,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from tools.run_cbmc import DEFAULT_CBMC_DEPTH, RunCbmcResult, Vacuity, has_contract, run_cbmc
+from tools.run_cbmc import DEFAULT_CBMC_DEPTH, RunCbmcResult, has_contract, run_cbmc
 from tools.util.edit_rules import hash_for_function_definition
 from tools.util.mutation import (
     MutationScore,
@@ -35,6 +35,7 @@ from tools.util.mutation import (
     get_mutation_testing_results_for_client,
 )
 from tools.util.vacuity import check_vacuity, describe_vacuous_result
+from tools.util.vacuity_check_result import Vacuity
 
 # Per-subprocess CBMC timeout for each *mutant* when this tool reports mutation feedback to the
 # agent. The function itself is still verified under the full `tools.run_cbmc` timeout, and the
@@ -170,12 +171,12 @@ def verify_function(
     `RunCbmcResult.no_contract` set (printing as `NO_CONTRACT`) and does not count as verified.
     A run that passes and has a contract is then checked for vacuity
     (`tools.util.vacuity.check_vacuity`), with one more run of the pipeline. A vacuous pass is
-    returned with `RunCbmcResult.vacuity` set, so it does not count as verified
+    returned with `RunCbmcResult.vacuity_check_result` set, so it does not count as verified
     (`is_function_verified` is False and it prints as `VACUOUS`), and with a response that says
     what was found. This is the one function through which the agent's tool, the harness's ground
     truth and both re-verification checks verify a function, so they all agree on what a
     contract-less or vacuous proof is. When the check itself gives no answer the pass stands,
-    with `vacuity` set to `Vacuity.UNKNOWN`.
+    with a `vacuity_check_result` whose vacuity is `Vacuity.UNKNOWN`.
 
     Args:
         function (str): Name of the function to verify.
@@ -213,15 +214,23 @@ def verify_function(
         )
     if not vacuity_check:
         return result
-    vacuity, why_unknown = check_vacuity(
-        function, file_path, include_dirs, variant=result.variant, depth=depth
+    vacuity_check_result = check_vacuity(
+        function, file_path, include_dirs, variant=result.variant, depth=result.depth
     )
-    if vacuity is Vacuity.UNKNOWN:
-        logger.warning(f"{function}: vacuity could not be checked ({why_unknown}); the pass stands")
-        return replace(result, vacuity=vacuity)
-    if vacuity is Vacuity.NOT_VACUOUS:
-        return replace(result, vacuity=vacuity)
-    return replace(result, vacuity=vacuity, response=describe_vacuous_result(function, vacuity))
+    vacuity_status = vacuity_check_result.vacuity
+    if vacuity_status is Vacuity.UNKNOWN:
+        logger.warning(
+            f"{function}: vacuity could not be checked ({vacuity_check_result.message}); "
+            "the pass stands"
+        )
+        return replace(result, vacuity_check_result=vacuity_check_result)
+    if vacuity_status is Vacuity.NOT_VACUOUS:
+        return replace(result, vacuity_check_result=vacuity_check_result)
+    return replace(
+        result,
+        vacuity_check_result=vacuity_check_result,
+        response=describe_vacuous_result(function, vacuity_check_result),
+    )
 
 
 def _log_verification_attempt(
@@ -258,7 +267,7 @@ def _log_verification_attempt(
         "file": file_under_verification,
         "verified": result.is_function_verified,
         "verdict": str(result),
-        "vacuity": None if result.vacuity is None else str(result.vacuity),
+        "vacuity": str(None or result.vacuity_check_result),
         "depth": result.depth,
         "definition_sha256": definition_hash,
     }

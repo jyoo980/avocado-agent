@@ -304,7 +304,9 @@ class FunctionVerificationResult:
                 "failed_step": None
                 if self.cbmc.failed_step is None
                 else self.cbmc.failed_step.value,
-                "vacuity": None if self.cbmc.vacuity is None else str(self.cbmc.vacuity),
+                "vacuity": None
+                if self.cbmc.vacuity_check_result is None
+                else str(self.cbmc.vacuity_check_result.vacuity),
             },
             "unverified_callees": dict(self.unverified_callees),
             "not_in_build": self.not_in_build,
@@ -316,7 +318,9 @@ class FunctionVerificationResult:
                 function: {
                     "verdict": str(result),
                     "is_function_verified": result.is_function_verified,
-                    "vacuity": None if result.vacuity is None else str(result.vacuity),
+                    "vacuity": None
+                    if result.vacuity_check_result is None
+                    else str(result.vacuity_check_result.vacuity),
                 }
                 for function, result in self.reverified.items()
             },
@@ -736,8 +740,8 @@ def _status_of(cbmc: RunCbmcResult) -> str:
         str: The verdict, with the kind of vacuity for a vacuous pass, for example
             `VACUOUS (unsatisfiable_preconditions)` or `CBMC_FAILED`.
     """
-    if cbmc.is_vacuous:
-        return vacuous_status(str(cbmc.vacuity))
+    if cbmc.is_vacuous and (vacuity_check_result := cbmc.vacuity_check_result):
+        return vacuous_status(str(vacuity_check_result.vacuity))
     return str(cbmc)
 
 
