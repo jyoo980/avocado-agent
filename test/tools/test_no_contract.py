@@ -42,7 +42,7 @@ def test_a_function_without_a_contract_is_not_verified(tmp_path: Path) -> None:
     source = str(_source(tmp_path))
     result = verify_function("answer", source)
     assert str(result) == "NO_CONTRACT" and not result.is_function_verified
-    assert result.no_contract and result.cbmc_ran_successfully and result.vacuity is None
+    assert result.no_contract and result.cbmc_ran_successfully and result.vacuity_check_result is None
     assert "has no contract" in result.response
     assert str(verify_function("pick", source)) == "NO_CONTRACT"
     assert verify_function("clear", source).is_function_verified

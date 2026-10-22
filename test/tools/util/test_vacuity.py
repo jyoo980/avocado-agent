@@ -3,14 +3,16 @@
 from pathlib import Path
 
 import tools.run_cbmc
-from tools.run_cbmc import CbmcStep, PipelineVariant, RunCbmcResult, Vacuity, run_cbmc
+from tools.run_cbmc import CbmcStep, PipelineVariant, RunCbmcResult, run_cbmc
 from tools.run_cbmc_and_mutation_testing import verify_function
+from tools.util import vacuity_check_result
 from tools.util.vacuity import (
     add_probes,
     check_vacuity,
     classify_probe_run,
     describe_vacuous_result,
 )
+from tools.util.vacuity_check_result import Vacuity, VacuityCheckResult
 
 SOURCE = b"""int clamp(int v)
 __CPROVER_requires(v >= 0)
@@ -69,27 +71,32 @@ def test_a_probe_run_is_read_by_which_of_the_two_probes_failed() -> None:
     entry = "[f.assertion.1] line 4 AVOCADO_VACUITY_PROBE_BODY_ENTERED: FAILURE"
     end = "[f.postcondition.2] line 3 Check ensures clause: FAILURE"
     cbmc = {"returncode": 10, "failed_step": CbmcStep.CBMC}
-    assert classify_probe_run(_probe_run(response=f"{end}\n{entry}\n", **cbmc))[0] is (
-        Vacuity.NOT_VACUOUS
-    )
-    assert classify_probe_run(_probe_run(response=f"{entry}\n", **cbmc))[0] is (
-        Vacuity.END_UNREACHABLE
-    )
+    vacuity_check_result = classify_probe_run(_probe_run(response=f"{end}\n{entry}\n", **cbmc))
+    assert vacuity_check_result.vacuity == Vacuity.NOT_VACUOUS
+
+    vacuity_check_result = classify_probe_run(_probe_run(response=f"{entry}\n", **cbmc))
+    assert vacuity_check_result.vacuity == Vacuity.END_UNREACHABLE
+    
     # Nothing failed: not even the assertion at the top of the body was reached.
-    passed = _probe_run(returncode=0, failed_step=None, response="f verified successfully")
-    assert classify_probe_run(passed)[0] is Vacuity.UNSATISFIABLE_PRECONDITIONS
+    vacuity_check_result = classify_probe_run(_probe_run(returncode=0, failed_step=None, response="f verified successfully"))
+    assert vacuity_check_result.vacuity == Vacuity.UNSATISFIABLE_PRECONDITIONS
 
 
 def test_a_probe_run_that_gives_no_answer_is_unknown() -> None:
-    timed_out = RunCbmcResult(
+    # Timeouts.
+    cbmc_timed_out = RunCbmcResult(
         function="f", failed_step=CbmcStep.CBMC, timed_out=True, returncode=124, response=""
     )
-    assert classify_probe_run(timed_out)[0] is Vacuity.UNKNOWN
+    vacuity_result = classify_probe_run(cbmc_timed_out)
+    assert vacuity_result.vacuity == Vacuity.UNKNOWN
+    
+    # Syntax errors.
     broken = _probe_run(returncode=1, failed_step=CbmcStep.GOTO_CC, response="syntax error")
-    vacuity, why = classify_probe_run(broken)
-    assert vacuity is Vacuity.UNKNOWN and "GOTO-CC_FAILED" in why
-    odd = _probe_run(returncode=10, failed_step=CbmcStep.CBMC, response="no property lines")
-    assert classify_probe_run(odd)[0] is Vacuity.UNKNOWN
+    vacuity_result = classify_probe_run(broken)
+    assert vacuity_result.vacuity is Vacuity.UNKNOWN and "GOTO-CC_FAILED" in vacuity_result.message
+
+    failed_run = _probe_run(returncode=10, failed_step=CbmcStep.CBMC, response="no property lines")
+    assert classify_probe_run(failed_run).vacuity == Vacuity.UNKNOWN
 
 
 def test_a_vacuous_result_does_not_count_as_verified() -> None:
@@ -98,21 +105,22 @@ def test_a_vacuous_result_does_not_count_as_verified() -> None:
     )
     assert passed.is_function_verified and str(passed) == "PASS"
     for vacuity in (Vacuity.NOT_VACUOUS, Vacuity.UNKNOWN):
-        checked = RunCbmcResult("f", None, False, 0, "ok", vacuity=vacuity)
+        checked = RunCbmcResult("f", None, False, 0, "ok", vacuity_check_result=VacuityCheckResult(vacuity, ""))
         assert checked.is_function_verified and not checked.is_vacuous and str(checked) == "PASS"
+
     for vacuity in (Vacuity.UNSATISFIABLE_PRECONDITIONS, Vacuity.END_UNREACHABLE):
-        vacuous = RunCbmcResult("f", None, False, 0, "ok", vacuity=vacuity)
+        vacuous = RunCbmcResult("f", None, False, 0, "ok", vacuity_check_result=VacuityCheckResult(vacuity, ""))
         assert not vacuous.is_function_verified and vacuous.is_vacuous
         assert str(vacuous) == "VACUOUS" and vacuous.cbmc_ran_successfully
-        assert "does not count as verified" in describe_vacuous_result("f", vacuity)
+        assert "does not count as verified" in describe_vacuous_result("f", VacuityCheckResult(vacuity, ""))
 
 
 def test_cbmc_tells_the_three_cases_apart(tmp_path: Path) -> None:
     source = tmp_path / "vacuity.c"
     source.write_bytes(SOURCE)
-    assert check_vacuity("clamp", str(source))[0] is Vacuity.NOT_VACUOUS
-    assert check_vacuity("contradictory", str(source))[0] is Vacuity.UNSATISFIABLE_PRECONDITIONS
-    assert check_vacuity("never_returns", str(source))[0] is Vacuity.END_UNREACHABLE
+    assert check_vacuity("clamp", str(source)).vacuity == Vacuity.NOT_VACUOUS
+    assert check_vacuity("contradictory", str(source)).vacuity == Vacuity.UNSATISFIABLE_PRECONDITIONS
+    assert check_vacuity("never_returns", str(source)).vacuity == Vacuity.END_UNREACHABLE
     # The probes go into a copy elsewhere: the file and its directory are as they were.
     assert source.read_bytes() == SOURCE
     assert [path.name for path in tmp_path.iterdir()] == ["vacuity.c"]
@@ -121,18 +129,27 @@ def test_cbmc_tells_the_three_cases_apart(tmp_path: Path) -> None:
 def test_verify_function_reports_a_vacuous_pass_as_vacuous(tmp_path: Path) -> None:
     source = tmp_path / "vacuity.c"
     source.write_bytes(SOURCE)
+
     real = verify_function("clamp", str(source))
-    assert real.is_function_verified and real.vacuity is Vacuity.NOT_VACUOUS
-    vacuous = verify_function("contradictory", str(source))
-    assert not vacuous.is_function_verified and str(vacuous) == "VACUOUS"
-    assert vacuous.vacuity is Vacuity.UNSATISFIABLE_PRECONDITIONS
-    assert "no execution even enters the body" in vacuous.response
+    assert real.vacuity_check_result, f"{real} was missing a 'VacuityCheckResult'"
+    assert real.is_function_verified and real.vacuity_check_result.vacuity is Vacuity.NOT_VACUOUS
+
+    vacuous_cbmc_run = verify_function("contradictory", str(source))
+    assert vacuous_cbmc_run.vacuity_check_result, f"{vacuous_cbmc_run} was missing a 'VacuityCheckResult"
+    assert real.vacuity_check_result.vacuity is Vacuity.NOT_VACUOUS
+
+    assert not vacuous_cbmc_run.is_function_verified and str(vacuous_cbmc_run) == "VACUOUS"
+    assert vacuous_cbmc_run.vacuity_check_result.vacuity is Vacuity.UNSATISFIABLE_PRECONDITIONS
+    assert "no execution even enters the body" in vacuous_cbmc_run.response
     stuck = verify_function("never_returns", str(source))
-    assert str(stuck) == "VACUOUS" and stuck.vacuity is Vacuity.END_UNREACHABLE
+    assert stuck.vacuity_check_result, f"{stuck} was missing a 'VacuityCheckResult"
+
+
+    assert str(stuck) == "VACUOUS" and stuck.vacuity_check_result.vacuity is Vacuity.END_UNREACHABLE
     assert "none reaches the end of the function" in stuck.response
     # Without the check, the false postcondition of `contradictory` passes unnoticed.
     unchecked = verify_function("contradictory", str(source), vacuity_check=False)
-    assert unchecked.is_function_verified and unchecked.vacuity is None
+    assert unchecked.is_function_verified and unchecked.vacuity_check_result is None
 
 
 def test_the_probe_run_uses_the_variant_that_passed_and_is_never_retried(
@@ -167,7 +184,6 @@ def test_the_probe_run_uses_the_variant_that_passed_and_is_never_retried(
     probe = run_cbmc("clamp", str(source), cwd=str(tmp_path), variant=PipelineVariant())
     assert runs == [False] and probe.variant == PipelineVariant()
     runs.clear()
-    assert check_vacuity("clamp", str(source), variant=PipelineVariant(True, True))[0] is (
-        Vacuity.END_UNREACHABLE
-    )
+    vacuity_check_result = check_vacuity("clamp", str(source), variant=PipelineVariant(True, True))
+    assert vacuity_check_result.vacuity == Vacuity.END_UNREACHABLE
     assert runs == [True]
