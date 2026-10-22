@@ -3,12 +3,14 @@
 Usage:
     % avocado-get-mutation-score --function <FUNCTION_NAME> \
                        --file <PATH_TO_C_FILE> \
+                       [--depth <DEPTH>] \
                        [-I <PATH_TO_INCLUDE_DIR(S)>]...
 """
 
 import argparse
 import sys
 
+from tools.run_cbmc import DEFAULT_CBMC_DEPTH
 from tools.util.mutation import (
     MutationScore,
     generate_mutants_and_compute_score,
@@ -30,6 +32,15 @@ def main() -> None:
     )
     parser.add_argument("--file", required=True, help="Path to the C file defining the function.")
     parser.add_argument(
+        "--depth",
+        type=int,
+        default=DEFAULT_CBMC_DEPTH,
+        help=(
+            "The '--depth' value passed to CBMC for every mutant; defaults to "
+            f"{DEFAULT_CBMC_DEPTH}. Use the depth the function was verified at."
+        ),
+    )
+    parser.add_argument(
         "-I",
         "--include-dir",
         action="append",
@@ -44,6 +55,7 @@ def main() -> None:
         file_path=args.file,
         target_function=args.function,
         include_dirs=args.include_dirs,
+        depth=args.depth,
     )
 
     if isinstance(mutation_testing_result, MutationScore):

@@ -129,23 +129,35 @@ import shutil
 import tempfile
 import threading
 import time
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 
 import avocado_verify
 from avocado_verify import (
+    FunctionVerificationResult,
     GroundTruthVerificationResult,
     _append_jsonl,
+    _chosen_depth,
     _fork_session,
     _merge_and_verify,
     _ready_functions,
+    _recorded_depths,
     _verify_functions,
 )
-from tools.run_cbmc import CbmcStep, RunCbmcResult
+from tools.run_cbmc import DEFAULT_CBMC_DEPTH, CbmcStep, RunCbmcResult
+from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
+from tools.util.edit_rules import (
+    function_body_offsets,
+    function_line,
+    hash_for_function_definition,
+)
+from tools.util.session_state import is_vacuous_status, read_run_state, rechecked_on_change
 from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
 from tools.util.edit_rules import function_body_offsets, function_line
 from tools.util.session_state import is_vacuous_status, rechecked_on_change
 from tools.util.vacuity_check_result import Vacuity, VacuityCheckResult
+
 
 
 def test_ready_functions_waits_only_for_earlier_callees() -> None:
@@ -261,12 +273,31 @@ def _write_contract(session_file: Path, function: str, contract: bytes) -> None:
     )
 
 
-def _log_attempts(session_file: Path, function: str, count: int = 2) -> None:
-    """Pretend the agent ran the verifier `count` times on this copy."""
+def _log_attempts(
+    session_file: Path,
+    function: str,
+    count: int = 2,
+    *,
+    verified: bool = True,
+    depth: int | None = None,
+    on_definition: bool = False,
+) -> None:
+    """Pretend the agent ran the verifier `count` times on this copy.
+
+    With `depth`, the records carry it the way the current tool writes them; with
+    `on_definition`, they also carry the hash of the copy's current definition of `function`.
+    """
     log = session_file.with_name(f"{session_file.stem}-verification-attempts.jsonl")
+    record: dict = {"function": function, "verified": verified}
+    if depth is not None:
+        record["depth"] = depth
+    if on_definition:
+        record["definition_sha256"] = hash_for_function_definition(
+            session_file.read_bytes(), function
+        )
     with log.open("a") as handle:
         for _ in range(count):
-            handle.write(json.dumps({"function": function, "verified": True}) + "\n")
+            handle.write(json.dumps(record) + "\n")
 
 
 def _verified_cbmc(function: str) -> RunCbmcResult:
@@ -487,15 +518,24 @@ class _FakeVerify:
     def __init__(self, failing: set[str] | None = None) -> None:
         self.failing = failing or set()
         self.calls: list[str] = []
+        self.depths: dict[str, int] = {}
 
-    def __call__(self, function: str, file_path: str, include_dirs=None) -> RunCbmcResult:
+    def __call__(
+        self, function: str, file_path: str, include_dirs=None, *, depth: int
+    ) -> RunCbmcResult:
         del file_path, include_dirs
         self.calls.append(function)
+        self.depths[function] = depth
         if function in self.failing:
             return RunCbmcResult(
-                function=function, failed_step=None, timed_out=False, returncode=10, response="fail"
+                function=function,
+                failed_step=None,
+                timed_out=False,
+                returncode=10,
+                response="fail",
+                depth=depth,
             )
-        return _verified_cbmc(function)
+        return replace(_verified_cbmc(function), depth=depth)
 
 
 def _call_graph_where_quicksort_also_calls_swap() -> CallGraph:
@@ -726,7 +766,7 @@ def _run_swap_whose_edit_to_partition_is_left_out(tmp_path, monkeypatch, swap_ve
     canonical = _stripped_quicksort(tmp_path)
     verdicts = iter(swap_verdicts)
 
-    def ground_truth(function: str, file_path: str, include_dirs=None) -> RunCbmcResult:
+    def ground_truth(function: str, file_path: str, include_dirs=None, **_) -> RunCbmcResult:
         del file_path, include_dirs
         returncode = 0 if next(verdicts) else 10
         return RunCbmcResult(
@@ -869,7 +909,7 @@ def test_a_function_broken_by_another_sessions_edit_to_its_callee_gets_another_s
     canonical = _stripped_quicksort(tmp_path)
     verdicts = iter([False, True])
 
-    def ground_truth(function: str, file_path: str, include_dirs=None) -> RunCbmcResult:
+    def ground_truth(function: str, file_path: str, include_dirs=None, **_) -> RunCbmcResult:
         del file_path, include_dirs
         returncode = 0 if next(verdicts) else 10
         return RunCbmcResult(
@@ -907,7 +947,7 @@ def test_a_function_broken_by_another_sessions_edit_to_its_callee_gets_another_s
 def test_merge_reruns_stop_at_their_own_cap(tmp_path: Path, monkeypatch) -> None:
     canonical = _stripped_quicksort(tmp_path)
 
-    def ground_truth(function: str, file_path: str, include_dirs=None) -> RunCbmcResult:
+    def ground_truth(function: str, file_path: str, include_dirs=None, **_) -> RunCbmcResult:
         del file_path, include_dirs
         return RunCbmcResult(
             function=function, failed_step=None, timed_out=False, returncode=10, response=""
@@ -955,7 +995,7 @@ def test_a_callee_changed_during_the_ground_truth_run_is_verified_against_again(
     canonical = _stripped_quicksort(tmp_path)
     seen: list[bool] = []
 
-    def ground_truth(function: str, file_path: str, include_dirs=None) -> RunCbmcResult:
+    def ground_truth(function: str, file_path: str, include_dirs=None, **_) -> RunCbmcResult:
         del include_dirs
         has_new_contract = _CONTRACTS["partition"] in Path(file_path).read_bytes()
         seen.append(has_new_contract)
@@ -1385,3 +1425,111 @@ def test_merge_state_rechecked_on_change_matches_the_shared_rule() -> None:
     state.record("swap", failed)
     assert state.rechecked_on_change() == {"quickSort", "partition"}
     assert state.rechecked_on_change() == rechecked_on_change(state.verified, state.unverified)
+
+
+# --------------------------------------------------------------------------------------------------
+# Per-function `--depth`: which depth a session chose, and where the harness carries it.
+# --------------------------------------------------------------------------------------------------
+
+
+def _attempts_log(source: Path) -> Path:
+    return source.with_name(f"{source.stem}-verification-attempts.jsonl")
+
+
+def test_chosen_depth_is_the_default_or_the_fallback_without_attempts(tmp_path: Path) -> None:
+    source = _stripped_quicksort(tmp_path)
+    assert _chosen_depth(_attempts_log(source), "swap", source.read_bytes()) == DEFAULT_CBMC_DEPTH
+    assert _chosen_depth(_attempts_log(source), "swap", source.read_bytes(), fallback=300) == 300
+
+
+def test_chosen_depth_is_that_of_the_last_passing_attempt_on_the_final_definition(
+    tmp_path: Path,
+) -> None:
+    source = _stripped_quicksort(tmp_path)
+    _write_contract(source, "swap", _CONTRACTS["swap"])
+    _log_attempts(source, "swap", 1, depth=200, on_definition=True)
+    _log_attempts(source, "swap", 1, depth=300, on_definition=True)
+    assert _chosen_depth(_attempts_log(source), "swap", source.read_bytes()) == 300
+    # The agent backed off to probe a lower bound and failed: the pass at 300 still counts.
+    _log_attempts(source, "swap", 1, verified=False, depth=200, on_definition=True)
+    assert _chosen_depth(_attempts_log(source), "swap", source.read_bytes()) == 300
+
+
+def test_chosen_depth_falls_back_to_the_last_attempt_when_the_definition_changed(
+    tmp_path: Path,
+) -> None:
+    source = _stripped_quicksort(tmp_path)
+    _log_attempts(source, "swap", 1, depth=300, on_definition=True)
+    # The contract changed after the pass, and the only run since failed at 400.
+    _write_contract(source, "swap", _CONTRACTS["swap"])
+    _log_attempts(source, "swap", 1, verified=False, depth=400, on_definition=True)
+    assert _chosen_depth(_attempts_log(source), "swap", source.read_bytes()) == 400
+    # Attempts on other functions and records from an older tool, without the new fields, do
+    # not take part, and the latter read as the default depth.
+    (tmp_path / "other").mkdir()
+    other = _stripped_quicksort(tmp_path / "other")
+    _log_attempts(other, "partition", 1, depth=500, on_definition=True)
+    _log_attempts(other, "swap", 2)
+    assert _chosen_depth(_attempts_log(other), "swap", other.read_bytes()) == DEFAULT_CBMC_DEPTH
+
+
+def test_merge_and_verify_takes_each_function_at_its_own_depth(tmp_path: Path, monkeypatch) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    fake = _FakeVerify()
+    monkeypatch.setattr(avocado_verify, "verify_function", fake)
+    state = avocado_verify._MergeState(
+        active={"partition"}, verified={"swap", "quickSort"}, depths={"swap": 250}
+    )
+    session = _partition_session_that_fixes_swap(canonical)
+    _log_attempts(session.file, "partition", depth=300, on_definition=True)
+    try:
+        report, cbmc, reverified = _merge_and_verify(
+            session,
+            canonical,
+            include_dirs=[],
+            call_graph=_call_graph_where_quicksort_also_calls_swap(),
+            state=state,
+        )
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    assert report.merged and report.carried == ["swap"], report
+    # The session's function at the depth it chose; the carried callee at its recorded depth;
+    # its other caller, which has no recorded depth, at the default.
+    assert fake.depths == {"partition": 300, "swap": 250, "quickSort": DEFAULT_CBMC_DEPTH}
+    assert cbmc.depth == 300 and reverified["swap"].depth == 250
+    assert state.depths == {"swap": 250, "quickSort": DEFAULT_CBMC_DEPTH, "partition": 300}
+    published = read_run_state(canonical)
+    assert published is not None and published.depths == state.depths
+
+
+def test_run_log_carries_the_depth_and_a_resumed_run_reads_it_back(tmp_path: Path) -> None:
+    log = tmp_path / "q-avocado-verify.jsonl"
+    result = FunctionVerificationResult(
+        function="swap",
+        outcome=GroundTruthVerificationResult.VERIFIED,
+        claude_sessions=[],
+        cbmc=replace(_verified_cbmc("swap"), depth=300),
+        internal_callees=[],
+        verification_attempts=2,
+        agent_sessions=1,
+    )
+    record = result.to_record()
+    assert record["cbmc"]["depth"] == 300
+    _append_jsonl(log, record)
+    # A record from before depths were logged, and the terminal summary, add no entry.
+    _append_jsonl(log, {"function": "partition", "outcome": "VERIFIED", "cbmc": {"verdict": "PASS"}})
+    _append_jsonl(log, {"type": "run_summary", "function": "quickSort", "cbmc": {"depth": 999}})
+    assert _recorded_depths(log) == {"swap": 300}
+    assert _recorded_depths(tmp_path / "missing.jsonl") == {}
+
+
+def test_prompt_carries_a_raised_depth_and_not_the_default() -> None:
+    raised = avocado_verify._build_prompt(
+        "swap", file_path="/src/q.c", call_graph=_quicksort_call_graph(), include_dirs=[], depth=300
+    )
+    assert "avocado-run-cbmc --function swap --file /src/q.c --depth 300\n" in raised
+    assert "last verified with --depth 300" in raised
+    plain = avocado_verify._build_prompt(
+        "swap", file_path="/src/q.c", call_graph=_quicksort_call_graph(), include_dirs=[]
+    )
+    assert "--depth" not in plain

@@ -7,7 +7,7 @@ import pytest
 
 from avocado_verify import _fork_session
 from tools import validate
-from tools.run_cbmc import RunCbmcResult
+from tools.run_cbmc import DEFAULT_CBMC_DEPTH, RunCbmcResult
 from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
 from tools.util.edit_rules import function_body_offsets
 from tools.util.session_state import (
@@ -38,13 +38,22 @@ class _FakeVerify:
     def __init__(self, failing: set[str] | None = None) -> None:
         self.failing = failing or set()
         self.calls: list[str] = []
+        self.depths: dict[str, int] = {}
 
-    def __call__(self, function: str, file_path: str, include_dirs=None) -> RunCbmcResult:
+    def __call__(
+        self, function: str, file_path: str, include_dirs=None, *, depth: int
+    ) -> RunCbmcResult:
         del file_path, include_dirs
         self.calls.append(function)
+        self.depths[function] = depth
         returncode = 10 if function in self.failing else 0
         return RunCbmcResult(
-            function=function, failed_step=None, timed_out=False, returncode=returncode, response=""
+            function=function,
+            failed_step=None,
+            timed_out=False,
+            returncode=returncode,
+            response="",
+            depth=depth,
         )
 
 
@@ -92,10 +101,11 @@ def test_fork_session_writes_a_session_file_the_tools_can_find(swap_session) -> 
 def test_run_state_round_trips_and_is_left_out_of_session_copies(tmp_path: Path) -> None:
     canonical = _stripped_quicksort(tmp_path)
     assert read_run_state(canonical) is None
-    write_run_state(canonical, verified={"swap"}, active={"partition"})
+    write_run_state(canonical, verified={"swap"}, active={"partition"}, depths={"swap": 300})
     state = read_run_state(canonical)
     assert state is not None
     assert state.verified == {"swap"} and state.active == {"partition"}
+    assert state.depths == {"swap": 300}
     session = _fork_session("partition", canonical)
     try:
         assert not run_state_path(session.file).exists()
@@ -335,3 +345,20 @@ def test_reverify_rechecks_a_vacuous_caller_but_does_not_count_it_as_broken(
     result = check_reverify("swap", session.file)
     assert sorted(fake.calls) == ["partition", "quickSort"]
     assert result.exit_code == EXIT_OK and result.violations == []
+
+
+def test_reverify_takes_each_function_at_its_recorded_depth(swap_session, monkeypatch) -> None:
+    canonical, session = swap_session
+    fake = _FakeVerify()
+    monkeypatch.setattr(validate, "verify_function", fake)
+    write_run_state(
+        canonical,
+        verified={"partition", "quickSort"},
+        active={"swap"},
+        depths={"quickSort": 300},
+    )
+    _write_contract(session.file, "partition", _PARTITION_CONTRACT)
+    result = check_reverify("swap", session.file)
+    assert result.exit_code == EXIT_OK, result
+    # The caller verified at 300 is held to 300; the carried callee has no entry, so the default.
+    assert fake.depths == {"partition": DEFAULT_CBMC_DEPTH, "quickSort": 300}

@@ -1,5 +1,6 @@
 """Tests for the run_cbmc tool."""
 
+import json
 import os
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -80,8 +81,9 @@ def test_get_goto_instrument_add_library_command() -> None:
 
 
 def test_get_cbmc_check_command() -> None:
-    command = _get_cbmc_check_command("swap")
+    command = _get_cbmc_check_command("swap", 200)
     assert command == "cbmc checking-swap-contracts.goto --function swap --depth 200"
+    assert _get_cbmc_check_command("swap", 300).endswith("--function swap --depth 300")
 
 
 def test_compile_with_goto_cc_returns_zero_for_valid_c(tmp_path: Path) -> None:
@@ -386,3 +388,16 @@ def test_print_mutation_progress_buckets_undecided_mutants(capsys) -> None:
         "[mutation testing] 2/2 done "
         "(killed=0 survived=0 timed_out=1 compile_failed=1 instrumentation_failed=0)" in capsys.readouterr().err
     )
+
+
+def test_run_cbmc_records_the_depth_it_was_given_and_passes_it_to_cbmc(tmp_path: Path) -> None:
+    src = tmp_path / "quicksort.c"
+    src.write_bytes(Path("test/data/quicksort.c").read_bytes())
+    deeper = run_cbmc("swap", str(src), cwd=str(tmp_path), depth=300)
+    assert deeper.cbmc_ran_successfully and deeper.depth == 300
+    default = run_cbmc("swap", str(src), cwd=str(tmp_path))
+    assert default.cbmc_ran_successfully and default.depth == 200
+    runs = [json.loads(line) for line in (tmp_path / "quicksort-cbmc-runs.jsonl").read_text().splitlines()]
+    assert [run["depth"] for run in runs] == [300, 200]
+    commands = [step["command"] for run in runs for step in run["subprocess_results"] if step["step"] == "cbmc"]
+    assert [command.rsplit(" ", 1)[1] for command in commands] == ["300", "200"]

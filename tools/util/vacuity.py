@@ -41,13 +41,15 @@ def check_vacuity(
     include_dirs: list[str] | None = None,
     *,
     variant: PipelineVariant | None = None,
+    depth: int,
 ) -> VacuityCheckResult:
     """Return whether `function`, which verifies in `file_path`, does so vacuously.
 
     The probed copy is run through the same variant of the pipeline as the run that verified,
-    and only that one. The probed run fails by design; left to itself, `run_cbmc` could take
-    that failure as a reason to retry differently, and the verdict would then be about a
-    pipeline other than the one whose pass is being checked.
+    at the same depth, and only that one. The probed run fails by design; left to itself,
+    `run_cbmc` could take that failure as a reason to retry differently, and the verdict would
+    then be about a pipeline other than the one whose pass is being checked. A different depth
+    would do the same: whether an execution reaches the end of the function depends on the bound.
 
     Args:
         function (str): A function that verifies.
@@ -55,6 +57,7 @@ def check_vacuity(
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
         variant (PipelineVariant | None): The variant of the pipeline in which the function
             verified (`RunCbmcResult.variant`); None means the plain pipeline.
+        depth (int): The `--depth` at which the function verified (`RunCbmcResult.depth`).
 
     Returns:
         VacuityCheckResult: The result of checking the function specification for vacuity.
@@ -86,6 +89,7 @@ def check_vacuity(
             ],
             cwd=str(work_dir),
             variant=variant or PipelineVariant(),
+            depth=depth,
         )
     return classify_probe_run(result)
 

@@ -49,7 +49,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tools.run_cbmc import compile_with_goto_cc
+from tools.run_cbmc import DEFAULT_CBMC_DEPTH, compile_with_goto_cc
 from tools.run_cbmc_and_mutation_testing import verify_function
 from tools.util import get_call_graph
 from tools.util.edit_rules import (
@@ -417,8 +417,15 @@ def check_reverify(
             candidates=rechecked_on_change(state.verified, state.unverified),
             exclude=function,
         )
+        # Each function is re-verified at the depth its own ground truth was taken at, which the
+        # harness publishes with the run state; one it never took is verified at the default.
         verdicts = {
-            other: verify_function(other, str(scratch_file), include_dirs=include_dirs)
+            other: verify_function(
+                other,
+                str(scratch_file),
+                include_dirs=include_dirs,
+                depth=state.depths.get(other, DEFAULT_CBMC_DEPTH),
+            )
             for other in affected
         }
     finally:

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import avocado_verify
-from tools.run_cbmc import list_compiled_functions
+from tools.run_cbmc import DEFAULT_CBMC_DEPTH, list_compiled_functions
 from tools.run_cbmc_and_mutation_testing import verify_function
 from tools.util import get_call_graph
 
@@ -62,10 +62,10 @@ def test_a_function_is_verified_without_the_callees_the_preprocessor_removes(
     source = _source(tmp_path)
     # `thrice` is in the callee list read from the text but not in the program; the pipeline
     # leaves it out instead of failing at goto-instrument.
-    result = verify_function("scale", str(source))
+    result = verify_function("scale", str(source), depth=DEFAULT_CBMC_DEPTH)
     assert result.is_function_verified, result.response
     # A function that is not compiled still cannot be verified itself.
-    assert str(verify_function("thrice", str(source))) == "GOTO-CC_FAILED"
+    assert str(verify_function("thrice", str(source), depth=DEFAULT_CBMC_DEPTH)) == "GOTO-CC_FAILED"
 
 
 def test_the_harness_gives_functions_outside_the_build_no_session(
