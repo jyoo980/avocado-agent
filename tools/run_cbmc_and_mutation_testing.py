@@ -25,14 +25,14 @@ from pathlib import Path
 
 from loguru import logger
 
-from tools.run_cbmc import RunCbmcResult, Vacuity, has_contract, run_cbmc
+from tools.run_cbmc import RunCbmcResult, has_contract, run_cbmc
 from tools.util.mutation import (
     MutationScore,
     MutationTestingResult,
     generate_mutants_and_compute_score,
     get_mutation_testing_results_for_client,
 )
-from tools.util.vacuity import check_vacuity, describe_vacuous_result
+from tools.util.vacuity import Vacuity, check_vacuity, describe_vacuous_result
 
 # Per-subprocess CBMC timeout for each *mutant* when this tool reports mutation feedback to the
 # agent. The function itself is still verified under the full `tools.run_cbmc` timeout, and the

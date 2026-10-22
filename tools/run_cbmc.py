@@ -32,7 +32,7 @@ from tools.util import (
     get_unstubbed_external_callees_for,
 )
 from tools.util.callgraph import CallGraph
-from tools.util.vacuity_check_result import Vacuity, VacuityCheckResult
+from tools.util.vacuity_check_result import VacuityCheckResult
 
 # Character budget for failure responses. The harness persists full tool output to a file but
 # previews only the head inline, so we keep responses bounded (a pathological CBMC run can
@@ -179,12 +179,7 @@ class RunCbmcResult:
     @property
     def is_vacuous(self) -> bool:
         """True iff the pipeline passed but the vacuity check found that it proves nothing."""
-        if vacuity_check := self.vacuity_check_result:
-            return vacuity_check.vacuity in {
-                Vacuity.UNSATISFIABLE_PRECONDITIONS,
-                Vacuity.END_UNREACHABLE,
-            }
-        return False
+        return self.vacuity_check_result is not None and self.vacuity_check_result.is_vacuous
 
     def __str__(self) -> str:
         """Return the string representation of this result, used for logging.

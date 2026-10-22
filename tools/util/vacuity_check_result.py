@@ -35,3 +35,12 @@ class VacuityCheckResult:
 
     vacuity: Vacuity
     message: str
+
+    @property
+    def is_vacuous(self) -> bool:
+        """True iff this vacuity check result corresponds to a vacuous specification.
+
+        Returns:
+            bool: True iff this vacuity check result corresponds to a vacuous specification.
+        """
+        return self.vacuity in {Vacuity.UNSATISFIABLE_PRECONDITIONS, Vacuity.END_UNREACHABLE}
