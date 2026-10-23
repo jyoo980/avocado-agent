@@ -2,9 +2,11 @@
 
 from pathlib import Path
 
+from tools.util import edit_rules
 from tools.util.edit_rules import (
     check_edits,
     frozen_functions_for,
+    function_body_offsets,
     function_header,
     function_line,
     functions_with_changed_contracts,
@@ -442,3 +444,98 @@ def test_function_header_is_the_signature_and_the_contract() -> None:
     header = function_header(_with_clamp_contract(BASE), "clamp")
     assert header == b"int clamp(int v)\n" + CLAMP_CONTRACT.rstrip()
     assert function_header(BASE, "missing") is None
+
+
+# `struct`, `union` and `enum` in a parameter list or a return type, as in kilo's `abAppend`.
+STRUCT_PARAMETERS = b"""struct abuf { char *b; int len; };
+typedef struct erow { int size; } erow;
+void abFree(struct abuf *ab) {
+    ab->len = 0;
+}
+struct abuf *abNew(union u *x, enum e k) {
+    return 0;
+}
+int after(int v) {
+    return v;
+}
+"""
+
+
+def test_a_struct_parameter_does_not_hide_the_function_or_the_ones_after_it() -> None:
+    for function in ("abFree", "abNew", "after"):
+        assert len(function_body_offsets(STRUCT_PARAMETERS, function)) == 1
+    # The type definitions are still declarations, not functions.
+    assert function_body_offsets(STRUCT_PARAMETERS, "abuf") == []
+    assert function_body_offsets(STRUCT_PARAMETERS, "erow") == []
+
+
+def test_contracts_on_functions_with_or_after_a_struct_parameter_are_merged() -> None:
+    contract = (
+        b"\n__CPROVER_requires(__CPROVER_is_fresh(ab, sizeof(struct abuf)))\n__CPROVER_assigns()\n"
+    )
+    for function, signature in (
+        ("abFree", b"void abFree(struct abuf *ab)"),
+        ("abNew", b"struct abuf *abNew(union u *x, enum e k)"),
+        ("after", b"int after(int v)"),
+    ):
+        snapshot = STRUCT_PARAMETERS.replace(signature + b" {", signature + contract + b"{")
+        assert check_edits(STRUCT_PARAMETERS, snapshot, function) == []
+        assert functions_with_changed_contracts(STRUCT_PARAMETERS, snapshot) == [function]
+        merged, report = merge_copy(
+            canonical=STRUCT_PARAMETERS,
+            snapshot=snapshot,
+            fork_base=STRUCT_PARAMETERS,
+            function=function,
+            frozen_functions=set(),
+        )
+        assert report.merged and report.dropped == [] and merged == snapshot
+
+
+def _parser_without_the_struct_parameter_fix(prefix) -> bool:
+    """`_opens_function_body` as it was before the fix: a `struct` parameter hides the body."""
+    texts = [token.text for token in prefix if not token.is_directive]
+    if "=" in texts:
+        return False
+    last_aggregate = max(
+        (index for index, text in enumerate(texts) if text in {"struct", "union", "enum"}),
+        default=-1,
+    )
+    return "(" in texts[last_aggregate + 1 :]
+
+
+def test_a_session_function_the_parser_cannot_find_fails_the_merge(monkeypatch) -> None:
+    # With the old parser, everything from `abFree` on is one unnamed item.
+    monkeypatch.setattr(edit_rules, "_opens_function_body", _parser_without_the_struct_parameter_fix)
+    snapshot = STRUCT_PARAMETERS.replace(
+        b"int after(int v) {", b"int after(int v)\n__CPROVER_ensures(__CPROVER_return_value == v)\n{"
+    )
+    merged, report = merge_copy(
+        canonical=STRUCT_PARAMETERS,
+        snapshot=snapshot,
+        fork_base=STRUCT_PARAMETERS,
+        function="after",
+        frozen_functions=set(),
+    )
+    assert not report.merged and merged == STRUCT_PARAMETERS
+    assert "after could not be found as a function definition" in report.reason
+    assert report.dropped == []
+
+
+def test_a_contract_edit_to_an_item_the_merge_cannot_name_fails_the_merge(monkeypatch) -> None:
+    # `pick` is defined twice. With the old parser the first definition is found, but the second
+    # is in an unnamed item, and its contract would once have been left out without a word.
+    monkeypatch.setattr(edit_rules, "_opens_function_body", _parser_without_the_struct_parameter_fix)
+    base = (
+        b"struct abuf { char *b; int len; };\n"
+        b"#ifdef FAST\nint pick(int x) {\n    return x;\n}\n#endif\n"
+        b"void abFree(struct abuf *ab) {\n    ab->len = 0;\n}\n"
+        b"#ifndef FAST\nint pick(int x) {\n    return x + 1;\n}\n#endif\n"
+    )
+    snapshot = base.replace(
+        b"int pick(int x) {", b"int pick(int x)\n__CPROVER_ensures(__CPROVER_return_value >= x)\n{"
+    )
+    merged, report = merge_copy(
+        canonical=base, snapshot=snapshot, fork_base=base, function="pick", frozen_functions=set()
+    )
+    assert not report.merged and merged == base
+    assert "the merge cannot name" in report.reason and "the contract of pick" in report.reason

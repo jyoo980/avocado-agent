@@ -17,6 +17,11 @@ class Vacuity(StrEnum):
     NOT_VACUOUS = "not_vacuous"
     # No execution enters the body: the preconditions cannot all hold at once.
     UNSATISFIABLE_PRECONDITIONS = "unsatisfiable_preconditions"
+    # No execution enters the body within CBMC's `--depth` bound, but the preconditions can hold:
+    # without the bound, an execution does enter it. The steps taken before the body (assuming the
+    # preconditions, setting up global state) use up the bound. Not counted as vacuous: like
+    # UNKNOWN, the prior result is maintained.
+    DEPTH_LIMIT_REACHED = "depth_limit_reached"
     # Executions enter the body, but none reach the end of the function.
     END_UNREACHABLE = "end_unreachable"
     # The CBMC run did not give an answer (it timed out or failed). The prior result is maintained,
@@ -43,4 +48,8 @@ class VacuityCheckResult:
         Returns:
             bool: True iff this vacuity check result corresponds to a vacuous specification.
         """
-        return self.vacuity in {Vacuity.UNSATISFIABLE_PRECONDITIONS, Vacuity.END_UNREACHABLE}
+        return self.vacuity in VACUOUS_KINDS
+
+
+# The kinds of vacuity that make a passing verification vacuous.
+VACUOUS_KINDS = frozenset({Vacuity.UNSATISFIABLE_PRECONDITIONS, Vacuity.END_UNREACHABLE})

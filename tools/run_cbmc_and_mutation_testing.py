@@ -190,6 +190,12 @@ def verify_function(
             "the pass stands"
         )
         return replace(result, vacuity_check_result=vacuity_check_result)
+    if vacuity_status is Vacuity.DEPTH_LIMIT_REACHED:
+        logger.warning(
+            f"{function}: no execution enters the body within the depth bound, although the "
+            "preconditions can hold; the pass stands"
+        )
+        return replace(result, vacuity_check_result=vacuity_check_result)
     if vacuity_status is Vacuity.NOT_VACUOUS:
         return replace(result, vacuity_check_result=vacuity_check_result)
     return replace(

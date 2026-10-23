@@ -910,6 +910,11 @@ def _note_for_rerun_after_merge(
     of the two causes applies, when the function has used up its re-runs
     (`_MAX_MERGE_RERUNS_PER_FUNCTION`), or when the last session was stopped by a usage limit.
 
+    The note tells the agent that its contract for `function` was merged. That holds whenever a
+    note is written: `merge_copy` fails the whole merge rather than leave out the session's own
+    contract, and no note is written for a rejected merge. What was left out is named as the
+    merge reported it, without assuming it was a function.
+
     Args:
         function (str): The function whose session just merged.
         report (MergeReport): What the merge kept and left out, and which contracts other
@@ -938,7 +943,8 @@ def _note_for_rerun_after_merge(
     causes = []
     if report.dropped:
         causes.append(
-            f"the merge left out your edits to other functions ({'; '.join(report.dropped)})"
+            f"the merge left out these edits you made outside {function}: "
+            f"{'; '.join(report.dropped)}"
         )
     if changed_callees:
         causes.append(
@@ -948,7 +954,8 @@ def _note_for_rerun_after_merge(
     if not causes:
         return ""
     return (
-        f"your contract for {function} was merged, but {' and '.join(causes)}, and {function} "
+        f"your contract for {function} was merged into the shared file, but "
+        f"{' and '.join(causes)}, and {function} "
         "does not verify on the shared file as it is now. This copy is that file, with your "
         f"contract for {function} already in it. Read the other functions' contracts as they "
         f"are here and make {function} verify against them. You may change a callee's contract "
