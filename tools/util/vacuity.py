@@ -9,8 +9,7 @@ every mutant of the function survives it.
 
 The check is one extra run of the pipeline on a copy of the file with two probes added to the
 function: a postcondition that is false (`__CPROVER_ensures(0)`) and an assertion that is false as
-the first statement of the body. A false assertion *fails* exactly when an execution reaches it,
-so:
+the first statement of the body. A false assertion *fails* exactly when an execution reaches it, so:
 
 - neither probe fails: no execution enters the body;
 - only the entry probe fails: executions enter the body but none reaches the end;
@@ -21,8 +20,7 @@ before the body use up CBMC's `--depth` bound. A second extra run tells the two 
 whose body starts with the false assertion followed by `__CPROVER_assume(0)`, CBMC runs without
 the depth bound. Every path ends at the top of the body, so the run stays short. If the assertion
 fails, the preconditions can hold and the depth bound was what kept executions out of the body
-(`DEPTH_LIMIT_REACHED`). That is not counted as vacuous: like an `UNKNOWN` result, the pass
-stands.
+(`DEPTH_LIMIT_REACHED`). That is not counted as vacuous: like an `UNKNOWN` result, the pass stands.
 
 The copies live in a temporary directory and are never seen by a session or by a merge.
 """

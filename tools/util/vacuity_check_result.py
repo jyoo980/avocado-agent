@@ -17,10 +17,7 @@ class Vacuity(StrEnum):
     NOT_VACUOUS = "not_vacuous"
     # No execution enters the body: the preconditions cannot all hold at once.
     UNSATISFIABLE_PRECONDITIONS = "unsatisfiable_preconditions"
-    # No execution enters the body within CBMC's `--depth` bound, but the preconditions can hold:
-    # without the bound, an execution does enter it. The steps taken before the body (assuming the
-    # preconditions, setting up global state) use up the bound. Not counted as vacuous: like
-    # UNKNOWN, the prior result is maintained.
+    # No execution enters the body within CBMC's `--depth` bound, but the preconditions can hold.
     DEPTH_LIMIT_REACHED = "depth_limit_reached"
     # Executions enter the body, but none reach the end of the function.
     END_UNREACHABLE = "end_unreachable"
