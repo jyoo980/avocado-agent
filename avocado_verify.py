@@ -222,6 +222,15 @@ def main() -> None:
             "limit (exit code 2)."
         ),
     )
+    parser.add_argument(
+        "--model",
+        required=False,
+        type=str,
+        help=(
+            "Model to pass to `claude --model`, overriding the `model` in `.claude/settings.json`. "
+            "Use this to target a non-default model (e.g., one served through a LiteLLM proxy)."
+        ),
+    )
     args = parser.parse_args()
 
     file_path = Path(args.file).resolve()
@@ -277,6 +286,7 @@ def main() -> None:
             call_graph=call_graph,
             timeout=args.claude_timeout,
             include_dirs=include_dirs,
+            model=args.model,
         )
         results.append(verification_result_from_agent)
         _append_jsonl(log_path, verification_result_from_agent.to_record())
@@ -355,6 +365,7 @@ def _verify_via_agent(
     call_graph: CallGraph,
     timeout: int,
     include_dirs: list[str],
+    model: str | None = None,
 ) -> FunctionVerificationResult:
     """Run one or more `claude -p` sessions for `function`, then re-verify it with CBMC.
 
@@ -369,12 +380,15 @@ def _verify_via_agent(
         timeout (int): Per-function timeout for the `claude -p` session, in seconds.
         include_dirs (list[str]): Extra include directories to expose to the agent and forward to
             CBMC's include search path.
+        model (str | None): Model to pass to `claude --model`, or None for the settings default.
 
     Returns:
         FunctionVerificationResult: The combined Claude/CBMC outcome for the function.
     """
     prompt = f"Verify {function} in {file_path}"
-    command = _build_claude_command(prompt, file_path=file_path, include_dirs=include_dirs)
+    command = _build_claude_command(
+        prompt, file_path=file_path, include_dirs=include_dirs, model=model
+    )
     attempts_log_path = Path(file_path).with_name(
         f"{Path(file_path).stem}{VERIFICATION_ATTEMPTS_LOG_SUFFIX}"
     )
@@ -632,7 +646,9 @@ def _run_summary_record(
     }
 
 
-def _build_claude_command(prompt: str, *, file_path: str, include_dirs: list[str]) -> list[str]:
+def _build_claude_command(
+    prompt: str, *, file_path: str, include_dirs: list[str], model: str | None = None
+) -> list[str]:
     """Build the `claude -p` argument vector for one function.
 
     Claude is invoked non-interactively, so it cannot answer permission prompts;
@@ -645,6 +661,7 @@ def _build_claude_command(prompt: str, *, file_path: str, include_dirs: list[str
         prompt (str): The prompt to send (currently blank).
         file_path (str): Absolute path to the C file being verified.
         include_dirs (list[str]): Extra include directories to expose via `--add-dir`.
+        model (str | None): If given, passed as `--model` so it overrides the settings default.
 
     Returns:
         list[str]: The argument vector to hand to `subprocess.run`.
@@ -661,6 +678,8 @@ def _build_claude_command(prompt: str, *, file_path: str, include_dirs: list[str
     ]
     for include_dir in include_dirs:
         command += ["--add-dir", include_dir]
+    if model:
+        command += ["--model", model]
     return command
 
 
