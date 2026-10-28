@@ -15,7 +15,13 @@
             "Bash(git push --force*)",
             "Bash(git push -f *)",
             "Bash(git switch main)",
-            "Bash(git checkout main)"
+            "Bash(git checkout main)",
+            "Bash(avocado-count-sloc)",
+            "Bash(*eval*)",
+            "Read(*eval*)",
+            "Read(DEVELOPMENT.md)",
+            "Read(**/*mutation_compile_failures.log)",
+            "Bash(**/*mutation_compile_failures.log)"
         ]
     }
 }
