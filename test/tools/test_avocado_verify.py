@@ -836,7 +836,11 @@ def test_a_callee_contract_changed_by_another_session_causes_a_rerun_only_on_fai
         changed_since_fork=["partition"],
     )
     text = note("quickSort", report=both, cbmc=failed)
-    assert "left out your edits" in text and "which quickSort calls" not in text
+    assert "left out these edits you made outside quickSort: function:partition" in text
+    assert "which quickSort calls" not in text
+    # The left-out edits are not assumed to be other functions' contracts.
+    assert "your edits to other functions" not in text
+    assert text.startswith("your contract for quickSort was merged into the shared file")
 
 
 class _ClaudeForQuickSortWhilePartitionMoves:
@@ -1385,3 +1389,22 @@ def test_merge_state_rechecked_on_change_matches_the_shared_rule() -> None:
     state.record("swap", failed)
     assert state.rechecked_on_change() == {"quickSort", "partition"}
     assert state.rechecked_on_change() == rechecked_on_change(state.verified, state.unverified)
+
+
+def test_a_pass_whose_body_the_depth_bound_keeps_out_stands_like_an_unknown_one() -> None:
+    depth_limited = RunCbmcResult(
+        function="partition",
+        failed_step=None,
+        timed_out=False,
+        returncode=0,
+        response="partition verified successfully",
+        vacuity_check_result=VacuityCheckResult(Vacuity.DEPTH_LIMIT_REACHED, ""),
+    )
+    assert not depth_limited.is_vacuous and depth_limited.is_function_verified
+    assert avocado_verify._outcome_for(_session(), depth_limited) is (
+        avocado_verify.GroundTruthVerificationResult.VERIFIED
+    )
+    # Its callers may build on it, as on any other pass.
+    state = avocado_verify._MergeState()
+    state.record("partition", depth_limited)
+    assert state.verified == {"partition"} and state.unverified == {}

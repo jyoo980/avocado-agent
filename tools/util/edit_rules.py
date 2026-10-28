@@ -306,6 +306,12 @@ def merge_copy(
     When the canonical file is still the fork base -- always the case with one session at a time
     -- this reduces to taking the copy itself, minus the edits that are left out.
 
+    The session's own contract is never left out silently: the merge fails, and says why, when
+    the session's function cannot be found as a function definition in the copy, or when the
+    copy changes the contract of an item the merge cannot name. A session can only edit contract
+    slots, so such an item is a function definition the parser could not make out, and it may be
+    the session's own.
+
     `MergeReport.changed_since_fork` names every function whose contract changed in the canonical
     file since the fork, whether or not the session edited it too.
 
@@ -326,6 +332,12 @@ def merge_copy(
         rendered = [str(violation) for violation in mine.violations]
         return canonical, MergeReport(
             False, f"the session copy breaks {len(rendered)} edit rule(s)", violations=rendered
+        )
+    if not any(item.kind == "function" and item.name == function for item in mine.snapshot_items):
+        return canonical, MergeReport(
+            False,
+            f"{function} could not be found as a function definition in the session copy, so its "
+            "contract could not be merged; nothing was merged",
         )
     theirs = mine if canonical == fork_base else _compare(fork_base, canonical)
     if canonical != fork_base and theirs.violations:
@@ -366,15 +378,22 @@ def merge_copy(
             changed_since_fork.append(current.name)
         if my_text in (base_text, their_text):
             continue
+        if edited.name is None:
+            return canonical, MergeReport(
+                False,
+                f"the copy changes the contract of an item at line {edited.line} that the merge "
+                f"cannot name, so it cannot tell whether that is the contract of {function}; "
+                "nothing was merged",
+                dropped=dropped,
+            )
         if edited.name != function:
             reason = _reason_not_carried(
                 edited.name, frozen_functions, their_changed=their_text != base_text
             )
             if reason is not None:
-                label = f"function:{edited.name}" if edited.name else f"item at line {edited.line}"
-                dropped.append(label + reason)
+                dropped.append(f"function:{edited.name}{reason}")
                 continue
-            if edited.name is not None and edited.name not in carried:
+            if edited.name not in carried:
                 carried.append(edited.name)
         edits.append((current.start, current.end, snapshot[edited.start : edited.end]))
 
@@ -884,7 +903,9 @@ def _opens_function_body(prefix: list[_Token]) -> bool:
     """Return True iff a file-scope `{` after `prefix` opens a function body.
 
     It does not when the item has an initializer (`= {`), or names a `struct`, `union` or `enum`
-    with no parameter list after the keyword (a type definition).
+    with no parameter list after the keyword (a type definition). Only keywords outside
+    parentheses count: the `struct` in `void f(struct S *s) {` belongs to a parameter, and the
+    brace still opens the body of `f`.
 
     Args:
         prefix (list[_Token]): The item's tokens before the `{`.
@@ -895,9 +916,15 @@ def _opens_function_body(prefix: list[_Token]) -> bool:
     texts = [token.text for token in prefix if not token.is_directive]
     if "=" in texts:
         return False
-    last_aggregate = max(
-        (index for index, text in enumerate(texts) if text in _AGGREGATE_KEYWORDS), default=-1
-    )
+    last_aggregate = -1
+    parentheses = 0
+    for index, text in enumerate(texts):
+        if text == "(":
+            parentheses += 1
+        elif text == ")":
+            parentheses = max(parentheses - 1, 0)
+        elif parentheses == 0 and text in _AGGREGATE_KEYWORDS:
+            last_aggregate = index
     return "(" in texts[last_aggregate + 1 :]
 
 
