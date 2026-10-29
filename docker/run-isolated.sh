@@ -20,7 +20,7 @@
 # The layout mirrors the manual workflow (EXPERIMENTAL_PROCEDURE.md): the harness is installed
 # at /app, the subject lives inside it, and the runner is launched from inside the subject
 # directory.
-# 
+#
 # A prompt may refer to `../AGENTS.md` and "this directory", and an `/app/CLAUDE.md` is
 # picked up by Claude Code as a parent-directory instructions file. If the snapshot carries a
 # Python package (pyproject.toml + uv.lock), it is installed into /app/.venv exactly as
@@ -87,6 +87,7 @@ fi
 # Outputs accumulate here and are published to /work/out on exit, whether the session
 # finishes, fails, or is stopped by the host's --timeout (SIGTERM reaches this shell).
 OUT_DIR="$(mktemp -d /tmp/avocado-out.XXXXXX)"
+# shellcheck disable=SC2329
 publish() {
   # Save the conversation transcript(s) before the config dir disappears with the container.
   if compgen -G "${CLAUDE_CONFIG_DIR:-/nonexistent}/projects/*/*.jsonl" >/dev/null; then
@@ -103,6 +104,7 @@ trap publish EXIT
 # background and waited on; on SIGTERM it is told to stop, and the EXIT trap then publishes
 # what exists.
 CLAUDE_PID=""
+# shellcheck disable=SC2329
 on_term() {
   if [ -n "$CLAUDE_PID" ]; then
     kill -TERM "$CLAUDE_PID" 2>/dev/null || true
