@@ -60,7 +60,6 @@ You can also search the web for more CBMC documentation.
 
   Prints function names callees-first, one per line.
 
-<<<<<<< HEAD
 - **To check your edits against the edit rules**, run:
 
   ```sh
