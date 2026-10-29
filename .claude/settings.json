@@ -1,6 +1,8 @@
 {
     "model": "claude-opus-4-8",
     "env": {
+        "API_TIMOUT_MS": "1200000",
+        "BASH_DEFAULT_TIMEOUT_MS": "600000",
         "CLAUDE_CODE_EFFORT_LEVEL": "high"
     },
     "permissions": {

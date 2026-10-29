@@ -370,7 +370,7 @@ def generate_mutants_and_compute_score(
             finally:
                 # If we exit early (an unexpected error or a Ctrl-C), stop launching mutants that
                 # haven't started yet rather than kicking off more 10-minute CBMC runs; the `with`
-                # block still waits for any in-flight runs to drain.
+                # block still waits for runs in-progress to drain.
                 executor.shutdown(cancel_futures=True)
     finally:
         if not keep_artifacts:

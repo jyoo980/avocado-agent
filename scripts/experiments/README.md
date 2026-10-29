@@ -57,4 +57,4 @@ so they exist only where the work was done.
   scoring passes. To score arms identically, run `rescore_run.sh` from a single
   checkout afterwards.
 - Do not run `make clean-mutants` from the repository root while an experiment
-  is running: it deletes in-flight artifacts under `avocado-experimental-data/`.
+  is running: it deletes in-progress artifacts under `avocado-experimental-data/`.

@@ -144,7 +144,7 @@ def main() -> None:
 
 @dataclass(frozen=True)
 class _SubmittedFile:
-    """The in-flight mutation-scoring work for one source file.
+    """The in-progress mutation-scoring work for one source file.
 
     Attributes:
         source (Path): The path to the file under evaluation.

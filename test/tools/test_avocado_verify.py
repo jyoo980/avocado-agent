@@ -433,7 +433,7 @@ def test_usage_limit_stops_new_submissions_but_in_flight_sessions_merge(
     started = {result.function for result in results}
     assert order[0] in started and order[1] in started  # both were in flight
     assert order[2] not in started  # never submitted after the limit
-    assert order[1] in fake.intervals  # the in-flight one finished and merged
+    assert order[1] in fake.intervals  # the in-progress one finished and merged
 
 
 def test_merge_failure_is_logged_and_canonical_untouched(tmp_path: Path, monkeypatch) -> None:
