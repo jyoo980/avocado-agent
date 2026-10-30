@@ -109,7 +109,16 @@ from inside the subject copy.
 `-n` is the number of runs and `-j N` (`--jobs`) how many of them run concurrently, each in its
 own container with its own `--memory`/`--cpus` cap (default 1, i.e. sequential; budget memory
 as `-j` × `--memory`). `--tag` names the batch (default: harness directory name, subject name
-and profile name). 
+and profile name).
+
+A batch detaches from the terminal it was launched from (it re-executes itself under
+`setsid`), so closing that terminal or losing an SSH connection does not kill it; `nohup` is
+not needed, but `> launch.log 2>&1 &` still keeps the batch's progress lines somewhere. Ctrl-C
+therefore does not stop a batch either. To stop one, kill the process recorded in its
+`run.pid`:
+
+This stops the batch's containers; each run then saves its transcript and records exit code
+`143`.
 
 ## Step 4: read the results
 

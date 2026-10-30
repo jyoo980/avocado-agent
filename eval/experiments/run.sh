@@ -58,6 +58,17 @@
 # See eval/experiments/profiles/ for the auth profiles (subscription vs. LiteLLM).
 set -euo pipefail
 
+# Detach from the terminal, so a dropped SSH connection cannot kill the batch. A hangup sends
+# SIGHUP to everything launched from that terminal; `nohup` does not help, because `timeout`
+# resets the handler and forwards the signal to `podman run`, which forwards it into the
+# container (the run then ends with exit code 129). Re-executing in a session of our own, with
+# no controlling terminal, keeps the signal out. The parent waits and returns the batch's exit
+# code, so a foreground launch still blocks until the batch is done; Ctrl-C only ends that
+# wait. Stop a batch with `kill $(cat <batch>/run.pid)`, which stops its containers too.
+if [ -z "${AVOCADO_DETACHED:-}" ] && command -v setsid >/dev/null 2>&1; then
+  AVOCADO_DETACHED=1 exec setsid -w "${BASH_SOURCE[0]}" "$@"
+fi
+
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENGINE="${CONTAINER_ENGINE:-$(command -v docker 2>/dev/null || command -v podman 2>/dev/null || true)}"
 IMAGE="${IMAGE_NAME:-avocado-agent-container}"
@@ -157,6 +168,18 @@ BATCH_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(head -c 3 /dev/urandom | od -An -tx1 | tr
 BATCH_DIR="$RESULTS/$TAG/$BATCH_ID"
 mkdir -p "$BATCH_DIR"
 echo "results: $BATCH_DIR"
+
+# `kill <pid>` (TERM or INT) stops this batch's containers; each run then publishes what it has
+# and records its exit code as usual before this script exits.
+echo $$ >"$BATCH_DIR/run.pid"
+stop_batch() {
+  trap - TERM INT
+  echo "stopping batch $BATCH_ID" >&2
+  "$ENGINE" ps -q --filter "name=avocado-$TAG-$BATCH_ID-" | xargs -r "$ENGINE" stop -t 5 >/dev/null 2>&1 || true
+  wait
+  exit 143
+}
+trap stop_batch TERM INT
 
 # What the runner is given: the prompt, or (avocado-verify) the C file's path inside the
 # container.
