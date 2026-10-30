@@ -1,10 +1,10 @@
 """Run CBMC on a function and perform mutation testing.
 
 This is the `avocado-run-cbmc` entry point that the inner agent calls. It wraps the shared pipeline
-in `tools.run_cbmc` (goto-cc → goto-instrument → cbmc), checks a passing run for vacuity
-(`tools.util.vacuity`), records the attempt in a sibling JSONL log that `avocado-verify` reads,
-and -- when the function verifies, and not vacuously -- runs mutation testing and reports the kill
-score plus any surviving mutants.
+in `tools.run_cbmc` (goto-cc → goto-instrument → cbmc), checks that a passing function has a
+contract and that the run is not vacuous (`tools.util.vacuity`), records the attempt in a sibling
+JSONL log that `avocado-verify` reads, and -- when the function verifies, and not vacuously --
+runs mutation testing and reports the kill score plus any surviving mutants.
 
 Usage:
     % avocado-run-cbmc --function <FUNCTION_NAME> \
