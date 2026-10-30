@@ -429,7 +429,6 @@ def test_the_library_is_added_after_the_contract_is_enforced(tmp_path: Path) -> 
         function: run_cbmc(
             function_to_verify=function,
             file_containing_function_to_verify=str(source),
-            cwd=str(tmp_path),
             variant=variant,
         )
         for function in ("mk", "abFree")

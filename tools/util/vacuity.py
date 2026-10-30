@@ -159,7 +159,6 @@ def _run_probed_copy(
             function_to_verify=function,
             file_containing_function_to_verify=str(probe_file),
             include_dirs=probe_include_dirs,
-            cwd=str(work_dir),
             timeout_sec=timeout_sec,
             variant=variant,
         )

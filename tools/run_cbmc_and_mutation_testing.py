@@ -15,7 +15,6 @@ Usage:
 import argparse
 import json
 import sys
-import tempfile
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -60,7 +59,7 @@ def main() -> None:
             f"pipeline once per mutant (concurrently, up to {_AGENT_MUTANT_TIMEOUT_SEC} s each); "
             "this can take a few minutes, during which the tool is mostly silent. This is "
             "expected, not a hang -- do not interrupt the process. Consider running it in the "
-            "and polling for completion."
+            "background and polling for completion."
         )
     )
     parser.add_argument("--function", required=True, help="Name of the function to verify.")
@@ -116,14 +115,7 @@ def verify_function(
     *,
     vacuity_check: bool = True,
 ) -> RunCbmcResult:
-    """Run the CBMC pipeline on `function` in a private scratch directory.
-
-    The pipeline writes its `<function>.goto` / `checking-<function>-contracts.goto` intermediates
-    relative to its working directory. Running it in a fresh temporary directory keeps those files
-    out of the caller's working directory and lets several `avocado-run-cbmc` processes (e.g. agent
-    sessions for different files that happen to share a function name) run concurrently without
-    clobbering one another. Paths are resolved first because the pipeline's commands are executed
-    relative to the scratch directory.
+    """Run the CBMC pipeline on `function`, then check a passing run for a contract and vacuity.
 
     A run that passes is then checked for a contract: a function without one is checked against
     an empty contract, which nothing can violate, so it is returned with
@@ -146,13 +138,11 @@ def verify_function(
     Returns:
         RunCbmcResult: The outcome of the run.
     """
-    with tempfile.TemporaryDirectory(prefix="avocado-verify-") as scratch_dir:
-        result = run_cbmc(
-            function_to_verify=function,
-            file_containing_function_to_verify=str(Path(file_path).resolve()),
-            include_dirs=[str(Path(d).resolve()) for d in include_dirs or []],
-            cwd=scratch_dir,
-        )
+    result = run_cbmc(
+        function_to_verify=function,
+        file_containing_function_to_verify=file_path,
+        include_dirs=include_dirs,
+    )
     if not result.is_function_verified:
         return result
     if has_contract(function, file_path, include_dirs) is False:
