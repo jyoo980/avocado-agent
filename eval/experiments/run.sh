@@ -322,8 +322,18 @@ run_one() {
 for i in $(seq 1 "$RUNS"); do
   run_one "$i" &
   if [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; then
-    wait -n
+    # A run that failed outside its container (e.g. copying the subject) must not end the
+    # batch; it is reported below.
+    wait -n || true
   fi
 done
 wait
+failed=0
+for i in $(seq 1 "$RUNS"); do
+  if [ ! -f "$BATCH_DIR/run-$i/exit-code" ]; then
+    echo "[$TAG] run $i/$RUNS failed before its container finished; see the error above" >&2
+    failed=1
+  fi
+done
 echo "done: $BATCH_DIR"
+exit "$failed"
