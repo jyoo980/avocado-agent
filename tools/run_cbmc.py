@@ -582,9 +582,10 @@ def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, 
         return full
 
     # Over budget: keep the leading FAILURE lines and replace each stream with its tail.
-    # The `_MAX_RESPONSE_CHARS`-wide placeholder pads the marker's digit count so the
-    # actual marker (with the real dropped count) cannot push us over budget.
-    digit_pad = str(_MAX_RESPONSE_CHARS)
+    # A stream drops at most all of its characters, so a placeholder with as many digits as
+    # the longer stream's length ensures that the actual marker (with the real dropped count)
+    # cannot push us over budget.
+    digit_pad = str(max(len(stdout), len(stderr)))
     marker = f"[... {digit_pad} characters truncated ...]\n"
     fixed = (
         f"{header}{failure_section}--- stderr (tail) ---\n{marker}--- stdout (tail) ---\n{marker}"
