@@ -40,10 +40,7 @@ exclude = { glob = [
   ".coderabbit.yaml",
   "AGENTS.md",
   "DEVELOPMENT.md",
-  "FINDINGS.md",
-  "GOAL.md",
   "README.md",
-  "WORK_SO_FAR.md",
   "avocado-experimental-data/*",
   "data/*",
   "docs/*",
@@ -51,7 +48,6 @@ exclude = { glob = [
   "test/data/*",
   "test/eval/*",
   "test/tools/*",
-  "smoke/*",
 ] }
 
 [[repos]]
