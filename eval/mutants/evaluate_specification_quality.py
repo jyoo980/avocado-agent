@@ -218,7 +218,13 @@ def _submit_file(
     redundancy_futures: list[Future[dict | None]] = []
     if run_redundancy:
         redundancy_futures = [
-            executor.submit(_redundancy_record, source, function, keep_artifacts=keep_artifacts)
+            executor.submit(
+                _redundancy_record,
+                source,
+                function,
+                include_dirs=include_dirs,
+                keep_artifacts=keep_artifacts,
+            )
             for function in functions_with_cprover_annotations
         ]
     return _SubmittedFile(
@@ -273,12 +279,15 @@ def _mutation_record(
     }
 
 
-def _redundancy_record(source: Path, function: str, *, keep_artifacts: bool) -> dict | None:
+def _redundancy_record(
+    source: Path, function: str, *, include_dirs: list[str], keep_artifacts: bool
+) -> dict | None:
     """Return the clause-redundancy-summary JSONL record for one function.
 
     Arguments:
         source (Path): The path to the file containing the function.
         function (str): The function whose contract clauses should be scored.
+        include_dirs (list[str]): Directories forwarded to CBMC as include paths.
         keep_artifacts (bool): True iff the removed-clause files should be retained after
             evaluation.
 
@@ -287,7 +296,7 @@ def _redundancy_record(source: Path, function: str, *, keep_artifacts: bool) -> 
             function could not be scored (for example, because it does not verify).
     """
     clause_redundancy_score = compute_clause_redundancy_score(
-        str(source), function, keep_artifacts=keep_artifacts
+        str(source), function, keep_artifacts=keep_artifacts, include_dirs=include_dirs
     )
     if not clause_redundancy_score:
         logger.warning(f"No redundancy score calculation reported for: '{source!s}#{function}'")
