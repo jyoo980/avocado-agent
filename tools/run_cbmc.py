@@ -1139,7 +1139,10 @@ def _list_goto_functions(
         tuple[set[str], set[str]] | None: The functions with a body, and the functions with a
             contract, in the compiled program; None when it could not be compiled or listed.
     """
-    include_flags = " ".join(f"-I {shlex.quote(d)}" for d in include_dirs or [])
+    # The commands run in a scratch directory, so paths are resolved first.
+    include_flags = " ".join(
+        f"-I {shlex.quote(str(Path(d).resolve()))}" for d in include_dirs or []
+    )
     source = shlex.quote(str(Path(file_path).resolve()))
     try:
         with tempfile.TemporaryDirectory(prefix="avocado-compiled-") as scratch_dir:
