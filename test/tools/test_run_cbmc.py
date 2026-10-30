@@ -193,6 +193,16 @@ def test_format_failure_response_omits_failure_section_for_compile_failure() -> 
     assert "failed at goto-cc" in response
 
 
+def test_format_failure_response_keeps_end_of_stdout_when_streams_are_huge() -> None:
+    # Each dropped count has more digits than `_MAX_RESPONSE_CHARS`; the response must still
+    # fit the budget without clipping the end of the stdout tail.
+    stdout = "noise\n" * 400_000 + "VERIFICATION FAILED\n"
+    response = _format_failure_response("f", CbmcStep.CBMC, stdout=stdout, stderr="e\n" * 1_200_000)
+
+    assert len(response) <= _MAX_RESPONSE_CHARS
+    assert response.endswith("VERIFICATION FAILED\n\n")
+
+
 def test_format_failure_response_truncates_but_keeps_failures_leading() -> None:
     # A pathological stdout far exceeds the budget; the response must stay bounded while
     # still leading with the (capped) FAILURE lines and switching the streams to tails.
@@ -204,16 +214,6 @@ def test_format_failure_response_truncates_but_keeps_failures_leading() -> None:
     assert "[f.assertion.7] line 3: FAILURE" in response[:2000]
     assert "--- stderr (tail) ---" in response
     assert "--- stdout (tail) ---" in response
-
-
-def test_format_failure_response_keeps_end_of_stdout_when_streams_are_huge() -> None:
-    # Each dropped count has more digits than `_MAX_RESPONSE_CHARS`; the response must still
-    # fit the budget without clipping the end of the stdout tail.
-    stdout = "noise\n" * 400_000 + "VERIFICATION FAILED\n"
-    response = _format_failure_response("f", CbmcStep.CBMC, stdout=stdout, stderr="e\n" * 1_200_000)
-
-    assert len(response) <= _MAX_RESPONSE_CHARS
-    assert response.endswith("VERIFICATION FAILED\n\n")
 
 
 def test_format_mutation_success_section_renders_kill_score_and_survivor_diff() -> None:

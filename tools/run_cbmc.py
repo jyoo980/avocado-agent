@@ -587,8 +587,12 @@ def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, 
     # cannot push us over budget.
     digit_pad = str(max(len(stdout), len(stderr)))
     marker = f"[... {digit_pad} characters truncated ...]\n"
+    # Each section, as rendered by `_tail_section`, is a label line, the marker, the tail, and
+    # a terminating newline.
     fixed = (
-        f"{header}{failure_section}--- stderr (tail) ---\n{marker}--- stdout (tail) ---\n{marker}"
+        f"{header}{failure_section}"
+        f"--- stderr (tail) ---\n{marker}\n"
+        f"--- stdout (tail) ---\n{marker}\n"
     )
     remaining = max(_MAX_RESPONSE_CHARS - len(fixed), 0)
     stdout_budget = int(remaining * _STDOUT_TAIL_SHARE)
@@ -598,8 +602,8 @@ def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, 
     stdout_section = _tail_section("stdout (tail)", stdout, stdout_budget)
 
     response = f"{header}{failure_section}{stderr_section}{stdout_section}"
-    # Hard clamp: the per-section budget accounting can drift by a few chars
-    # against the `fixed` estimate, so guarantee we never exceed the cap.
+    # Hard clamp: the budget accounting above already keeps the response within the cap; this
+    # guarantees it even if that accounting is wrong.
     return response[:_MAX_RESPONSE_CHARS]
 
 
