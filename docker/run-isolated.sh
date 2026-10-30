@@ -90,9 +90,11 @@ OUT_DIR="$(mktemp -d /tmp/avocado-out.XXXXXX)"
 # shellcheck disable=SC2329
 publish() {
   # Save the conversation transcript(s) before the config dir disappears with the container.
+  # A project directory holds <session-id>.jsonl for each session and, for a session that
+  # started subagents, <session-id>/subagents/*.jsonl; copy all of it.
   if compgen -G "${CLAUDE_CONFIG_DIR:-/nonexistent}/projects/*/*.jsonl" >/dev/null; then
     mkdir -p "$OUT_DIR/transcripts"
-    cp "$CLAUDE_CONFIG_DIR"/projects/*/*.jsonl "$OUT_DIR/transcripts/" 2>/dev/null || true
+    cp -a "$CLAUDE_CONFIG_DIR"/projects/*/. "$OUT_DIR/transcripts/" 2>/dev/null || true
   fi
   if [ "$RUNNER" = claude ]; then
     printf '%s\n' "$TARGET" >"$OUT_DIR/prompt.txt"
@@ -146,7 +148,8 @@ fi
 # file's "model". The settings file may not be strict JSON, hence grep rather than jq.
 MODEL="${AVOCADO_MODEL:-}"
 if [ -z "$MODEL" ] && [ -f /app/.claude/settings.json ]; then
-  MODEL="$(grep -oE '"model"[[:space:]]*:[[:space:]]*"[^"]+"' /app/.claude/settings.json \
+  # `|| true`: with no "model" key, grep fails, and pipefail would abort the script.
+  MODEL="$({ grep -oE '"model"[[:space:]]*:[[:space:]]*"[^"]+"' /app/.claude/settings.json || true; } \
     | head -1 | sed -E 's/.*:[[:space:]]*"([^"]+)"/\1/')"
 fi
 MODEL_ARGS=()

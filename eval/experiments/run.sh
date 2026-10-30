@@ -31,7 +31,8 @@
 #   subject/            the subject copy, with the agent's specs and any files it wrote; with
 #                       avocado-verify, also its <file>-avocado-verify.jsonl per-function log
 #   claude-output.json  (claude runner) the `claude -p --output-format json` result
-#   transcripts/        the Claude Code conversation transcript(s), one per session
+#   transcripts/        the Claude Code conversation transcript(s): <session-id>.jsonl per
+#                       session, and <session-id>/subagents/ for any subagents it started
 #   prompt.txt          (claude runner) the prompt that was sent
 #   command.txt         the command line the runner was launched with
 #   run.log             stdout+stderr of the run; with avocado-verify, the driver's log
@@ -167,6 +168,13 @@ TAG="$(printf '%s' "$TAG" | tr -c 'A-Za-z0-9_.-' '-')"
 BATCH_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(head -c 3 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 BATCH_DIR="$RESULTS/$TAG/$BATCH_ID"
 mkdir -p "$BATCH_DIR"
+# A detached batch still writes to the terminal it was launched from. Once that terminal is gone
+# (or a `| tee` reading it has died), a write fails, and under `set -e` a failed `echo` would end
+# the batch. Send all output through a `tee` that keeps going when the terminal fails (-p) and
+# also writes `batch.log`.
+if [ -n "${AVOCADO_DETACHED:-}" ]; then
+  exec > >(tee -p -a "$BATCH_DIR/batch.log") 2>&1
+fi
 echo "results: $BATCH_DIR"
 
 # `kill <pid>` (TERM or INT) stops this batch's containers; each run then publishes what it has

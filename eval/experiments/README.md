@@ -50,7 +50,8 @@ give a treatment extra docs or tools, track them and add them to `HARNESS_FILES`
   `~/.local/share/avocado-experiments/<tag>/<timestamp>/run-<i>/` holds `subject/`,
   `transcripts/`, `command.txt`, `run.log`, `exit-code` and, with the `claude` runner,
   `claude-output.json` and `prompt.txt`. The batch directory holds `batch-info.txt`
-  recording the runner, the harness commit and the parameters. Override the location with
+  recording the runner, the harness commit and the parameters, and `batch.log` with the
+  batch's progress lines. Override the location with
   `--results <dir>` or `AVOCADO_RESULTS_DIR`.
 - `--memory`/`--cpus` cap each container, so an OOM-killed CBMC only costs that one run,
   `--timeout <sec>` caps a run's wall-clock time, and `-j` runs several containers at once.
@@ -113,7 +114,8 @@ and profile name).
 
 A batch detaches from the terminal it was launched from (it re-executes itself under
 `setsid`), so closing that terminal or losing an SSH connection does not kill it; `nohup` is
-not needed, but `> launch.log 2>&1 &` still keeps the batch's progress lines somewhere. Ctrl-C
+not needed. The batch's progress lines go both to that terminal (while it exists) and to
+`batch.log` in the batch directory. Ctrl-C
 therefore does not stop a batch either. To stop one, kill the process recorded in its
 `run.pid`:
 
@@ -124,7 +126,8 @@ This stops the batch's containers; each run then saves its transcript and record
 
 Each `run-<i>/exit-code` is the runner's exit code (`124` means `--timeout` was hit;
 `avocado-verify` exits `2` when it stopped on a usage limit). `transcripts/` has the full
-conversation(s) and `subject/` the specified program. With the `claude` runner
+conversation(s), as `<session-id>.jsonl` plus `<session-id>/subagents/*.jsonl` for any
+subagents, and `subject/` the specified program. With the `claude` runner
 `claude-output.json` has the session id, cost and final message. With `avocado-verify`,
 `run.log` is the driver's log (what the manual procedure saved as `claude-output.json`) and
 `subject/<file>-avocado-verify.jsonl` holds one record per function plus a final
