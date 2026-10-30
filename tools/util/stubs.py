@@ -35,10 +35,10 @@ def build_stub_index(stubs_dir: Path = _STUBS_DIR) -> dict[str, Path]:
     paths = sorted(stubs_dir.glob("*.c"))
     for stub_path in paths:
         for name in _FUNCTION_MARKER.findall(stub_path.read_text(encoding="utf-8")):
-            if name in index:
-                msg = f"Stub definition for '{name}' already exists in the stub index"
+            if index.get(name, stub_path) != stub_path:
+                msg = f"Function '{name}' is modeled by both {index[name]} and {stub_path}"
                 raise ValueError(msg)
-            index.setdefault(name, stub_path)
+            index[name] = stub_path
     return index
 
 
