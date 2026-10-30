@@ -52,7 +52,7 @@ _EXIT_SOME_UNVERIFIED = 1
 # 2 indicates an early stop due to a usage limit being hit.
 _EXIT_USAGE_LIMITED = 2
 
-# `main` is never specified (see CLAUDE.md); skip it wherever it appears in the ordering.
+# `main` is never specified (see AGENTS.md); skip it wherever it appears in the ordering.
 _UNVERIFIABLE_FUNCTIONS = frozenset({"main"})
 
 # Cap on the raw stdout/stderr snippet kept when Claude's JSON output cannot be parsed.
@@ -249,6 +249,10 @@ def main() -> None:
         log_path = file_path.with_name(f"{file_path.stem}-avocado-verify.jsonl")
         already_done = set()
         log_path.write_text("", encoding="utf-8")  # Fresh run: truncate any prior log.
+        attempts_log_path = file_path.with_name(
+            f"{file_path.stem}{VERIFICATION_ATTEMPTS_LOG_SUFFIX}"
+        )
+        attempts_log_path.write_text("", encoding="utf-8")  # Scope the attempts log to this run.
 
     num_functions = len(functions)
     pending = [function for function in functions if function not in already_done]
@@ -454,7 +458,7 @@ def is_spec_improvable_with_mutation_testing(
     function_has_mutants = False
     try:
         function_has_mutants = bool(get_mutants(source_path, function))
-    except Exception:  # noqa: BLE001 - any generation failure should fall back to default behavior.
+    except Exception:  # ruff: ignore[blind-except] - any generation failure should fall back to default behavior.
         logger.error(f"Failure in mutant generation for '{function}' in {source_path}")
         # Assume mutants exist in the worst-case scenario.
         function_has_mutants = True

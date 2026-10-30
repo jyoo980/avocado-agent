@@ -16,16 +16,10 @@
 
     **All operations from this point on occur within the container**.
 
-3. Inside the container, run the following to enable Claude to run with `--dangerously-skip-permissions` enabled:
+3. Run the following command to kick off specification generation and capture output:
 
     ```sh
-    export IS_SANDBOX=1
-    ```
-
-    Then, run the following command to kick off specification generation and capture output:
-
-    ```sh
-    % claude "Carefully read @CLAUDE.md. Then, verify the C source files in <REPO_PATH>" --dangerously-skip-permissions --print --output-format json > claude-output-<REPO_PATH>.json
+    % avocado-verify --file <PATH_TO_C_FILE>
     ```
 
 4. Save the output and metadata with the `save-session-metadata` script (inside the container):

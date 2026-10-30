@@ -15,17 +15,21 @@ from .stubs import (
     get_unstubbed_external_callees_for,
 )
 from .tree_sitter_utils import (
+    FunctionSloc,
     get_call_graph,
     get_function_definition,
+    get_function_sloc,
     get_functions_with_cprover_annotations,
 )
 
 __all__ = [
     "CallGraph",
     "CallGraphCallees",
+    "FunctionSloc",
     "build_stub_index",
     "get_call_graph",
     "get_function_definition",
+    "get_function_sloc",
     "get_functions_with_cprover_annotations",
     "get_in_file_callees_for",
     "get_in_file_callers_of",
