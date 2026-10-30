@@ -1,4 +1,4 @@
-"""Tests for in-file caller/callee helpers in `tools.util.stubs`."""
+"""Tests for the stub index and in-file caller/callee helpers in `tools.util`."""
 
 from pathlib import Path
 

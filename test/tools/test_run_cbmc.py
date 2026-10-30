@@ -10,12 +10,12 @@ from tools.run_cbmc import (
     RunCbmcResult,
     _MAX_RESPONSE_CHARS,
     _format_failure_response,
-    _get_tail_within_budget,
     _get_cbmc_check_command,
     _get_goto_cc_command,
     _get_goto_instrument_add_library_command,
     _get_goto_instrument_contract_command,
     _get_goto_instrument_unwind_command,
+    _get_tail_within_budget,
     compile_with_goto_cc,
     run_cbmc,
 )
@@ -217,6 +217,10 @@ def test_get_tail_within_budget_drops_short_partial_leading_line() -> None:
 
     assert tail == "line one\nline one\n"
     assert dropped == len(content) - len(tail)
+
+
+def test_get_tail_within_budget_keeps_first_line_when_window_starts_at_line_boundary() -> None:
+    assert _get_tail_within_budget("aaa\nbbb\nccc\n", 8) == ("bbb\nccc\n", 4)
 
 
 def test_get_tail_within_budget_keeps_single_long_line() -> None:

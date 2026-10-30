@@ -103,7 +103,7 @@ class RunCbmcResult:
         `is_function_verified`.
 
         """
-        return self.failed_step is None
+        return self.failed_step is None and not self.timed_out
 
     @property
     def is_function_verified(self) -> bool:
@@ -211,7 +211,7 @@ def run_cbmc(
     call_graph: CallGraph | None = None,
     cwd: str | None = None,
 ) -> RunCbmcResult:
-    """Run CBMC on the given function with loop unwinding = `_UNWIND`, depth = `_DEPTH`.
+    """Run CBMC on the given function with loop unwinding = `_CBMC_UNWIND`, depth = `_CBMC_DEPTH`.
 
     The pipeline is split into three logical steps — `goto-cc`, `goto-instrument`, and
     `cbmc` — each run as one or more subprocesses so that failures can be attributed to a
@@ -646,10 +646,10 @@ def _failure_lines_section(stdout: str) -> str:
 def _get_tail_within_budget(content: str, budget: int) -> tuple[str, int]:
     """Return at most the last `budget` chars of `content`, preferably starting at a line boundary.
 
-    When `content` is truncated, the partial line at the front of the kept window is discarded
-    so that the tail starts at a line boundary, unless that partial line fills at least half the
-    window. In that case, the partial line is kept, because discarding it would discard most of
-    the output (for example, when the output is one very long line).
+    When `content` is truncated and the kept window starts in the middle of a line, that partial
+    line is discarded so that the tail starts at a line boundary, unless the partial line fills
+    at least half the window. In that case, the partial line is kept, because discarding it would
+    discard most of the output (for example, when the output is one very long line).
 
     Args:
         content (str): The content to truncate to its tail.
@@ -663,10 +663,12 @@ def _get_tail_within_budget(content: str, budget: int) -> tuple[str, int]:
     if len(content) <= budget:
         return content, 0
     # Not `content[-budget:]`, which is all of `content` when `budget` is 0.
-    tail = content[len(content) - budget :]
-    partial_line_length = tail.find("\n")
-    if 0 <= partial_line_length < budget // 2:
-        tail = tail[partial_line_length + 1 :]
+    start = len(content) - budget
+    tail = content[start:]
+    if content[start - 1] != "\n":
+        partial_line_length = tail.find("\n")
+        if 0 <= partial_line_length < budget // 2:
+            tail = tail[partial_line_length + 1 :]
     return tail, len(content) - len(tail)
 
 

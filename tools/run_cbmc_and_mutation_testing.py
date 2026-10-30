@@ -120,3 +120,7 @@ def _log_verification_attempt(
     except OSError:
         # Best-effort: never let attempt logging stop the tool from making progress.
         pass
+
+
+if __name__ == "__main__":
+    main()
