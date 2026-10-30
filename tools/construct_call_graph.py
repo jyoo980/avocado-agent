@@ -14,9 +14,15 @@ Usage:
 
 import argparse
 import json
+import threading
 from pathlib import Path
 
 from tools.util import get_call_graph
+
+# `construct_call_graph` caches its JSON next to the source and is called from concurrent code
+# paths (e.g. the evaluation driver scoring several functions of one file at once). Serialize the
+# exists-check and write so no caller ever reads a partially written file.
+_CALL_GRAPH_LOCK = threading.Lock()
 
 
 def main() -> None:
@@ -45,10 +51,11 @@ def construct_call_graph(
     """
     source_path = Path(path_to_file_to_verify)
     path_to_call_graph = source_path.with_name(f"{source_path.stem}-callgraph.json")
-    if path_to_call_graph.exists():
-        return str(path_to_call_graph)
-    call_graph = get_call_graph(path_to_file_to_verify)
-    path_to_call_graph.write_text(json.dumps(call_graph, indent=4))
+    with _CALL_GRAPH_LOCK:
+        if path_to_call_graph.exists():
+            return str(path_to_call_graph)
+        call_graph = get_call_graph(path_to_file_to_verify)
+        path_to_call_graph.write_text(json.dumps(call_graph, indent=4))
     return str(path_to_call_graph)
 
 

@@ -11,8 +11,15 @@ CONTAINER_NAME ?= avocado-agent
 build-image:
 	$(CONTAINER_ENGINE) build -t $(IMAGE_NAME) .
 
+# Memory ceiling for the container.
+# Parallelized CBMC runs in a container must not exhaust the host.
+CONTAINER_MEMORY ?= 256g
+
 run:
-	$(CONTAINER_ENGINE) run -it --rm --name $(CONTAINER_NAME) -v $(PWD):/app $(IMAGE_NAME)
+	$(CONTAINER_ENGINE) run -it --rm --name $(CONTAINER_NAME) \
+	  --memory=$(CONTAINER_MEMORY) --memory-swap=$(CONTAINER_MEMORY) \
+	  --oom-score-adj=500 \
+	  -v $(PWD):/app $(IMAGE_NAME)
 
 all: build-image test checks
 test:
@@ -24,7 +31,8 @@ checks:
 
 # Delete artifacts from CBMC runs.
 clean:
-	find . \( -name '*.goto' -o -name '*callgraph.json' -o -name '*.jsonl' \) -delete
+	find . \( -name '*.goto' -o -name '*callgraph.json' -o -name '*.jsonl' \
+		-o -name '*-avocado-run-state.json' \) -delete
 	find . -type d -name '__pycache__' -exec rm -rf {} +
 
 # Delete artifacts from mutation testing runs.

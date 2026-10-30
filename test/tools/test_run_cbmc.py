@@ -7,6 +7,7 @@ from subprocess import CompletedProcess
 from eval.mutants.mutate_function import Mutant
 from tools.run_cbmc import (
     CbmcStep,
+    PipelineVariant,
     RunCbmcResult,
     _MAX_RESPONSE_CHARS,
     _format_failure_response,
@@ -74,9 +75,19 @@ def test_get_goto_instrument_contract_command_includes_self_for_inductive_recurs
     assert "--enforce-contract quickSort" in command
 
 
-def test_get_goto_instrument_add_library_command() -> None:
+def test_get_goto_instrument_add_library_command_targets_the_instrumented_binary() -> None:
     command = _get_goto_instrument_add_library_command("swap")
-    assert command == "goto-instrument --add-library swap.goto swap.goto"
+    assert command == (
+        "goto-instrument --add-library checking-swap-contracts.goto checking-swap-contracts.goto"
+    )
+
+
+def test_get_goto_instrument_unwind_command_on_another_binary() -> None:
+    command = _get_goto_instrument_unwind_command("swap", goto_file="checking-swap-contracts.goto")
+    assert command == (
+        "goto-instrument --partial-loops --unwind 5 "
+        "checking-swap-contracts.goto checking-swap-contracts.goto"
+    )
 
 
 def test_get_cbmc_check_command() -> None:
@@ -386,3 +397,43 @@ def test_print_mutation_progress_buckets_undecided_mutants(capsys) -> None:
         "[mutation testing] 2/2 done "
         "(killed=0 survived=0 timed_out=1 compile_failed=1 instrumentation_failed=0)" in capsys.readouterr().err
     )
+
+
+ALLOCATING_SOURCE = """#include <stdlib.h>
+struct abuf { char *b; int len; };
+
+char *mk(int n)
+__CPROVER_requires(n > 0 && n < 8)
+__CPROVER_ensures(__CPROVER_return_value == NULL || __CPROVER_r_ok(__CPROVER_return_value, n))
+{
+    return malloc(n);
+}
+
+void abFree(struct abuf *ab)
+__CPROVER_requires(__CPROVER_is_fresh(ab, sizeof(struct abuf)))
+__CPROVER_assigns()
+{
+    free(ab->b);
+}
+"""
+
+
+def test_the_library_is_added_after_the_contract_is_enforced(tmp_path: Path) -> None:
+    # goto-instrument aborts when it enforces a contract on a binary that already holds the
+    # library's `malloc` and `free` models. The missing-body retry adds the library afterwards,
+    # so the run ends in a verdict, not a crash.
+    source = tmp_path / "alloc.c"
+    source.write_text(ALLOCATING_SOURCE, encoding="utf-8")
+    variant = PipelineVariant(prevent_macro_expansion=True)
+    results = {
+        function: run_cbmc(
+            function_to_verify=function,
+            file_containing_function_to_verify=str(source),
+            cwd=str(tmp_path),
+            variant=variant,
+        )
+        for function in ("mk", "abFree")
+    }
+    assert results["mk"].cbmc_ran_successfully
+    # abFree's contract leaves out the freed object, so the run fails in cbmc, not before.
+    assert results["abFree"].failed_step is CbmcStep.CBMC
