@@ -14,7 +14,6 @@ Usage:
 import argparse
 import json
 import sys
-import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -51,7 +50,7 @@ def main() -> None:
             f"pipeline once per mutant (concurrently, up to {_AGENT_MUTANT_TIMEOUT_SEC} s each); "
             "this can take a few minutes, during which the tool is mostly silent. This is "
             "expected, not a hang -- do not interrupt the process. Consider running it in the "
-            "and polling for completion."
+            "background and polling for completion."
         )
     )
     parser.add_argument("--function", required=True, help="Name of the function to verify.")
@@ -76,7 +75,11 @@ def main() -> None:
         filter=lambda record: "failed to compile" in record["message"],
     )
 
-    result = verify_function(args.function, args.file, include_dirs=args.include_dirs)
+    result = run_cbmc(
+        function_to_verify=args.function,
+        file_containing_function_to_verify=args.file,
+        include_dirs=args.include_dirs,
+    )
     # Record this top-level verification attempt (pass or fail) so `avocado-verify` can gate its
     # per-function loop on the agent having actually attempted verification often enough.
     _log_verification_attempt(args.file, args.function, result)
@@ -97,35 +100,6 @@ def main() -> None:
     else:
         print(result.response)
         sys.exit(result.returncode)
-
-
-def verify_function(
-    function: str, file_path: str, include_dirs: list[str] | None = None
-) -> RunCbmcResult:
-    """Run the CBMC pipeline on `function` in a private scratch directory.
-
-    The pipeline writes its `<function>.goto` / `checking-<function>-contracts.goto` intermediates
-    relative to its working directory. Running it in a fresh temporary directory keeps those files
-    out of the caller's working directory and lets several `avocado-run-cbmc` processes (e.g. agent
-    sessions for different files that happen to share a function name) run concurrently without
-    clobbering one another. Paths are resolved first because the pipeline's commands are executed
-    relative to the scratch directory.
-
-    Args:
-        function (str): Name of the function to verify.
-        file_path (str): Path to the C file defining the function.
-        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
-
-    Returns:
-        RunCbmcResult: The outcome of the run.
-    """
-    with tempfile.TemporaryDirectory(prefix="avocado-verify-") as scratch_dir:
-        return run_cbmc(
-            function_to_verify=function,
-            file_containing_function_to_verify=str(Path(file_path).resolve()),
-            include_dirs=[str(Path(d).resolve()) for d in include_dirs or []],
-            cwd=scratch_dir,
-        )
 
 
 def _log_verification_attempt(
