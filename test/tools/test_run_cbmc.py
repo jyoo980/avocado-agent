@@ -26,6 +26,7 @@ from tools.run_cbmc import (
     compile_with_goto_cc,
     max_concurrent_subprocesses,
     run_cbmc,
+    run_goto_cc,
     run_shell_command,
 )
 from tools.util.mutation import MutantVerificationResult, MutationScore, _MAX_MUTATION_SECTION_CHARS, _print_mutation_progress, get_mutation_testing_results_for_client
@@ -121,6 +122,24 @@ def test_compile_with_goto_cc_returns_zero_for_valid_c(tmp_path: Path) -> None:
             print(result.stderr)
         result.check_returncode()
     assert result == 0
+
+
+def test_run_goto_cc_runs_through_run_shell_command(tmp_path: Path, monkeypatch) -> None:
+    # Like every pipeline subprocess, `goto-cc` runs through `run_shell_command`, which takes a
+    # subprocess slot and kills the whole process tree on timeout.
+    calls: list[tuple[str, str | None]] = []
+    run_shell_command_ = run_cbmc_module.run_shell_command
+
+    def recording_run_shell_command(command: str, *args, **kwargs):
+        calls.append((command, kwargs.get("cwd")))
+        return run_shell_command_(command, *args, **kwargs)
+
+    monkeypatch.setattr(run_cbmc_module, "run_shell_command", recording_run_shell_command)
+    src = Path("test/data/no_callees.c").resolve()
+    result = run_goto_cc("baz", str(src), cwd=str(tmp_path))
+    assert result is not None and result.returncode == 0, result
+    assert [(command.split()[0], cwd) for command, cwd in calls] == [("goto-cc", str(tmp_path))]
+    assert (tmp_path / "baz.goto").exists()
 
 
 def test_compile_with_goto_cc_returns_nonzero_for_invalid_c(tmp_path: Path) -> None:
