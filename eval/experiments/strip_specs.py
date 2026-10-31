@@ -14,7 +14,7 @@ source reads like an unannotated program. In-body intrinsics (e.g. `__CPROVER_as
 alone -- no benchmark currently contains any -- so the program text is otherwise unchanged.
 
 Usage:
-    % scripts/experiments/strip_specs.py <SRC_DIR> <DEST_DIR>
+    % eval/experiments/strip_specs.py <SRC_DIR> <DEST_DIR>
 """
 
 from __future__ import annotations

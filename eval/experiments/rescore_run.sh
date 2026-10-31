@@ -6,7 +6,7 @@
 # every arm is scored by the same code, or to recover a scoring pass that was interrupted.
 #
 # Usage:
-#   scripts/experiments/rescore_run.sh <label> <run-id> <benchmark> [<benchmark> ...]
+#   eval/experiments/rescore_run.sh <label> <run-id> <benchmark> [<benchmark> ...]
 #
 # Reads `<data-dir>/runs/<label>/<run-id>/<benchmark>/` and overwrites
 # `<data-dir>/<label>-<run-id>-<benchmark>.jsonl`. AVOCADO_DATA_DIR defaults to this checkout's

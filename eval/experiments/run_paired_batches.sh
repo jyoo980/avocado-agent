@@ -4,11 +4,10 @@
 # Each batch starts one run of each arm at the same moment and waits for both before starting the
 # next batch. Pairing matters: a run's wall-clock depends heavily on how much CBMC work is
 # competing with it, so the two arms must share the machine. Running only two agent sessions at a
-# time also keeps a pass inside the account's usage limit, which a wider fan-out exhausted (see
-# "Usage limits, not machine time" in FINDINGS.md).
+# time also keeps a pass inside the account's usage limit, which a wider fan-out exhausted.
 #
 # Usage:
-#   scripts/experiments/run_paired_batches.sh <label>:<checkout>[:<jobs>] <label>:<checkout>[:<jobs>] \
+#   eval/experiments/run_paired_batches.sh <label>:<checkout>[:<jobs>] <label>:<checkout>[:<jobs>] \
 #       -- <benchmark-dir> [<benchmark-dir> ...] -- <run-id> [<run-id> ...]
 #
 # Each <checkout> is a git worktree of this repository, synced with `uv sync --frozen`, pinned to
@@ -17,21 +16,9 @@
 # `avocado-experimental-data`), and every arm is scored by AVOCADO_SCORER_ROOT (default: this
 # checkout) -- but see the note in that variable's documentation in run_agent_experiment.sh.
 #
-# The measurements in WORK_SO_FAR.md were produced by machine-local copies of this script; the
-# invocations they correspond to are:
-#
-#   # iteration tier, baseline vs the kept changes (runs 4, 5, 6)
-#   run_paired_batches.sh base:/root/avocado-base2 final:/root/avocado-t2-1 \
-#       -- eval/benchmarks/quicksort eval/benchmarks/csv_parser -- 4 5 6
-#
-#   # iteration tier, kept changes vs treatment T3 (runs 7, 8, 9)
-#   run_paired_batches.sh final:/root/avocado-t2-1 t3:/root/avocado-t3 \
-#       -- eval/benchmarks/quicksort eval/benchmarks/csv_parser -- 7 8 9
-#
-#   # confirmation tier (runs 14, 15; 16 was lost to the usage limit)
-#   AVOCADO_SKIP_GLOB='*/polarssl/*' run_paired_batches.sh \
-#       base:/root/avocado-base2 final:/root/avocado-t2-1 \
-#       -- eval/benchmarks/mkey -- 14 15
+# Example (two arms over two benchmarks, runs 1, 2 and 3 of each):
+#   eval/experiments/run_paired_batches.sh base:/path/to/base-worktree new:/path/to/new-worktree \
+#       -- eval/benchmarks/quicksort eval/benchmarks/csv_parser -- 1 2 3
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

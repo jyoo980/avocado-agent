@@ -13,7 +13,7 @@ Prints, per arm, the split between model time and tool time (by tool kind), and 
 cost the most, so the question "what is the wall-clock actually spent on" has a measured answer.
 
 Usage:
-    % scripts/experiments/session_timeline.py --projects-dir <DIR> <RUN_LOG>... \
+    % eval/experiments/session_timeline.py --projects-dir <DIR> <RUN_LOG>... \
           [--top N] [--timeout 1800]
 """
 

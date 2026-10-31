@@ -22,9 +22,3 @@
 # Other
 avocado-experimental-data
 *.egg-info/
-
-# Validation-tier benchmark, cloned in locally; must never be committed (see GOAL.md).
-lz4_lib/
-# Smoke-test runs on it carry copies of its sources, so they stay local too.
-smoke/lz4*
-.DS_Store

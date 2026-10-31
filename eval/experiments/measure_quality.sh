@@ -6,10 +6,10 @@
 # GNU `time` output (wall/user/sys) to `avocado-experimental-data/<label>-<benchmark>.time`.
 #
 # Usage:
-#   scripts/experiments/measure_quality.sh <label> <benchmark-dir> [<benchmark-dir> ...]
+#   eval/experiments/measure_quality.sh <label> <benchmark-dir> [<benchmark-dir> ...]
 #
 # Example (baseline over the iteration tier):
-#   scripts/experiments/measure_quality.sh baseline eval/benchmarks/quicksort eval/benchmarks/csv_parser
+#   eval/experiments/measure_quality.sh baseline eval/benchmarks/quicksort eval/benchmarks/csv_parser
 #
 # The benchmark name used in output file names is the directory's basename (e.g. `quicksort`).
 # Benchmarks are processed sequentially so timings are not perturbed by one another. CBMC artifacts

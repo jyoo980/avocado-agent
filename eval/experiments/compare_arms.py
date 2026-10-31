@@ -19,7 +19,7 @@ Because the arms are run in paired batches (one run of each arm at a time, on th
 the per-batch difference is the meaningful quantity; the report prints it alongside the arm means.
 
 Usage:
-    % scripts/experiments/compare_arms.py --baseline base --treatment final --runs 4 5 6 \
+    % eval/experiments/compare_arms.py --baseline base --treatment final --runs 4 5 6 \
           --benchmarks quicksort csv_parser [--data-dir avocado-experimental-data]
 """
 

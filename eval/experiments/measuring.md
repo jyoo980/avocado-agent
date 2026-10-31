@@ -1,22 +1,31 @@
-# Experiment tooling
+# Measuring Avocado Agent
 
-Scripts used to measure Avocado Agent while changing it. Results and analysis
-live in `../../WORK_SO_FAR.md`; the hypotheses behind them live in
-`../../FINDINGS.md`.
+Scripts for measuring Avocado Agent while changing it: scoring specifications,
+running agent experiments on the host, and summarizing and comparing runs.
 
-## Where the data goes, and why you may not have it
+## Which launcher to use
 
-Everything these scripts write lands in `avocado-experimental-data/` at the
-repository root, which **`.gitignore` excludes**. That is the repository's own
-convention and it predates this work, but it has a consequence worth stating
-plainly: every JSONL and `.time` file cited in `WORK_SO_FAR.md` and
-`FINDINGS.md` is local to the machine that produced it. A fresh clone has the
-documents and the scripts but none of the evidence. To re-derive it, re-run the
-commands quoted in those documents.
+Two kinds of script in this directory start agent runs:
 
-The same applies to the branches those documents mention (`addlib`,
-`depth2000`, `t3`), which record rejected treatments. They were never pushed,
-so they exist only where the work was done.
+- `run.sh` runs each run in a fresh container, so no run can see another's
+  specifications, session transcripts or memory. Use it for measurements that
+  must be repeatable and isolated, such as numbers to report.
+- `run_agent_experiment.sh` and `run_paired_batches.sh` run `avocado-verify`
+  on the host, from a local checkout, and score the result. They are quicker to
+  set up and suit iterating on a change; `run_paired_batches.sh` puts two arms
+  under the same machine load. Runs on one machine share Claude Code's
+  auto-memory (see the last item under [Traps](#traps)).
+
+The summarizing and comparison scripts below read the run directories that
+either kind of launcher writes.
+
+## Where the data goes
+
+Everything the host-side scripts write lands in `avocado-experimental-data/` at
+the repository root, which **`.gitignore` excludes**. Every JSONL and `.time`
+file they produce is therefore local to the machine that produced it: a fresh
+clone has the scripts but none of the data. To re-derive the data, re-run the
+scripts.
 
 ## Deterministic measurement, no agent involved
 
@@ -38,8 +47,7 @@ so they exist only where the work was done.
   strip, `avocado-verify` over each file, then score. Its header documents the
   environment variables, including `AVOCADO_SKIP_GLOB` for vendored sources.
 - `run_paired_batches.sh` runs two arms concurrently, one batch at a time, so
-  both see the same machine load. Its header lists the exact invocations behind
-  the numbers in `WORK_SO_FAR.md`.
+  both see the same machine load.
 - `progress.sh <run-dir>...` prints per-function outcome, turns, agent seconds
   and cost for a run in flight.
 - `summarize_agent_runs.py <run-dir>...` aggregates a finished run, charging a

@@ -2,7 +2,7 @@
 # Print a one-line-per-function progress summary for every agent run directory given.
 #
 # Usage:
-#   scripts/experiments/progress.sh <RUN_DIR> [<RUN_DIR> ...]
+#   eval/experiments/progress.sh <RUN_DIR> [<RUN_DIR> ...]
 #
 # Reads the `<stem>-avocado-verify.jsonl` logs beneath each directory and prints, per function,
 # the outcome, session/turn counts, agent seconds, and cost, followed by the run's total.

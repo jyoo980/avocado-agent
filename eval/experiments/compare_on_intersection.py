@@ -12,7 +12,7 @@ A function that carries a contract which does not verify contributes a kill scor
 in `compare_arms.py`; a function with no mutants is excluded from both arms.
 
 Usage:
-    % scripts/experiments/compare_on_intersection.py <BASELINE_JSONL> <TREATMENT_JSONL>
+    % eval/experiments/compare_on_intersection.py <BASELINE_JSONL> <TREATMENT_JSONL>
 """
 
 from __future__ import annotations

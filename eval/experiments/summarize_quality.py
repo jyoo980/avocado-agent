@@ -14,7 +14,7 @@ given (e.g. three independent agent runs), a final block reports the mean and sp
 of both aggregates across files, which is the noise floor for agent-time experiments.
 
 Usage:
-    % scripts/experiments/summarize_quality.py <JSONL> [<JSONL> ...] [--quiet]
+    % eval/experiments/summarize_quality.py <JSONL> [<JSONL> ...] [--quiet]
 """
 
 from __future__ import annotations

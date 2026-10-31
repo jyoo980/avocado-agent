@@ -13,10 +13,10 @@
 #      writing `avocado-experimental-data/<label>-<run-id>-<benchmark>.jsonl`.
 #
 # Usage:
-#   scripts/experiments/run_agent_experiment.sh <label> <run-id> <benchmark-dir> [<benchmark-dir> ...]
+#   eval/experiments/run_agent_experiment.sh <label> <run-id> <benchmark-dir> [<benchmark-dir> ...]
 #
 # Example (first baseline run over the iteration tier):
-#   scripts/experiments/run_agent_experiment.sh baseline 1 eval/benchmarks/quicksort eval/benchmarks/csv_parser
+#   eval/experiments/run_agent_experiment.sh baseline 1 eval/benchmarks/quicksort eval/benchmarks/csv_parser
 #
 # Environment:
 #   CLAUDE_TIMEOUT      Per-function `claude -p` timeout in seconds, forwarded to

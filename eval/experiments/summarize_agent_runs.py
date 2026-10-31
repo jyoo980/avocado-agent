@@ -16,7 +16,7 @@ Walks one or more run directories (as laid out by `run_agent_experiment.sh`), re
 With several run directories, a final block reports the mean and spread of each aggregate.
 
 Usage:
-    % scripts/experiments/summarize_agent_runs.py <RUN_DIR> [<RUN_DIR> ...]
+    % eval/experiments/summarize_agent_runs.py <RUN_DIR> [<RUN_DIR> ...]
 """
 
 from __future__ import annotations

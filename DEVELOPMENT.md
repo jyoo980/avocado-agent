@@ -41,18 +41,10 @@ Please feel free to open a pull request (draft pull requests are fine,
   the scripts we have to run CBMC, and likely a change to the prompts and documentation provided to
   agents to mention `--dfcc` mode and the harnesses it requires.
 
-## Self-improvement work
+## Measuring changes
 
-An extended pass over the system's performance is recorded in two files at the
-repository root:
-
-- [`WORK_SO_FAR.md`](./WORK_SO_FAR.md): the measured baseline, every change that
-  was kept or reverted with its before-and-after numbers, and a sequenced plan
-  for the next round of work.
-- [`FINDINGS.md`](./FINDINGS.md): every hypothesis considered, confirmed,
-  refuted or left open, with the evidence for each.
-
-The tooling used to produce those numbers is in
-[`scripts/experiments/`](./scripts/experiments/README.md). Note that the data
-those documents cite lives under `avocado-experimental-data/`, which is
-git-ignored, so it is local to the machine that produced it.
+Scripts for measuring agent runs, such as paired baseline/treatment
+experiments, are described in
+[`eval/experiments/measuring.md`](./eval/experiments/measuring.md). The data they
+write lives under `avocado-experimental-data/`, which is git-ignored, so it is
+local to the machine that produced it.
