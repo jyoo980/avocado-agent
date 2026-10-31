@@ -120,20 +120,11 @@ def test_compile_with_goto_cc_returns_nonzero_for_invalid_c(tmp_path: Path) -> N
     assert result != 0
 
 
-def test_run_cbmc_returns_success_result_for_trivially_verifying_function(
-    tmp_path: Path,
-) -> None:
+def test_run_cbmc_returns_success_result_for_trivially_verifying_function() -> None:
     # `swap` in quicksort.c has a complete contract and no callees — fast to verify and
     # exercises every step of the new per-step pipeline end-to-end.
     src = Path("test/data/quicksort.c").resolve()
-    original_cwd = Path.cwd()
-    try:
-        os.chdir(tmp_path)
-        result = run_cbmc(
-            function_to_verify="swap", file_containing_function_to_verify=str(src)
-        )
-    finally:
-        os.chdir(original_cwd)
+    result = run_cbmc(function_to_verify="swap", file_containing_function_to_verify=str(src))
     assert isinstance(result, RunCbmcResult)
     assert result.failed_step is None
     assert result.timed_out is False
@@ -150,15 +141,10 @@ def test_run_cbmc_names_failed_step_for_uncompilable_source(tmp_path: Path) -> N
         "#include <stddef.h>\nptrdiff_t add_ptrs(int *p, int *q) { return p + q; }\n",
         encoding="utf-8",
     )
-    original_cwd = Path.cwd()
-    try:
-        os.chdir(tmp_path)
-        result = run_cbmc(
-            function_to_verify="add_ptrs",
-            file_containing_function_to_verify=str(bad_src),
-        )
-    finally:
-        os.chdir(original_cwd)
+    result = run_cbmc(
+        function_to_verify="add_ptrs",
+        file_containing_function_to_verify=str(bad_src),
+    )
     assert result.failed_step is CbmcStep.GOTO_CC
     assert not result.cbmc_ran_successfully
     assert result.returncode != 0

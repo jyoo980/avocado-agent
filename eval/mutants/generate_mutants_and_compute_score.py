@@ -47,7 +47,10 @@ def main() -> None:
     parser.add_argument(
         "--keep-artifacts",
         action="store_true",
-        help="Keep mutant .c files for inspection. By default they are removed after scoring.",
+        help=(
+            "Keep mutant .c files and their CBMC run logs for inspection. "
+            "By default, the .c files are removed after scoring and no run logs are written."
+        ),
     )
     args = parser.parse_args()
 

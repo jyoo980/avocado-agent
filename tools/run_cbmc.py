@@ -11,6 +11,7 @@ import json
 import shlex
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -204,7 +205,6 @@ def run_cbmc(
     file_containing_function_to_verify: str,
     include_dirs: list[str] | None = None,
     call_graph: CallGraph | None = None,
-    cwd: str | None = None,
     log_invocation: bool = True,
 ) -> RunCbmcResult:
     """Run CBMC on the given function with loop unwinding = `_UNWIND`, depth = `_DEPTH`.
@@ -215,6 +215,10 @@ def run_cbmc(
     when an apparent recursive-inlining error is detected, and a retry when a missing
     callee body is detected. The timeout is per CBMC subprocess attempt, not a total
     budget; a timeout in any single step terminates the whole call.
+
+    The pipeline runs in a private temporary directory, which receives its intermediate
+    `<function>.goto` / `checking-<function>-contracts.goto` files. Thus, concurrent runs (even of
+    the same function) do not clobber one another, and no `.goto` files are left behind.
 
     Args:
         function_to_verify (str): Name of the function to verify.
@@ -227,11 +231,6 @@ def run_cbmc(
             graph) can build it once and pass it in, which both avoids redundant parsing and keeps
             the non-thread-safe tree-sitter parser out of concurrent code paths. When None, the
             call graph is constructed from the source file as usual.
-        cwd (str | None): Working directory for every subprocess in the pipeline. The pipeline
-            writes its intermediate `<function>.goto` / `checking-<function>-contracts.goto` files
-            relative to this directory, so concurrent runs of the same function (again, mutation
-            testing) must each pass a distinct `cwd` to avoid clobbering one another. When None,
-            subprocesses inherit the current working directory.
         log_invocation (bool): When True, a record of the run is appended to the
             `<stem>-cbmc-runs.jsonl` log next to `file_containing_function_to_verify`. Callers
             that verify throwaway sources (e.g., mutants) can pass False so that no log is left
@@ -252,12 +251,61 @@ def run_cbmc(
     nondet_callees = get_unstubbed_external_callees_for(function_to_verify, call_graph, stub_index)
 
     subprocess_results: list[dict] = []
+    with tempfile.TemporaryDirectory(prefix="avocado-cbmc-") as scratch_dir:
+        result = _run_pipeline_with_retries(
+            function_to_verify,
+            callees,
+            str(Path(file_containing_function_to_verify).resolve()),
+            call_graph=call_graph,
+            stub_paths=stub_paths,
+            include_dirs=[str(Path(d).resolve()) for d in include_dirs] if include_dirs else None,
+            subprocess_results=subprocess_results,
+            cwd=scratch_dir,
+        )
+    if log_invocation:
+        _log_invocation(
+            file_containing_function_to_verify, result, subprocess_results, nondet_callees
+        )
+    return result
 
+
+def _run_pipeline_with_retries(
+    function_to_verify: str,
+    callees: list[str],
+    file_containing_function: str,
+    *,
+    call_graph: CallGraph,
+    stub_paths: list[str],
+    include_dirs: list[str] | None,
+    subprocess_results: list[dict],
+    cwd: str,
+) -> RunCbmcResult:
+    """Run the CBMC pipeline, retrying when the first attempt fails in a recognized way.
+
+    The first retry (if needed) is for an apparent recursive-inlining error, and the second
+    retry (if needed) is for a missing callee body.
+
+    Args:
+        function_to_verify (str): The function under verification.
+        callees (list[str]): Callees of the function, used by `--replace-call-with-contract`.
+        file_containing_function (str): The absolute path of the C source file containing the
+            function.
+        call_graph (CallGraph): The call graph of `file_containing_function`.
+        stub_paths (list[str]): Extra `.c` stub files compiled in alongside the source.
+        include_dirs (list[str] | None): Absolute directories forwarded to `goto-cc` as `-I`
+            flags.
+        subprocess_results (list[dict]): Side-effected by appending one record per subprocess
+            invocation; see `_run_pipeline`.
+        cwd (str): Working directory for every subprocess.
+
+    Returns:
+        RunCbmcResult: The outcome of the last pipeline attempt.
+    """
     # Initial attempt.
     result, combined_stdout, combined_stderr = _run_pipeline(
         function_to_verify,
         callees,
-        file_containing_function_to_verify,
+        file_containing_function,
         stub_paths=stub_paths,
         include_dirs=include_dirs,
         prevent_macro_expansion=False,
@@ -266,13 +314,6 @@ def run_cbmc(
     )
     # First, check if the run was successful or if it timed out.
     if result.cbmc_ran_successfully or result.timed_out:
-        if log_invocation:
-            _log_invocation(
-                file_containing_function_to_verify,
-                result,
-                subprocess_results,
-                nondet_callees,
-            )
         return result
 
     # Recursion-inlining retry.
@@ -285,7 +326,7 @@ def run_cbmc(
         result, combined_stdout, combined_stderr = _run_pipeline(
             function_to_verify,
             callees,
-            file_containing_function_to_verify,
+            file_containing_function,
             stub_paths=stub_paths,
             include_dirs=include_dirs,
             prevent_macro_expansion=False,
@@ -302,7 +343,7 @@ def run_cbmc(
         result, combined_stdout, combined_stderr = _run_pipeline(
             function_to_verify,
             callees,
-            file_containing_function_to_verify,
+            file_containing_function,
             stub_paths=stub_paths,
             include_dirs=include_dirs,
             prevent_macro_expansion=True,
@@ -310,10 +351,6 @@ def run_cbmc(
             cwd=cwd,
         )
 
-    if log_invocation:
-        _log_invocation(
-            file_containing_function_to_verify, result, subprocess_results, nondet_callees
-        )
     return result
 
 
@@ -325,7 +362,7 @@ def _run_pipeline(
     include_dirs: list[str] | None,
     prevent_macro_expansion: bool,
     subprocess_results: list[dict],
-    cwd: str | None = None,
+    cwd: str,
 ) -> tuple[RunCbmcResult, str, str]:
     """Run the goto-cc → goto-instrument → cbmc pipeline once.
 
@@ -343,7 +380,7 @@ def _run_pipeline(
         subprocess_results (list[dict]): Mutated in place by callee (_run_command). One dict per
             subprocess invocation is appended in-order. Used by `_log_invocation` to produce the
             JSONL row.
-        cwd (str | None): Working directory for every subprocess, forwarded to `_run_step`. The
+        cwd (str): Working directory for every subprocess, forwarded to `_run_command`. The
             pipeline's intermediate `.goto` files are written relative to this directory.
 
     Returns:
@@ -417,17 +454,14 @@ def _run_pipeline(
     )
 
 
-def _run_command(
-    step: CbmcStep, command: str, subprocess_results, cwd: str | None = None
-) -> _SubprocessResult:
+def _run_command(step: CbmcStep, command: str, subprocess_results, cwd: str) -> _SubprocessResult:
     """Run one pipeline step as a subprocess with the per-step timeout.
 
     Args:
         step (CbmcStep): The logical step this subprocess belongs to.
         command (str): The shell command to run.
         subprocess_results: List of subprocess results; is side-effected.
-        cwd (str | None): Working directory for the subprocess. When None, the subprocess
-            inherits the current working directory. Distinct directories let concurrent
+        cwd (str): Working directory for the subprocess. Distinct directories let concurrent
             pipelines for the same function avoid clobbering each other's `.goto` files.
 
     Returns:
