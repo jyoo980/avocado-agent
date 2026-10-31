@@ -140,8 +140,8 @@ def verify_function(
     (`is_function_verified` is False and it prints as `VACUOUS`), and with a response that says
     what was found. This is the one function through which the agent's tool, the harness's ground
     truth and the harness's re-verification of other functions verify a function, so they all
-    agree on what a contract-less or vacuous proof is. When the check itself gives no answer the pass stands,
-    with a `vacuity_check_result` whose vacuity is `Vacuity.UNKNOWN`.
+    agree on what a contract-less or vacuous proof is. When the check itself gives no answer the
+    pass stands, with a `vacuity_check_result` whose vacuity is `Vacuity.UNKNOWN`.
 
     Args:
         function (str): Name of the function to verify.
