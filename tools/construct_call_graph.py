@@ -41,18 +41,11 @@ def construct_call_graph(
         path_to_file_to_verify (str): The path to the file from which to construct a call graph.
 
     Returns:
-        str: The path to the file to which the call graph is written.  An existing call-graph
-            file is reused only if it is newer than the C file.
+        str: The path to the file to which the call graph is written.  The file is always
+            rewritten, so it reflects the current contents of the C file.
     """
     source_path = Path(path_to_file_to_verify)
     path_to_call_graph = source_path.with_name(f"{source_path.stem}-callgraph.json")
-    # Strict comparison: on a file system with coarse timestamps, an edit made in the same tick
-    # as the call-graph file was written must not be mistaken for an older one.
-    if (
-        path_to_call_graph.exists()
-        and path_to_call_graph.stat().st_mtime_ns > source_path.stat().st_mtime_ns
-    ):
-        return str(path_to_call_graph)
     call_graph = get_call_graph(path_to_file_to_verify)
     path_to_call_graph.write_text(json.dumps(call_graph, indent=4))
     return str(path_to_call_graph)
