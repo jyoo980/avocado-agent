@@ -1,6 +1,10 @@
 """Utilities for mutation testing."""
 
+import sys
+from collections.abc import Iterable
 from pathlib import Path
+
+from loguru import logger
 
 from tools.run_cbmc import RunCbmcResult
 
@@ -58,3 +62,25 @@ def get_files_with_extension(path_str: str, extension: str) -> list[Path]:
     if path.is_dir():
         return sorted(path.rglob(f"*{extension}"))
     return [path] if path.suffix == extension else []
+
+
+def remove_files(paths: Iterable[Path]) -> None:
+    """Delete each of the given files, skipping any that do not exist.
+
+    A file that cannot be deleted does not stop the deletion of the rest. After every file has been
+    attempted, the first deletion failure is raised, unless an exception is already propagating
+    (as when this is called from a `finally` block during exception handling). In that case,
+    deletion failures are only logged, so they do not replace that exception.
+
+    Args:
+        paths (Iterable[Path]): The files to delete.
+    """
+    errors: list[OSError] = []
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning(f"Could not delete {path}: {e}")
+            errors.append(e)
+    if errors and sys.exception() is None:
+        raise errors[0]

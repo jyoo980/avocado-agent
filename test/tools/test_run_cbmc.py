@@ -1,6 +1,7 @@
 """Tests for the run_cbmc tool."""
 
 import os
+import shutil
 from pathlib import Path
 from subprocess import CompletedProcess
 
@@ -120,20 +121,11 @@ def test_compile_with_goto_cc_returns_nonzero_for_invalid_c(tmp_path: Path) -> N
     assert result != 0
 
 
-def test_run_cbmc_returns_success_result_for_trivially_verifying_function(
-    tmp_path: Path,
-) -> None:
+def test_run_cbmc_returns_success_result_for_trivially_verifying_function() -> None:
     # `swap` in quicksort.c has a complete contract and no callees — fast to verify and
     # exercises every step of the new per-step pipeline end-to-end.
     src = Path("test/data/quicksort.c").resolve()
-    original_cwd = Path.cwd()
-    try:
-        os.chdir(tmp_path)
-        result = run_cbmc(
-            function_to_verify="swap", file_containing_function_to_verify=str(src)
-        )
-    finally:
-        os.chdir(original_cwd)
+    result = run_cbmc(function_to_verify="swap", file_containing_function_to_verify=str(src))
     assert isinstance(result, RunCbmcResult)
     assert result.failed_step is None
     assert result.timed_out is False
@@ -150,18 +142,30 @@ def test_run_cbmc_names_failed_step_for_uncompilable_source(tmp_path: Path) -> N
         "#include <stddef.h>\nptrdiff_t add_ptrs(int *p, int *q) { return p + q; }\n",
         encoding="utf-8",
     )
-    original_cwd = Path.cwd()
-    try:
-        os.chdir(tmp_path)
-        result = run_cbmc(
-            function_to_verify="add_ptrs",
-            file_containing_function_to_verify=str(bad_src),
-        )
-    finally:
-        os.chdir(original_cwd)
+    result = run_cbmc(
+        function_to_verify="add_ptrs",
+        file_containing_function_to_verify=str(bad_src),
+    )
     assert result.failed_step is CbmcStep.GOTO_CC
     assert not result.cbmc_ran_successfully
     assert result.returncode != 0
+
+
+def test_run_cbmc_leaves_no_goto_files_in_the_working_directory(tmp_path: Path) -> None:
+    src = tmp_path / "quicksort.c"
+    shutil.copy(Path("test/data/quicksort.c"), src)
+    work_dir = tmp_path / "cwd"
+    work_dir.mkdir()
+    original_cwd = Path.cwd()
+    try:
+        os.chdir(work_dir)
+        # A relative source path must keep working even though the pipeline runs elsewhere.
+        result = run_cbmc("swap", os.path.relpath(src, work_dir))
+    finally:
+        os.chdir(original_cwd)
+    assert result.is_function_verified, result.response
+    assert list(work_dir.iterdir()) == [], "pipeline intermediates leaked into the cwd"
+    assert not list(tmp_path.glob("*.goto")), "pipeline intermediates leaked next to the source"
 
 
 def test_format_failure_response_leads_with_failure_lines_for_cbmc_step() -> None:

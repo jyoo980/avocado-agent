@@ -9,13 +9,12 @@ that perturbation.
 
 from __future__ import annotations
 
-import json
 import os
 import sys
-import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
@@ -23,10 +22,13 @@ from eval.mutants.mutate_function import Mutant, get_mutants
 from eval.mutants.util import (
     check_expected_cbmc_return_code,
     is_valid_mutation_candidate,
+    remove_files,
 )
-from tools.construct_call_graph import construct_call_graph
+from tools.construct_call_graph import load_call_graph
 from tools.run_cbmc import CbmcStep, run_cbmc
-from tools.util.callgraph import CallGraph
+
+if TYPE_CHECKING:
+    from tools.util.callgraph import CallGraph
 
 # Matches the GNU `timeout(1)` convention used elsewhere in the codebase; surfaces in
 # MutantVerificationResult.returncode so consumers can distinguish a timed-out run from a
@@ -258,6 +260,7 @@ def generate_mutants_and_compute_score(
     target_function: str,
     *,
     include_dirs: list[str] | None = None,
+    call_graph: CallGraph | None = None,
     workspace: Path | None = None,
     keep_artifacts: bool = False,
     skip_reverification: bool = False,
@@ -266,15 +269,20 @@ def generate_mutants_and_compute_score(
 
     Mutant `.c` files are written next to the original source by default to simplify compilation
     and instrumentation with CBMC. Mutants are removed unless keep_artifacts is set to `True`.
+    The CBMC run log (`<stem>-cbmc-runs.jsonl`) of each mutant is written only when keep_artifacts
+    is `True`.
 
     Args:
         file_path (str): Path to the C source defining the function.
         target_function (str): The function for which to generate mutants.
         include_dirs (list[str] | None): Directories forwarded to `run_cbmc()` as `-I` flags
             for both the original-function verification and every mutant run.
+        call_graph (CallGraph | None): The call graph of `file_path`. When None, it is
+            constructed from `file_path`.
         workspace (Path | None): Directory to write mutant files into. Defaults to the
             source file's directory.
-        keep_artifacts (bool): When True, mutant `.c` files are kept for inspection.
+        keep_artifacts (bool): When True, mutant `.c` files and their CBMC run logs are kept for
+            inspection.
         skip_reverification (bool): When True, proceed with mutation testing regardless of whether
             the function verifies or not.
 
@@ -289,20 +297,21 @@ def generate_mutants_and_compute_score(
     workspace = workspace or source_path.parent
     workspace.mkdir(parents=True, exist_ok=True)
 
+    # Operator-swap mutations never add or remove calls (or rename functions), so the call graph
+    # is identical for the original and every mutant. Use one call graph for the baseline run and
+    # every mutant's run_cbmc below. Besides avoiding redundant parsing, this keeps the
+    # non-thread-safe tree-sitter parser out of the concurrent section: no call graph is
+    # constructed inside the worker threads.
+    if call_graph is None:
+        call_graph = load_call_graph(file_path)
+
     if not skip_reverification:
-        cbmc_result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
+        cbmc_result = run_cbmc(
+            target_function, file_path, include_dirs=include_dirs, call_graph=call_graph
+        )
         if not is_valid_mutation_candidate(cbmc_result):
             # No usable baseline if CBMC can't verify the unmutated function.
             return BaselineFailsVerification(file_path, target_function)
-
-    # Operator-swap mutations never add or remove calls (or rename functions), so the call graph
-    # is identical for the original and every mutant. Build it once -- cache-hitting the JSON the
-    # baseline run above already wrote -- and pass it into each mutant's run_cbmc below. Besides
-    # avoiding redundant parsing, this keeps the non-thread-safe tree-sitter parser out of the
-    # concurrent section: no call graph is constructed inside the worker threads.
-    call_graph = CallGraph(
-        json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
-    )
 
     paths_to_mutants = {
         _get_path_for_mutated_source(workspace, source_path, i): mutant
@@ -331,7 +340,14 @@ def generate_mutants_and_compute_score(
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_index = {
-                executor.submit(_verify_mutant, path, mutant, include_dirs, call_graph): index
+                executor.submit(
+                    _verify_mutant,
+                    path,
+                    mutant,
+                    include_dirs,
+                    call_graph,
+                    log_invocation=keep_artifacts,
+                ): index
                 for index, (path, mutant) in enumerate(paths_to_mutants.items())
             }
             try:
@@ -347,8 +363,7 @@ def generate_mutants_and_compute_score(
                 executor.shutdown(cancel_futures=True)
     finally:
         if not keep_artifacts:
-            for path in paths_to_mutants:
-                path.unlink(missing_ok=True)
+            remove_files(paths_to_mutants)
 
     # Every future either stored a result above or raised (which would have propagated), so no
     # None slots remain; the filter just refines the type for the aggregator.
@@ -445,6 +460,8 @@ def _verify_mutant(
     mutant: Mutant,
     include_dirs: list[str] | None,
     call_graph: CallGraph,
+    *,
+    log_invocation: bool,
 ) -> MutantVerificationResult:
     """Return the result of verifying a mutant.
 
@@ -452,8 +469,8 @@ def _verify_mutant(
     returned with `compile_failed=True`; this prevents `check_expected_cbmc_return_code` from
     raising on goto-cc's exit code and lets callers exclude these mutants from the kill rate.
 
-    Safe to call concurrently for sibling mutants of one function: the CBMC pipeline runs in a
-    private scratch directory so its function-name-derived `.goto` intermediates never collide,
+    Safe to call concurrently for sibling mutants of one function: `run_cbmc` runs each pipeline in
+    a private scratch directory so its function-name-derived `.goto` intermediates never collide,
     and the shared `call_graph` is read-only.
 
     Args:
@@ -463,6 +480,7 @@ def _verify_mutant(
         call_graph (CallGraph): The original function's call graph, reused verbatim for this
             mutant (operator-swap mutants share the original's call graph) and passed to
             `run_cbmc()` so it skips re-parsing the mutant source.
+        log_invocation (bool): Whether `run_cbmc()` writes a run log next to the mutant.
 
     Returns:
         MutantVerificationResult: The result of verifying a mutant. The returned result's
@@ -470,19 +488,13 @@ def _verify_mutant(
             not run.
     """
     path_to_write_mutant.write_text(mutant.mutant_source, encoding="utf-8")
-    # The CBMC pipeline writes intermediate `<function>.goto` / `checking-<function>-contracts.goto`
-    # files named only by the function name -- identical across all mutants of one function -- into
-    # its working directory. Give each run a private scratch dir so concurrent mutants don't clobber
-    # one another's goto-binaries (this also keeps the source directory clean). The result is read
-    # entirely from the in-memory `cbmc_result`, so the scratch dir can be torn down immediately.
-    with tempfile.TemporaryDirectory(prefix="avocado-mutant-") as scratch_dir:
-        cbmc_result = run_cbmc(
-            function_to_verify=mutant.function,
-            file_containing_function_to_verify=str(path_to_write_mutant),
-            include_dirs=include_dirs,
-            call_graph=call_graph,
-            cwd=scratch_dir,
-        )
+    cbmc_result = run_cbmc(
+        function_to_verify=mutant.function,
+        file_containing_function_to_verify=str(path_to_write_mutant),
+        include_dirs=include_dirs,
+        call_graph=call_graph,
+        log_invocation=log_invocation,
+    )
     if cbmc_result.timed_out:
         return MutantVerificationResult(
             mutant,
