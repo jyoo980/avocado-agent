@@ -61,9 +61,8 @@ You can also search the web for more CBMC documentation.
   Prints function names callees-first, one per line.
 
 Do not read the harness's Python sources, and do not experiment with CBMC's `--depth` or
-`--unwind` bounds: the bounds are fixed by the harness and are not yours to tune. Do not probe
-whether a proof is vacuous by hand either: `avocado-run-cbmc` checks every passing run and tells
-you. Spend your turns on the contract itself.
+`--unwind` bounds: the bounds are fixed by the harness and are not yours to tune. Spend your turns
+on the contract itself.
 
 ## Vacuous proofs
 
