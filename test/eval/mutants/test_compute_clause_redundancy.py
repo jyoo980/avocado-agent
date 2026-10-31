@@ -69,17 +69,3 @@ def test_clause_redundancy_scoring_uses_the_include_directories(
     _assert_expected_clause_results(
         compute_clause_redundancy_score(str(source), "clamp", include_dirs=[str(include_dir)])
     )
-
-
-def test_mutants_outside_the_source_directory_resolve_quoted_includes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    source = tmp_path / "src" / "clamp.c"
-    source.parent.mkdir()
-    (source.parent / "lim.h").write_text(HEADER)
-    source.write_text(SOURCE)
-    workspace = tmp_path / "workspace"
-    _assert_expected_clause_results(
-        compute_clause_redundancy_score(str(source), "clamp", workspace=workspace)
-    )

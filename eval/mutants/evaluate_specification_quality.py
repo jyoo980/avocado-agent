@@ -32,8 +32,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from eval.mutants.compute_clause_redundancy import compute_clause_redundancy_score
 from eval.mutants.generate_mutants_and_compute_score import generate_mutants_and_compute_score
-from eval.mutants.util import autodetect_include_dirs, get_files_with_extension
-from tools.util import get_functions_with_cprover_annotations
+from eval.mutants.util import get_files_with_extension
+from tools.util import get_functions_with_cprover_annotations, get_include_dirs
 from tools.util.mutation import MutationScore
 
 
@@ -136,9 +136,7 @@ def _process_file(
         logger.warning(f"{source} had no functions with CBMC annotations")
         return
 
-    include_dirs = (
-        [*autodetect_include_dirs(str(source)), *include_dirs] if auto_include else include_dirs
-    )
+    include_dirs = get_include_dirs(str(source), include_dirs, auto_include=auto_include)
     if include_dirs:
         logger.debug(f"[auto-include] using {include_dirs}")
 

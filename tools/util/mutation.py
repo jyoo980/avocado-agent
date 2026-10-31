@@ -258,22 +258,19 @@ def generate_mutants_and_compute_score(
     target_function: str,
     *,
     include_dirs: list[str] | None = None,
-    workspace: Path | None = None,
     keep_artifacts: bool = False,
     skip_reverification: bool = False,
 ) -> MutationTestingResult:
     """Return the mutation testing result for `target_function` in `file_path`.
 
-    Mutant `.c` files are written next to the original source by default to simplify compilation
-    and instrumentation with CBMC. Mutants are removed unless keep_artifacts is set to `True`.
+    Mutant `.c` files are written next to the original source, so that every `#include` resolves
+    as it does for the original source. Mutants are removed unless keep_artifacts is set to `True`.
 
     Args:
         file_path (str): Path to the C source defining the function.
         target_function (str): The function for which to generate mutants.
         include_dirs (list[str] | None): Directories forwarded to `run_cbmc()` as `-I` flags
             for both the original-function verification and every mutant run.
-        workspace (Path | None): Directory to write mutant files into. Defaults to the
-            source file's directory.
         keep_artifacts (bool): When True, mutant `.c` files are kept for inspection.
         skip_reverification (bool): When True, proceed with mutation testing regardless of whether
             the function verifies or not.
@@ -286,11 +283,10 @@ def generate_mutants_and_compute_score(
     if not mutants:
         return NoMutantsGenerated(file_path, target_function)
 
-    workspace = workspace or source_path.parent
-    workspace.mkdir(parents=True, exist_ok=True)
-
     if not skip_reverification:
-        cbmc_result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
+        # Verify the resolved path, which is next to the mutants, so that every `#include`
+        # resolves alike for both.
+        cbmc_result = run_cbmc(target_function, str(source_path), include_dirs=include_dirs)
         if not is_valid_mutation_candidate(cbmc_result):
             # No usable baseline if CBMC can't verify the unmutated function.
             return BaselineFailsVerification(file_path, target_function)
@@ -301,11 +297,11 @@ def generate_mutants_and_compute_score(
     # avoiding redundant parsing, this keeps the non-thread-safe tree-sitter parser out of the
     # concurrent section: no call graph is constructed inside the worker threads.
     call_graph = CallGraph(
-        json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
+        json.loads(Path(construct_call_graph(str(source_path))).read_text(encoding="utf-8"))
     )
 
     paths_to_mutants = {
-        _get_path_for_mutated_source(workspace, source_path, i): mutant
+        _get_path_for_mutated_source(source_path.parent, source_path, i): mutant
         for i, mutant in enumerate(mutants)
     }
     # Heads-up to stderr so an agent polling the run can see the slow phase has begun and is
