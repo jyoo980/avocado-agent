@@ -362,10 +362,6 @@ def generate_mutants_and_compute_score(
         if not keep_artifacts:
             for path in paths_to_mutants:
                 path.unlink(missing_ok=True)
-                # `run_cbmc` appends a `<stem>-cbmc-runs.jsonl` log next to every source it
-                # verifies, mutants included; drop those with the mutant so a directory that has
-                # been mutation tested many times is not littered with per-mutant logs.
-                path.with_name(f"{path.stem}-cbmc-runs.jsonl").unlink(missing_ok=True)
 
     # Every future either stored a result above or raised (which would have propagated), so no
     # None slots remain; the filter just refines the type for the aggregator.

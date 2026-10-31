@@ -32,6 +32,7 @@ import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from enum import StrEnum
+from itertools import starmap
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -315,29 +316,21 @@ def compute_clause_redundancy_score(
         for i, mutant in enumerate(mutants)
     }
 
-    # Contract clauses are erased before a call graph is built, so removing one leaves the call
-    # graph unchanged. Build it once and pass it into every removed-clause run below, which avoids
-    # re-parsing and avoids caching a call-graph JSON next to each removed-clause source.
-    call_graph = CallGraph(
-        json.loads(Path(construct_call_graph(str(source_path))).read_text(encoding="utf-8"))
-    )
-    in_file_callers = _get_in_file_callers(call_graph, function_name)
+    in_file_callers = _get_in_file_callers(source_path, function_name)
     in_file_callers_to_baseline_verification_results = (
         _get_baseline_verification_results_for_callers(in_file_callers, source_path)
     )
 
     try:
-        in_isolation_results = [
-            _verify_removed_clause_source(mutant_path, mutant, call_graph)
-            for mutant_path, mutant in paths_to_removed_clauses.items()
-        ]
+        in_isolation_results = list(
+            starmap(_verify_removed_clause_source, paths_to_removed_clauses.items())
+        )
         caller_side_results = [
             _verify_callers(
                 mutant_path,
                 mutant,
                 in_file_callers,
                 in_file_callers_to_baseline_verification_results,
-                call_graph,
             )
             for mutant_path, mutant in paths_to_removed_clauses.items()
         ]
@@ -345,9 +338,6 @@ def compute_clause_redundancy_score(
         if not keep_artifacts:
             for path in paths_to_removed_clauses:
                 path.unlink(missing_ok=True)
-                # `run_cbmc` appends a `<stem>-cbmc-runs.jsonl` log next to every source it
-                # verifies; drop it with the removed-clause source.
-                path.with_name(f"{path.stem}-cbmc-runs.jsonl").unlink(missing_ok=True)
 
     return _aggregate_clause_redundancy_score(
         in_isolation_results,
@@ -432,16 +422,18 @@ def _aggregate_clause_redundancy_score(
     )
 
 
-def _get_in_file_callers(call_graph: CallGraph, function_name: str) -> list[str]:
+def _get_in_file_callers(source_path: Path, function_name: str) -> list[str]:
     """Return functions in a file that directly call the function with the given name.
 
     Args:
-        call_graph (CallGraph): The call graph of the file in which to look up callers.
+        source_path (Path): The file in which to look up callers.
         function_name (str): The function for which to look up callers.
 
     Returns:
         list[str]: The names of the in-file callers of the given name.
     """
+    call_graph_path = construct_call_graph(str(source_path))
+    call_graph = CallGraph(json.loads(Path(call_graph_path).read_text(encoding="utf-8")))
     if function_name not in call_graph:
         msg = f"'{function_name}' was missing from the call graph"
         raise ValueError(msg)
@@ -475,7 +467,7 @@ def _get_path_to_source_with_removed_clause(
 
 
 def _verify_removed_clause_source(
-    path_to_write_removed_clause_mutant: Path, clause_mutant: ClauseMutant, call_graph: CallGraph
+    path_to_write_removed_clause_mutant: Path, clause_mutant: ClauseMutant
 ) -> ClauseRemovalVerificationResult:
     """Return the result of verifying a removed-clause mutant in isolation.
 
@@ -483,8 +475,6 @@ def _verify_removed_clause_source(
         path_to_write_removed_clause_mutant (Path): The path to which to write the source with the
             mutated specification.
         clause_mutant (ClauseMutant): The clause mutant.
-        call_graph (CallGraph): The original source's call graph, which the removed-clause source
-            shares.
 
     Returns:
         ClauseRemovalVerificationResult: The result of verifying a removed-clause mutant.
@@ -494,7 +484,6 @@ def _verify_removed_clause_source(
     result = run_cbmc(
         function_to_verify=clause_mutant.function,
         file_containing_function_to_verify=str(path_to_write_removed_clause_mutant),
-        call_graph=call_graph,
     )
     if result.timed_out:
         return ClauseRemovalVerificationResult(
@@ -543,7 +532,6 @@ def _verify_callers(
     clause_mutant: ClauseMutant,
     in_file_callers: list[str],
     caller_baselines: dict[str, bool],
-    call_graph: CallGraph,
 ) -> ClauseCallerSideResult:
     """Return the caller-side verdict for one mutant.
 
@@ -559,7 +547,6 @@ def _verify_callers(
         in_file_callers (list[str]): The names of the in-file callers.
         caller_baselines (dict[str, bool]): Map from caller name to baseline verification result
             on the unmutated source.
-        call_graph (CallGraph): The original source's call graph, which the mutant source shares.
 
     Returns:
         ClauseCallerSideResult: The caller-side verification result for a mutated specification.
@@ -582,7 +569,6 @@ def _verify_callers(
         result = run_cbmc(
             function_to_verify=caller,
             file_containing_function_to_verify=str(mutant_path),
-            call_graph=call_graph,
         )
         if result.timed_out:
             caller_vresults.append(
