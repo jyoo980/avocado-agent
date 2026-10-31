@@ -23,7 +23,7 @@ the merge. Both pass the files they found changed beside the source file to `cop
 which adds rule 6 to `check_edits`, so they agree on rules 1-6 by construction. They can disagree
 on rule 7: `tools.validate` compiles the session's copy, but the merge compiles the merged file,
 which also holds whatever other sessions merged since the fork.
-Rule 10 (no merge conflict) is decided by `merge_copy` below, which the merge also uses: an edit
+Rule 10 (no merge conflict) is decided by `merge_copy` below, which both callers also use: an edit
 to another function's contract is left out when another live session is working on that function
 or when its contract changed in the shared file since the fork, and nothing merges when a new name
 is already defined differently there.

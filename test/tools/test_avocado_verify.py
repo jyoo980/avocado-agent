@@ -195,18 +195,21 @@ def test_prompt_states_the_isolation_rule() -> None:
     assert "Edits to other files and to headers are always discarded" in prompt
     assert "must stay exactly as it was" in prompt and "contract and body" not in prompt
     assert "A copy that breaks an edit rule is not merged at all" in prompt
-    assert prompt.endswith("avocado-validate edits --file /tmp/copy/q.c")
+    assert prompt.endswith("avocado-validate reverify --function swap --file /tmp/copy/q.c")
 
 
-def test_prompt_edits_command_carries_the_include_dirs() -> None:
+def test_prompt_reverify_command_carries_the_include_dirs() -> None:
     prompt = _build_prompt(
         "partition",
         file_path="/src/quicksort.c",
         call_graph=_quicksort_call_graph(),
         include_dirs=["/src/include"],
     )
-    expected = "avocado-validate edits --file /src/quicksort.c"
+    assert "avocado-validate edits --file /src/quicksort.c -I /src/include" in prompt
+    expected = "avocado-validate reverify --function partition --file /src/quicksort.c"
     assert prompt.endswith(f"{expected} -I /src/include")
+    assert "avocado-validate conflicts --function partition --file /src/quicksort.c\n" in prompt
+    assert prompt.index("avocado-validate edits") < prompt.index("avocado-validate reverify")
 
 
 def test_prompt_commands_carry_absolute_include_dirs(tmp_path: Path, monkeypatch) -> None:
@@ -218,7 +221,7 @@ def test_prompt_commands_carry_absolute_include_dirs(tmp_path: Path, monkeypatch
         include_dirs=["include"],
     )
     absolute = tmp_path.resolve() / "include"
-    assert prompt.count(f"-I {absolute}") == 2, prompt
+    assert prompt.count(f"-I {absolute}") == 3, prompt
 
 
 def test_append_jsonl_is_safe_under_threads(tmp_path: Path) -> None:
@@ -1127,6 +1130,8 @@ def test_a_vacuous_contract_is_merged_but_its_function_is_not_verified(
     assert str(cbmc) == "VACUOUS" and not cbmc.is_function_verified
     assert state.verified == set()
     assert state.unverified == {"partition": "VACUOUS (unsatisfiable_preconditions)"}
+    published = json.loads(canonical.with_name("quicksort-avocado-run-state.json").read_text())
+    assert published["unverified"] == {"partition": "VACUOUS (unsatisfiable_preconditions)"}
 
 
 def test_a_function_verified_against_an_unverified_callee_says_so(
@@ -1372,7 +1377,7 @@ def test_a_kept_reverification_updates_the_final_tally(tmp_path: Path) -> None:
 
 
 def test_status_of_a_vacuous_proof_is_recognised_by_the_shared_predicate() -> None:
-    """The status the harness writes is the one `tools.util.session_state` recognises."""
+    """The status the harness writes is the one `tools.util.session_state` reads back."""
     status = avocado_verify._status_of(_vacuous_cbmc("partition"))
     assert status == "VACUOUS (unsatisfiable_preconditions)"
     assert is_vacuous_status(status)
@@ -1380,7 +1385,7 @@ def test_status_of_a_vacuous_proof_is_recognised_by_the_shared_predicate() -> No
 
 
 def test_merge_state_rechecked_on_change_matches_the_shared_rule() -> None:
-    """The harness's in-memory state applies the shared rule for what to recheck."""
+    """The harness's in-memory state and the published run state agree on what to recheck."""
     state = avocado_verify._MergeState(verified={"quickSort"})
     state.record("partition", _vacuous_cbmc("partition"))
     failed = RunCbmcResult(

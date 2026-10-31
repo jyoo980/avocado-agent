@@ -77,6 +77,7 @@ from tools.util.session_state import (
     is_vacuous_status,
     rechecked_on_change,
     vacuous_status,
+    write_run_state,
     write_session_info,
 )
 
@@ -691,7 +692,8 @@ class _MergeState:
     def rechecked_on_change(self) -> set[str]:
         """Return the functions to re-verify when a merge changes one of their callees' contracts.
 
-        The rule lives in `tools.util.session_state.rechecked_on_change`.
+        The rule lives in `tools.util.session_state.rechecked_on_change`, which
+        `avocado-validate reverify` applies to the published copy of this state.
 
         Returns:
             set[str]: The functions.
@@ -860,6 +862,7 @@ def _verify_via_agent(
         with _CANONICAL_LOCK:
             # The merge released the function; it is being worked on again.
             state.active.add(function)
+            _publish_run_state(state, canonical_file)
     with _CANONICAL_LOCK:
         unverified_callees = {} if state is None else state.unverified_among(callees)
     if unverified_callees and cbmc.is_function_verified:
@@ -1252,6 +1255,8 @@ def _merge_and_verify(
                 staged = canonical_file.with_name(f"{canonical_file.name}.avocado-merge")
                 staged.write_bytes(merged)
                 Path(staged).replace(canonical_file)
+        if state is not None:
+            _publish_run_state(state, canonical_file)
     if report.merged:
         if report.transplanted:
             logger.info(f"{function}: transplanted {', '.join(report.transplanted)}")
@@ -1298,9 +1303,25 @@ def _merge_and_verify(
             if state is not None:
                 state.active.discard(function)
                 state.record(function, cbmc)
+                _publish_run_state(state, canonical_file)
     finally:
         shutil.rmtree(scratch_root, ignore_errors=True)
     return report, cbmc, reverified
+
+
+def _publish_run_state(state: _MergeState, canonical_file: Path) -> None:
+    """Write the run's merge state beside the canonical file for the agent-side tools.
+
+    Must be called with `_CANONICAL_LOCK` held, so the published sets are a consistent view of
+    `state`. The harness never reads the file back.
+
+    Args:
+        state (_MergeState): The run's shared merge state.
+        canonical_file (Path): Absolute path to the canonical source file.
+    """
+    write_run_state(
+        canonical_file, verified=state.verified, active=state.active, unverified=state.unverified
+    )
 
 
 def _report_stray_edits(session: _Session, canonical_dir: Path) -> list[str]:
@@ -1488,6 +1509,8 @@ def _verify_functions(
             if function in done
         },
     )
+    with _CANONICAL_LOCK:
+        _publish_run_state(state, Path(file_path))
     usage_limited: set[str] = set()
     active: dict[Future[FunctionVerificationResult], str] = {}
     results: list[FunctionVerificationResult] = []
@@ -1507,6 +1530,7 @@ def _verify_functions(
                     )
                     with _CANONICAL_LOCK:
                         state.active.add(function)
+                        _publish_run_state(state, Path(file_path))
                     future = pool.submit(
                         _verify_via_agent,
                         function,
@@ -1968,8 +1992,10 @@ def _build_prompt(
     copies of the file the harness could not see), and that the session works in a private copy
     of which the function's contract, new top-level helpers and sound fixes to other functions'
     contracts are merged back while everything else must stay as it was (the edit rules are in
-    CLAUDE.md). It ends with the exact `avocado-validate edits` command, to be run before each
-    verifier run because a copy that breaks an edit rule is not merged at all.
+    CLAUDE.md). It ends with the exact `avocado-validate` commands: `edits` and `conflicts`, to be
+    run before each verifier run because a copy that breaks an edit rule is not merged and other
+    sessions merge while this one works, and `reverify`, to be run once when the agent has changed
+    another function's contract.
 
     Args:
         function (str): The function to specify and verify.
@@ -1988,11 +2014,21 @@ def _build_prompt(
     """
     command = ["avocado-run-cbmc", "--function", function, "--file", file_path]
     edits_command = ["avocado-validate", "edits", "--file", file_path]
+    conflicts_command = [
+        "avocado-validate",
+        "conflicts",
+        "--function",
+        function,
+        "--file",
+        file_path,
+    ]
+    reverify_command = ["avocado-validate", "reverify", "--function", function, "--file", file_path]
     # Absolute, as in `_merge_and_verify`, so the agent's current directory does not matter.
     for include_dir in include_dirs:
         absolute_include_dir = str(Path(include_dir).resolve())
         command += ["-I", absolute_include_dir]
         edits_command += ["-I", absolute_include_dir]
+        reverify_command += ["-I", absolute_include_dir]
     callees = get_in_file_callees_for(function, call_graph)
     callers = get_in_file_callers_of(function, call_graph)
     callees_text = ", ".join(callees) if callees else "none"
@@ -2038,14 +2074,22 @@ def _build_prompt(
         "discarded. Everything else that was in this file when the session started must stay "
         "exactly as it was, and the names you add must start with avocado_spec_ or "
         "AVOCADO_SPEC_; the edit rules are in CLAUDE.md. Edits to other files and to headers are "
-        "always discarded. Other sessions are running at the same time and merge into the shared "
-        "file while you work.\n"
+        "always discarded.\n"
         "\n"
         "A copy that breaks an edit rule is not merged at all, so before each run of the command "
-        "above, run this check. It takes seconds and prints every rule your copy breaks, with the "
-        "line and the reason.\n"
+        "above, run these two checks. Each takes seconds. The first prints every rule your copy "
+        "breaks, with the line and the reason. The second prints any edit of yours that other "
+        "sessions' work would keep out of the merge; other sessions are running at the same "
+        "time and merge into the shared file while you work.\n"
         "\n"
-        f"    {shlex.join(edits_command)}"
+        f"    {shlex.join(edits_command)}\n"
+        f"    {shlex.join(conflicts_command)}\n"
+        "\n"
+        f"If you change the contract of any function other than {function}, run this once, "
+        "after your last successful run of the command above. It re-verifies the functions your "
+        "change can affect and lists any of your edits that would not be merged.\n"
+        "\n"
+        f"    {shlex.join(reverify_command)}"
     )
 
 
