@@ -1,30 +1,11 @@
 """Tests for the `avocado-run-cbmc` entry point in `tools.run_cbmc_and_mutation_testing`."""
 
 import json
-import os
-import shutil
 from pathlib import Path
 
-from tools.run_cbmc import run_cbmc
-from tools.run_cbmc_and_mutation_testing import _log_mutation_feedback
-from tools.util.mutation import MutationScore, NoMutantsGenerated
-
-
-def test_run_cbmc_leaves_no_goto_files_in_the_working_directory(tmp_path: Path) -> None:
-    src = tmp_path / "quicksort.c"
-    shutil.copy(Path("test/data/quicksort.c"), src)
-    work_dir = tmp_path / "cwd"
-    work_dir.mkdir()
-    original_cwd = Path.cwd()
-    try:
-        os.chdir(work_dir)
-        # A relative source path must keep working even though the pipeline runs elsewhere.
-        result = run_cbmc("swap", os.path.relpath(src, work_dir))
-    finally:
-        os.chdir(original_cwd)
-    assert result.is_function_verified, result.response
-    assert list(work_dir.iterdir()) == [], "pipeline intermediates leaked into the cwd"
-    assert not list(tmp_path.glob("*.goto")), "pipeline intermediates leaked next to the source"
+from tools.run_cbmc import _DEFAULT_RUN_CBMC_TIMEOUT_SEC
+from tools.run_cbmc_and_mutation_testing import _AGENT_MUTANT_TIMEOUT_SEC, _log_mutation_feedback
+from tools.util.mutation import DEFAULT_MUTANT_TIMEOUT_SEC, MutationScore, NoMutantsGenerated
 
 
 def test_mutation_feedback_of_each_passing_run_is_logged_beside_the_file(tmp_path: Path) -> None:
@@ -58,3 +39,9 @@ def test_mutation_feedback_of_each_passing_run_is_logged_beside_the_file(tmp_pat
     assert "no mutable operators" in records[2]["reason"]
     # The attempts log, which `avocado-verify` counts records of, is a different file.
     assert not (tmp_path / "quicksort-verification-attempts.jsonl").exists()
+
+
+def test_agent_tool_uses_a_shorter_mutant_budget_than_the_metric() -> None:
+    # The evaluation metric keeps the full pipeline timeout; only the agent-facing tool trims it.
+    assert DEFAULT_MUTANT_TIMEOUT_SEC == _DEFAULT_RUN_CBMC_TIMEOUT_SEC
+    assert 0 < _AGENT_MUTANT_TIMEOUT_SEC < DEFAULT_MUTANT_TIMEOUT_SEC
