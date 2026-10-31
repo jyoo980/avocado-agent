@@ -8,6 +8,7 @@ Usage:
 
 import argparse
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -58,6 +59,11 @@ _CBMC_UNWIND = 5
 
 # `--depth` argument to CBMC.
 _CBMC_DEPTH = 200
+
+# What goto-instrument prints when `--replace-call-with-contract` names a function the compiled
+# program does not contain. The call graph is read from the source text without preprocessing, so
+# it also lists callees that the preprocessor removes (a call inside an `#ifdef` that is off).
+_CALLEE_NOT_COMPILED = re.compile(r"Function '([^']+)' was not found in the GOTO program")
 
 
 class CbmcStep(StrEnum):
@@ -407,10 +413,11 @@ def _run_pipeline(
 
     per_step_stdout = []
     per_step_stderr = []
-    for step, command, drop_missing_body_warnings in commands:
-        subprocess_result = _run_command(
-            step, command, subprocess_results, cwd=cwd, timeout_sec=timeout_sec
-        )
+
+    def record_output(
+        subprocess_result: _SubprocessResult, drop_missing_body_warnings: bool
+    ) -> None:
+        """Append `subprocess_result`'s output, possibly without missing-body warnings."""
         stdout = subprocess_result.stdout
         stderr = subprocess_result.stderr
         if drop_missing_body_warnings:
@@ -418,6 +425,33 @@ def _run_pipeline(
             stderr = _drop_missing_body_warnings(stderr)
         per_step_stdout.append(stdout)
         per_step_stderr.append(stderr)
+
+    contract_command = _get_goto_instrument_contract_command(function_to_verify, callees)
+    for step, command, drop_missing_body_warnings in commands:
+        subprocess_result = _run_command(
+            step, command, subprocess_results, cwd=cwd, timeout_sec=timeout_sec
+        )
+        record_output(subprocess_result, drop_missing_body_warnings)
+        if command == contract_command:
+            # A callee that the preprocessor removed is not in the compiled program, so its
+            # contract cannot be substituted, and need not be: the function does not call it in
+            # this build. Leave such callees out and run the step again.
+            compiled_callees = list(callees)
+            while not subprocess_result.succeeded and not subprocess_result.timed_out:
+                missing = _CALLEE_NOT_COMPILED.search(
+                    subprocess_result.stderr + subprocess_result.stdout
+                )
+                if missing is None or missing.group(1) not in compiled_callees:
+                    break
+                compiled_callees.remove(missing.group(1))
+                subprocess_result = _run_command(
+                    step,
+                    _get_goto_instrument_contract_command(function_to_verify, compiled_callees),
+                    subprocess_results,
+                    cwd=cwd,
+                    timeout_sec=timeout_sec,
+                )
+                record_output(subprocess_result, drop_missing_body_warnings)
         if not subprocess_result.succeeded:
             combined_stdout = "".join(per_step_stdout)
             combined_stderr = "".join(per_step_stderr)
