@@ -11,6 +11,8 @@ from __future__ import annotations
 import shutil
 from typing import TYPE_CHECKING
 
+from tools.run_cbmc import VACUOUS_VERDICT
+
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
     from pathlib import Path
@@ -36,11 +38,6 @@ SNAPSHOT_IGNORE = shutil.ignore_patterns(
     "*__clause_drop_*.c",
     "mutation_compile_failures.log",
 )
-
-
-# The CBMC verdict of a proof that passed vacuously, as it opens the status of such a function
-# in the harness's merge state and in its run log.
-VACUOUS_VERDICT = "VACUOUS"
 
 
 def vacuous_status(vacuity: str | None) -> str:
