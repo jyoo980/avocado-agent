@@ -1,16 +1,23 @@
 """Run CBMC on a function.
 
-The command-line interface is `avocado-run-cbmc`, in `tools.run_cbmc_and_mutation_testing`.
+Usage:
+    % avocado-run-cbmc --function <FUNCTION_NAME> \
+                       --file <PATH_TO_C_FILE> \
+                       [-I <PATH_TO_INCLUDE_DIR(S)>]...
 """
 
+import argparse
 import json
 import shlex
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from subprocess import TimeoutExpired
+
+from loguru import logger
 
 from tools.construct_call_graph import construct_call_graph
 from tools.util import (
@@ -148,6 +155,50 @@ class _SubprocessResult:
         return self.returncode == 0 and not self.timed_out
 
 
+def main() -> None:
+    """Run CBMC on a function."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run CBMC on a function with loop unwinding = _CBMC_UNWIND, depth = _CBMC_DEPTH. "
+            "Exits with status 0 on verification success. "
+            "On success, additionally runs mutation testing, which re-runs the full CBMC "
+            "pipeline once per mutant (sequentially, up to a 10-minute timeout each); this can "
+            "take several minutes, during which the tool is mostly silent. This is expected, "
+            "not a hang -- do not interrupt the process. Consider running it in the background "
+            "and polling for completion."
+        )
+    )
+    parser.add_argument("--function", required=True, help="Name of the function to verify.")
+    parser.add_argument("--file", required=True, help="Path to the C file defining the function.")
+    parser.add_argument(
+        "-I",
+        "--include-dir",
+        action="append",
+        default=[],
+        dest="include_dirs",
+        metavar="DIR",
+        help="Directory to add to the include search path. May be repeated.",
+    )
+    args = parser.parse_args()
+
+    # Tee mutation-testing compile failures into a file. Leaves loguru's default stderr sink
+    # untouched; the filter keys on the warning emitted by `_verify_mutant` in
+    # tools/util/mutation.py.
+    logger.add(
+        "mutation_compile_failures.log",
+        level="WARNING",
+        filter=lambda record: "failed to compile" in record["message"],
+    )
+
+    result = run_cbmc(
+        function_to_verify=args.function,
+        file_containing_function_to_verify=args.file,
+        include_dirs=args.include_dirs,
+    )
+    print(result.response)
+    sys.exit(result.returncode)
+
+
 def run_cbmc(
     function_to_verify: str,
     file_containing_function_to_verify: str,
@@ -155,7 +206,7 @@ def run_cbmc(
     call_graph: CallGraph | None = None,
     cwd: str | None = None,
 ) -> RunCbmcResult:
-    """Run CBMC on the given function with loop unwinding = `_CBMC_UNWIND`, depth = `_CBMC_DEPTH`.
+    """Run CBMC on the given function with loop unwinding = `_UNWIND`, depth = `_DEPTH`.
 
     The pipeline is split into three logical steps — `goto-cc`, `goto-instrument`, and
     `cbmc` — each run as its own subprocess so that failures can be attributed to a
@@ -779,3 +830,7 @@ def compile_with_goto_cc(
     except TimeoutExpired:
         return _TIMEOUT_RETURNCODE
     return result.returncode
+
+
+if __name__ == "__main__":
+    main()
