@@ -17,7 +17,9 @@ from pathlib import Path
 
 from loguru import logger
 
+from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import RunCbmcResult, run_cbmc
+from tools.util.callgraph import CallGraph
 from tools.util.mutation import (
     generate_mutants_and_compute_score,
     get_mutation_testing_results_for_client,
@@ -31,17 +33,18 @@ VERIFICATION_ATTEMPTS_LOG_SUFFIX = "-verification-attempts.jsonl"
 
 def main() -> None:
     """Run CBMC on a function."""
-    # The description omits the unwinding and depth bounds, so that the agent does not hard-code
-    # them into specifications (which AGENTS.md forbids).
+    # The description omits the unwinding and depth bounds, to avoid inviting the agent to hard-code
+    # them into specifications (which AGENTS.md forbids). This does not hide the bounds from the
+    # agent: docs/running-cbmc-directly.md states them, because its commands must be runnable.
     parser = argparse.ArgumentParser(
         description=(
             "Run CBMC on a function, with bounded loop unwinding and bounded depth. "
             "Exits with status 0 on verification success. "
             "On success, additionally runs mutation testing, which re-runs the full CBMC "
-            "pipeline once per mutant (sequentially, up to a 10-minute timeout each); this can "
-            "take several minutes, during which the tool is mostly silent. This is expected, "
-            "not a hang -- do not interrupt the process. Consider running it in the background "
-            "and polling for completion."
+            "pipeline once per mutant (several mutants in parallel, up to a 10-minute timeout "
+            "each); this can take several minutes, during which the tool is mostly silent. This "
+            "is expected, not a hang -- do not interrupt the process. Consider running it in the "
+            "background and polling for completion."
         )
     )
     parser.add_argument("--function", required=True, help="Name of the function to verify.")
@@ -66,10 +69,15 @@ def main() -> None:
         filter=lambda record: "failed to compile" in record["message"],
     )
 
+    # Built once and shared by verification and mutation testing.
+    call_graph = CallGraph(
+        json.loads(Path(construct_call_graph(args.file)).read_text(encoding="utf-8"))
+    )
     result = run_cbmc(
         function_to_verify=args.function,
         file_containing_function_to_verify=args.file,
         include_dirs=args.include_dirs,
+        call_graph=call_graph,
     )
     # Record this top-level verification attempt (pass or fail) so `avocado-verify` can gate its
     # per-function loop on the agent having actually attempted verification often enough.
@@ -81,11 +89,11 @@ def main() -> None:
             file_path=args.file,
             target_function=args.function,
             include_dirs=args.include_dirs,
+            call_graph=call_graph,
             skip_reverification=True,
         )
-        if score:
-            print(result.response)
-            print(get_mutation_testing_results_for_client(score))
+        print(result.response)
+        print(get_mutation_testing_results_for_client(score))
         sys.exit(0)
     else:
         print(result.response)
