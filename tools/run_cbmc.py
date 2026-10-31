@@ -8,10 +8,12 @@ Usage:
 
 import argparse
 import json
+import re
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass
+import tempfile
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -27,6 +29,7 @@ from tools.util import (
     get_unstubbed_external_callees_for,
 )
 from tools.util.callgraph import CallGraph
+from tools.util.vacuity_check_result import VacuityCheckResult
 
 # Character budget for failure responses. The harness persists full tool output to a file but
 # previews only the head inline, so we keep responses bounded (a pathological CBMC run can
@@ -59,6 +62,15 @@ _CBMC_UNWIND = 5
 # `--depth` argument to CBMC.
 _CBMC_DEPTH = 200
 
+# What goto-instrument prints when `--replace-call-with-contract` names a function the compiled
+# program does not contain. The call graph is read from the source text without preprocessing, so
+# it also lists callees that the preprocessor removes (a call inside an `#ifdef` that is off).
+_CALLEE_NOT_COMPILED = re.compile(r"Function '([^']+)' was not found in the GOTO program")
+
+# One line of `goto-instrument --list-goto-functions`: `<name> /* <identifier>[, body not
+# available] */`. A contract is listed under the function's name with a `contract::` identifier.
+_LISTED_FUNCTION = re.compile(r"^(\S+) /\* (\S+?)(, body not available)? \*/$")
+
 
 class CbmcStep(StrEnum):
     """Logical step in the CBMC verification pipeline.
@@ -75,6 +87,29 @@ class CbmcStep(StrEnum):
 
 
 @dataclass(frozen=True)
+class PipelineVariant:
+    """Which of the pipeline's variants a run used.
+
+    `run_cbmc` first runs the plain pipeline and, when that fails in one of two recognisable
+    ways, runs it again differently. A result says which variant produced it, so that a later
+    run that must be comparable with it (the vacuity check) can be made the same way.
+
+    Attributes:
+        replace_self_call (bool): True iff a self-recursive function's own contract was
+            substituted for its recursive calls (the recursion-inlining retry).
+        prevent_macro_expansion (bool): True iff macros CBMC cannot model were disabled and the
+            bundled C-library models were added (the missing-body retry).
+    """
+
+    replace_self_call: bool = False
+    prevent_macro_expansion: bool = False
+
+
+# How `RunCbmcResult` prints a proof that passed vacuously.
+VACUOUS_VERDICT = "VACUOUS"
+
+
+@dataclass(frozen=True)
 class RunCbmcResult:
     """The outcome of running CBMC on a function.
 
@@ -86,6 +121,14 @@ class RunCbmcResult:
             exit code of the failing subprocess (cbmc's verification exit code when
             `failed_step` is CBMC).
         response (str): Printable summary — a success line or a truncated failure block.
+        vacuity_check_result (VacuityCheckResult | None): The result of the vacuity check on a run
+            that passed, or None when no check was made (the run did not pass, or the caller did not
+            ask for one, as for mutants).
+        variant (PipelineVariant | None): The variant of the pipeline that produced this result,
+            when it came from `run_cbmc`.
+        no_contract (bool): True iff the pipeline passed but the function has no contract in the
+            compiled program. CBMC then checks an empty contract, which nothing can violate, so
+            such a pass proves nothing about the function and does not count as verified.
     """
 
     function: str
@@ -93,6 +136,9 @@ class RunCbmcResult:
     timed_out: bool
     returncode: int
     response: str
+    vacuity_check_result: VacuityCheckResult | None = None
+    variant: PipelineVariant | None = None
+    no_contract: bool = False
 
     @property
     def cbmc_ran_successfully(self) -> bool:
@@ -108,10 +154,21 @@ class RunCbmcResult:
     def is_function_verified(self) -> bool:
         """True iff the function for this verification run is successfully verified.
 
-        A function is successfully verified if all components of the CBMC pipeline ran successfully
-        and the return code is 0.
+        A function is successfully verified if all components of the CBMC pipeline ran successfully,
+        the return code is 0, the function has a contract, and the vacuity check (when one was
+        made) did not find the proof vacuous.
         """
-        return self.cbmc_ran_successfully and self.returncode == 0
+        return (
+            self.cbmc_ran_successfully
+            and self.returncode == 0
+            and not self.no_contract
+            and not self.is_vacuous
+        )
+
+    @property
+    def is_vacuous(self) -> bool:
+        """True iff the pipeline passed but the vacuity check found that it proves nothing."""
+        return self.vacuity_check_result is not None and self.vacuity_check_result.is_vacuous
 
     def __str__(self) -> str:
         """Return the string representation of this result, used for logging.
@@ -123,6 +180,10 @@ class RunCbmcResult:
             return "TIMED_OUT"
         if self.failed_step:
             return f"{self.failed_step.value.upper()}_FAILED"
+        if self.no_contract:
+            return "NO_CONTRACT"
+        if self.is_vacuous:
+            return VACUOUS_VERDICT
         if self.is_function_verified:
             return "PASS"
         return "FAIL"
@@ -140,6 +201,7 @@ class _SubprocessResult:
         stdout (str): Captured stdout (empty on timeout).
         stderr (str): Captured stderr (empty on timeout).
         timed_out (bool): True iff the subprocess hit the per-step timeout.
+        timeout_sec (int): The per-step timeout that applied, for the timeout diagnostic.
     """
 
     step: CbmcStep
@@ -148,6 +210,7 @@ class _SubprocessResult:
     stdout: str
     stderr: str
     timed_out: bool
+    timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC
 
     @property
     def succeeded(self) -> bool:
@@ -204,7 +267,8 @@ def run_cbmc(
     file_containing_function_to_verify: str,
     include_dirs: list[str] | None = None,
     call_graph: CallGraph | None = None,
-    cwd: str | None = None,
+    timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
+    variant: PipelineVariant | None = None,
 ) -> RunCbmcResult:
     """Run CBMC on the given function with loop unwinding = `_UNWIND`, depth = `_DEPTH`.
 
@@ -214,6 +278,13 @@ def run_cbmc(
     when an apparent recursive-inlining error is detected, and a retry when a missing
     callee body is detected. The timeout is per CBMC subprocess attempt, not a total
     budget; a timeout in any single step terminates the whole call.
+
+    The pipeline's subprocesses run in a fresh private temporary directory, which receives the
+    intermediate `<function>.goto` / `checking-<function>-contracts.goto` files and is removed
+    afterward. Therefore, concurrent calls (even for the same function, as in mutation testing)
+    never clobber one another's intermediates, and no files are left in the caller's working
+    directory. Relative paths in the arguments are interpreted relative to the caller's working
+    directory, as usual.
 
     Args:
         function_to_verify (str): Name of the function to verify.
@@ -226,16 +297,60 @@ def run_cbmc(
             graph) can build it once and pass it in, which both avoids redundant parsing and keeps
             the non-thread-safe tree-sitter parser out of concurrent code paths. When None, the
             call graph is constructed from the source file as usual.
-        cwd (str | None): Working directory for every subprocess in the pipeline. The pipeline
-            writes its intermediate `<function>.goto` / `checking-<function>-contracts.goto` files
-            relative to this directory, so concurrent runs of the same function (again, mutation
-            testing) must each pass a distinct `cwd` to avoid clobbering one another. When None,
-            subprocesses inherit the current working directory.
+        timeout_sec (int): Per-subprocess timeout in seconds. Defaults to
+            `_DEFAULT_RUN_CBMC_TIMEOUT_SEC`; callers that only need a quick verdict (e.g. mutation
+            feedback for the agent) can pass a smaller budget. A timed-out run is reported as such
+            and is never mistaken for a verification result.
+        variant (PipelineVariant | None): When given, the pipeline is run exactly once, in this
+            variant, and nothing is retried. The vacuity check passes the variant of the run it
+            is checking: its own run fails by design, and a failure must not be allowed to
+            trigger a retry that would judge a different pipeline from the one that passed.
 
     Returns:
         RunCbmcResult: The outcome of the run, naming the failed step (if any) and carrying
             a printable response and the relevant exit code.
     """
+    with tempfile.TemporaryDirectory(prefix="avocado-cbmc-") as scratch_dir:
+        return _run_cbmc_in_directory(
+            function_to_verify,
+            file_containing_function_to_verify,
+            include_dirs,
+            call_graph,
+            scratch_dir,
+            timeout_sec,
+            variant,
+        )
+
+
+def _run_cbmc_in_directory(
+    function_to_verify: str,
+    file_containing_function_to_verify: str,
+    include_dirs: list[str] | None,
+    call_graph: CallGraph | None,
+    cwd: str,
+    timeout_sec: int,
+    variant: PipelineVariant | None,
+) -> RunCbmcResult:
+    """Run CBMC on the given function as `run_cbmc` does, but run every subprocess in `cwd`.
+
+    Args:
+        function_to_verify (str): Name of the function to verify.
+        file_containing_function_to_verify (str): Path to the C file defining the function.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+        call_graph (CallGraph | None): A pre-built call graph, or None to construct one.
+        cwd (str): Working directory for every subprocess in the pipeline.
+        timeout_sec (int): Per-subprocess timeout in seconds.
+        variant (PipelineVariant | None): When given, the only variant of the pipeline to run.
+
+    Returns:
+        RunCbmcResult: The outcome of the run.
+    """
+    # The pipeline's commands are executed relative to `cwd`, so relative paths given by the
+    # caller (which are relative to the process's working directory) must be resolved first. The
+    # invocation log still records the path as the caller gave it.
+    resolved_file = str(Path(file_containing_function_to_verify).resolve())
+    include_dirs = [str(Path(d).resolve()) for d in include_dirs or []]
+
     if call_graph is None:
         path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)
         call_graph = CallGraph(json.loads(Path(path_to_raw_call_graph).read_text(encoding="utf-8")))
@@ -248,19 +363,46 @@ def run_cbmc(
 
     subprocess_results: list[dict] = []
 
+    if variant is not None:
+        if variant.replace_self_call:
+            callees = get_in_file_callees_for(
+                function_to_verify,
+                call_graph,
+                include_self=call_graph.is_self_recursive(function_to_verify),
+            )
+        result, _, _ = _run_pipeline(
+            function_to_verify,
+            callees,
+            resolved_file,
+            stub_paths=stub_paths,
+            include_dirs=include_dirs,
+            prevent_macro_expansion=variant.prevent_macro_expansion,
+            subprocess_results=subprocess_results,
+            cwd=cwd,
+            timeout_sec=timeout_sec,
+        )
+        result = replace(result, variant=variant)
+        _log_invocation(
+            file_containing_function_to_verify, result, subprocess_results, nondet_callees
+        )
+        return result
+
+    used = PipelineVariant()
     # Initial attempt.
     result, combined_stdout, combined_stderr = _run_pipeline(
         function_to_verify,
         callees,
-        file_containing_function_to_verify,
+        resolved_file,
         stub_paths=stub_paths,
         include_dirs=include_dirs,
         prevent_macro_expansion=False,
         subprocess_results=subprocess_results,
         cwd=cwd,
+        timeout_sec=timeout_sec,
     )
     # First, check if the run was successful or if it timed out.
     if result.cbmc_ran_successfully or result.timed_out:
+        result = replace(result, variant=used)
         _log_invocation(
             file_containing_function_to_verify,
             result,
@@ -276,15 +418,17 @@ def run_cbmc(
             call_graph,
             include_self=call_graph.is_self_recursive(function_to_verify),
         )
+        used = replace(used, replace_self_call=True)
         result, combined_stdout, combined_stderr = _run_pipeline(
             function_to_verify,
             callees,
-            file_containing_function_to_verify,
+            resolved_file,
             stub_paths=stub_paths,
             include_dirs=include_dirs,
             prevent_macro_expansion=False,
             subprocess_results=subprocess_results,
             cwd=cwd,
+            timeout_sec=timeout_sec,
         )
 
     # Missing-body retry if unsuccessful: re-run with macro expansion suppressed.
@@ -293,17 +437,20 @@ def run_cbmc(
         and not result.timed_out
         and has_missing_body_for_callee_or_function_message(combined_stdout, combined_stderr)
     ):
+        used = replace(used, prevent_macro_expansion=True)
         result, combined_stdout, combined_stderr = _run_pipeline(
             function_to_verify,
             callees,
-            file_containing_function_to_verify,
+            resolved_file,
             stub_paths=stub_paths,
             include_dirs=include_dirs,
             prevent_macro_expansion=True,
             subprocess_results=subprocess_results,
             cwd=cwd,
+            timeout_sec=timeout_sec,
         )
 
+    result = replace(result, variant=used)
     _log_invocation(file_containing_function_to_verify, result, subprocess_results, nondet_callees)
     return result
 
@@ -317,6 +464,7 @@ def _run_pipeline(
     prevent_macro_expansion: bool,
     subprocess_results: list[dict],
     cwd: str | None = None,
+    timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
 ) -> tuple[RunCbmcResult, str, str]:
     """Run the goto-cc → goto-instrument → cbmc pipeline once.
 
@@ -330,19 +478,21 @@ def _run_pipeline(
         stub_paths (list[str] | None): Extra `.c` stub files compiled in alongside the source.
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
         prevent_macro_expansion (bool): When True, disable macros CBMC can't model and inject
-            the bundled C-library models before contract enforcement.
+            the bundled C-library models after contract enforcement.
         subprocess_results (list[dict]): Mutated in place by callee (_run_command). One dict per
             subprocess invocation is appended in-order. Used by `_log_invocation` to produce the
             JSONL row.
         cwd (str | None): Working directory for every subprocess, forwarded to `_run_step`. The
             pipeline's intermediate `.goto` files are written relative to this directory.
+        timeout_sec (int): Per-subprocess timeout in seconds, forwarded to `_run_command`.
 
     Returns:
         tuple[RunCbmcResult, str, str]: The result of the pipeline plus the concatenated
             stdout and stderr across every subprocess that ran. The concatenated output is used by
             the retry triggers in `run_cbmc`.
     """
-    commands: list[tuple[CbmcStep, str]] = [
+    # Each entry is (step, command, whether to drop the command's missing-body warnings).
+    commands: list[tuple[CbmcStep, str, bool]] = [
         (
             CbmcStep.GOTO_CC,
             _get_goto_cc_command(
@@ -352,35 +502,87 @@ def _run_pipeline(
                 include_dirs=include_dirs,
                 prevent_macro_expansion=prevent_macro_expansion,
             ),
+            False,
+        ),
+        (
+            CbmcStep.GOTO_INSTRUMENT,
+            _get_goto_instrument_unwind_command(_compiled_goto_file(function_to_verify)),
+            False,
+        ),
+        # When the library is added later, contract enforcement warns about every library
+        # function, such as `malloc`. Those warnings would lead the agent to write stubs that hide
+        # CBMC's models. `cbmc` itself reports each callee that still lacks a body ("no body for
+        # callee").
+        (
+            CbmcStep.GOTO_INSTRUMENT,
+            _get_goto_instrument_contract_command(function_to_verify, callees),
+            prevent_macro_expansion,
         ),
     ]
     if prevent_macro_expansion:
-        commands.append(
-            (
-                CbmcStep.GOTO_INSTRUMENT,
-                _get_goto_instrument_add_library_command(function_to_verify),
-            )
+        # The library goes in only once the contract is enforced. Enforcing it on a binary that
+        # already holds the library makes goto-instrument abort on the `__CPROVER_bool` locals of
+        # the `malloc`, `free` and `read` models. `cbmc` would link the same models itself; adding
+        # them here lets the second unwind cut the library's own loops at `_CBMC_UNWIND`, like the
+        # function's.
+        checking_goto = _checking_goto_file(function_to_verify)
+        commands.extend(
+            [
+                (
+                    CbmcStep.GOTO_INSTRUMENT,
+                    _get_goto_instrument_add_library_command(checking_goto),
+                    False,
+                ),
+                (
+                    CbmcStep.GOTO_INSTRUMENT,
+                    _get_goto_instrument_unwind_command(checking_goto),
+                    False,
+                ),
+            ]
         )
-    commands.extend(
-        [
-            (
-                CbmcStep.GOTO_INSTRUMENT,
-                _get_goto_instrument_unwind_command(function_to_verify),
-            ),
-            (
-                CbmcStep.GOTO_INSTRUMENT,
-                _get_goto_instrument_contract_command(function_to_verify, callees),
-            ),
-            (CbmcStep.CBMC, _get_cbmc_check_command(function_to_verify)),
-        ]
-    )
+    commands.append((CbmcStep.CBMC, _get_cbmc_check_command(function_to_verify), False))
 
     per_step_stdout = []
     per_step_stderr = []
-    for step, command in commands:
-        subprocess_result = _run_command(step, command, subprocess_results, cwd=cwd)
-        per_step_stdout.append(subprocess_result.stdout)
-        per_step_stderr.append(subprocess_result.stderr)
+
+    def record_output(
+        subprocess_result: _SubprocessResult, drop_missing_body_warnings: bool
+    ) -> None:
+        """Append `subprocess_result`'s output, possibly without missing-body warnings."""
+        stdout = subprocess_result.stdout
+        stderr = subprocess_result.stderr
+        if drop_missing_body_warnings:
+            stdout = _drop_missing_body_warnings(stdout)
+            stderr = _drop_missing_body_warnings(stderr)
+        per_step_stdout.append(stdout)
+        per_step_stderr.append(stderr)
+
+    contract_command = _get_goto_instrument_contract_command(function_to_verify, callees)
+    for step, command, drop_missing_body_warnings in commands:
+        subprocess_result = _run_command(
+            step, command, subprocess_results, cwd=cwd, timeout_sec=timeout_sec
+        )
+        record_output(subprocess_result, drop_missing_body_warnings)
+        if command == contract_command:
+            # A callee that the preprocessor removed is not in the compiled program, so its
+            # contract cannot be substituted, and need not be: the function does not call it in
+            # this build. Leave such callees out and run the step again.
+            compiled_callees = list(callees)
+            while not subprocess_result.succeeded and not subprocess_result.timed_out:
+                missing = _CALLEE_NOT_COMPILED.search(
+                    subprocess_result.stderr + subprocess_result.stdout
+                )
+                if missing is None or missing.group(1) not in compiled_callees:
+                    break
+                compiled_callees.remove(missing.group(1))
+                subprocess_result = _run_command(
+                    step,
+                    _get_goto_instrument_contract_command(function_to_verify, compiled_callees),
+                    subprocess_results,
+                    cwd=cwd,
+                    timeout_sec=timeout_sec,
+                )
+                record_output(subprocess_result, drop_missing_body_warnings)
         if not subprocess_result.succeeded:
             combined_stdout = "".join(per_step_stdout)
             combined_stderr = "".join(per_step_stderr)
@@ -409,7 +611,11 @@ def _run_pipeline(
 
 
 def _run_command(
-    step: CbmcStep, command: str, subprocess_results, cwd: str | None = None
+    step: CbmcStep,
+    command: str,
+    subprocess_results,
+    cwd: str | None = None,
+    timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
 ) -> _SubprocessResult:
     """Run one pipeline step as a subprocess with the per-step timeout.
 
@@ -420,6 +626,8 @@ def _run_command(
         cwd (str | None): Working directory for the subprocess. When None, the subprocess
             inherits the current working directory. Distinct directories let concurrent
             pipelines for the same function avoid clobbering each other's `.goto` files.
+        timeout_sec (int): Seconds the subprocess may run before it is killed and reported as
+            timed out.
 
     Returns:
         _SubprocessResult: The captured outcome, including stdout/stderr or the timeout sentinel.
@@ -431,7 +639,7 @@ def _run_command(
             text=True,
             shell=True,
             check=False,
-            timeout=_DEFAULT_RUN_CBMC_TIMEOUT_SEC,
+            timeout=timeout_sec,
             cwd=cwd,
         )
         returncode = completed.returncode
@@ -458,6 +666,7 @@ def _run_command(
         stdout=stdout,
         stderr=stderr,
         timed_out=timed_out,
+        timeout_sec=timeout_sec,
     )
 
 
@@ -482,7 +691,7 @@ def _result_from_failure(
     if subprocess_result.timed_out:
         response = (
             f"Verification for '{function}' timed out after "
-            f"{_DEFAULT_RUN_CBMC_TIMEOUT_SEC} second(s) during {subprocess_result.step.value}"
+            f"{subprocess_result.timeout_sec} second(s) during {subprocess_result.step.value}"
         )
         return RunCbmcResult(
             function=function,
@@ -545,6 +754,20 @@ def has_missing_body_for_callee_or_function_message(stdout: str, stderr: str) ->
         or missing_callee_indicator in stderr
         or missing_function_indicator in stdout
         or missing_function_indicator in stderr
+    )
+
+
+def _drop_missing_body_warnings(output: str) -> str:
+    """Return `output` without its "no body for function" warning lines.
+
+    Args:
+        output (str): The stdout or stderr of a goto-instrument command.
+
+    Returns:
+        str: `output` with every line that contains "no body for function" removed.
+    """
+    return "".join(
+        line for line in output.splitlines(keepends=True) if "no body for function" not in line
     )
 
 
@@ -717,7 +940,7 @@ def _get_goto_cc_command(
     return " ".join(
         (
             f"goto-cc {flags_disabling_macro_expansion}",
-            f"-o {quoted_function}.goto",
+            f"-o {_compiled_goto_file(function)}",
             include_flags,
             shlex.quote(file_containing_function),
             extra_stub_args,
@@ -726,38 +949,57 @@ def _get_goto_cc_command(
     )
 
 
-def _get_goto_instrument_add_library_command(function: str) -> str:
-    """Return the `goto-instrument --add-library` command for `function`'s goto-binary.
-
-    This step injects CBMC's bundled C-library models (`isspace`, `strchr`, etc.) into
-    the goto-binary before contract enforcement runs. It's only used when macro expansion
-    is suppressed; without it, those calls are treated as nondeterministic, which loosens
-    precision and can cause `goto-instrument` to emit "no body for function" warnings.
+def _compiled_goto_file(function: str) -> str:
+    """Return the name of the goto-binary that `goto-cc` writes for `function`.
 
     Args:
-        function (str): The function whose goto-binary should receive the library models.
+        function (str): The function under verification.
+
+    Returns:
+        str: The file name, quoted for the shell.
+    """
+    return f"{shlex.quote(function)}.goto"
+
+
+def _checking_goto_file(function: str) -> str:
+    """Return the name of the goto-binary that `--enforce-contract` writes for `function`.
+
+    Args:
+        function (str): The function under verification.
+
+    Returns:
+        str: The file name, quoted for the shell.
+    """
+    return f"checking-{shlex.quote(function)}-contracts.goto"
+
+
+def _get_goto_instrument_add_library_command(goto_file: str) -> str:
+    """Return the `goto-instrument --add-library` command for `goto_file`.
+
+    The command adds CBMC's bundled C-library models (`isspace`, `strchr`, etc.) to the
+    goto-binary in place. `cbmc` links the same models itself when it checks a binary that lacks
+    them, so adding them earlier matters only to later goto-instrument steps, such as an unwind
+    that should also bound the models' loops.
+
+    Args:
+        goto_file (str): The goto-binary to receive the models, quoted for the shell.
 
     Returns:
         str: A single shell command.
     """
-    quoted_function = shlex.quote(function)
-    return f"goto-instrument --add-library {quoted_function}.goto {quoted_function}.goto"
+    return f"goto-instrument --add-library {goto_file} {goto_file}"
 
 
-def _get_goto_instrument_unwind_command(function: str) -> str:
-    """Return the `goto-instrument --partial-loops --unwind _CBMC_UNWIND` command for `function`.
+def _get_goto_instrument_unwind_command(goto_file: str) -> str:
+    """Return the `goto-instrument --partial-loops --unwind _CBMC_UNWIND` command for `goto_file`.
 
     Args:
-        function (str): The function whose goto-binary should be unwound.
+        goto_file (str): The goto-binary to unwind in place, quoted for the shell.
 
     Returns:
         str: A single shell command.
     """
-    quoted_function = shlex.quote(function)
-    return (
-        f"goto-instrument --partial-loops --unwind {_CBMC_UNWIND} "
-        f"{quoted_function}.goto {quoted_function}.goto"
-    )
+    return f"goto-instrument --partial-loops --unwind {_CBMC_UNWIND} {goto_file} {goto_file}"
 
 
 def _get_goto_instrument_contract_command(function: str, callees: list[str]) -> str:
@@ -776,8 +1018,8 @@ def _get_goto_instrument_contract_command(function: str, callees: list[str]) -> 
     return (
         f"goto-instrument{replace_calls} "
         f"--enforce-contract {quoted_function} "
-        f"{quoted_function}.goto "
-        f"checking-{quoted_function}-contracts.goto"
+        f"{_compiled_goto_file(function)} "
+        f"{_checking_goto_file(function)}"
     )
 
 
@@ -792,15 +1034,168 @@ def _get_cbmc_check_command(function: str) -> str:
     """
     quoted_function = shlex.quote(function)
     return (
-        f"cbmc checking-{quoted_function}-contracts.goto "
-        f"--function {quoted_function} --depth {_CBMC_DEPTH}"
+        f"cbmc {_checking_goto_file(function)} --function {quoted_function} --depth {_CBMC_DEPTH}"
     )
+
+
+def _run_cbmc_without_depth_bound(
+    function_to_verify: str,
+    file_containing_function_to_verify: str,
+    *,
+    include_dirs: list[str] | None,
+    cwd: str,
+    timeout_sec: int,
+    variant: PipelineVariant,
+) -> RunCbmcResult:
+    """Run the pipeline once, in `variant`, then check its instrumented binary without `--depth`.
+
+    Only the vacuity check uses this, to learn whether the depth bound is what keeps executions
+    out of a function's body; everything else verifies at the fixed depth. The pipeline is
+    `run_cbmc`'s, unchanged. When it passes, the binary its last step checked is checked again by
+    CBMC with no depth bound.
+
+    Args:
+        function_to_verify (str): Name of the function to verify.
+        file_containing_function_to_verify (str): Path to the C file defining the function.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+        cwd (str): Working directory of the pipeline, where its goto-binaries are written.
+        timeout_sec (int): Per-subprocess timeout in seconds.
+        variant (PipelineVariant): The variant of the pipeline to run, exactly once.
+
+    Returns:
+        RunCbmcResult: The outcome of the run without the depth bound, or of the pipeline when it
+            did not pass at the fixed depth.
+    """
+    bounded = _run_cbmc_in_directory(
+        function_to_verify,
+        file_containing_function_to_verify,
+        include_dirs,
+        None,
+        cwd,
+        timeout_sec,
+        variant,
+    )
+    if not bounded.cbmc_ran_successfully:
+        return bounded
+    unbounded = _run_command(
+        CbmcStep.CBMC,
+        f"cbmc {_checking_goto_file(function_to_verify)} "
+        f"--function {shlex.quote(function_to_verify)}",
+        [],
+        cwd=cwd,
+        timeout_sec=timeout_sec,
+    )
+    if unbounded.succeeded:
+        return bounded
+    return replace(
+        _result_from_failure(function_to_verify, unbounded, unbounded.stdout, unbounded.stderr),
+        variant=variant,
+    )
+
+
+def list_compiled_functions(
+    file_path: str, include_dirs: list[str] | None = None
+) -> set[str] | None:
+    """Return the names of the functions that are compiled when `file_path` is built.
+
+    The harness finds a file's functions by reading its text, without running the preprocessor,
+    so it also finds the ones inside conditional blocks that this build leaves out. Such a
+    function does not exist as far as CBMC is concerned: it cannot be verified, and its contract
+    cannot be substituted at a call site. This asks the compiler, once, which functions do exist.
+
+    Args:
+        file_path (str): Path to the C source file.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+
+    Returns:
+        set[str] | None: The functions that have a body in the compiled program, or None when
+            the file could not be compiled or listed, in which case nothing is known.
+    """
+    listing = _list_goto_functions(file_path, include_dirs)
+    return None if listing is None else listing[0]
+
+
+def has_contract(
+    function: str, file_path: str, include_dirs: list[str] | None = None
+) -> bool | None:
+    """Return whether `function`, as compiled from `file_path`, has a contract.
+
+    Asked of the compiled program rather than of the source text, so a function defined once per
+    preprocessor branch is judged by the definition that is actually built. goto-cc records a
+    `contract::<name>` symbol for a function iff that definition carries at least one contract
+    clause (`__CPROVER_requires`, `__CPROVER_ensures`, `__CPROVER_assigns`, ...).
+
+    Args:
+        function (str): The function.
+        file_path (str): Path to the C source file.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+
+    Returns:
+        bool | None: True or False, or None when the file could not be compiled or listed.
+    """
+    listing = _list_goto_functions(file_path, include_dirs)
+    return None if listing is None else function in listing[1]
+
+
+def _list_goto_functions(
+    file_path: str, include_dirs: list[str] | None
+) -> tuple[set[str], set[str]] | None:
+    """Compile `file_path` and list its functions and the functions that have contracts.
+
+    Args:
+        file_path (str): Path to the C source file.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+
+    Returns:
+        tuple[set[str], set[str]] | None: The functions with a body, and the functions with a
+            contract, in the compiled program; None when it could not be compiled or listed.
+    """
+    # The commands run in a scratch directory, so paths are resolved first.
+    include_flags = " ".join(
+        f"-I {shlex.quote(str(Path(d).resolve()))}" for d in include_dirs or []
+    )
+    source = shlex.quote(str(Path(file_path).resolve()))
+    try:
+        with tempfile.TemporaryDirectory(prefix="avocado-compiled-") as scratch_dir:
+            commands = (
+                f"goto-cc -o compiled.goto {include_flags} {source}",
+                "goto-instrument --list-goto-functions compiled.goto",
+            )
+            listing = ""
+            for command in commands:
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    shell=True,
+                    check=False,
+                    timeout=_GOTO_CC_TIMEOUT_SEC,
+                    cwd=scratch_dir,
+                )
+                if completed.returncode != 0:
+                    return None
+                listing = completed.stdout
+    except (OSError, TimeoutExpired):
+        return None
+    compiled: set[str] = set()
+    contracted: set[str] = set()
+    for line in listing.splitlines():
+        listed = _LISTED_FUNCTION.match(line.strip())
+        if listed is None:
+            continue
+        name, identifier, no_body = listed.groups()
+        if identifier == name and no_body is None:
+            compiled.add(name)
+        elif identifier == f"contract::{name}":
+            contracted.add(name)
+    return compiled, contracted
 
 
 def compile_with_goto_cc(
     function: str,
     file_path: str,
     include_dirs: list[str] | None = None,
+    cwd: str | None = None,
 ) -> int:
     """Run only the goto-cc compile command on a C file and return its exit code.
 
@@ -812,6 +1207,8 @@ def compile_with_goto_cc(
         function (str): The function used as the goto-binary entry point.
         file_path (str): Path to the C file to compile.
         include_dirs (list[str] | None): Directories forwarded as `-I` flags.
+        cwd (str | None): Working directory for the subprocess; the `<function>.goto` output
+            lands there. When None, it lands in the current working directory as before.
 
     Returns:
         int: the return code of the subprocess used to invoke `goto-cc`,
@@ -826,6 +1223,7 @@ def compile_with_goto_cc(
             shell=True,
             check=False,
             timeout=_GOTO_CC_TIMEOUT_SEC,
+            cwd=cwd,
         )
     except TimeoutExpired:
         return _TIMEOUT_RETURNCODE
