@@ -250,6 +250,7 @@ def run_cbmc(
             include_dirs,
             call_graph,
             scratch_dir,
+            log_invocation=log_invocation,
         )
 
 
@@ -259,6 +260,8 @@ def _run_cbmc_in_directory(
     include_dirs: list[str] | None,
     call_graph: CallGraph | None,
     cwd: str,
+    *,
+    log_invocation: bool,
 ) -> RunCbmcResult:
     """Run CBMC on the given function as `run_cbmc` does, but run every subprocess in `cwd`.
 
@@ -268,6 +271,7 @@ def _run_cbmc_in_directory(
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
         call_graph (CallGraph | None): A pre-built call graph, or None to construct one.
         cwd (str): Working directory for every subprocess in the pipeline.
+        log_invocation (bool): Whether to append a record of the run to the run log.
 
     Returns:
         RunCbmcResult: The outcome of the run.
@@ -288,61 +292,12 @@ def _run_cbmc_in_directory(
     nondet_callees = get_unstubbed_external_callees_for(function_to_verify, call_graph, stub_index)
 
     subprocess_results: list[dict] = []
-    with tempfile.TemporaryDirectory(prefix="avocado-cbmc-") as scratch_dir:
-        result = _run_pipeline_with_retries(
-            function_to_verify,
-            callees,
-            str(Path(file_containing_function_to_verify).resolve()),
-            call_graph=call_graph,
-            stub_paths=stub_paths,
-            include_dirs=[str(Path(d).resolve()) for d in include_dirs] if include_dirs else None,
-            subprocess_results=subprocess_results,
-            cwd=scratch_dir,
-        )
-    if log_invocation:
-        _log_invocation(
-            file_containing_function_to_verify, result, subprocess_results, nondet_callees
-        )
-    return result
 
-
-def _run_pipeline_with_retries(
-    function_to_verify: str,
-    callees: list[str],
-    file_containing_function: str,
-    *,
-    call_graph: CallGraph,
-    stub_paths: list[str],
-    include_dirs: list[str] | None,
-    subprocess_results: list[dict],
-    cwd: str,
-) -> RunCbmcResult:
-    """Run the CBMC pipeline, retrying when the first attempt fails in a recognized way.
-
-    The first retry (if needed) is for an apparent recursive-inlining error, and the second
-    retry (if needed) is for a missing callee body.
-
-    Args:
-        function_to_verify (str): The function under verification.
-        callees (list[str]): Callees of the function, used by `--replace-call-with-contract`.
-        file_containing_function (str): The absolute path of the C source file containing the
-            function.
-        call_graph (CallGraph): The call graph of `file_containing_function`.
-        stub_paths (list[str]): Extra `.c` stub files compiled in alongside the source.
-        include_dirs (list[str] | None): Absolute directories forwarded to `goto-cc` as `-I`
-            flags.
-        subprocess_results (list[dict]): Side-effected by appending one record per subprocess
-            invocation; see `_run_pipeline`.
-        cwd (str): Working directory for every subprocess.
-
-    Returns:
-        RunCbmcResult: The outcome of the last pipeline attempt.
-    """
     # Initial attempt.
     result, combined_stdout, combined_stderr = _run_pipeline(
         function_to_verify,
         callees,
-        file_containing_function,
+        resolved_file,
         stub_paths=stub_paths,
         include_dirs=include_dirs,
         prevent_macro_expansion=False,
@@ -351,6 +306,13 @@ def _run_pipeline_with_retries(
     )
     # First, check if the run was successful or if it timed out.
     if result.cbmc_ran_successfully or result.timed_out:
+        if log_invocation:
+            _log_invocation(
+                file_containing_function_to_verify,
+                result,
+                subprocess_results,
+                nondet_callees,
+            )
         return result
 
     # Recursion-inlining retry.
@@ -363,7 +325,7 @@ def _run_pipeline_with_retries(
         result, combined_stdout, combined_stderr = _run_pipeline(
             function_to_verify,
             callees,
-            file_containing_function,
+            resolved_file,
             stub_paths=stub_paths,
             include_dirs=include_dirs,
             prevent_macro_expansion=False,
@@ -380,7 +342,7 @@ def _run_pipeline_with_retries(
         result, combined_stdout, combined_stderr = _run_pipeline(
             function_to_verify,
             callees,
-            file_containing_function,
+            resolved_file,
             stub_paths=stub_paths,
             include_dirs=include_dirs,
             prevent_macro_expansion=True,
@@ -388,6 +350,10 @@ def _run_pipeline_with_retries(
             cwd=cwd,
         )
 
+    if log_invocation:
+        _log_invocation(
+            file_containing_function_to_verify, result, subprocess_results, nondet_callees
+        )
     return result
 
 
@@ -399,7 +365,7 @@ def _run_pipeline(
     include_dirs: list[str] | None,
     prevent_macro_expansion: bool,
     subprocess_results: list[dict],
-    cwd: str,
+    cwd: str | None = None,
 ) -> tuple[RunCbmcResult, str, str]:
     """Run the goto-cc → goto-instrument → cbmc pipeline once.
 
@@ -417,7 +383,7 @@ def _run_pipeline(
         subprocess_results (list[dict]): Mutated in place by callee (_run_command). One dict per
             subprocess invocation is appended in-order. Used by `_log_invocation` to produce the
             JSONL row.
-        cwd (str): Working directory for every subprocess, forwarded to `_run_command`. The
+        cwd (str | None): Working directory for every subprocess, forwarded to `_run_step`. The
             pipeline's intermediate `.goto` files are written relative to this directory.
 
     Returns:
@@ -491,14 +457,17 @@ def _run_pipeline(
     )
 
 
-def _run_command(step: CbmcStep, command: str, subprocess_results, cwd: str) -> _SubprocessResult:
+def _run_command(
+    step: CbmcStep, command: str, subprocess_results, cwd: str | None = None
+) -> _SubprocessResult:
     """Run one pipeline step as a subprocess with the per-step timeout.
 
     Args:
         step (CbmcStep): The logical step this subprocess belongs to.
         command (str): The shell command to run.
         subprocess_results: List of subprocess results; is side-effected.
-        cwd (str): Working directory for the subprocess. Distinct directories let concurrent
+        cwd (str | None): Working directory for the subprocess. When None, the subprocess
+            inherits the current working directory. Distinct directories let concurrent
             pipelines for the same function avoid clobbering each other's `.goto` files.
 
     Returns:
