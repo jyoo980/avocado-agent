@@ -45,7 +45,9 @@ def run_command(
             stdout, stderr = process.communicate(timeout=timeout)
         except TimeoutExpired:
             _kill_process_tree(process.pid)
-            process.communicate()
+            # Wait for the command to exit, not for end-of-file on its output pipes, which an
+            # orphaned descendant can hold open indefinitely.
+            process.wait()
             return None
         except BaseException:
             _kill_process_tree(process.pid)
