@@ -45,7 +45,7 @@ You can also search the web for more CBMC documentation.
   avocado-construct-call-graph <PATH_TO_C_FILE>
   ```
 
-  Prints the path to a newly written JSON file that is a sibling of the source file,
+  Prints the path to a newly written JSON file that is a sibling of the source file.
   For example, invoking `avocado-construct-call-graph /app/a/b/file.c` will print `/app/a/b/file-callgraph.json`
 
 - **To obtain a reverse topological ordering of functions in a file, with all callees before their callers**:

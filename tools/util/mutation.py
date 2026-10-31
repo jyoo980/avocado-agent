@@ -296,8 +296,8 @@ def generate_mutants_and_compute_score(
             return BaselineFailsVerification(file_path, target_function)
 
     # Operator-swap mutations never add or remove calls (or rename functions), so the call graph
-    # is identical for the original and every mutant. Build it once -- cache-hitting the JSON the
-    # baseline run above already wrote -- and pass it into each mutant's run_cbmc below. Besides
+    # is identical for the original and every mutant. Build it once and pass it into each
+    # mutant's run_cbmc below. Besides
     # avoiding redundant parsing, this keeps the non-thread-safe tree-sitter parser out of the
     # concurrent section: no call graph is constructed inside the worker threads.
     call_graph = CallGraph(
@@ -305,7 +305,7 @@ def generate_mutants_and_compute_score(
     )
 
     paths_to_mutants = {
-        _get_path_for_mutated_source(workspace, source_path, i): mutant
+        _get_path_for_mutated_source(workspace, source_path, target_function, i): mutant
         for i, mutant in enumerate(mutants)
     }
     # Heads-up to stderr so an agent polling the run can see the slow phase has begun and is
@@ -529,21 +529,25 @@ def _verify_mutant(
 
 
 def _get_path_for_mutated_source(
-    workspace_path: Path, path_to_original_source: Path, index: int
+    workspace_path: Path, path_to_original_source: Path, function: str, index: int
 ) -> Path:
     """Return the path to which to write a mutated source file.
 
-    For example, given the path `/app/test/data/foo.c`, return `/app/test/data/foo__mutant_1.c`
+    For example, given the path `/app/test/data/foo.c` and function `bar`, return
+    `/app/test/data/foo__mutant_bar_1.c`. The function name is part of the file name so that
+    mutants of different functions in the same file -- which may be scored concurrently -- never
+    overwrite one another; mutant files still match the `*__mutant_*.c` pattern that
+    `make clean-mutants` removes.
 
     Args:
         workspace_path (Path): The directory under which mutation testing occurs.
         path_to_original_source (Path): The path to the original source file.
+        function (str): The function the mutant belongs to.
         index (int): The index of the mutant, used as a identifier for the mutant source path.
 
     Returns:
         Path: The path to which to write a mutated source file.
     """
-    return (
-        workspace_path
-        / f"{path_to_original_source.stem}__mutant_{index}{path_to_original_source.suffix}"
+    return workspace_path / (
+        f"{path_to_original_source.stem}__mutant_{function}_{index}{path_to_original_source.suffix}"
     )

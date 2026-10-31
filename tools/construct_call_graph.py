@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import json
+import tempfile
 from pathlib import Path
 
 from tools.util import get_call_graph
@@ -41,14 +42,26 @@ def construct_call_graph(
         path_to_file_to_verify (str): The path to the file from which to construct a call graph.
 
     Returns:
-        str: The path to the file to which the call graph is written.
+        str: The path to the file to which the call graph is written.  The file is always
+            rewritten, so it reflects the current contents of the C file.
     """
     source_path = Path(path_to_file_to_verify)
     path_to_call_graph = source_path.with_name(f"{source_path.stem}-callgraph.json")
-    if path_to_call_graph.exists():
-        return str(path_to_call_graph)
     call_graph = get_call_graph(path_to_file_to_verify)
-    path_to_call_graph.write_text(json.dumps(call_graph, indent=4))
+    # `construct_call_graph` is called from concurrent code paths (e.g. the evaluation driver
+    # scoring several functions of one file at once), in one process or several. Write to a
+    # uniquely named sibling and rename it into place, so that a concurrent reader sees either the
+    # previous file or a complete new one, never a partially written one.
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=path_to_call_graph.parent,
+        prefix=f".{path_to_call_graph.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as tmp:
+        tmp.write(json.dumps(call_graph, indent=4))
+    Path(tmp.name).replace(path_to_call_graph)
     return str(path_to_call_graph)
 
 
