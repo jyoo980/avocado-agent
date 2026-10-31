@@ -1,12 +1,12 @@
 """Run CBMC on a function and perform mutation testing.
 
 This is the `avocado-run-cbmc` entry point that the inner agent calls. It wraps the shared pipeline
-in `tools.run_cbmc` (goto-cc → goto-instrument → cbmc), checks a passing run for vacuity
-(`tools.util.vacuity`), records the attempt in a sibling JSONL log that `avocado-verify` reads,
-and -- when the function verifies, and not vacuously -- runs mutation testing and reports the kill
-score plus any surviving mutants. The kill score of each passing run is recorded in a
-second sibling JSONL log, so a run can be analysed afterwards for whether repeated attempts on a
-function were still raising its score.
+in `tools.run_cbmc` (goto-cc → goto-instrument → cbmc), checks that a passing function has a
+contract and that the run is not vacuous (`tools.util.vacuity`), records the attempt in a sibling
+JSONL log that `avocado-verify` reads, and -- when the function verifies, and not vacuously --
+runs mutation testing and reports the kill score plus any surviving mutants. The kill score of each
+passing run is recorded in a second sibling JSONL log, so a run can be analysed afterwards for
+whether repeated attempts on a function were still raising its score.
 
 Usage:
     % avocado-run-cbmc --function <FUNCTION_NAME> \
@@ -18,7 +18,6 @@ Usage:
 import argparse
 import json
 import sys
-import tempfile
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -76,7 +75,7 @@ def main() -> None:
             f"pipeline once per mutant (concurrently, up to {_AGENT_MUTANT_TIMEOUT_SEC} s each); "
             "this can take a few minutes, during which the tool is mostly silent. This is "
             "expected, not a hang -- do not interrupt the process. Consider running it in the "
-            "and polling for completion."
+            "background and polling for completion."
         )
     )
     parser.add_argument("--function", required=True, help="Name of the function to verify.")
@@ -157,14 +156,7 @@ def verify_function(
     depth: int,
     vacuity_check: bool = True,
 ) -> RunCbmcResult:
-    """Run the CBMC pipeline on `function` in a private scratch directory.
-
-    The pipeline writes its `<function>.goto` / `checking-<function>-contracts.goto` intermediates
-    relative to its working directory. Running it in a fresh temporary directory keeps those files
-    out of the caller's working directory and lets several `avocado-run-cbmc` processes (e.g. agent
-    sessions for different files that happen to share a function name) run concurrently without
-    clobbering one another. Paths are resolved first because the pipeline's commands are executed
-    relative to the scratch directory.
+    """Run the CBMC pipeline on `function`, then check a passing run for a contract and vacuity.
 
     A run that passes is then checked for a contract: a function without one is checked against
     an empty contract, which nothing can violate, so it is returned with
@@ -191,14 +183,12 @@ def verify_function(
     Returns:
         RunCbmcResult: The outcome of the run.
     """
-    with tempfile.TemporaryDirectory(prefix="avocado-verify-") as scratch_dir:
-        result = run_cbmc(
-            function_to_verify=function,
-            file_containing_function_to_verify=str(Path(file_path).resolve()),
-            include_dirs=[str(Path(d).resolve()) for d in include_dirs or []],
-            cwd=scratch_dir,
-            depth=depth,
-        )
+    result = run_cbmc(
+        function_to_verify=function,
+        file_containing_function_to_verify=file_path,
+        include_dirs=include_dirs,
+        depth=depth,
+    )
     if not result.is_function_verified:
         return result
     if has_contract(function, file_path, include_dirs) is False:
@@ -222,6 +212,12 @@ def verify_function(
         logger.warning(
             f"{function}: vacuity could not be checked ({vacuity_check_result.message}); "
             "the pass stands"
+        )
+        return replace(result, vacuity_check_result=vacuity_check_result)
+    if vacuity_status is Vacuity.DEPTH_LIMIT_REACHED:
+        logger.warning(
+            f"{function}: no execution enters the body within the depth bound, although the "
+            "preconditions can hold; the pass stands"
         )
         return replace(result, vacuity_check_result=vacuity_check_result)
     if vacuity_status is Vacuity.NOT_VACUOUS:

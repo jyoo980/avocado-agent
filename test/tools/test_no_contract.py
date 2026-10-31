@@ -35,7 +35,14 @@ def test_the_compiled_program_says_which_functions_have_a_contract(tmp_path: Pat
     assert has_contract("clear", source) is True
     # The definition that is compiled decides, not one in a branch the build leaves out.
     assert has_contract("pick", source) is False
-    assert has_contract("answer", str(tmp_path / "missing.c")) is None
+
+
+
+def test_a_file_that_does_not_compile_tells_nothing(tmp_path: Path) -> None:
+    broken = tmp_path / "broken.c"
+    broken.write_text("int f(void) { return }\n")
+    assert has_contract("f", str(broken)) is None
+    assert has_contract("f", str(tmp_path / "missing.c")) is None
 
 
 def test_a_function_without_a_contract_is_not_verified(tmp_path: Path) -> None:

@@ -7,8 +7,10 @@ from tools.run_cbmc import DEFAULT_CBMC_DEPTH, CbmcStep, PipelineVariant, RunCbm
 from tools.run_cbmc_and_mutation_testing import verify_function
 from tools.util import vacuity_check_result
 from tools.util.vacuity import (
+    add_entry_probe,
     add_probes,
     check_vacuity,
+    classify_entry_probe_run,
     classify_probe_run,
     describe_vacuous_result,
 )
@@ -104,7 +106,8 @@ def test_a_vacuous_result_does_not_count_as_verified() -> None:
         function="f", failed_step=None, timed_out=False, returncode=0, response="ok"
     )
     assert passed.is_function_verified and str(passed) == "PASS"
-    for vacuity in (Vacuity.NOT_VACUOUS, Vacuity.UNKNOWN):
+    # A pass whose body CBMC could not enter within the depth bound stands, like an unknown one.
+    for vacuity in (Vacuity.NOT_VACUOUS, Vacuity.UNKNOWN, Vacuity.DEPTH_LIMIT_REACHED):
         checked = RunCbmcResult("f", None, False, 0, "ok", vacuity_check_result=VacuityCheckResult(vacuity, ""))
         assert checked.is_function_verified and not checked.is_vacuous and str(checked) == "PASS"
 
@@ -170,15 +173,77 @@ def test_the_probe_run_uses_the_variant_that_passed_and_is_never_retried(
     monkeypatch.setattr(tools.run_cbmc, "_run_pipeline", failing_pipeline)
     monkeypatch.setattr(tools.run_cbmc, "_log_invocation", lambda *a, **k: None)
     # An ordinary run takes that failure as a reason to run the other variant.
-    retried = run_cbmc("clamp", str(source), cwd=str(tmp_path))
+    retried = run_cbmc("clamp", str(source))
     assert runs == [False, True] and retried.variant == PipelineVariant(
         prevent_macro_expansion=True
     )
     # The probe run is made once, in the variant it is told, so its verdict is about that one.
     runs.clear()
-    probe = run_cbmc("clamp", str(source), cwd=str(tmp_path), variant=PipelineVariant())
+    probe = run_cbmc("clamp", str(source), variant=PipelineVariant())
     assert runs == [False] and probe.variant == PipelineVariant()
     runs.clear()
     cbmc_run_for_clamp = check_vacuity("clamp", str(source), variant=PipelineVariant(True, True), depth=DEFAULT_CBMC_DEPTH)
     assert cbmc_run_for_clamp.vacuity == Vacuity.END_UNREACHABLE
     assert runs == [True]
+
+
+def _deep_source() -> bytes:
+    """A function whose precondition asks for more steps than the depth bound before the body."""
+    steps = "".join(f"    x = x + {index % 3};\n" for index in range(300))
+    return (
+        "static int avocado_spec_long(int x)\n{\n" + steps + "    return x;\n}\n\n"
+        "int deep(int v)\n"
+        "__CPROVER_requires(v >= 0 && v < 4 && avocado_spec_long(v) >= 0)\n"
+        "__CPROVER_ensures(__CPROVER_return_value == v)\n"
+        "{\n    return v;\n}\n"
+    ).encode("ascii")
+
+
+def test_the_entry_probe_ends_every_path_at_the_top_of_every_definition() -> None:
+    source = (
+        b"#ifdef FAST\nstatic int pick(int x) { return x; }\n#else\n"
+        b"static int pick(int x)\n__CPROVER_ensures(__CPROVER_return_value == x)\n"
+        b"{ return x; }\n#endif\nint other(int x) { return x; }\n"
+    )
+    probed = add_entry_probe(source, "pick")
+    assert probed is not None
+    probe = b'{ __CPROVER_assert(0, "AVOCADO_VACUITY_PROBE_BODY_ENTERED"); __CPROVER_assume(0);'
+    assert probed.count(probe) == 2
+    # Unlike the other probes, it adds no false postcondition.
+    assert b"__CPROVER_ensures(0)" not in probed
+    assert b"int other(int x) { return x; }" in probed
+    assert add_entry_probe(source, "missing") is None
+
+
+def test_the_run_without_the_depth_bound_tells_the_depth_limit_from_a_contradiction() -> None:
+    entry = "[f.assertion.1] line 4 AVOCADO_VACUITY_PROBE_BODY_ENTERED: FAILURE"
+    entered = _probe_run(returncode=10, failed_step=CbmcStep.CBMC, response=f"{entry}\n")
+    assert classify_entry_probe_run(entered).vacuity is Vacuity.DEPTH_LIMIT_REACHED
+    # Not reached even without the bound: the preconditions cannot all hold.
+    not_entered = _probe_run(returncode=0, failed_step=None, response="f verified successfully")
+    result = classify_entry_probe_run(not_entered)
+    assert result.vacuity is Vacuity.UNSATISFIABLE_PRECONDITIONS and result.message == ""
+    # A run that gives no answer leaves the first verdict standing, and says so.
+    timed_out = RunCbmcResult(
+        function="f", failed_step=CbmcStep.CBMC, timed_out=True, returncode=124, response=""
+    )
+    result = classify_entry_probe_run(timed_out)
+    assert result.vacuity is Vacuity.UNSATISFIABLE_PRECONDITIONS and "no answer" in result.message
+
+
+def test_a_precondition_that_uses_up_the_depth_bound_is_told_apart(tmp_path: Path) -> None:
+    source = tmp_path / "deep.c"
+    source.write_bytes(_deep_source())
+    result = check_vacuity("deep", str(source), depth=DEFAULT_CBMC_DEPTH)
+    assert result.vacuity is Vacuity.DEPTH_LIMIT_REACHED and not result.is_vacuous
+    # Like an unknown result, the pass stands, and the kind is kept on the result.
+    verified = verify_function("deep", str(source), depth=DEFAULT_CBMC_DEPTH)
+    assert verified.is_function_verified and not verified.is_vacuous and str(verified) == "PASS"
+    assert verified.vacuity_check_result is not None
+    assert verified.vacuity_check_result.vacuity is Vacuity.DEPTH_LIMIT_REACHED
+    # A real contradiction is still reported as one.
+    contradictory = tmp_path / "vacuity.c"
+    contradictory.write_bytes(SOURCE)
+    result = check_vacuity("contradictory", str(contradictory), depth=DEFAULT_CBMC_DEPTH)
+    assert result.vacuity is Vacuity.UNSATISFIABLE_PRECONDITIONS
+    assert source.read_bytes() == _deep_source()

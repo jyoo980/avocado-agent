@@ -75,9 +75,19 @@ def test_get_goto_instrument_contract_command_includes_self_for_inductive_recurs
     assert "--enforce-contract quickSort" in command
 
 
-def test_get_goto_instrument_add_library_command() -> None:
+def test_get_goto_instrument_add_library_command_targets_the_instrumented_binary() -> None:
     command = _get_goto_instrument_add_library_command("swap")
-    assert command == "goto-instrument --add-library swap.goto swap.goto"
+    assert command == (
+        "goto-instrument --add-library checking-swap-contracts.goto checking-swap-contracts.goto"
+    )
+
+
+def test_get_goto_instrument_unwind_command_on_another_binary() -> None:
+    command = _get_goto_instrument_unwind_command("swap", goto_file="checking-swap-contracts.goto")
+    assert command == (
+        "goto-instrument --partial-loops --unwind 5 "
+        "checking-swap-contracts.goto checking-swap-contracts.goto"
+    )
 
 
 def test_get_cbmc_check_command() -> None:
@@ -393,11 +403,48 @@ def test_print_mutation_progress_buckets_undecided_mutants(capsys) -> None:
 def test_run_cbmc_records_the_depth_it_was_given_and_passes_it_to_cbmc(tmp_path: Path) -> None:
     src = tmp_path / "quicksort.c"
     src.write_bytes(Path("test/data/quicksort.c").read_bytes())
-    deeper = run_cbmc("swap", str(src), cwd=str(tmp_path), depth=300)
+    deeper = run_cbmc("swap", str(src), depth=300)
     assert deeper.cbmc_ran_successfully and deeper.depth == 300
-    default = run_cbmc("swap", str(src), cwd=str(tmp_path))
+    default = run_cbmc("swap", str(src))
     assert default.cbmc_ran_successfully and default.depth == 200
     runs = [json.loads(line) for line in (tmp_path / "quicksort-cbmc-runs.jsonl").read_text().splitlines()]
     assert [run["depth"] for run in runs] == [300, 200]
     commands = [step["command"] for run in runs for step in run["subprocess_results"] if step["step"] == "cbmc"]
     assert [command.rsplit(" ", 1)[1] for command in commands] == ["300", "200"]
+
+
+ALLOCATING_SOURCE = """#include <stdlib.h>
+struct abuf { char *b; int len; };
+
+char *mk(int n)
+__CPROVER_requires(n > 0 && n < 8)
+__CPROVER_ensures(__CPROVER_return_value == NULL || __CPROVER_r_ok(__CPROVER_return_value, n))
+{
+    return malloc(n);
+}
+
+void abFree(struct abuf *ab)
+__CPROVER_requires(__CPROVER_is_fresh(ab, sizeof(struct abuf)))
+__CPROVER_assigns()
+{
+    free(ab->b);
+}
+"""
+
+
+def test_the_library_is_added_after_the_contract_is_enforced(tmp_path: Path) -> None:
+    # goto-instrument aborts when it enforces a contract on a binary that already holds the
+    # library's `malloc` and `free` models. The missing-body retry adds the library afterwards,
+    # so the run ends in a verdict, not a crash.
+    source = tmp_path / "alloc.c"
+    source.write_text(ALLOCATING_SOURCE, encoding="utf-8")
+    results = {
+        function: run_cbmc(
+            function_to_verify=function,
+            file_containing_function_to_verify=str(source),
+        )
+        for function in ("mk", "abFree")
+    }
+    assert results["mk"].cbmc_ran_successfully
+    # abFree's contract leaves out the freed object, so the run fails in cbmc, not before.
+    assert results["abFree"].failed_step is CbmcStep.CBMC

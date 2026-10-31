@@ -8,11 +8,11 @@ Each metric is a separate flag so the user can specify the ones they want, namel
     - --mutation: Mutation scores for specifications that can "kill" a mutant function.
     - --redundancy: Clause redundancy.
 
-Mutation scoring of different functions is independent, so with `--jobs N` (default: the CPU
-count) up to N functions are scored concurrently, each in its own thread; the mutants of every
-function additionally fan out in their own thread pool. Machine-wide load is bounded by the
-subprocess cap in `tools.run_cbmc` (`AVOCADO_MAX_CONCURRENT_CBMC`). Records are still emitted in
-the sequential order (files sorted, functions sorted within each file), so the JSONL output is
+Mutation scoring of different functions is independent, so with `--jobs N` up to N functions are
+scored concurrently, each in its own thread; the mutants of every function additionally fan out in
+their own thread pool. Machine-wide load is bounded by the subprocess cap in `tools.run_cbmc`
+(`AVOCADO_MAX_CONCURRENT_CBMC`), which is also the default for `--jobs`. Records are still emitted
+in the sequential order (files sorted, functions sorted within each file), so the JSONL output is
 identical to a `--jobs 1` run. Clause-redundancy scoring is not parallelized: its scratch files are
 named per source file, not per function, so it runs sequentially after mutation scoring.
 
@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -45,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from eval.mutants.compute_clause_redundancy import compute_clause_redundancy_score
 from eval.mutants.generate_mutants_and_compute_score import generate_mutants_and_compute_score
 from eval.mutants.util import get_files_with_extension
+from tools.run_cbmc import MAX_CONCURRENT_SUBPROCESSES
 from tools.util import get_functions_with_cprover_annotations
 from tools.util.mutation import MutationScore
 
@@ -85,11 +85,14 @@ def main() -> None:
     parser.add_argument(
         "--jobs",
         type=int,
-        default=os.cpu_count() or 1,
+        # More functions than subprocess slots could only wait for a slot, while each holds its
+        # own pool of mutant threads.
+        default=MAX_CONCURRENT_SUBPROCESSES,
         metavar="N",
         help=(
-            "Score up to N functions concurrently (mutation metric only). Defaults to the CPU "
-            "count; use 1 for a fully sequential run."
+            "Score up to N functions concurrently (mutation metric only). Defaults to the "
+            "subprocess cap (`AVOCADO_MAX_CONCURRENT_CBMC`, or the CPU count up to 32); use 1 for "
+            "a fully sequential run."
         ),
     )
     parser.add_argument("--jsonl", default=None, help="Write records to this JSONL file.")
@@ -116,26 +119,32 @@ def main() -> None:
     try:
         include_dirs_from_cli = args.include_dirs or []
         with ThreadPoolExecutor(max_workers=args.jobs) as executor:
-            # Submit every file's mutation-scoring tasks up front so the pool is never idle while
-            # one file's stragglers finish, then drain results file by file in the original order.
-            submitted = [
-                _submit_file(
-                    source=source,
-                    auto_include=args.auto_include,
-                    include_dirs=include_dirs_from_cli,
-                    run_mutation=args.mutation,
-                    keep_artifacts=args.keep_artifacts,
-                    executor=executor,
-                )
-                for source in input_files
-            ]
-            for submitted_file in submitted:
-                _write_file_records(
-                    submitted_file,
-                    out=output_stream,
-                    run_redundancy=args.redundancy,
-                    keep_artifacts=args.keep_artifacts,
-                )
+            try:
+                # Submit every file's mutation-scoring tasks up front so the pool is never idle
+                # while one file's stragglers finish, then drain results file by file in the
+                # original order.
+                submitted = [
+                    _submit_file(
+                        source=source,
+                        auto_include=args.auto_include,
+                        include_dirs=include_dirs_from_cli,
+                        run_mutation=args.mutation,
+                        keep_artifacts=args.keep_artifacts,
+                        executor=executor,
+                    )
+                    for source in input_files
+                ]
+                for submitted_file in submitted:
+                    _write_file_records(
+                        submitted_file,
+                        out=output_stream,
+                        run_redundancy=args.redundancy,
+                        keep_artifacts=args.keep_artifacts,
+                    )
+            finally:
+                # If we exit early (an unexpected error or a Ctrl-C), stop scoring functions that
+                # haven't started yet; the `with` block still waits for functions in progress.
+                executor.shutdown(cancel_futures=True)
     finally:
         if args.jsonl:
             output_stream.close()
@@ -144,7 +153,7 @@ def main() -> None:
 
 @dataclass(frozen=True)
 class _SubmittedFile:
-    """The in-flight mutation-scoring work for one source file.
+    """The in-progress mutation-scoring work for one source file.
 
     Attributes:
         source (Path): The path to the file under evaluation.

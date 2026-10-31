@@ -464,7 +464,7 @@ def test_usage_limit_stops_new_submissions_but_in_flight_sessions_merge(
     started = {result.function for result in results}
     assert order[0] in started and order[1] in started  # both were in flight
     assert order[2] not in started  # never submitted after the limit
-    assert order[1] in fake.intervals  # the in-flight one finished and merged
+    assert order[1] in fake.intervals  # the in-progress one finished and merged
 
 
 def test_merge_failure_is_logged_and_canonical_untouched(tmp_path: Path, monkeypatch) -> None:
@@ -876,7 +876,11 @@ def test_a_callee_contract_changed_by_another_session_causes_a_rerun_only_on_fai
         changed_since_fork=["partition"],
     )
     text = note("quickSort", report=both, cbmc=failed)
-    assert "left out your edits" in text and "which quickSort calls" not in text
+    assert "left out these edits you made outside quickSort: function:partition" in text
+    assert "which quickSort calls" not in text
+    # The left-out edits are not assumed to be other functions' contracts.
+    assert "your edits to other functions" not in text
+    assert text.startswith("your contract for quickSort was merged into the shared file")
 
 
 class _ClaudeForQuickSortWhilePartitionMoves:
@@ -1533,3 +1537,22 @@ def test_prompt_carries_a_raised_depth_and_not_the_default() -> None:
         "swap", file_path="/src/q.c", call_graph=_quicksort_call_graph(), include_dirs=[]
     )
     assert "--depth" not in plain
+
+
+def test_a_pass_whose_body_the_depth_bound_keeps_out_stands_like_an_unknown_one() -> None:
+    depth_limited = RunCbmcResult(
+        function="partition",
+        failed_step=None,
+        timed_out=False,
+        returncode=0,
+        response="partition verified successfully",
+        vacuity_check_result=VacuityCheckResult(Vacuity.DEPTH_LIMIT_REACHED, ""),
+    )
+    assert not depth_limited.is_vacuous and depth_limited.is_function_verified
+    assert avocado_verify._outcome_for(_session(), depth_limited) is (
+        avocado_verify.GroundTruthVerificationResult.VERIFIED
+    )
+    # Its callers may build on it, as on any other pass.
+    state = avocado_verify._MergeState()
+    state.record("partition", depth_limited)
+    assert state.verified == {"partition"} and state.unverified == {}
