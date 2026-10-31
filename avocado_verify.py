@@ -232,8 +232,6 @@ def main() -> None:
     if include_dirs := _autodetect_include_dirs(str(file_path)):
         logger.info(f"[auto-include] using {include_dirs}")
 
-    path_to_call_graph = construct_call_graph(str(file_path))
-    call_graph = CallGraph(json.loads(Path(path_to_call_graph).read_text(encoding="utf-8")))
     functions = _get_functions_to_verify(str(file_path))
     if not functions:
         logger.warning(f"No verifiable functions found in {file_path}")
@@ -273,32 +271,39 @@ def main() -> None:
     )
 
     results: list[FunctionVerificationResult] = []
-    for index, function in enumerate(pending, start=1):
-        logger.info(f"[{index}/{len(pending)}] {function}: generating spec via claude -p")
+    processed = set(already_done)
+    while pending:
+        function = pending[0]
+        index = len(results) + 1
+        total = len(results) + len(pending)
+        logger.info(f"[{index}/{total}] {function}: generating spec via claude -p")
         verification_result_from_agent = _verify_via_agent(
             function,
             file_path=str(file_path),
-            call_graph=call_graph,
             timeout=args.claude_timeout,
             include_dirs=include_dirs,
         )
         results.append(verification_result_from_agent)
+        processed.add(function)
         _append_jsonl(log_path, verification_result_from_agent.to_record())
-        logger.info(
-            f"[{index}/{len(pending)}] {function}: {verification_result_from_agent.outcome}"
-        )
+        logger.info(f"[{index}/{total}] {function}: {verification_result_from_agent.outcome}")
+
+        # The agent might have added functions (such as helpers) or removed them, so recompute
+        # the functions to verify.  A new callee of `function` precedes the functions still
+        # pending, because the order is callees-first.
+        functions = _get_functions_to_verify(str(file_path))
+        pending = [other for other in functions if other not in processed]
 
         if verification_result_from_agent.outcome is GroundTruthVerificationResult.USAGE_LIMITED:
-            remaining = pending[index:]
             logger.warning(
-                f"{function}: stopped after {index}/{len(pending)} function(s) this run due to a "
-                f"usage limit; {len(remaining)} remaining. Resume with --resume-from."
+                f"{function}: stopped after {index}/{index + len(pending)} function(s) this run "
+                f"due to a usage limit; {len(pending)} remaining. Resume with --resume-from."
             )
             _log_summary(results, log_path)
             _finalize_run(
                 log_path,
                 functions=functions,
-                remaining=[function, *remaining],
+                remaining=[function, *pending],
                 status="usage_limited",
                 stopped_early=True,
             )
@@ -356,7 +361,6 @@ def _verify_via_agent(
     function: str,
     *,
     file_path: str,
-    call_graph: CallGraph,
     timeout: int,
     include_dirs: list[str],
 ) -> FunctionVerificationResult:
@@ -369,7 +373,6 @@ def _verify_via_agent(
     Args:
         function (str): The function to specify and verify.
         file_path (str): Absolute path to the C file defining the function.
-        call_graph (CallGraph): Call graph of the file, used to record in-file callees.
         timeout (int): Per-function timeout for the `claude -p` session, in seconds.
         include_dirs (list[str]): Extra include directories to expose to the agent and forward to
             CBMC's include search path.
@@ -426,6 +429,10 @@ def _verify_via_agent(
 
     # Objective verdict: re-run CBMC rather than trust Claude's self-report.
     cbmc = run_cbmc(function, file_path, include_dirs=include_dirs)
+    # Build the call graph after the sessions, so that it includes callees the agent added.
+    call_graph = CallGraph(
+        json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
+    )
     return FunctionVerificationResult(
         function=function,
         outcome=_outcome_for(claude_sessions_for_function[-1], cbmc),
