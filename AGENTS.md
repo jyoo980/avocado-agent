@@ -60,6 +60,21 @@ You can also search the web for more CBMC documentation.
 
   Prints function names callees-first, one per line.
 
+## Workflow
+
+Work in this order, and do not skip the first CBMC run:
+
+1. Read the function, the contracts already written for its in-file callees (they are replaced by
+   their contracts during verification, so what they promise is all you get), and any callers in
+   the same file, so your preconditions are satisfiable at every call site.
+2. Write the contract, then run `avocado-run-cbmc` right away. Do not run CBMC by hand, do not
+   run the tool in the background, and do not read the harness's `*.jsonl` logs: the tool's own
+   output is the source of truth and already includes the diff of every surviving mutant. A
+   `VACUOUS` result is a failed run: fix the contract as [Vacuous proofs](#vacuous-proofs) says.
+3. Strengthen the contract using the surviving-mutant diffs, and re-run `avocado-run-cbmc`. Stop
+   as soon as every decided mutant is killed, or when two consecutive runs leave the kill score
+   unchanged.
+
 Do not read the harness's Python sources, and do not experiment with CBMC's `--depth` or
 `--unwind` bounds: the bounds are fixed by the harness and are not yours to tune. Spend your turns
 on the contract itself.
