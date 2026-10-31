@@ -289,7 +289,7 @@ def generate_mutants_and_compute_score(
     workspace.mkdir(parents=True, exist_ok=True)
 
     if not skip_reverification:
-        cbmc_result = run_cbmc(target_function, str(source_path), include_dirs=include_dirs)
+        cbmc_result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
         if not is_valid_mutation_candidate(cbmc_result):
             # No usable baseline if CBMC can't verify the unmutated function.
             return BaselineFailsVerification(file_path, target_function)
