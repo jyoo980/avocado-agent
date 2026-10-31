@@ -3,7 +3,7 @@
 """Run CBMC on every function in a C file or directory of C files and report pass/fail.
 
 Usage: ./eval/verify_program.py <PATH_TO_C_FILE_OR_DIRECTORY> \
-                                [--include-dirs] \
+                                [--include-dirs <PATH_TO_INCLUDE_DIR>]... \
                                 [--auto-include] \
                                 [--v] \
                                 [--skip-unannotated-functions]
