@@ -9,17 +9,16 @@ Usage:
 import argparse
 import json
 import shlex
-import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from subprocess import TimeoutExpired
 
 from loguru import logger
 
 from tools.construct_call_graph import construct_call_graph
+from tools.run_cbmc import run_in_subprocess_slot
 from tools.util import (
     build_stub_index,
     get_in_file_callees_for,
@@ -407,6 +406,8 @@ def _run_pipeline(
 def _run_step(step: CbmcStep, command: str) -> _StepRun:
     """Run one pipeline step as a subprocess with the per-step timeout.
 
+    The subprocess is run by `run_in_subprocess_slot`, so it waits for a subprocess slot.
+
     Args:
         step (CbmcStep): The logical step this subprocess belongs to.
         command (str): The shell command to run.
@@ -414,16 +415,8 @@ def _run_step(step: CbmcStep, command: str) -> _StepRun:
     Returns:
         _StepRun: The captured outcome, including stdout/stderr or the timeout sentinel.
     """
-    try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            shell=True,
-            check=False,
-            timeout=_DEFAULT_RUN_CBMC_TIMEOUT_SEC,
-        )
-    except TimeoutExpired:
+    completed = run_in_subprocess_slot(command, _DEFAULT_RUN_CBMC_TIMEOUT_SEC).completed
+    if completed is None:
         return _StepRun(
             step=step,
             command=command,
@@ -821,18 +814,10 @@ def compile_with_goto_cc(
         int: goto-cc's exit code (0 == compiled successfully).
     """
     compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
-    try:
-        result = subprocess.run(
-            compilation_command,
-            capture_output=True,
-            text=True,
-            shell=True,
-            check=False,
-            timeout=_GOTO_CC_TIMEOUT_SEC,
-        )
-    except TimeoutExpired:
+    completed = run_in_subprocess_slot(compilation_command, _GOTO_CC_TIMEOUT_SEC).completed
+    if completed is None:
         return _TIMEOUT_RETURNCODE
-    return result.returncode
+    return completed.returncode
 
 
 if __name__ == "__main__":
