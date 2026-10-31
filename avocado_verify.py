@@ -64,12 +64,11 @@ from tools.util import get_in_file_callees_for, get_in_file_callers_of
 from tools.util.callgraph import CallGraph
 from tools.util.edit_rules import (
     MergeReport,
-    check_edits,
+    copy_violations,
     frozen_functions_for,
     functions_affected_by,
     functions_with_changed_contracts,
     merge_copy,
-    stray_file_violations,
 )
 from tools.util.session_state import (
     SNAPSHOT_IGNORE,
@@ -1094,11 +1093,12 @@ def _merge_and_verify(
 ) -> tuple[MergeReport, RunCbmcResult, dict[str, RunCbmcResult]]:
     """Merge the session's copy into the canonical file, then run the independent ground truth.
 
-    The copy is first checked against the edit rules (`tools.util.edit_rules.check_edits`, the
-    same check the agent runs with `avocado-validate edits`): original code unchanged, insertions
-    only in contract slots or at file scope, reserved-prefix names, no `__CPROVER_assume`, no
-    false precondition, and no other file touched. A copy that breaks a rule is not merged at
-    all; the violations are logged and returned in `MergeReport.violations`.
+    The copy is first checked against the edit rules (`tools.util.edit_rules.copy_violations`,
+    the same check the agent runs with `avocado-validate edits`): original code unchanged,
+    insertions only in contract slots or at file scope, reserved-prefix names, no
+    `__CPROVER_assume`, no false precondition, and no other file touched. A copy that breaks a
+    rule is not merged at all; the violations are logged and returned in
+    `MergeReport.violations`.
 
     Under `_CANONICAL_LOCK`: read the canonical file, compute the merge
     (`tools.util.edit_rules.merge_copy`), copy the canonical directory to a scratch
@@ -1156,9 +1156,8 @@ def _merge_and_verify(
         else:
             violations = [
                 str(violation)
-                for violation in (
-                    *check_edits(session.fork_base, snapshot, function),
-                    *stray_file_violations(stray_files or []),
+                for violation in copy_violations(
+                    session.fork_base, snapshot, function, stray_files or []
                 )
             ]
             if violations:
@@ -1989,9 +1988,11 @@ def _build_prompt(
     """
     command = ["avocado-run-cbmc", "--function", function, "--file", file_path]
     edits_command = ["avocado-validate", "edits", "--file", file_path]
+    # Absolute, as in `_merge_and_verify`, so the agent's current directory does not matter.
     for include_dir in include_dirs:
-        command += ["-I", include_dir]
-        edits_command += ["-I", include_dir]
+        absolute_include_dir = str(Path(include_dir).resolve())
+        command += ["-I", absolute_include_dir]
+        edits_command += ["-I", absolute_include_dir]
     callees = get_in_file_callees_for(function, call_graph)
     callers = get_in_file_callers_of(function, call_graph)
     callees_text = ", ".join(callees) if callees else "none"

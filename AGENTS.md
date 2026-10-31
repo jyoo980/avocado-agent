@@ -68,12 +68,14 @@ You can also search the web for more CBMC documentation.
   ```
 
   Checks [edit rules](#edit-rules) 1-8 in a few seconds, without running CBMC. Exits with status 0
-  if your copy breaks none of them, 1 if it breaks one (each line gives the rule, the line of your
-  file and what to change), and 2 if the check could not be made. It checks the function your
-  session works on, which it learns from the harness. The harness checks the same rules before it
-  merges your copy, and a copy that breaks one is not merged at all. For rule 7, the harness
-  compiles the merged file, which also holds what other sessions merged while you worked, so the
-  merge can fail to compile even when this check passes.
+  if your copy breaks none of them, 1 if it breaks one or more (each line gives the rule, the line
+  of your file and what to change), and 2 if it breaks none of the rules it could check but could
+  not check them all. When it reports a violation but `goto-cc` is missing or timed out, it exits 1
+  and says that rule 7 is unchecked. It checks the function your session works on, which it learns
+  from the harness. The harness checks the same rules before it merges your copy, and a copy that
+  breaks one is not merged at all. For rule 7, the harness compiles the merged file, which also
+  holds what other sessions merged while you worked, so the merge can fail to compile even when this
+  check passes.
 
 ## Workflow
 

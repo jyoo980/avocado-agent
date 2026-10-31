@@ -93,7 +93,8 @@ def test_edits_reports_every_broken_rule_with_its_line(swap_session, monkeypatch
     result = check_copy_edits(session.file)
     assert result.exit_code == EXIT_VIOLATIONS
     rules = [int(line.split()[1]) for line in result.violations]
-    assert sorted(rules) == [2, 4, 6, 7], result.violations
+    # Violations without a line come first, then the others in line order.
+    assert rules == [6, 7, 4, 2], result.violations
     undef_line = source.split(b"#undef NULL")[0].count(b"\n") + 1
     assert any(f"line {undef_line}: new `#undef`" in line for line in result.violations)
     # goto-cc's own message is printed, so the agent need not run the verifier to see it.
@@ -135,14 +136,37 @@ def test_edits_cannot_check_outside_a_session(tmp_path: Path) -> None:
     assert check_copy_edits(outside).exit_code == EXIT_CANNOT_CHECK
 
 
-def test_edits_reports_a_damaged_session_file(swap_session) -> None:
+@pytest.mark.parametrize(
+    "content",
+    [
+        "{not json",
+        '{"function": null, "canonical_file": "/x.c", "fork_base": ".avocado-fork-base.c"}',
+        "[]",
+    ],
+)
+def test_edits_reports_a_damaged_session_file(swap_session, content: str) -> None:
     _canonical, session = swap_session
-    (session.directory / SESSION_FILE_NAME).write_text("{not json", encoding="utf-8")
+    (session.directory / SESSION_FILE_NAME).write_text(content, encoding="utf-8")
     with pytest.raises(SessionFileError):
         read_session_info(session.file)
     result = check_copy_edits(session.file)
     assert result.exit_code == EXIT_CANNOT_CHECK
-    assert "is damaged" in result.render() and "no session file" not in result.render()
+    assert "is damaged" in result.render(), result
+
+
+def test_edits_rejects_a_file_other_than_the_sessions_source_file(swap_session) -> None:
+    _canonical, session = swap_session
+    scratch = session.file.with_name("quicksort_try.c")
+    scratch.write_bytes(session.file.read_bytes())
+    result = check_copy_edits(scratch)
+    assert result.exit_code == EXIT_CANNOT_CHECK
+    assert f"pass --file {session.file.resolve()}" in result.render(), result
+    nested = session.file.parent / "sub" / "quicksort.c"
+    nested.parent.mkdir()
+    nested.write_bytes(session.file.read_bytes())
+    result = check_copy_edits(nested)
+    assert result.exit_code == EXIT_CANNOT_CHECK
+    assert f"there is no {SESSION_FILE_NAME}" in result.render(), result
 
 
 def test_main_exits_cannot_check_on_an_internal_error(monkeypatch, capsys) -> None:

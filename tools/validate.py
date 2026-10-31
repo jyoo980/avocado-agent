@@ -6,10 +6,10 @@ This is the `avocado-validate` entry point called by an agent inside its snapsho
 unchanged, insertions only in contract slots or at file scope, the session's function intact,
 reserved-prefix names, no `__CPROVER_assume` in new text, no other file touched, the file compiles,
 and no literally false precondition. It takes seconds and is meant to be run before every
-`avocado-run-cbmc` run. Rules 1-5 and 8 come from `tools.util.edit_rules.check_edits`, the same
-function the harness calls before it merges a copy. The session's function and fork base come from
-the session file that the harness writes (`tools.util.session_state`), so the check is always made
-against the function the merge checks.
+`avocado-run-cbmc` run. Rules 1-6 and 8 come from `tools.util.edit_rules.copy_violations`, the
+same function the harness calls before it merges a copy. The session's function and fork base
+come from the session file that the harness writes (`tools.util.session_state`), so the check is
+always made against the function the merge checks.
 
 Usage:
     % avocado-validate edits    --file <PATH_TO_C_FILE_IN_THE_SESSION_COPY> \
@@ -27,8 +27,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from tools.run_cbmc import run_goto_cc
-from tools.util.edit_rules import Violation, check_edits, stray_file_violations
-from tools.util.session_state import SessionFileError, find_stray_files, read_session_info
+from tools.util.edit_rules import Violation, copy_violations, ordered_violations
+from tools.util.session_state import (
+    SESSION_FILE_NAME,
+    SessionFileError,
+    find_stray_files,
+    read_session_info,
+    session_root_of,
+)
 
 # Exit codes: the copy passes the check, the copy breaks the rule, or the check could not be made.
 EXIT_OK = 0
@@ -70,7 +76,8 @@ def main() -> None:
         description=(
             "Check a session's private copy of a C file against the rules its merge must "
             "satisfy. Prints every violation with the rule it breaks and the reason; exits 0 "
-            "when there is none, 1 when there is one, 2 when the check could not be made."
+            "when there is none, 1 when there is at least one, and 2 when there is none but the "
+            "check could not be made in full."
         )
     )
     subparsers = parser.add_subparsers(dest="check", required=True)
@@ -78,13 +85,12 @@ def main() -> None:
         "edits",
         help="Check your edits against the edit rules that need no verifier (rules 1-8).",
         description=(
-            "Check that your copy changes no original code, inserts text only in contract slots "
-            "or at file scope, uses the reserved prefix for new names, touches no other file and "
-            "still compiles. Takes seconds; run it before every avocado-run-cbmc run."
+            "Check your copy of the source file against edit rules 1-8 in CLAUDE.md. Takes "
+            "seconds; run it before every avocado-run-cbmc run."
         ),
     )
     edits.add_argument(
-        "--file", required=True, help="Path to the C file in the session's private copy."
+        "--file", required=True, help="Path to your session's private copy of the C file."
     )
     edits.add_argument(
         "-I",
@@ -109,7 +115,8 @@ def main() -> None:
 def check_copy_edits(session_file: Path, *, include_dirs: list[str] | None = None) -> CheckResult:
     """Check the session's copy against the edit rules that need no verifier (rules 1-8).
 
-    The session's function and fork base are read from the session file above `session_file`.
+    The session's function and fork base are read from the session file that the harness wrote
+    beside the copied directory.
 
     Args:
         session_file (Path): The session's private copy of the source file.
@@ -118,18 +125,24 @@ def check_copy_edits(session_file: Path, *, include_dirs: list[str] | None = Non
     Returns:
         CheckResult: `EXIT_VIOLATIONS` with one line per broken rule (followed by goto-cc's
             messages when the file does not compile) when the copy breaks a rule;
-            `EXIT_CANNOT_CHECK` when it breaks none of the rules that could be checked but the
-            file is not in a session copy, a file cannot be read, or goto-cc cannot be run to
-            completion; and `EXIT_OK` otherwise.
+            `EXIT_CANNOT_CHECK` when it breaks none of the rules that could be checked but
+            `session_file` is not a session's copy of the source file, a file cannot be read, or
+            goto-cc cannot be run to completion; and `EXIT_OK` otherwise.
     """
     try:
         info = read_session_info(session_file)
     except SessionFileError as error:
         return _cannot_check(str(error))
+    root = session_root_of(session_file)
     if info is None:
         return _cannot_check(
-            f"{session_file} is not inside a session's private copy (no session file found "
-            "above it), so there is nothing to compare it against"
+            f"{session_file} is not a session's private copy of the source file (there is no "
+            f"{SESSION_FILE_NAME} in {root}), so there is nothing to compare it against"
+        )
+    expected = root / info.canonical_file.parent.name / info.canonical_file.name
+    if session_file.resolve() != expected:
+        return _cannot_check(
+            f"{session_file} is not the session's copy of the source file; pass --file {expected}"
         )
     try:
         snapshot = session_file.read_bytes()
@@ -137,8 +150,7 @@ def check_copy_edits(session_file: Path, *, include_dirs: list[str] | None = Non
     except OSError as error:
         return _cannot_check(f"could not read the session's copy: {error}")
 
-    violations = check_edits(info.fork_base, snapshot, info.function)
-    violations += stray_file_violations(stray_files)
+    violations = copy_violations(info.fork_base, snapshot, info.function, stray_files)
     notes: list[str] = []
     unchecked = None
     if shutil.which("goto-cc") is None:
@@ -163,7 +175,7 @@ def check_copy_edits(session_file: Path, *, include_dirs: list[str] | None = Non
             )
             notes = _compiler_messages(compiled.stderr + compiled.stdout)
 
-    rendered = [str(entry) for entry in violations]
+    rendered = [str(entry) for entry in ordered_violations(violations)]
     if unchecked is not None:
         reason = f"{unchecked}, so rule 7 (the file compiles) is unchecked"
         if violations:

@@ -209,6 +209,18 @@ def test_prompt_edits_command_carries_the_include_dirs() -> None:
     assert prompt.endswith(f"{expected} -I /src/include")
 
 
+def test_prompt_commands_carry_absolute_include_dirs(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    prompt = _build_prompt(
+        "partition",
+        file_path="/src/quicksort.c",
+        call_graph=_quicksort_call_graph(),
+        include_dirs=["include"],
+    )
+    absolute = tmp_path.resolve() / "include"
+    assert prompt.count(f"-I {absolute}") == 2, prompt
+
+
 def test_append_jsonl_is_safe_under_threads(tmp_path: Path) -> None:
     log = tmp_path / "run.jsonl"
 
