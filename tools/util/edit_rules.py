@@ -18,11 +18,15 @@ A session's job is to add specifications. `check_edits` compares the session's f
 
 Rules 6 (only the source file is edited), 7 (the file compiles) and 9 (no verified function stops
 verifying, where a vacuous pass does not count as verifying) need the file system or CBMC and are
-checked by the caller, `avocado_verify._merge_and_verify`. Rule 10 (no merge conflict) is decided
-by `merge_copy` below, which the caller also uses: an edit to another function's contract is left
-out when another live session is working on that function or when its contract changed in the
-shared file since the fork, and nothing merges when a new name is already defined differently
-there.
+checked by the callers: `tools.validate` for the agent and `avocado_verify._merge_and_verify` for
+the merge. Both pass the files they found changed beside the source file to `copy_violations`,
+which adds rule 6 to `check_edits`, so they agree on rules 1-6 by construction. They can disagree
+on rule 7: `tools.validate` compiles the session's copy, but the merge compiles the merged file,
+which also holds whatever other sessions merged since the fork.
+Rule 10 (no merge conflict) is decided by `merge_copy` below, which both callers also use: an edit
+to another function's contract is left out when another live session is working on that function
+or when its contract changed in the shared file since the fork, and nothing merges when a new name
+is already defined differently there.
 
 `merge_copy` then produces the file to commit, reconciling the copy with whatever other sessions
 merged since it was taken, and returns a `MergeReport` for the run log. Because every version is
@@ -40,6 +44,7 @@ on which an AST comparison would reject merges that change no code.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from bisect import bisect_left, bisect_right
 from collections import Counter
@@ -52,7 +57,7 @@ from typing import TYPE_CHECKING
 from tools.util.cbmc_clause_stripper import CBMC_CLAUSE_NAMES, CbmcClauseSpan, _consume_clause
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Collection, Iterable
 
     from tools.util.callgraph import CallGraph
 
@@ -289,6 +294,44 @@ def check_edits(base: bytes, snapshot: bytes, function: str) -> list[Violation]:
         comparison.base.items, comparison.snapshot.items, comparison.new_indices
     )
     violations += _check_new_clauses(base, snapshot, comparison)
+    return ordered_violations(violations)
+
+
+def copy_violations(
+    base: bytes, snapshot: bytes, function: str, stray_files: list[str]
+) -> list[Violation]:
+    """Return the rules a session's copy breaks, of those that need neither a compiler nor CBMC.
+
+    Both the agent's check (`tools.validate`) and the merge (`avocado_verify._merge_and_verify`)
+    call this, so they check the same rules.
+
+    Args:
+        base (bytes): The file as it was when the session's copy was taken.
+        snapshot (bytes): The session's finished copy.
+        function (str): The function the session works on.
+        stray_files (list[str]): Relative paths tagged `added:` or `modified:`, as returned by
+            `tools.util.session_state.find_stray_files`.
+
+    Returns:
+        list[Violation]: One entry per violation of rules 1-6 and 8, in `ordered_violations`
+            order; empty when the copy is clean.
+    """
+    return ordered_violations(
+        [*check_edits(base, snapshot, function), *stray_file_violations(stray_files)]
+    )
+
+
+def ordered_violations(violations: Iterable[Violation]) -> list[Violation]:
+    """Return violations in the order they are reported: by line, then by rule.
+
+    Violations that have no line come first.
+
+    Args:
+        violations (Iterable[Violation]): The violations.
+
+    Returns:
+        list[Violation]: The violations, sorted.
+    """
     return sorted(violations, key=lambda violation: (violation.line or 0, violation.rule))
 
 
@@ -555,6 +598,32 @@ def function_header(source: bytes, function: str) -> bytes | None:
         return None
     start, brace = definitions[0]
     return source[start:brace].rstrip()
+
+
+def hash_for_function_definition(source: bytes, function: str) -> str | None:
+    """Return a hash of the definition of a function: its signature, contract and body.
+
+    The hash is over the normalised text of every definition of `function` (a function may be
+    defined once per preprocessor branch), with comments removed and whitespace collapsed, the
+    same normalisation `functions_with_changed_contracts` compares items by. Two versions of a
+    file give the same hash iff the function's definition is the same in both, so a verification
+    attempt recorded with the hash can be matched later to the definition it was made on.
+
+    Args:
+        source (bytes): A C source.
+        function (str): The function's name.
+
+    Returns:
+        str | None: The SHA-256 hex digest, or None when the function is not defined.
+    """
+    definitions = [
+        _code_text(source[item.start : item.end])
+        for item in _parse(source).items
+        if item.kind == "function" and item.name == function
+    ]
+    if not definitions:
+        return None
+    return hashlib.sha256(b"\n".join(definitions)).hexdigest()
 
 
 def function_body_offsets(source: bytes, function: str) -> list[int]:

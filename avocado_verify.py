@@ -50,6 +50,7 @@ from eval.mutants.mutate_function import get_mutants
 from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
 from tools.run_cbmc import (
+    DEFAULT_CBMC_DEPTH,
     VACUOUS_VERDICT,
     CbmcStep,
     RunCbmcResult,
@@ -57,6 +58,7 @@ from tools.run_cbmc import (
     list_compiled_functions,
 )
 from tools.run_cbmc_and_mutation_testing import (
+    MUTATION_FEEDBACK_LOG_SUFFIX,
     VERIFICATION_ATTEMPTS_LOG_SUFFIX,
     verify_function,
 )
@@ -64,12 +66,12 @@ from tools.util import get_in_file_callees_for, get_in_file_callers_of
 from tools.util.callgraph import CallGraph
 from tools.util.edit_rules import (
     MergeReport,
-    check_edits,
+    copy_violations,
     frozen_functions_for,
     functions_affected_by,
     functions_with_changed_contracts,
+    hash_for_function_definition,
     merge_copy,
-    stray_file_violations,
 )
 from tools.util.session_state import (
     SNAPSHOT_IGNORE,
@@ -78,6 +80,8 @@ from tools.util.session_state import (
     is_vacuous_status,
     rechecked_on_change,
     vacuous_status,
+    write_run_state,
+    write_session_info,
 )
 
 # Per-function wall-clock budget for a single `claude -p` session. A session may run CBMC
@@ -293,6 +297,7 @@ class FunctionVerificationResult:
             "cbmc": {
                 "verdict": str(self.cbmc),
                 "is_function_verified": self.cbmc.is_function_verified,
+                "depth": self.cbmc.depth,
                 "returncode": self.cbmc.returncode,
                 "timed_out": self.cbmc.timed_out,
                 "failed_step": None
@@ -668,11 +673,16 @@ class _MergeState:
             why (`_status_of`). Their contracts are in the canonical file all the same, because
             a caller cannot be verified against a callee that has no contract; a session for a
             caller is told about them, and a function verified against one records it.
+        depths (dict[str, int]): The CBMC `--depth` each function's latest ground truth was
+            taken at, pass or fail. A function is always re-verified at its own depth: one
+            chosen by its session (`_chosen_depth`) may be higher than the default, and a
+            verdict taken at another depth would be about a different analysis.
     """
 
     active: set[str] = field(default_factory=set)
     verified: set[str] = field(default_factory=set)
     unverified: dict[str, str] = field(default_factory=dict)
+    depths: dict[str, int] = field(default_factory=dict)
 
     def record(self, function: str, cbmc: RunCbmcResult) -> None:
         """Record a function's latest ground truth; the caller holds `_CANONICAL_LOCK`.
@@ -681,6 +691,7 @@ class _MergeState:
             function (str): The function.
             cbmc (RunCbmcResult): Its ground truth on the canonical file.
         """
+        self.depths[function] = cbmc.depth
         if cbmc.is_function_verified:
             self.verified.add(function)
             self.unverified.pop(function, None)
@@ -688,10 +699,22 @@ class _MergeState:
             self.verified.discard(function)
             self.unverified[function] = _status_of(cbmc)
 
+    def depth_of(self, function: str) -> int:
+        """Return the depth at which a function is re-verified.
+
+        Args:
+            function (str): The function.
+
+        Returns:
+            int: The depth of its latest ground truth, or the default when it has had none.
+        """
+        return self.depths.get(function, DEFAULT_CBMC_DEPTH)
+
     def rechecked_on_change(self) -> set[str]:
         """Return the functions to re-verify when a merge changes one of their callees' contracts.
 
-        The rule lives in `tools.util.session_state.rechecked_on_change`.
+        The rule lives in `tools.util.session_state.rechecked_on_change`, which
+        `avocado-validate reverify` applies to the published copy of this state.
 
         Returns:
             set[str]: The functions.
@@ -733,6 +756,11 @@ def _fork_session(function: str, canonical_file: Path) -> _Session:
     caches, CBMC intermediates and mutant sources, so the copy starts clean and the tool's
     verification-attempts log for this session starts empty beside the copy.
 
+    The session's identity and fork base are also written into the temporary root, beside the
+    copied directory, for the tools the agent runs in the copy (`tools.util.session_state`). The
+    harness itself uses `fork_base` from memory, so a failure to write them is logged and the
+    session goes ahead without them.
+
     Args:
         function (str): The function the session will work on.
         canonical_file (Path): Absolute path to the canonical source file.
@@ -745,6 +773,12 @@ def _fork_session(function: str, canonical_file: Path) -> _Session:
         root = Path(tempfile.mkdtemp(prefix=_SESSION_DIR_PREFIX))
         directory = root / canonical_file.parent.name
         shutil.copytree(canonical_file.parent, directory, ignore=_SNAPSHOT_IGNORE)
+    try:
+        write_session_info(
+            root, function=function, canonical_file=canonical_file, fork_base=fork_base
+        )
+    except OSError as error:
+        logger.warning(f"{function}: could not write the session file into {root}: {error}")
     return _Session(
         function=function,
         directory=root,
@@ -798,6 +832,9 @@ def _verify_via_agent(
     merge_reruns = 0
     reverified: dict[str, RunCbmcResult] = {}
     retry_note = ""
+    # The depth the function was last held to. A merge re-run starts at it, and keeps it when
+    # the re-run makes no attempt of its own; the first session starts at the default.
+    depth = DEFAULT_CBMC_DEPTH
     callees = [callee for callee in call_graph.get_callees(function).internal if callee != function]
     while True:
         session = _fork_session(function, canonical_file)
@@ -812,6 +849,7 @@ def _verify_via_agent(
                 include_dirs=include_dirs,
                 retry_note=retry_note,
                 callee_status=callee_status,
+                depth=depth,
             )
             sessions += _keep_transcripts_of_timed_out_sessions(
                 function, new_sessions, canonical_file
@@ -826,8 +864,10 @@ def _verify_via_agent(
                 call_graph=call_graph,
                 state=state,
                 stray_files=stray_files,
+                fallback=depth,
             )
             reverified.update(newly_reverified)
+            depth = cbmc.depth
         finally:
             if keep_sessions:
                 logger.info(f"{function}: session copy kept at {session.directory}")
@@ -849,6 +889,7 @@ def _verify_via_agent(
         with _CANONICAL_LOCK:
             # The merge released the function; it is being worked on again.
             state.active.add(function)
+            _publish_run_state(state, canonical_file)
     with _CANONICAL_LOCK:
         unverified_callees = {} if state is None else state.unverified_among(callees)
     if unverified_callees and cbmc.is_function_verified:
@@ -967,6 +1008,7 @@ def _run_sessions_for(
     include_dirs: list[str],
     retry_note: str = "",
     callee_status: dict[str, str] | None = None,
+    depth: int = DEFAULT_CBMC_DEPTH,
 ) -> tuple[list[ClaudeRun], int, int]:
     """Run the `claude -p` session(s) for `function` against its private copy of the file.
 
@@ -984,6 +1026,8 @@ def _run_sessions_for(
             first session's prompt.
         callee_status (dict[str, str] | None): The in-file callees whose contracts are not
             verified, each with why, for the prompt.
+        depth (int): The CBMC `--depth` the function was last held to, for the prompt's
+            verifier command; the default leaves the command without a `--depth`.
 
     Returns:
         tuple[list[ClaudeRun], int, int]: The sessions run, the verification attempts they made,
@@ -1016,6 +1060,7 @@ def _run_sessions_for(
             include_dirs=include_dirs,
             retry_note=retry_note,
             callee_status=callee_status,
+            depth=depth,
         ),
         file_path=file_path,
         include_dirs=include_dirs,
@@ -1045,6 +1090,7 @@ def _run_sessions_for(
                 include_dirs=include_dirs,
                 retry_note=decision.rationale,
                 callee_status=callee_status,
+                depth=depth,
             ),
             file_path=file_path,
             include_dirs=include_dirs,
@@ -1079,14 +1125,20 @@ def _merge_and_verify(
     call_graph: CallGraph | None = None,
     state: _MergeState | None = None,
     stray_files: list[str] | None = None,
+    fallback: int = DEFAULT_CBMC_DEPTH,
 ) -> tuple[MergeReport, RunCbmcResult, dict[str, RunCbmcResult]]:
     """Merge the session's copy into the canonical file, then run the independent ground truth.
 
-    The copy is first checked against the edit rules (`tools.util.edit_rules.check_edits`):
-    original code unchanged, insertions
-    only in contract slots or at file scope, reserved-prefix names, no `__CPROVER_assume`, no
-    false precondition, and no other file touched. A copy that breaks a rule is not merged at
-    all; the violations are logged and returned in `MergeReport.violations`.
+    The ground truth is taken at the depth the session chose for the function, read from the
+    attempts log beside the session copy (`_chosen_depth`); a function the merge re-verifies is
+    taken at its own recorded depth (`_MergeState.depth_of`).
+
+    The copy is first checked against the edit rules (`tools.util.edit_rules.copy_violations`,
+    the same check the agent runs with `avocado-validate edits`): original code unchanged,
+    insertions only in contract slots or at file scope, reserved-prefix names, no
+    `__CPROVER_assume`, no false precondition, and no other file touched. A copy that breaks a
+    rule is not merged at all; the violations are logged and returned in
+    `MergeReport.violations`.
 
     Under `_CANONICAL_LOCK`: read the canonical file, compute the merge
     (`tools.util.edit_rules.merge_copy`), copy the canonical directory to a scratch
@@ -1124,6 +1176,8 @@ def _merge_and_verify(
         state (_MergeState | None): The run's shared merge state; None carries nothing.
         stray_files (list[str] | None): Files other than the source file that the session added
             or changed (`_report_stray_edits`); any of them blocks the merge (edit rule 6).
+        fallback (int): The depth to verify at when the session made no attempt: the depth the
+            function was last held to, so a merge re-run that ran nothing keeps it.
 
     Returns:
         tuple[MergeReport, RunCbmcResult, dict[str, RunCbmcResult]]: What the merge did, the
@@ -1134,6 +1188,7 @@ def _merge_and_verify(
     function = session.function
     absolute_include_dirs = [str(Path(directory).resolve()) for directory in include_dirs]
     reverified: dict[str, RunCbmcResult] = {}
+    attempts_log = session.file.with_name(f"{session.file.stem}{VERIFICATION_ATTEMPTS_LOG_SUFFIX}")
     with _CANONICAL_LOCK:
         canonical = canonical_file.read_bytes()
         try:
@@ -1144,9 +1199,8 @@ def _merge_and_verify(
         else:
             violations = [
                 str(violation)
-                for violation in (
-                    *check_edits(session.fork_base, snapshot, function),
-                    *stray_file_violations(stray_files or []),
+                for violation in copy_violations(
+                    session.fork_base, snapshot, function, stray_files or []
                 )
             ]
             if violations:
@@ -1214,7 +1268,12 @@ def _merge_and_verify(
                     f"{', '.join(affected)}"
                 )
                 reverified = {
-                    other: verify_function(other, str(scratch_file), include_dirs=include_dirs)
+                    other: verify_function(
+                        other,
+                        str(scratch_file),
+                        include_dirs=include_dirs,
+                        depth=state.depth_of(other),
+                    )
                     for other in affected
                 }
                 regressed = [
@@ -1241,6 +1300,8 @@ def _merge_and_verify(
                 staged = canonical_file.with_name(f"{canonical_file.name}.avocado-merge")
                 staged.write_bytes(merged)
                 Path(staged).replace(canonical_file)
+        if state is not None:
+            _publish_run_state(state, canonical_file)
     if report.merged:
         if report.transplanted:
             logger.info(f"{function}: transplanted {', '.join(report.transplanted)}")
@@ -1256,13 +1317,16 @@ def _merge_and_verify(
             logger.warning(f"{function}:   {violation}")
     # What the scratch copy holds, and so what the function's verdict is a verdict on.
     verified_on = merged if report.merged else canonical
+    # The depth the session chose for the function: that of its last passing attempt on the
+    # definition being merged, or failing that of its last attempt (see `_chosen_depth`).
+    depth = _chosen_depth(attempts_log, function, snapshot or b"", fallback=fallback)
     callees = (
         call_graph.get_callees(function).internal
         if call_graph is not None and function in call_graph
         else []
     )
     try:
-        cbmc = verify_function(function, str(scratch_file), include_dirs=include_dirs)
+        cbmc = verify_function(function, str(scratch_file), include_dirs=include_dirs, depth=depth)
         with _CANONICAL_LOCK:
             current = canonical_file.read_bytes()
             moved = [
@@ -1276,7 +1340,9 @@ def _merge_and_verify(
                     f"{function} was being verified; verifying it again on the file as it is now"
                 )
                 scratch_file.write_bytes(current)
-                cbmc = verify_function(function, str(scratch_file), include_dirs=include_dirs)
+                cbmc = verify_function(
+                    function, str(scratch_file), include_dirs=include_dirs, depth=depth
+                )
                 report = replace(
                     report,
                     changed_since_fork=[
@@ -1287,9 +1353,29 @@ def _merge_and_verify(
             if state is not None:
                 state.active.discard(function)
                 state.record(function, cbmc)
+                _publish_run_state(state, canonical_file)
     finally:
         shutil.rmtree(scratch_root, ignore_errors=True)
     return report, cbmc, reverified
+
+
+def _publish_run_state(state: _MergeState, canonical_file: Path) -> None:
+    """Write the run's merge state beside the canonical file for the agent-side tools.
+
+    Must be called with `_CANONICAL_LOCK` held, so the published sets are a consistent view of
+    `state`. The harness never reads the file back.
+
+    Args:
+        state (_MergeState): The run's shared merge state.
+        canonical_file (Path): Absolute path to the canonical source file.
+    """
+    write_run_state(
+        canonical_file,
+        verified=state.verified,
+        active=state.active,
+        unverified=state.unverified,
+        depths=state.depths,
+    )
 
 
 def _report_stray_edits(session: _Session, canonical_dir: Path) -> list[str]:
@@ -1317,16 +1403,17 @@ def _report_stray_edits(session: _Session, canonical_dir: Path) -> list[str]:
 def _mirror_tool_logs(session: _Session, canonical_file: Path) -> None:
     """Append the logs `avocado-run-cbmc` wrote beside the session copy to the canonical-side logs.
 
-    That is the verification-attempts log. The harness itself reads attempts from the session copy;
-    the canonical-side logs are kept for post-hoc analysis of a run, where readers expect one log
-    beside the source file and the session copy is gone. Failures to read or write are swallowed so
-    logging never affects a run.
+    Those are the verification-attempts log and the mutation-feedback log (the kill score of each
+    passing attempt). The harness itself reads attempts from the session copy; the canonical-side
+    logs are kept for post-hoc analysis of a run, where readers expect one log beside the source
+    file and the session copy is gone. Failures to read or write are swallowed so logging never
+    affects a run.
 
     Args:
         session (_Session): The finished session.
         canonical_file (Path): Absolute path to the canonical source file.
     """
-    for suffix in (VERIFICATION_ATTEMPTS_LOG_SUFFIX,):
+    for suffix in (VERIFICATION_ATTEMPTS_LOG_SUFFIX, MUTATION_FEEDBACK_LOG_SUFFIX):
         source_log = session.file.with_name(f"{session.file.stem}{suffix}")
         target_log = canonical_file.with_name(f"{canonical_file.stem}{suffix}")
         try:
@@ -1476,7 +1563,14 @@ def _verify_functions(
             for function, why in _unverified_functions(log_path).items()
             if function in done
         },
+        depths={
+            function: depth
+            for function, depth in _recorded_depths(log_path).items()
+            if function in done
+        },
     )
+    with _CANONICAL_LOCK:
+        _publish_run_state(state, Path(file_path))
     usage_limited: set[str] = set()
     active: dict[Future[FunctionVerificationResult], str] = {}
     results: list[FunctionVerificationResult] = []
@@ -1496,6 +1590,7 @@ def _verify_functions(
                     )
                     with _CANONICAL_LOCK:
                         state.active.add(function)
+                        _publish_run_state(state, Path(file_path))
                     future = pool.submit(
                         _verify_via_agent,
                         function,
@@ -1633,25 +1728,25 @@ def is_spec_improvable_with_mutation_testing(
     return function_has_mutants and not is_function_successfully_verified
 
 
-def _count_verification_attempts(log_path: Path, function: str) -> int:
-    """Return the number of logged `avocado-run-cbmc` verification attempts for `function`.
+def _attempt_records(log_path: Path, function: str) -> list[dict]:
+    """Return the logged `avocado-run-cbmc` verification attempts for `function`, oldest first.
 
     Reads the verification-attempts JSONL that `avocado-run-cbmc` appends to (one record per
-    top-level verification attempt). A missing log, blank lines, and malformed records are treated
-    as zero/skipped so counting never raises.
+    top-level verification attempt). A missing log, blank lines and malformed records are skipped
+    so reading never raises.
 
     Args:
         log_path (Path): Path to the verification-attempts JSONL log.
-        function (str): The function whose attempts should be counted.
+        function (str): The function whose attempts are wanted.
 
     Returns:
-        int: The number of attempts recorded for `function`.
+        list[dict]: The records naming `function`, in the order they were written.
     """
     try:
         lines = log_path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return 0
-    count = 0
+        return []
+    records = []
     for line in lines:
         stripped = line.strip()
         if not stripped:
@@ -1660,20 +1755,32 @@ def _count_verification_attempts(log_path: Path, function: str) -> int:
             record = json.loads(stripped)
         except json.JSONDecodeError:
             continue
-        if record.get("function") == function:
-            count += 1
-    return count
+        if isinstance(record, dict) and record.get("function") == function:
+            records.append(record)
+    return records
+
+
+def _count_verification_attempts(log_path: Path, function: str) -> int:
+    """Return the number of logged `avocado-run-cbmc` verification attempts for `function`.
+
+    Args:
+        log_path (Path): Path to the verification-attempts JSONL log.
+        function (str): The function whose attempts should be counted.
+
+    Returns:
+        int: The number of attempts recorded for `function`; zero when the log is missing.
+    """
+    return len(_attempt_records(log_path, function))
 
 
 def _last_attempt_verified(log_path: Path, function: str) -> bool:
     """Return whether the most recent logged verification attempt for `function` succeeded.
 
-    Reads the verification-attempts JSONL that `avocado-run-cbmc` appends to and returns the
-    `verified` field of the last record naming `function`. That field is the *tool's* own CBMC
-    verdict (`run_cbmc_and_mutation_testing._log_verification_attempt` records
-    `result.is_function_verified`), not Claude's self-report, so it is safe to trust here. A missing
-    log, blank lines, and malformed records are skipped; the function returns False when there is no
-    decided record, so callers never skip work on the basis of a verification that did not happen.
+    Returns the `verified` field of the last record naming `function`. That field is the
+    *tool's* own CBMC verdict (`run_cbmc_and_mutation_testing._log_verification_attempt` records
+    `result.is_function_verified`), not Claude's self-report, so it is safe to trust here. The
+    function returns False when there is no decided record, so callers never skip work on the
+    basis of a verification that did not happen.
 
     Args:
         log_path (Path): Path to the verification-attempts JSONL log.
@@ -1682,22 +1789,47 @@ def _last_attempt_verified(log_path: Path, function: str) -> bool:
     Returns:
         bool: True iff the most recent attempt record for `function` reports verification success.
     """
-    try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-    verified = False
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            record = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        if record.get("function") == function:
-            verified = bool(record.get("verified", False))
-    return verified
+    records = _attempt_records(log_path, function)
+    return bool(records[-1].get("verified", False)) if records else False
+
+
+def _chosen_depth(
+    log_path: Path, function: str, source: bytes, *, fallback: int = DEFAULT_CBMC_DEPTH
+) -> int:
+    """Return the CBMC `--depth` a session chose for `function`, to take its ground truth at.
+
+    The agent may raise the depth, back off again, and change the contract between attempts, so
+    the depth is tied to the definition being merged rather than to any one attempt: it is the
+    depth of the last *passing* attempt made on the definition that `source` holds (each record
+    carries a hash of the definition it was made on, `hash_for_function_definition`); when no
+    passing attempt was made on that definition, the depth of the last attempt, whatever its
+    verdict; and when the session made no attempt at all, `fallback`. A record written by an
+    older tool, without a depth, was made at the default depth.
+
+    Args:
+        log_path (Path): Path to the session's verification-attempts JSONL log.
+        function (str): The function.
+        source (bytes): The session's finished copy of the file, whose definition of `function`
+            is the one being merged.
+        fallback (int): The depth when there is no attempt to read it from.
+
+    Returns:
+        int: The depth.
+    """
+    records = _attempt_records(log_path, function)
+    if not records:
+        return fallback
+
+    def depth_of(record: dict) -> int:
+        depth = record.get("depth")
+        return depth if isinstance(depth, int) else DEFAULT_CBMC_DEPTH
+
+    definition = hash_for_function_definition(source, function)
+    for record in reversed(records):
+        if record.get("verified") and definition is not None:
+            if record.get("definition_sha256") == definition:
+                return depth_of(record)
+    return depth_of(records[-1])
 
 
 def _read_function_verdicts(log_path: Path) -> dict[str, tuple[str, str]]:
@@ -1754,6 +1886,42 @@ def _read_function_verdicts(log_path: Path) -> dict[str, tuple[str, str]]:
                     str(result["verdict"]),
                 )
     return verdicts
+
+
+def _recorded_depths(log_path: Path) -> dict[str, int]:
+    """Return the depth of the last recorded ground truth of each function in the run log.
+
+    Used to rebuild `_MergeState.depths` when a run is resumed, so a function that an earlier
+    invocation verified at a raised depth is re-verified at that depth, not the default. A
+    record from before depths were logged has no entry, which `_MergeState.depth_of` reads as
+    the default. Never raises; a missing log yields an empty map.
+
+    Args:
+        log_path (Path): Path to the `<stem>-avocado-verify.jsonl` run log.
+
+    Returns:
+        dict[str, int]: Function to the depth of its last recorded ground truth.
+    """
+    depths: dict[str, int] = {}
+    try:
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return depths
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            record = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict) or "type" in record:
+            continue
+        function = record.get("function")
+        depth = (record.get("cbmc") or {}).get("depth")
+        if function is not None and isinstance(depth, int):
+            depths[function] = depth
+    return depths
 
 
 def _read_function_outcomes(log_path: Path) -> dict[str, str]:
@@ -1945,6 +2113,7 @@ def _build_prompt(
     include_dirs: list[str],
     retry_note: str = "",
     callee_status: dict[str, str] | None = None,
+    depth: int = DEFAULT_CBMC_DEPTH,
 ) -> str:
     """Build the per-function prompt for a `claude -p` session.
 
@@ -1957,7 +2126,10 @@ def _build_prompt(
     copies of the file the harness could not see), and that the session works in a private copy
     of which the function's contract, new top-level helpers and sound fixes to other functions'
     contracts are merged back while everything else must stay as it was (the edit rules are in
-    CLAUDE.md, and a copy that breaks one is not merged at all).
+    CLAUDE.md). It ends with the exact `avocado-validate` commands: `edits` and `conflicts`, to be
+    run before each verifier run because a copy that breaks an edit rule is not merged and other
+    sessions merge while this one works, and `reverify`, to be run once when the agent has changed
+    another function's contract.
 
     Args:
         function (str): The function to specify and verify.
@@ -1970,13 +2142,32 @@ def _build_prompt(
         callee_status (dict[str, str] | None): The in-file callees whose contracts are in the
             file but are not verified, each with why (`_status_of`). The prompt names them, so
             the agent does not build on a contract that proves nothing, and repairs it first.
+        depth (int): The CBMC `--depth` the function was last held to. When it is above the
+            default (a previous session raised it), the verifier command carries it and the
+            prompt says so, so the re-run does not drop back to the default without meaning to.
 
     Returns:
         str: The prompt text.
     """
     command = ["avocado-run-cbmc", "--function", function, "--file", file_path]
+    if depth != DEFAULT_CBMC_DEPTH:
+        command += ["--depth", str(depth)]
+    edits_command = ["avocado-validate", "edits", "--file", file_path]
+    conflicts_command = [
+        "avocado-validate",
+        "conflicts",
+        "--function",
+        function,
+        "--file",
+        file_path,
+    ]
+    reverify_command = ["avocado-validate", "reverify", "--function", function, "--file", file_path]
+    # Absolute, as in `_merge_and_verify`, so the agent's current directory does not matter.
     for include_dir in include_dirs:
-        command += ["-I", include_dir]
+        absolute_include_dir = str(Path(include_dir).resolve())
+        command += ["-I", absolute_include_dir]
+        edits_command += ["-I", absolute_include_dir]
+        reverify_command += ["-I", absolute_include_dir]
     callees = get_in_file_callees_for(function, call_graph)
     callers = get_in_file_callers_of(function, call_graph)
     callees_text = ", ".join(callees) if callees else "none"
@@ -1985,6 +2176,12 @@ def _build_prompt(
         f"This is a re-run: {retry_note}. Run the command below on this file before anything "
         "else.\n\n"
         if retry_note
+        else ""
+    )
+    depth_text = (
+        f"This function was last verified with --depth {depth}, which the command below "
+        "carries; keep that value or raise it.\n\n"
+        if depth != DEFAULT_CBMC_DEPTH
         else ""
     )
     unverified_text = (
@@ -2001,6 +2198,7 @@ def _build_prompt(
         f"{retry_text}"
         f"Verify {function} in {file_path}.\n"
         "\n"
+        f"{depth_text}"
         "Run exactly this command to verify it; on success it also reports the mutation kill "
         "score and the diff of every surviving mutant. Only runs of this command against exactly "
         "this path are recorded as verification attempts; runs on copies of the file are not.\n"
@@ -2022,8 +2220,22 @@ def _build_prompt(
         "discarded. Everything else that was in this file when the session started must stay "
         "exactly as it was, and the names you add must start with avocado_spec_ or "
         "AVOCADO_SPEC_; the edit rules are in CLAUDE.md. Edits to other files and to headers are "
-        "always discarded. A copy that breaks an edit rule is not merged at all. Other sessions "
-        "are running at the same time and merge into the shared file while you work."
+        "always discarded.\n"
+        "\n"
+        "A copy that breaks an edit rule is not merged at all, so before each run of the command "
+        "above, run these two checks. Each takes seconds. The first prints every rule your copy "
+        "breaks, with the line and the reason. The second prints any edit of yours that other "
+        "sessions' work would keep out of the merge; other sessions are running at the same "
+        "time and merge into the shared file while you work.\n"
+        "\n"
+        f"    {shlex.join(edits_command)}\n"
+        f"    {shlex.join(conflicts_command)}\n"
+        "\n"
+        f"If you change the contract of any function other than {function}, run this once, "
+        "after your last successful run of the command above. It re-verifies the functions your "
+        "change can affect and lists any of your edits that would not be merged.\n"
+        "\n"
+        f"    {shlex.join(reverify_command)}"
     )
 
 

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from tools.run_cbmc import RunCbmcResult, has_contract
+from tools.run_cbmc import DEFAULT_CBMC_DEPTH, RunCbmcResult, has_contract
 from tools.run_cbmc_and_mutation_testing import verify_function
 
 SOURCE = b"""int answer(void) { return 42; }
@@ -47,12 +47,12 @@ def test_a_file_that_does_not_compile_tells_nothing(tmp_path: Path) -> None:
 
 def test_a_function_without_a_contract_is_not_verified(tmp_path: Path) -> None:
     source = str(_source(tmp_path))
-    result = verify_function("answer", source)
+    result = verify_function("answer", source, depth=DEFAULT_CBMC_DEPTH)
     assert str(result) == "NO_CONTRACT" and not result.is_function_verified
     assert result.no_contract and result.cbmc_ran_successfully and result.vacuity_check_result is None
     assert "has no contract" in result.response
-    assert str(verify_function("pick", source)) == "NO_CONTRACT"
-    assert verify_function("clear", source).is_function_verified
+    assert str(verify_function("pick", source, depth=DEFAULT_CBMC_DEPTH)) == "NO_CONTRACT"
+    assert verify_function("clear", source, depth=DEFAULT_CBMC_DEPTH).is_function_verified
 
 
 def test_no_contract_outranks_the_other_verdicts_of_a_pass() -> None:
