@@ -56,19 +56,26 @@ def test_records_are_written_in_function_order_regardless_of_completion_order(
 
 
 class _FakeRedundancyScore:
-    def __init__(self, function: str) -> None:
+    def __init__(self, function: str, include_dirs: list[str]) -> None:
         self.function = function
+        self.include_dirs = include_dirs
 
     def summary(self) -> dict:
-        return {"kind": "clause_redundancy_summary", "function": self.function}
+        return {
+            "kind": "clause_redundancy_summary",
+            "function": self.function,
+            "include_dirs": self.include_dirs,
+        }
 
 
-def _fake_redundancy_scorer(file_path: str, function: str, *, keep_artifacts: bool):
+def _fake_redundancy_scorer(
+    file_path: str, function: str, *, keep_artifacts: bool, include_dirs: list[str]
+):
     """Stand-in for `compute_clause_redundancy_score` that finishes in reverse name order."""
     del file_path, keep_artifacts
     time.sleep({"partition": 0.05, "quickSort": 0.1, "swap": 0.2}[function])
     # `quickSort` stands for a function whose baseline does not verify, which yields no record.
-    return None if function == "quickSort" else _FakeRedundancyScore(function)
+    return None if function == "quickSort" else _FakeRedundancyScore(function, include_dirs)
 
 
 def test_redundancy_records_follow_mutation_records_in_function_order(monkeypatch) -> None:
@@ -79,7 +86,7 @@ def test_redundancy_records_follow_mutation_records_in_function_order(monkeypatc
         submitted = driver._submit_file(
             source=Path("test/data/quicksort.c"),
             auto_include=False,
-            include_dirs=[],
+            include_dirs=["include"],
             run_mutation=True,
             run_redundancy=True,
             keep_artifacts=False,
@@ -95,6 +102,8 @@ def test_redundancy_records_follow_mutation_records_in_function_order(monkeypatc
         ("clause_redundancy_summary", "partition"),
         ("clause_redundancy_summary", "swap"),
     ]
+    # Redundancy scoring receives the same include directories as mutation scoring.
+    assert all(record["include_dirs"] == ["include"] for record in records[3:])
 
 
 def test_unannotated_file_submits_nothing(monkeypatch) -> None:
