@@ -194,6 +194,18 @@ def test_prompt_states_the_isolation_rule() -> None:
     assert "A contract you fix on another function in this file is kept too" in prompt
     assert "Edits to other files and to headers are always discarded" in prompt
     assert "must stay exactly as it was" in prompt and "contract and body" not in prompt
+    assert prompt.endswith("avocado-validate edits --function swap --file /tmp/copy/q.c")
+
+
+def test_prompt_edits_command_carries_the_include_dirs() -> None:
+    prompt = _build_prompt(
+        "partition",
+        file_path="/src/quicksort.c",
+        call_graph=_quicksort_call_graph(),
+        include_dirs=["/src/include"],
+    )
+    expected = "avocado-validate edits --function partition --file /src/quicksort.c"
+    assert prompt.endswith(f"{expected} -I /src/include")
     assert "A copy that breaks an edit rule is not merged at all" in prompt
 
 

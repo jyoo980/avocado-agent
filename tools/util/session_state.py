@@ -1,21 +1,35 @@
-"""What `avocado-verify` and its tests share about sessions, their copies and their verdicts.
+"""What `avocado-verify`, its tests and agent-side tools share about sessions and their copies.
 
 `avocado-verify` gives each session a private copy of the source directory. This module says what
 such a copy leaves out and what counts as an edit outside the source file, and it is the one place
 that builds and reads the status of a vacuous proof and that says which functions a merge
 rechecks.
+
+A tool the agent runs inside its copy (`avocado-validate`) is a separate process and can learn the
+canonical file the copy was taken from, and that file's bytes at the time (the fork base), only
+from disk. So the harness writes a *session file* in the root of each session's temporary
+directory, beside (not inside) the copied source directory. The session file is an advisory copy.
+The harness never reads it back: its own merge works from memory, so nothing an agent does to the
+file can change what is merged.
 """
 
 from __future__ import annotations
 
+import json
 import shutil
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from tools.run_cbmc import VACUOUS_VERDICT
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
-    from pathlib import Path
+
+# Name of the session file, and of the fork base saved next to it (the source file's suffix is
+# appended to the latter).
+SESSION_FILE_NAME = ".avocado-session.json"
+_FORK_BASE_STEM = ".avocado-fork-base"
 
 # Suffix of the directory beside the canonical file in which the harness keeps the transcripts of
 # the sessions it had to stop at the session timeout.
@@ -38,6 +52,21 @@ SNAPSHOT_IGNORE = shutil.ignore_patterns(
     "*__clause_drop_*.c",
     "mutation_compile_failures.log",
 )
+
+
+@dataclass(frozen=True)
+class SessionInfo:
+    """What a tool running inside a session's private copy needs to know about that session.
+
+    Attributes:
+        function (str): The function the session works on.
+        canonical_file (Path): Absolute path to the canonical source file the copy was taken from.
+        fork_base (bytes): The canonical file's bytes when the copy was taken.
+    """
+
+    function: str
+    canonical_file: Path
+    fork_base: bytes
 
 
 def vacuous_status(vacuity: str | None) -> str:
@@ -85,6 +114,56 @@ def rechecked_on_change(verified: Iterable[str], unverified: Mapping[str, str]) 
         set[str]: The functions.
     """
     return set(verified) | {name for name, why in unverified.items() if is_vacuous_status(why)}
+
+
+def write_session_info(
+    session_root: Path, *, function: str, canonical_file: Path, fork_base: bytes
+) -> None:
+    """Write the session file and the fork base into a session's temporary root directory.
+
+    Args:
+        session_root (Path): The session's temporary root (the parent of the copied source
+            directory).
+        function (str): The function the session works on.
+        canonical_file (Path): Absolute path to the canonical source file.
+        fork_base (bytes): The canonical file's bytes when the copy was taken.
+    """
+    fork_base_name = f"{_FORK_BASE_STEM}{canonical_file.suffix}"
+    (session_root / fork_base_name).write_bytes(fork_base)
+    record = {
+        "function": function,
+        "canonical_file": str(canonical_file),
+        "fork_base": fork_base_name,
+    }
+    (session_root / SESSION_FILE_NAME).write_text(json.dumps(record), encoding="utf-8")
+
+
+def read_session_info(session_file: Path) -> SessionInfo | None:
+    """Return the session a file in a private copy belongs to, or None if it belongs to none.
+
+    The session file is looked for in every directory above `session_file`, nearest first, so the
+    tool finds it whatever the depth of the source file inside the copied directory.
+
+    Args:
+        session_file (Path): A file inside a session's private copy (normally the source file).
+
+    Returns:
+        SessionInfo | None: The session, or None when no readable session file is found.
+    """
+    for directory in session_file.resolve().parents:
+        candidate = directory / SESSION_FILE_NAME
+        if not candidate.is_file():
+            continue
+        try:
+            record = json.loads(candidate.read_text(encoding="utf-8"))
+            return SessionInfo(
+                function=record["function"],
+                canonical_file=Path(record["canonical_file"]),
+                fork_base=(directory / record["fork_base"]).read_bytes(),
+            )
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+    return None
 
 
 def find_stray_files(session_file: Path, canonical_dir: Path) -> list[str]:

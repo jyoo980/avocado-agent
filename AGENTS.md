@@ -60,6 +60,19 @@ You can also search the web for more CBMC documentation.
 
   Prints function names callees-first, one per line.
 
+- **To check your edits against the edit rules**, run:
+
+  ```sh
+  avocado-validate edits --function <FUNCTION_NAME> \
+                         --file <PATH_TO_C_FILE> \
+                         [-I <PATH_TO_INCLUDE_DIR(S)>]...
+  ```
+
+  Checks [edit rules](#edit-rules) 1-8 in a few seconds, without running CBMC. Exits with status 0
+  if your copy breaks none of them, 1 if it breaks one (each line gives the rule, the line of your
+  file and what to change), and 2 if the check could not be made. The harness runs the same check
+  before it merges your copy, and a copy that fails it is not merged at all.
+
 ## Workflow
 
 Work in this order, and do not skip the first CBMC run:
@@ -67,11 +80,13 @@ Work in this order, and do not skip the first CBMC run:
 1. Read the function, the contracts already written for its in-file callees (they are replaced by
    their contracts during verification, so what they promise is all you get), and any callers in
    the same file, so your preconditions are satisfiable at every call site.
-2. Write the contract, then run `avocado-run-cbmc` right away. Do not run CBMC by hand, do not
+2. Write the contract, run `avocado-validate edits` and fix whatever it reports, then run
+   `avocado-run-cbmc` right away. Do not run CBMC by hand, do not
    run the tool in the background, and do not read the harness's `*.jsonl` logs: the tool's own
    output is the source of truth and already includes the diff of every surviving mutant. A
    `VACUOUS` result is a failed run: fix the contract as [Vacuous proofs](#vacuous-proofs) says.
-3. Strengthen the contract using the surviving-mutant diffs, and re-run `avocado-run-cbmc`. Stop as soon as every decided mutant is killed, or when two
+3. Strengthen the contract using the surviving-mutant diffs, run the check again, and re-run
+   `avocado-run-cbmc`. Stop as soon as every decided mutant is killed, or when two
    consecutive runs leave the kill score unchanged.
 
 Do not read the harness's Python sources, and do not experiment with CBMC's `--depth` or
@@ -154,11 +169,14 @@ your copy of the source file into the shared file that every later session build
 specifications only: the program must behave exactly as it did before you touched it, and a
 function that already verified must stay verified. A copy that breaks any of rules 1-8 is not
 merged at all: none of the session's work is kept. The harness checks every rule below when it
-merges your copy.
+merges your copy. Run `avocado-validate edits` before each `avocado-run-cbmc` run so that
+rules 1-8 never come as a surprise.
 
 In these rules, *original* means everything that was in the file when your session started,
 including helpers that earlier sessions added. *New* means what you add in this
 session.
+
+Rules checked by `avocado-validate edits` (fast; run it before each `avocado-run-cbmc` run):
 
 1. **Original code is unchanged.** Every original top-level item -- function signatures and
    bodies, macros, typedefs, structs, globals, includes, declarations -- must still be present, in
