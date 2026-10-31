@@ -40,3 +40,11 @@ Please feel free to open a pull request (draft pull requests are fine,
 - Running CBMC with `--dfcc` is likely what we want to do going forward. This requires a rework of
   the scripts we have to run CBMC, and likely a change to the prompts and documentation provided to
   agents to mention `--dfcc` mode and the harnesses it requires.
+
+## Measuring changes
+
+Scripts for measuring agent runs, such as paired baseline/treatment
+experiments, are described in
+[`eval/experiments/measuring.md`](./eval/experiments/measuring.md). The data they
+write lives under `avocado-experimental-data/`, which is git-ignored, so it is
+local to the machine that produced it.
