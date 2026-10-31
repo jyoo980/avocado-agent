@@ -93,9 +93,9 @@ def main() -> int:
     parser.add_argument(
         "--auto-include",
         help=(
-            "For each .c file, look for a sibling include/ directory at "
-            "<source>/../include and pass it to CBMC as an include path. "
-            "Fits projects whose headers live next to their src/ tree."
+            "For each .c file <project>/<subdir>/<name>.c, pass <project>/include to CBMC "
+            "as an include path if that directory exists. "
+            "Fits projects whose include/ directory is a sibling of their src/ directory."
         ),
         action="store_true",
     )
@@ -166,8 +166,8 @@ def _verify_program(
             (i.e., CBMC should not be run on them).
         include_dirs (list[str]): List of directories containing files (e.g., headers) that should
             be included in verification.
-        auto_include (bool): True iff `<file>/../include` should be added to CBMC's include
-            search path when that directory exists. Defaults to False.
+        auto_include (bool): True iff the auto-detected include directory (see
+            `get_include_dirs()`) should be added to CBMC's include search path. Defaults to False.
 
     Returns:
         ProgramVerificationResult: The verification result for the given file.
@@ -183,7 +183,7 @@ def _verify_program(
 
     include_dirs = get_include_dirs(file, include_dirs, auto_include=auto_include)
     if include_dirs:
-        logger.debug(f"[auto-include] using {include_dirs}")
+        logger.debug(f"[include-dirs] using {include_dirs}")
 
     results: list[FunctionVerificationResult] = []
     for function in names_of_functions_to_verify:

@@ -46,9 +46,9 @@ def main() -> None:
     parser.add_argument(
         "--auto-include",
         help=(
-            "For each .c file, look for a sibling include/ directory at "
-            "<source>/../include and pass it to CBMC as an include path. "
-            "Fits projects whose headers live next to their src/ tree."
+            "For each .c file <project>/<subdir>/<name>.c, pass <project>/include to CBMC "
+            "as an include path if that directory exists. "
+            "Fits projects whose include/ directory is a sibling of their src/ directory."
         ),
         action="store_true",
     )
@@ -138,7 +138,7 @@ def _process_file(
 
     include_dirs = get_include_dirs(str(source), include_dirs, auto_include=auto_include)
     if include_dirs:
-        logger.debug(f"[auto-include] using {include_dirs}")
+        logger.debug(f"[include-dirs] using {include_dirs}")
 
     for function in functions_with_cprover_annotations:
         if run_mutation:
