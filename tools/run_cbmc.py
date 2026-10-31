@@ -80,8 +80,9 @@ class RunCbmcResult:
 
     Attributes:
         function (str): The function under verification.
-        failed_step (CbmcStep | None): The pipeline step that failed, or None on success.
-        timed_out (bool): True iff any step hit the per-attempt timeout.
+        failed_step (CbmcStep | None): The pipeline step that failed or timed out,
+            or None on success.
+        timed_out (bool): True iff any subprocess in the `run_cbmc` pipeline timed out.
         returncode (int): 0 on success, `_TIMEOUT_RETURNCODE` on timeout, otherwise the
             exit code of the failing subprocess (cbmc's verification exit code when
             `failed_step` is CBMC).
@@ -130,16 +131,20 @@ class RunCbmcResult:
 
 @dataclass(frozen=True)
 class _SubprocessResult:
-    """Outcome of running one subprocess step.
+    """Outcome of a single subprocess invocation (one command).
+
+    A `CbmcStep` may comprise several subprocess invocations (e.g. `goto-instrument` runs
+    more than once); this object captures exactly one of them, so it has exactly one exit
+    code.
 
     Attributes:
-        step (CbmcStep): The logical step in the CBMC verification pipeline this subprocess belongs
-            to.
+        step (CbmcStep): The logical pipeline step this single subprocess belongs to. The
+            step may span several subprocesses; this is one of them.
         command (str): The shell command that was run.
-        returncode (int): The subprocess exit code, or `_TIMEOUT_RETURNCODE` on timeout.
+        returncode (int): This subprocess's exit code, or `_TIMEOUT_RETURNCODE` on timeout.
         stdout (str): Captured stdout (empty on timeout).
         stderr (str): Captured stderr (empty on timeout).
-        timed_out (bool): True iff the subprocess hit the per-step timeout.
+        timed_out (bool): True iff the subprocess hit the per-subprocess timeout.
     """
 
     step: CbmcStep
@@ -209,11 +214,11 @@ def run_cbmc(
     """Run CBMC on the given function with loop unwinding = `_UNWIND`, depth = `_DEPTH`.
 
     The pipeline is split into three logical steps — `goto-cc`, `goto-instrument`, and
-    `cbmc` — each run as its own subprocess so that failures can be attributed to a
+    `cbmc` — each run as one or more subprocesses so that failures can be attributed to a
     specific step. Up to three pipeline attempts are made: an initial run, a retry
     when an apparent recursive-inlining error is detected, and a retry when a missing
-    callee body is detected. The timeout is per CBMC subprocess attempt, not a total
-    budget; a timeout in any single step terminates the whole call.
+    callee body is detected. The timeout is per subprocess, not a total
+    budget; a timeout in any single step terminates the whole call, with no further retries.
 
     Args:
         function_to_verify (str): Name of the function to verify.
@@ -237,8 +242,10 @@ def run_cbmc(
             a printable response and the relevant exit code.
     """
     if call_graph is None:
-        path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)
-        call_graph = CallGraph(json.loads(Path(path_to_raw_call_graph).read_text(encoding="utf-8")))
+        path_to_call_graph_json = construct_call_graph(file_containing_function_to_verify)
+        call_graph = CallGraph(
+            json.loads(Path(path_to_call_graph_json).read_text(encoding="utf-8"))
+        )
     callees = get_in_file_callees_for(function_to_verify, call_graph)
     # Building the stub index is inexpensive for now (there is a single file).
     # Re-visit this if/when we have more stub files to parse.
@@ -248,17 +255,36 @@ def run_cbmc(
 
     subprocess_results: list[dict] = []
 
+    def attempt(
+        callees_to_replace: list[str], prevent_macro_expansion: bool
+    ) -> tuple[RunCbmcResult, str, str]:
+        """Build and run the pipeline once, recording its subprocesses in `subprocess_results`.
+
+        Args:
+            callees_to_replace (list[str]): The functions whose calls are replaced by their
+                contracts. See `_get_pipeline`.
+            prevent_macro_expansion (bool): See `_get_pipeline`.
+
+        Returns:
+            tuple[RunCbmcResult, str, str]: See `_run_pipeline`.
+        """
+        pipeline = _get_pipeline(
+            function_to_verify,
+            callees_to_replace,
+            file_containing_function_to_verify,
+            prevent_macro_expansion=prevent_macro_expansion,
+            stub_paths=stub_paths,
+            include_dirs=include_dirs,
+        )
+        return _run_pipeline(
+            function_to_verify,
+            pipeline,
+            subprocess_results=subprocess_results,
+            cwd=cwd,
+        )
+
     # Initial attempt.
-    result, combined_stdout, combined_stderr = _run_pipeline(
-        function_to_verify,
-        callees,
-        file_containing_function_to_verify,
-        stub_paths=stub_paths,
-        include_dirs=include_dirs,
-        prevent_macro_expansion=False,
-        subprocess_results=subprocess_results,
-        cwd=cwd,
-    )
+    result, combined_stdout, combined_stderr = attempt(callees, prevent_macro_expansion=False)
     # First, check if the run was successful or if it timed out.
     if result.cbmc_ran_successfully or result.timed_out:
         _log_invocation(
@@ -276,16 +302,7 @@ def run_cbmc(
             call_graph,
             include_self=call_graph.is_self_recursive(function_to_verify),
         )
-        result, combined_stdout, combined_stderr = _run_pipeline(
-            function_to_verify,
-            callees,
-            file_containing_function_to_verify,
-            stub_paths=stub_paths,
-            include_dirs=include_dirs,
-            prevent_macro_expansion=False,
-            subprocess_results=subprocess_results,
-            cwd=cwd,
-        )
+        result, combined_stdout, combined_stderr = attempt(callees, prevent_macro_expansion=False)
 
     # Missing-body retry if unsuccessful: re-run with macro expansion suppressed.
     if (
@@ -293,54 +310,32 @@ def run_cbmc(
         and not result.timed_out
         and has_missing_body_for_callee_or_function_message(combined_stdout, combined_stderr)
     ):
-        result, combined_stdout, combined_stderr = _run_pipeline(
-            function_to_verify,
-            callees,
-            file_containing_function_to_verify,
-            stub_paths=stub_paths,
-            include_dirs=include_dirs,
-            prevent_macro_expansion=True,
-            subprocess_results=subprocess_results,
-            cwd=cwd,
-        )
-
+        result, combined_stdout, combined_stderr = attempt(callees, prevent_macro_expansion=True)
     _log_invocation(file_containing_function_to_verify, result, subprocess_results, nondet_callees)
     return result
 
 
-def _run_pipeline(
+def _get_pipeline(
     function_to_verify: str,
     callees: list[str],
     file_containing_function: str,
+    prevent_macro_expansion: bool,
     stub_paths: list[str] | None,
     include_dirs: list[str] | None,
-    prevent_macro_expansion: bool,
-    subprocess_results: list[dict],
-    cwd: str | None = None,
-) -> tuple[RunCbmcResult, str, str]:
-    """Run the goto-cc → goto-instrument → cbmc pipeline once.
-
-    Each subprocess is run separately so the first failure (or timeout) can be attributed
-    to its logical step. Subprocess results are appended to `subprocess_results` for the JSONL log.
+) -> list[tuple[CbmcStep, str]]:
+    """Return the pipeline of CBMC commands to execute to verify a function.
 
     Args:
         function_to_verify (str): The function under verification.
         callees (list[str]): Callees of the function, used by `--replace-call-with-contract`.
         file_containing_function (str): The C source file containing the function.
+        prevent_macro_expansion (bool): When True, disable macros CBMC can't model and inject the
+            bundled C-library models before contract enforcement.
         stub_paths (list[str] | None): Extra `.c` stub files compiled in alongside the source.
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
-        prevent_macro_expansion (bool): When True, disable macros CBMC can't model and inject
-            the bundled C-library models before contract enforcement.
-        subprocess_results (list[dict]): Mutated in place by callee (_run_command). One dict per
-            subprocess invocation is appended in-order. Used by `_log_invocation` to produce the
-            JSONL row.
-        cwd (str | None): Working directory for every subprocess, forwarded to `_run_step`. The
-            pipeline's intermediate `.goto` files are written relative to this directory.
 
     Returns:
-        tuple[RunCbmcResult, str, str]: The result of the pipeline plus the concatenated
-            stdout and stderr across every subprocess that ran. The concatenated output is used by
-            the retry triggers in `run_cbmc`.
+        list[tuple[CbmcStep, str]]: The sequence of CBMC commands used to verify a function.
     """
     commands: list[tuple[CbmcStep, str]] = [
         (
@@ -374,16 +369,41 @@ def _run_pipeline(
             (CbmcStep.CBMC, _get_cbmc_check_command(function_to_verify)),
         ]
     )
+    return commands
 
-    per_step_stdout = []
-    per_step_stderr = []
-    for step, command in commands:
-        subprocess_result = _run_command(step, command, subprocess_results, cwd=cwd)
-        per_step_stdout.append(subprocess_result.stdout)
-        per_step_stderr.append(subprocess_result.stderr)
+
+def _run_pipeline(
+    function_to_verify: str,
+    cbmc_commands: list[tuple[CbmcStep, str]],
+    subprocess_results: list[dict],
+    cwd: str | None,
+) -> tuple[RunCbmcResult, str, str]:
+    """Run the CBMC verification pipeline for the given function.
+
+    The commands run in order, each as its own subprocess, and the first command that fails or
+    times out stops the pipeline, so that the failure can be attributed to its logical step.
+
+    Args:
+        function_to_verify (str): The name of the function to verify.
+        cbmc_commands (list[tuple[CbmcStep, str]]): The CBMC commands used to verify the function.
+        subprocess_results (list[dict]): Subprocess result(s) collected from running each CBMC
+            command, mutated in-place by `_run_command`.
+        cwd (str | None): The working directory for every subprocess. The pipeline's intermediate
+            `.goto` files are written relative to this directory.
+
+    Returns:
+        tuple[RunCbmcResult, str, str]: The result of running CBMC on the given function, plus
+            the concatenated stdout and stderr of every command that ran.
+    """
+    per_command_stdout = []
+    per_command_stderr = []
+    for cbmc_step, command in cbmc_commands:
+        subprocess_result = _run_command(cbmc_step, command, subprocess_results, cwd=cwd)
+        per_command_stdout.append(subprocess_result.stdout)
+        per_command_stderr.append(subprocess_result.stderr)
         if not subprocess_result.succeeded:
-            combined_stdout = "".join(per_step_stdout)
-            combined_stderr = "".join(per_step_stderr)
+            combined_stdout = "".join(per_command_stdout)
+            combined_stderr = "".join(per_command_stderr)
             return (
                 _result_from_failure(
                     function_to_verify,
@@ -403,15 +423,15 @@ def _run_pipeline(
             returncode=0,
             response=f"{function_to_verify} verified successfully",
         ),
-        "".join(per_step_stdout),
-        "".join(per_step_stderr),
+        "".join(per_command_stdout),
+        "".join(per_command_stderr),
     )
 
 
 def _run_command(
     step: CbmcStep, command: str, subprocess_results, cwd: str | None = None
 ) -> _SubprocessResult:
-    """Run one pipeline step as a subprocess with the per-step timeout.
+    """Run one command of a pipeline step as a subprocess with the per-subprocess timeout.
 
     Args:
         step (CbmcStep): The logical step this subprocess belongs to.
