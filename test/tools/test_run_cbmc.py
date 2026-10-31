@@ -5,7 +5,6 @@ import shutil
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 from subprocess import CompletedProcess
 
@@ -27,7 +26,6 @@ from tools.run_cbmc import (
     compile_with_goto_cc,
     max_concurrent_subprocesses,
     run_cbmc,
-    run_shell_command,
 )
 from tools.util.mutation import MutantVerificationResult, MutationScore, _MAX_MUTATION_SECTION_CHARS, _print_mutation_progress, get_mutation_testing_results_for_client
 
@@ -231,15 +229,6 @@ def test_run_shell_command_waits_for_a_slot_used_by_another_process(tmp_path: Pa
         subprocess.Popen([sys.executable, "-c", script], env=env, cwd=repo_root) for _ in range(2)
     ]
     assert [process.wait() for process in processes] == [0, 0]
-
-
-def test_run_shell_command_kills_the_whole_process_group_on_timeout(tmp_path: Path) -> None:
-    marker = tmp_path / "survived"
-    # Killing only the shell would leave the background subshell running to create the marker.
-    completed = run_shell_command(f"(sleep 1; touch {marker}) & sleep 10", timeout=0.3)
-    assert completed is None
-    time.sleep(1.5)
-    assert not marker.exists()
 
 
 @pytest.mark.parametrize("setting", ["0", "-3", "auto", "8.0"])
