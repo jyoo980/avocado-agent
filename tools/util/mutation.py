@@ -465,9 +465,9 @@ def _verify_mutant(
     returned with `compile_failed=True`; this prevents `check_expected_cbmc_return_code` from
     raising on goto-cc's exit code and lets callers exclude these mutants from the kill rate.
 
-    Safe to call concurrently for sibling mutants of one function: `run_cbmc()` runs each CBMC
-    pipeline in a private scratch directory so its function-name-derived `.goto` intermediates
-    never collide, and the shared `call_graph` is read-only.
+    Safe to call concurrently for sibling mutants of one function: `run_cbmc` runs each pipeline in
+    a private scratch directory so its function-name-derived `.goto` intermediates never collide,
+    and the shared `call_graph` is read-only.
 
     Args:
         path_to_write_mutant (Path): The path to which the mutated source is written.

@@ -216,9 +216,12 @@ def run_cbmc(
     callee body is detected. The timeout is per CBMC subprocess attempt, not a total
     budget; a timeout in any single step terminates the whole call.
 
-    The pipeline runs in a private temporary directory, which receives its intermediate
-    `<function>.goto` / `checking-<function>-contracts.goto` files. Thus, concurrent runs (even of
-    the same function) do not clobber one another, and no `.goto` files are left behind.
+    The pipeline's subprocesses run in a fresh private temporary directory, which receives the
+    intermediate `<function>.goto` / `checking-<function>-contracts.goto` files and is removed
+    afterward. Therefore, concurrent calls (even for the same function, as in mutation testing)
+    never clobber one another's intermediates, and no files are left in the caller's working
+    directory. Relative paths in the arguments are interpreted relative to the caller's working
+    directory, as usual.
 
     Args:
         function_to_verify (str): Name of the function to verify.
@@ -240,6 +243,41 @@ def run_cbmc(
         RunCbmcResult: The outcome of the run, naming the failed step (if any) and carrying
             a printable response and the relevant exit code.
     """
+    with tempfile.TemporaryDirectory(prefix="avocado-cbmc-") as scratch_dir:
+        return _run_cbmc_in_directory(
+            function_to_verify,
+            file_containing_function_to_verify,
+            include_dirs,
+            call_graph,
+            scratch_dir,
+        )
+
+
+def _run_cbmc_in_directory(
+    function_to_verify: str,
+    file_containing_function_to_verify: str,
+    include_dirs: list[str] | None,
+    call_graph: CallGraph | None,
+    cwd: str,
+) -> RunCbmcResult:
+    """Run CBMC on the given function as `run_cbmc` does, but run every subprocess in `cwd`.
+
+    Args:
+        function_to_verify (str): Name of the function to verify.
+        file_containing_function_to_verify (str): Path to the C file defining the function.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+        call_graph (CallGraph | None): A pre-built call graph, or None to construct one.
+        cwd (str): Working directory for every subprocess in the pipeline.
+
+    Returns:
+        RunCbmcResult: The outcome of the run.
+    """
+    # The pipeline's commands are executed relative to `cwd`, so relative paths given by the
+    # caller (which are relative to the process's working directory) must be resolved first. The
+    # invocation log still records the path as the caller gave it.
+    resolved_file = str(Path(file_containing_function_to_verify).resolve())
+    include_dirs = [str(Path(d).resolve()) for d in include_dirs or []]
+
     if call_graph is None:
         path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)
         call_graph = CallGraph(json.loads(Path(path_to_raw_call_graph).read_text(encoding="utf-8")))
