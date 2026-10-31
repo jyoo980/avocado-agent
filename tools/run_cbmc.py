@@ -1,8 +1,13 @@
-"""Run CBMC on a function."""
+"""Library for running CBMC on a function.
+
+This module has no command-line interface; the `avocado-run-cbmc` command is defined in
+`tools/run_cbmc_and_mutation_testing.py`.
+"""
 
 import json
 import shlex
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -40,7 +45,7 @@ _DEFAULT_RUN_CBMC_TIMEOUT_SEC = 600
 _GOTO_CC_TIMEOUT_SEC = 30
 
 # GNU `timeout(1)` convention: distinguishes a timeout from a CBMC verification failure
-# both in the CLI exit code and in the JSONL invocation log.
+# both in `RunCbmcResult.returncode` and in the JSONL invocation log.
 _TIMEOUT_RETURNCODE = 124
 
 # `--unwind` argument to CBMC.
@@ -776,3 +781,7 @@ def compile_with_goto_cc(
     except TimeoutExpired:
         return _TIMEOUT_RETURNCODE
     return result.returncode
+
+
+if __name__ == "__main__":
+    sys.exit("tools/run_cbmc.py is a library and cannot be run; use `avocado-run-cbmc` instead.")

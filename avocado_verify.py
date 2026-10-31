@@ -76,7 +76,7 @@ _MAX_AGENT_SESSIONS_PER_FUNCTION = 3
 
 
 class GroundTruthVerificationResult(StrEnum):
-    """Ground truth verification result, corresponding to an invocation of `tools.run_cbmc.py`.
+    """Ground truth verification result, corresponding to a call to `tools.run_cbmc.run_cbmc`.
 
     Corresponds to this harness's own CBMC re-run, not Claude's self-report.
     """
