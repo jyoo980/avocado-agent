@@ -7,6 +7,7 @@ time. Consumers should `from tools.util.mutation import ...` directly.
 """
 
 from .callgraph import CallGraph, CallGraphCallees
+from .include_dirs import autodetect_include_dirs, get_include_dirs
 from .stubs import (
     build_stub_index,
     get_in_file_callees_for,
@@ -26,6 +27,7 @@ __all__ = [
     "CallGraph",
     "CallGraphCallees",
     "FunctionSloc",
+    "autodetect_include_dirs",
     "build_stub_index",
     "get_call_graph",
     "get_function_definition",
@@ -33,6 +35,7 @@ __all__ = [
     "get_functions_with_cprover_annotations",
     "get_in_file_callees_for",
     "get_in_file_callers_of",
+    "get_include_dirs",
     "get_stub_paths_for",
     "get_unstubbed_external_callees_for",
 ]
