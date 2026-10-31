@@ -10,9 +10,9 @@ that perturbation.
 from __future__ import annotations
 
 import json
-import os
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,7 +25,7 @@ from eval.mutants.util import (
     is_valid_mutation_candidate,
 )
 from tools.construct_call_graph import construct_call_graph
-from tools.run_cbmc import CbmcStep, run_cbmc
+from tools.run_cbmc import MAX_CONCURRENT_SUBPROCESSES, CbmcStep, run_cbmc
 from tools.util.callgraph import CallGraph
 
 # Matches the GNU `timeout(1)` convention used elsewhere in the codebase; surfaces in
@@ -38,11 +38,10 @@ _VERIFICATION_FAILURE_RETURNCODE = 10
 # output is capped, dropping trailing survivors behind an explicit omission marker.
 _MAX_MUTATION_SECTION_CHARS = 50_000
 
-# Upper bound on how many mutants are verified concurrently. Each worker drives a full CBMC
-# pipeline (its own subprocesses), which can be memory-heavy, so the effective worker count is
-# min(this cap, os.cpu_count(), number of mutants). The cap bounds peak memory on machines with
-# many cores; lower it if mutation runs exhaust RAM.
-_MAX_MUTATION_WORKERS = 32
+# Mutants are verified concurrently by worker threads (see `_mutation_worker_count`). Each worker
+# drives a full CBMC pipeline; the process-wide subprocess cap in `tools.run_cbmc`
+# (`AVOCADO_MAX_CONCURRENT_CBMC`) bounds how many of those pipelines can actually be running at
+# once, so lower that if mutation runs exhaust RAM.
 
 
 @dataclass(frozen=True)
@@ -63,6 +62,8 @@ class MutantVerificationResult:
             mutant is undecided: CBMC never ran, so the spec's strength is not evidenced.
         instrumentation_failed (bool): True iff any of the goto-instrument steps failed.
             These failures are not necessarily indicative of errors with the specification.
+        seconds (float): Wall-clock seconds the mutant's CBMC pipeline took (including any wait
+            for a subprocess slot). Diagnostic only; lets slow mutants be identified.
     """
 
     mutant: Mutant
@@ -72,6 +73,7 @@ class MutantVerificationResult:
     timed_out: bool = False
     compile_failed: bool = False
     instrumentation_failed: bool = False
+    seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -359,9 +361,10 @@ def generate_mutants_and_compute_score(
 def _mutation_worker_count(num_mutants: int) -> int:
     """Return how many mutants to verify concurrently.
 
-    Bounded by `_MAX_MUTATION_WORKERS`, the machine's CPU count, and the number of mutants, and
-    never below 1 (a `ThreadPoolExecutor` requires a positive worker count, even when there are
-    no mutants to run).
+    Bounded by the process-wide subprocess cap in `tools.run_cbmc` (more workers than that could
+    only wait for a subprocess slot, while each holds its own mutant file) and by the number of
+    mutants, and never below 1 (a `ThreadPoolExecutor` requires a positive worker count, even when
+    there are no mutants to run).
 
     Args:
         num_mutants (int): The total number of mutants to verify.
@@ -369,7 +372,7 @@ def _mutation_worker_count(num_mutants: int) -> int:
     Returns:
         int: The number of worker threads to use.
     """
-    return max(1, min(num_mutants, os.cpu_count() or 1, _MAX_MUTATION_WORKERS))
+    return max(1, min(num_mutants, MAX_CONCURRENT_SUBPROCESSES))
 
 
 def _print_mutation_progress(
@@ -470,6 +473,7 @@ def _verify_mutant(
             not run.
     """
     path_to_write_mutant.write_text(mutant.mutant_source, encoding="utf-8")
+    started = time.monotonic()
     # The CBMC pipeline writes intermediate `<function>.goto` / `checking-<function>-contracts.goto`
     # files named only by the function name -- identical across all mutants of one function -- into
     # its working directory. Give each run a private scratch dir so concurrent mutants don't clobber
@@ -483,6 +487,7 @@ def _verify_mutant(
             call_graph=call_graph,
             cwd=scratch_dir,
         )
+    seconds = round(time.monotonic() - started, 3)
     if cbmc_result.timed_out:
         return MutantVerificationResult(
             mutant,
@@ -490,6 +495,7 @@ def _verify_mutant(
             killed=False,
             returncode=cbmc_result.returncode,
             timed_out=True,
+            seconds=seconds,
         )
     if failed_step := cbmc_result.failed_step:
         if failed_step == CbmcStep.CBMC:
@@ -501,6 +507,7 @@ def _verify_mutant(
                 path_to_mutant=str(path_to_write_mutant),
                 killed=cbmc_result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
                 returncode=cbmc_result.returncode,
+                seconds=seconds,
             )
         compile_failed = cbmc_result.failed_step == CbmcStep.GOTO_CC
         if compile_failed:
@@ -517,6 +524,7 @@ def _verify_mutant(
             returncode=cbmc_result.returncode,
             compile_failed=compile_failed,
             instrumentation_failed=cbmc_result.failed_step == CbmcStep.GOTO_INSTRUMENT,
+            seconds=seconds,
         )
 
     check_expected_cbmc_return_code(cbmc_result.returncode)
@@ -525,6 +533,7 @@ def _verify_mutant(
         path_to_mutant=str(path_to_write_mutant),
         killed=cbmc_result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
         returncode=cbmc_result.returncode,
+        seconds=seconds,
     )
 
 

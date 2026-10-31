@@ -8,9 +8,12 @@ Usage:
 
 import argparse
 import json
+import os
 import shlex
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -58,6 +61,27 @@ _CBMC_UNWIND = 5
 
 # `--depth` argument to CBMC.
 _CBMC_DEPTH = 200
+
+# Process-wide cap on how many pipeline subprocesses (`goto-cc`, `goto-instrument`, `cbmc`) may run
+# at once. Several layers spawn pipelines concurrently -- mutants of one function run in a thread
+# pool, and the evaluation driver scores several functions at once -- and without a shared bound
+# the product of those fan-outs could oversubscribe the machine, turning slow-but-decidable CBMC
+# runs into timeouts. Defaults to the CPU count, but at most `_DEFAULT_MAX_CONCURRENT_SUBPROCESSES`
+# because each CBMC run can use a lot of memory, so RAM rather than CPUs is the binding constraint
+# on many-core hosts. Override with `AVOCADO_MAX_CONCURRENT_CBMC` (e.g. lower it if mutation runs
+# exhaust RAM). Waiting for a slot does not count against a step's timeout, which only starts once
+# the subprocess is launched.
+_DEFAULT_MAX_CONCURRENT_SUBPROCESSES = 32
+MAX_CONCURRENT_SUBPROCESSES = max(
+    1,
+    int(
+        os.environ.get(
+            "AVOCADO_MAX_CONCURRENT_CBMC",
+            min(os.cpu_count() or 1, _DEFAULT_MAX_CONCURRENT_SUBPROCESSES),
+        )
+    ),
+)
+_SUBPROCESS_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_SUBPROCESSES)
 
 
 class CbmcStep(StrEnum):
@@ -413,6 +437,10 @@ def _run_command(
 ) -> _SubprocessResult:
     """Run one pipeline step as a subprocess with the per-step timeout.
 
+    The subprocess is launched only once a slot in `_SUBPROCESS_SLOTS` is available, so the
+    number of concurrently running pipeline steps across every thread in this process never
+    exceeds `MAX_CONCURRENT_SUBPROCESSES`.
+
     Args:
         step (CbmcStep): The logical step this subprocess belongs to.
         command (str): The shell command to run.
@@ -424,16 +452,18 @@ def _run_command(
     Returns:
         _SubprocessResult: The captured outcome, including stdout/stderr or the timeout sentinel.
     """
+    started = time.monotonic()
     try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            shell=True,
-            check=False,
-            timeout=_DEFAULT_RUN_CBMC_TIMEOUT_SEC,
-            cwd=cwd,
-        )
+        with _SUBPROCESS_SLOTS:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                shell=True,
+                check=False,
+                timeout=_DEFAULT_RUN_CBMC_TIMEOUT_SEC,
+                cwd=cwd,
+            )
         returncode = completed.returncode
         stdout = completed.stdout
         stderr = completed.stderr
@@ -449,6 +479,9 @@ def _run_command(
             "step": step.value,
             "command": command,
             "returncode": returncode,
+            # Wall-clock seconds including any wait for a subprocess slot; lets the run log show
+            # which steps (and which mutants) dominate harness time.
+            "seconds": round(time.monotonic() - started, 3),
         }
     )
     return _SubprocessResult(
