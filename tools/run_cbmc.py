@@ -268,6 +268,7 @@ def run_cbmc(
             include_dirs,
             call_graph,
             scratch_dir,
+            timeout_sec,
         )
 
 
@@ -277,6 +278,7 @@ def _run_cbmc_in_directory(
     include_dirs: list[str] | None,
     call_graph: CallGraph | None,
     cwd: str,
+    timeout_sec: int,
 ) -> RunCbmcResult:
     """Run CBMC on the given function as `run_cbmc` does, but run every subprocess in `cwd`.
 
@@ -286,6 +288,7 @@ def _run_cbmc_in_directory(
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
         call_graph (CallGraph | None): A pre-built call graph, or None to construct one.
         cwd (str): Working directory for every subprocess in the pipeline.
+        timeout_sec (int): Per-subprocess timeout in seconds.
 
     Returns:
         RunCbmcResult: The outcome of the run.
