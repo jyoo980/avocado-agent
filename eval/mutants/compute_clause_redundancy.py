@@ -43,10 +43,9 @@ from eval.mutants.util import (
     is_valid_mutation_candidate,
     remove_files,
 )
-from tools.construct_call_graph import construct_call_graph
+from tools.construct_call_graph import load_call_graph
 from tools.run_cbmc import run_cbmc
-from tools.util import get_in_file_callers_of
-from tools.util.callgraph import CallGraph
+from tools.util import CallGraph, get_in_file_callers_of
 
 # Matches the GNU `timeout(1)` convention used elsewhere; surfaces in `returncode` for
 # timed-out CBMC runs so the value is distinguishable from CBMC's real 0/10 exit codes.
@@ -314,13 +313,10 @@ def compute_clause_redundancy_score(
     workspace = workspace or source_path.parent
     workspace.mkdir(parents=True, exist_ok=True)
 
-    # Removing a contract clause never changes the call graph, because the call graph omits calls
-    # within contract clauses. So every removed-clause source is verified with the original
-    # source's call graph. Otherwise, `run_cbmc` would re-parse each removed-clause source and
-    # write a `-callgraph.json` file next to it.
-    call_graph = CallGraph(
-        json.loads(Path(construct_call_graph(str(source_path))).read_text(encoding="utf-8"))
-    )
+    # Contract clauses are erased before a call graph is built, so removing one leaves the call
+    # graph unchanged. Build it once and pass it into every run below, which avoids re-parsing and
+    # avoids caching a call-graph JSON next to each removed-clause source.
+    call_graph = load_call_graph(str(source_path))
 
     # Check that the original function verifies in the first place.
     result = run_cbmc(function_name, file_path, call_graph=call_graph)
@@ -494,8 +490,8 @@ def _verify_removed_clause_source(
         path_to_write_removed_clause_mutant (Path): The path to which to write the source with the
             mutated specification.
         clause_mutant (ClauseMutant): The clause mutant.
-        call_graph (CallGraph): The call graph of the original (unmutated) source, which is also
-            the call graph of the mutated source; forwarded to `run_cbmc()`.
+        call_graph (CallGraph): The original source's call graph, which the removed-clause source
+            shares.
         log_invocation (bool): Whether `run_cbmc()` writes a run log next to the mutated source.
 
     Returns:
@@ -535,7 +531,7 @@ def _get_baseline_verification_results_for_callers(
     Args:
         in_file_callers (list[str]): The names of the in-file callers.
         source_path (Path): The unmutated source file.
-        call_graph (CallGraph): The call graph of `source_path`, forwarded to `run_cbmc()`.
+        call_graph (CallGraph): The call graph of `source_path`.
 
     Returns:
         dict[str, bool]: Map from caller name to True iff CBMC verified it on the unmutated source.
@@ -576,8 +572,7 @@ def _verify_callers(
         in_file_callers (list[str]): The names of the in-file callers.
         caller_baselines (dict[str, bool]): Map from caller name to baseline verification result
             on the unmutated source.
-        call_graph (CallGraph): The call graph of the original (unmutated) source, which is also
-            the call graph of the mutated source; forwarded to `run_cbmc()`.
+        call_graph (CallGraph): The original source's call graph, which the mutant source shares.
         log_invocation (bool): Whether `run_cbmc()` writes a run log next to the mutated source.
 
     Returns:

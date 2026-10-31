@@ -31,7 +31,7 @@ from subprocess import TimeoutExpired
 from loguru import logger
 
 from eval.mutants.mutate_function import get_mutants
-from tools.construct_call_graph import construct_call_graph
+from tools.construct_call_graph import construct_call_graph, load_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
 from tools.run_cbmc import RunCbmcResult, run_cbmc
 from tools.run_cbmc_and_mutation_testing import VERIFICATION_ATTEMPTS_LOG_SUFFIX
@@ -232,8 +232,7 @@ def main() -> None:
     if include_dirs := _autodetect_include_dirs(str(file_path)):
         logger.info(f"[auto-include] using {include_dirs}")
 
-    path_to_call_graph = construct_call_graph(str(file_path))
-    call_graph = CallGraph(json.loads(Path(path_to_call_graph).read_text(encoding="utf-8")))
+    call_graph = load_call_graph(str(file_path))
     functions = _get_functions_to_verify(str(file_path))
     if not functions:
         logger.warning(f"No verifiable functions found in {file_path}")
