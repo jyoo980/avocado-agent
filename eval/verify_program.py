@@ -23,6 +23,7 @@ from tools.util import (
     build_stub_index,
     get_call_graph,
     get_functions_with_cprover_annotations,
+    get_include_dirs,
     get_unstubbed_external_callees_for,
 )
 
@@ -180,9 +181,7 @@ def _verify_program(
         names_of_functions_to_verify = get_functions_with_cprover_annotations(file)
         skipped_functions = set(call_graph.keys()).difference(names_of_functions_to_verify)
 
-    include_dirs = (
-        [*_autodetect_include_dirs(file), *include_dirs] if auto_include else include_dirs
-    )
+    include_dirs = get_include_dirs(file, include_dirs, auto_include=auto_include)
     if include_dirs:
         logger.debug(f"[auto-include] using {include_dirs}")
 
@@ -203,23 +202,6 @@ def _verify_program(
             logger.error(f"     {failure}")
         results.append(result)
     return ProgramVerificationResult(file, list(skipped_functions), results)
-
-
-def _autodetect_include_dirs(source_file: str) -> list[str]:
-    """Return `[<source>/../include]` if that directory exists, else an empty list.
-
-    Many CMake projects keep public headers in `<project>/include/` while sources live in
-    `<project>/src/`. When that layout holds, returning the sibling `include/` directory lets
-    CBMC resolve `#include "foo.h"` without the caller having to configure paths by hand.
-
-    Args:
-        source_file (str): Path to a `.c` file.
-
-    Returns:
-        list[str]: `[<resolved include dir>]` when present, else `[]`.
-    """
-    candidate = Path(source_file).resolve().parent.parent / "include"
-    return [str(candidate)] if candidate.is_dir() else []
 
 
 def _verify_function(
