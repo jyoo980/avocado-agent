@@ -2098,8 +2098,7 @@ def _build_claude_command(prompt: str, *, file_path: str, include_dirs: list[str
     Claude Code's auto-memory is deliberately left enabled: each session is given a persistent
     notes directory (keyed by the repository's main worktree, so shared by every worktree of it)
     and its index is loaded into the session, so knowledge gained on one function or one run
-    carries over to later ones. Note the consequence for experiments in `FINDINGS.md`: two arms
-    run on one machine share those notes unless the experiment gives each arm its own directory.
+    carries over to later ones.
 
     Args:
         prompt (str): The prompt to send (see `_build_prompt`).
