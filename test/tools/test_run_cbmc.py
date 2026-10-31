@@ -25,6 +25,7 @@ from tools.run_cbmc import (
     compile_with_goto_cc,
     max_concurrent_subprocesses,
     run_cbmc,
+    run_shell_command,
 )
 from tools.util.mutation import MutantVerificationResult, MutationScore, _MAX_MUTATION_SECTION_CHARS, _print_mutation_progress, get_mutation_testing_results_for_client
 
@@ -199,6 +200,48 @@ def test_run_command_waits_for_a_slot_used_by_another_thread(monkeypatch, tmp_pa
     # One command queued behind the other, and its record says so rather than inflating `seconds`.
     assert max(record["wait_seconds"] for record in records) >= 0.2
     assert all(record["seconds"] < 1 for record in records)
+
+
+def test_threads_waiting_for_a_slot_do_not_poll_the_slot_files(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", tmp_path / "slots")
+    monkeypatch.setattr(run_cbmc_module, "max_concurrent_subprocesses", lambda: 1)
+    flock = run_cbmc_module.fcntl.flock
+    lock_attempts: list[int] = []
+
+    def counting_flock(fd: int, operation: int) -> None:
+        lock_attempts.append(fd)
+        flock(fd, operation)
+
+    monkeypatch.setattr(run_cbmc_module.fcntl, "flock", counting_flock)
+    threads = [threading.Thread(target=run_shell_command, args=("sleep 0.5", 30)) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    # One attempt per thread: the second thread waits on this process's semaphore, not by
+    # retrying the lock every `_SLOT_POLL_SEC`.
+    assert len(lock_attempts) == 2
+
+
+def test_a_slot_directory_that_another_user_can_write_is_refused(
+    monkeypatch, tmp_path: Path
+) -> None:
+    slot_dir = tmp_path / "slots"
+    slot_dir.mkdir()
+    slot_dir.chmod(0o777)
+    monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", slot_dir)
+    with pytest.raises(PermissionError, match="no other user can write"):
+        run_shell_command("true", timeout=30)
+
+
+def test_a_slot_directory_that_is_a_symbolic_link_is_refused(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "elsewhere"
+    target.mkdir(mode=0o700)
+    slot_dir = tmp_path / "slots"
+    slot_dir.symlink_to(target)
+    monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", slot_dir)
+    with pytest.raises(PermissionError, match="no other user can write"):
+        run_shell_command("true", timeout=30)
 
 
 def test_run_shell_command_waits_for_a_slot_used_by_another_process(tmp_path: Path) -> None:
