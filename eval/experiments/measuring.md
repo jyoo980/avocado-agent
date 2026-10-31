@@ -38,6 +38,11 @@ of version control yourself.
   and cost for a run in flight.
 - `summarize_agent_runs.py <run-dir>...` aggregates a finished run, charging a
   session killed by the harness timeout its full timeout rather than zero.
+- `session_timeline.py --projects-dir <dir> <run-log>...` reads the Claude
+  Code transcripts of the sessions that `<stem>-avocado-verify.jsonl` run logs
+  name, and attributes each second of a session to model generation or to a
+  tool call. It prints, per arm, the split between model time and tool time
+  (by kind of tool), and the sessions that cost the most.
 - `compare_arms.py` with `--baseline`, `--treatment`, `--runs` and
   `--benchmarks` is the paired comparison that decides a treatment.
 - `rescore_run.sh <label> <run-id> <benchmark>...` re-scores a run's
