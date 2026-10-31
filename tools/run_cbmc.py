@@ -9,7 +9,9 @@ Usage:
 import argparse
 import fcntl
 import json
+import os
 import shlex
+import subprocess
 import sys
 import tempfile
 import time
@@ -533,7 +535,7 @@ def _run_command(
     Returns:
         _SubprocessResult: The captured outcome, including stdout/stderr or the timeout sentinel.
     """
-    completed = run_command(command, _DEFAULT_RUN_CBMC_TIMEOUT_SEC, cwd=cwd)
+    completed = run_shell_command(command, _DEFAULT_RUN_CBMC_TIMEOUT_SEC, cwd=cwd)
     if completed is None:
         returncode = _TIMEOUT_RETURNCODE
         stdout = ""
@@ -919,7 +921,7 @@ def compile_with_goto_cc(
             (0 == compiled successfully).
     """
     compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
-    completed = run_command(compilation_command, _GOTO_CC_TIMEOUT_SEC)
+    completed = run_shell_command(compilation_command, _GOTO_CC_TIMEOUT_SEC)
     if completed is None:
         return _TIMEOUT_RETURNCODE
     return completed.returncode
