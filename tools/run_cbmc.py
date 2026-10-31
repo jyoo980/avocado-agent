@@ -211,7 +211,7 @@ def run_cbmc(
     call_graph: CallGraph | None = None,
     cwd: str | None = None,
 ) -> RunCbmcResult:
-    """Run CBMC on the given function with loop unwinding = `_CBMC_UNWIND`, depth = `_CBMC_DEPTH`.
+    """Run CBMC on the given function with loop unwinding = `_UNWIND`, depth = `_DEPTH`.
 
     The pipeline is split into three logical steps — `goto-cc`, `goto-instrument`, and
     `cbmc` — each run as one or more subprocesses so that failures can be attributed to a
@@ -599,12 +599,10 @@ def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, 
     # actual marker (with the real dropped count) cannot push us over budget.
     digit_pad = str(_MAX_RESPONSE_CHARS)
     marker = f"[... {digit_pad} characters truncated ...]\n"
-    # The constant-length parts of the response (header, FAILURE section, section labels, and
-    # both truncation markers), used to size the budget left for the stream tails.
-    scaffold = (
+    fixed = (
         f"{header}{failure_section}--- stderr (tail) ---\n{marker}--- stdout (tail) ---\n{marker}"
     )
-    remaining = max(_MAX_RESPONSE_CHARS - len(scaffold), 0)
+    remaining = max(_MAX_RESPONSE_CHARS - len(fixed), 0)
     stdout_budget = int(remaining * _STDOUT_TAIL_SHARE)
     stderr_budget = remaining - stdout_budget
 
@@ -612,9 +610,8 @@ def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, 
     stdout_section = _tail_section("stdout (tail)", stdout, stdout_budget)
 
     response = f"{header}{failure_section}{stderr_section}{stdout_section}"
-    # Hard clamp: the per-section budget accounting can drift by a few chars against the
-    # `scaffold` estimate, so guarantee we never exceed the cap.
-    # Avoid asserts to mitigate any crashes during running CBMC; crashes are expensive.
+    # Hard clamp: the per-section budget accounting can drift by a few chars
+    # against the `fixed` estimate, so guarantee we never exceed the cap.
     return response[:_MAX_RESPONSE_CHARS]
 
 
@@ -637,39 +634,13 @@ def _failure_lines_section(stdout: str) -> str:
         return ""
     failure_block = "\n".join(failure_lines)
     failure_cap = _MAX_RESPONSE_CHARS // 2
-    tail, dropped = _get_tail_within_budget(failure_block, failure_cap)
-    if dropped:
-        failure_block = f"[... {dropped} characters of FAILURE lines truncated ...]\n{tail}"
+    if len(failure_block) > failure_cap:
+        dropped = len(failure_block) - failure_cap
+        failure_block = (
+            f"[... {dropped} characters of FAILURE lines truncated ...]\n"
+            f"{failure_block[-failure_cap:]}"
+        )
     return f"--- FAILURE lines ---\n{failure_block}\n"
-
-
-def _get_tail_within_budget(content: str, budget: int) -> tuple[str, int]:
-    """Return at most the last `budget` chars of `content`, preferably starting at a line boundary.
-
-    When `content` is truncated and the kept window starts in the middle of a line, that partial
-    line is discarded so that the tail starts at a line boundary, unless the partial line fills
-    at least half the window. In that case, the partial line is kept, because discarding it would
-    discard most of the output (for example, when the output is one very long line).
-
-    Args:
-        content (str): The content to truncate to its tail.
-        budget (int): The maximum number of characters to keep; must be non-negative.
-
-    Returns:
-        tuple[str, int]: The kept tail and the number of characters dropped from the front
-            (0 when `content` already fits within `budget`). Because a partial leading line can
-            be discarded, the kept tail can be shorter than `budget`.
-    """
-    if len(content) <= budget:
-        return content, 0
-    # Not `content[-budget:]`, which is all of `content` when `budget` is 0.
-    start = len(content) - budget
-    tail = content[start:]
-    if content[start - 1] != "\n":
-        partial_line_length = tail.find("\n")
-        if 0 <= partial_line_length < budget // 2:
-            tail = tail[partial_line_length + 1 :]
-    return tail, len(content) - len(tail)
 
 
 def _tail_section(label: str, content: str, budget: int) -> str:
@@ -683,11 +654,11 @@ def _tail_section(label: str, content: str, budget: int) -> str:
     Returns:
         str: The labeled section containing the tail of content within budget chars.
     """
-    tail, dropped = _get_tail_within_budget(content, budget)
-    if dropped:
-        body = f"[... {dropped} characters truncated ...]\n{tail}"
+    if len(content) <= budget:
+        body = content
     else:
-        body = tail
+        dropped = len(content) - budget
+        body = f"[... {dropped} characters truncated ...]\n{content[-budget:]}"
     return f"--- {label} ---\n{body}\n"
 
 
