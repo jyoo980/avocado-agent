@@ -20,13 +20,11 @@ Usage:
 import argparse
 import json
 import shlex
-import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from subprocess import TimeoutExpired
 
 from loguru import logger
 
@@ -35,11 +33,14 @@ from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
 from tools.run_cbmc import RunCbmcResult, run_cbmc
 from tools.run_cbmc_and_mutation_testing import VERIFICATION_ATTEMPTS_LOG_SUFFIX
+from tools.util import run_command
 from tools.util.callgraph import CallGraph
 
 # Per-function wall-clock budget for a single `claude -p` session. A session may run CBMC
 # several times (each with its own multi-minute timeout) across the coverage and quality
-# passes, so this default is deliberately generous.
+# passes, so this default is deliberately generous. The budget is wall-clock time, so it also
+# counts the time those CBMC runs spend waiting for a machine-wide subprocess slot (see
+# `tools.run_cbmc.run_shell_command`) while other processes use the slots.
 _DEFAULT_CLAUDE_TIMEOUT_SEC = 1800
 
 # GNU `timeout(1)` convention, matching `tools.run_cbmc`: distinguishes a timeout from an
@@ -651,7 +652,7 @@ def _build_claude_command(prompt: str, *, file_path: str, include_dirs: list[str
         include_dirs (list[str]): Extra include directories to expose via `--add-dir`.
 
     Returns:
-        list[str]: The argument vector to hand to `subprocess.run`.
+        list[str]: The argument vector to hand to `run_command`.
     """
     command = [
         "claude",
@@ -679,16 +680,8 @@ def _run_claude(command: list[str], timeout: int) -> ClaudeRun:
         ClaudeRun: The parsed outcome, or a timeout sentinel if the session ran long.
     """
     logger.debug(f"running: {shlex.join(command)}")
-    try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-    except TimeoutExpired:
+    completed = run_command(command, timeout)
+    if completed is None:
         # It isn't possible to calculate some of the fields below when the timeout for a `claude -p`
         # command is reached.
         return ClaudeRun(

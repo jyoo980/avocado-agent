@@ -7,15 +7,23 @@ Usage:
 """
 
 import argparse
+import fcntl
 import json
+import os
 import shlex
+import stat
 import subprocess
 import sys
+import tempfile
+import threading
+import time
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from functools import cache
 from pathlib import Path
-from subprocess import TimeoutExpired
 
 from loguru import logger
 
@@ -25,6 +33,7 @@ from tools.util import (
     get_in_file_callees_for,
     get_stub_paths_for,
     get_unstubbed_external_callees_for,
+    run_command,
 )
 from tools.util.callgraph import CallGraph
 
@@ -58,6 +67,59 @@ _CBMC_UNWIND = 5
 
 # `--depth` argument to CBMC.
 _CBMC_DEPTH = 200
+
+# Machine-wide cap on how many pipeline subprocesses (`goto-cc`, `goto-instrument`, `cbmc`) may run
+# at once. Pipelines are spawned concurrently both within a process (mutants of one function run
+# in a thread pool) and across processes (for example, several `avocado-run-cbmc` invocations at
+# once), and without a shared bound the product of those fan-outs could oversubscribe the machine,
+# turning slow-but-decidable CBMC runs into timeouts. See `max_concurrent_subprocesses` for how the
+# cap is chosen and `run_shell_command` for how it is enforced.
+_MAX_CONCURRENT_SUBPROCESSES_ENV_VAR = "AVOCADO_MAX_CONCURRENT_CBMC"
+_DEFAULT_MAX_CONCURRENT_SUBPROCESSES = 32
+
+# Directory of the slot files that enforce the cap. It is shared by every process of this user
+# that has the same temporary directory, which is the whole container under Docker.
+_SLOT_DIR = Path(tempfile.gettempdir()) / f"avocado-cbmc-slots-{os.getuid()}"
+
+# How often a caller waiting for a subprocess slot checks whether one has become free.
+_SLOT_POLL_SEC = 0.1
+
+# For each cap, a semaphore with that many permits. A thread holds a permit while it waits for a
+# subprocess slot and while it uses the slot, so at most the cap's number of threads of this
+# process poll the slot files; other threads of this process block on the semaphore instead.
+_IN_PROCESS_SLOTS: dict[int, threading.BoundedSemaphore] = {}
+_IN_PROCESS_SLOTS_LOCK = threading.Lock()
+
+
+@cache
+def max_concurrent_subprocesses() -> int:
+    """Return the cap on how many pipeline subprocesses may run at once.
+
+    The cap is the number of CPUs available to this process, further limited by
+    `AVOCADO_MAX_CONCURRENT_CBMC` if that environment variable is set to a non-empty value, and
+    otherwise by `_DEFAULT_MAX_CONCURRENT_SUBPROCESSES`. The CPU count is not the only limit
+    because each CBMC run can use a lot of memory, so on many-core hosts RAM rather than CPUs is the
+    binding constraint; lower `AVOCADO_MAX_CONCURRENT_CBMC` if mutation runs exhaust RAM.
+
+    Returns:
+        int: The cap, which is at least 1.
+
+    Raises:
+        ValueError: If `AVOCADO_MAX_CONCURRENT_CBMC` is set to something other than a positive
+            integer.
+    """
+    limit = _DEFAULT_MAX_CONCURRENT_SUBPROCESSES
+    setting = os.environ.get(_MAX_CONCURRENT_SUBPROCESSES_ENV_VAR, "").strip()
+    if setting:
+        try:
+            limit = int(setting)
+        except ValueError:
+            limit = 0
+        if limit < 1:
+            env_var = _MAX_CONCURRENT_SUBPROCESSES_ENV_VAR
+            message = f"{env_var} must be a positive integer, not {setting!r}"
+            raise ValueError(message)
+    return min(os.process_cpu_count() or 1, limit)
 
 
 class CbmcStep(StrEnum):
@@ -140,6 +202,7 @@ class _SubprocessResult:
         stdout (str): Captured stdout (empty on timeout).
         stderr (str): Captured stderr (empty on timeout).
         timed_out (bool): True iff the subprocess hit the per-step timeout.
+        timeout_sec (int): The per-step timeout that applied, for the timeout diagnostic.
     """
 
     step: CbmcStep
@@ -148,11 +211,86 @@ class _SubprocessResult:
     stdout: str
     stderr: str
     timed_out: bool
+    timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC
 
     @property
     def succeeded(self) -> bool:
         """True iff the subprocess exited zero and did not time out."""
         return self.returncode == 0 and not self.timed_out
+
+
+def run_shell_command(
+    command: str, timeout: float, cwd: str | None = None
+) -> subprocess.CompletedProcess[str] | None:
+    """Run a shell command with `run_command`, once a subprocess slot is free.
+
+    Every pipeline subprocess (`goto-cc`, `goto-instrument`, `cbmc`) should be run through this
+    function. Then the number of them running at once, across all threads and all processes that
+    share `_SLOT_DIR`, never exceeds `max_concurrent_subprocesses()` (or, if those processes
+    disagree about the cap, the largest of their caps). The timeout starts once the subprocess is
+    launched; waiting for a slot does not count against it. On timeout, the command and every
+    process it started are killed, so no `cbmc` keeps running without holding a subprocess slot.
+
+    Args:
+        command (str): The shell command to run.
+        timeout (float): Seconds after which the command and every process it started are killed.
+        cwd (str | None): Working directory for the subprocess. When None, the subprocess
+            inherits the current working directory.
+
+    Returns:
+        subprocess.CompletedProcess[str] | None: The finished subprocess, with its captured stdout
+            and stderr, or None if it hit the timeout.
+    """
+    with _subprocess_slot():
+        return run_command(command, timeout, cwd=cwd)
+
+
+@contextmanager
+def _subprocess_slot() -> Generator[None]:
+    """Hold one of the `max_concurrent_subprocesses()` subprocess slots for the `with` body.
+
+    Each slot is an exclusive `flock` on a file in `_SLOT_DIR`. An `flock` belongs to an open file
+    description, so it excludes other threads of this process as well as other processes, and the
+    kernel releases it when its process dies, so a killed process never leaks a slot. The lock's
+    file descriptor is not inherited by subprocesses. Blocks until a slot is free: a thread first
+    waits for a permit from this process's semaphore for the cap, then polls the slot files every
+    `_SLOT_POLL_SEC`.
+
+    Yields:
+        None: Control, while the slot is held.
+
+    Raises:
+        PermissionError: If `_SLOT_DIR` is not a directory that this user owns and that no other
+            user can write, since another user could then hold the slots or plant symbolic links.
+    """
+    _SLOT_DIR.mkdir(mode=0o700, exist_ok=True)
+    slot_dir_status = os.lstat(_SLOT_DIR)
+    if (
+        not stat.S_ISDIR(slot_dir_status.st_mode)
+        or slot_dir_status.st_uid != os.getuid()
+        or slot_dir_status.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        message = f"{_SLOT_DIR} must be a directory that this user owns and no other user can write"
+        raise PermissionError(message)
+    cap = max_concurrent_subprocesses()
+    with _IN_PROCESS_SLOTS_LOCK:
+        in_process_slots = _IN_PROCESS_SLOTS.setdefault(cap, threading.BoundedSemaphore(cap))
+    slot_paths = [_SLOT_DIR / f"slot-{i}" for i in range(cap)]
+    with in_process_slots:
+        while True:
+            for slot_path in slot_paths:
+                fd = os.open(slot_path, os.O_RDWR | os.O_CREAT, 0o600)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    os.close(fd)
+                    continue
+                try:
+                    yield
+                finally:
+                    os.close(fd)
+                return
+            time.sleep(_SLOT_POLL_SEC)
 
 
 def main() -> None:
@@ -204,7 +342,7 @@ def run_cbmc(
     file_containing_function_to_verify: str,
     include_dirs: list[str] | None = None,
     call_graph: CallGraph | None = None,
-    cwd: str | None = None,
+    timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
 ) -> RunCbmcResult:
     """Run CBMC on the given function with loop unwinding = `_UNWIND`, depth = `_DEPTH`.
 
@@ -214,6 +352,13 @@ def run_cbmc(
     when an apparent recursive-inlining error is detected, and a retry when a missing
     callee body is detected. The timeout is per CBMC subprocess attempt, not a total
     budget; a timeout in any single step terminates the whole call.
+
+    The pipeline's subprocesses run in a fresh private temporary directory, which receives the
+    intermediate `<function>.goto` / `checking-<function>-contracts.goto` files and is removed
+    afterward. Therefore, concurrent calls (even for the same function, as in mutation testing)
+    never clobber one another's intermediates, and no files are left in the caller's working
+    directory. Relative paths in the arguments are interpreted relative to the caller's working
+    directory, as usual.
 
     Args:
         function_to_verify (str): Name of the function to verify.
@@ -226,16 +371,53 @@ def run_cbmc(
             graph) can build it once and pass it in, which both avoids redundant parsing and keeps
             the non-thread-safe tree-sitter parser out of concurrent code paths. When None, the
             call graph is constructed from the source file as usual.
-        cwd (str | None): Working directory for every subprocess in the pipeline. The pipeline
-            writes its intermediate `<function>.goto` / `checking-<function>-contracts.goto` files
-            relative to this directory, so concurrent runs of the same function (again, mutation
-            testing) must each pass a distinct `cwd` to avoid clobbering one another. When None,
-            subprocesses inherit the current working directory.
+        timeout_sec (int): Per-subprocess timeout in seconds. Defaults to
+            `_DEFAULT_RUN_CBMC_TIMEOUT_SEC`; callers that only need a quick verdict (e.g. mutation
+            feedback for the agent) can pass a smaller budget. A timed-out run is reported as such
+            and is never mistaken for a verification result.
 
     Returns:
         RunCbmcResult: The outcome of the run, naming the failed step (if any) and carrying
             a printable response and the relevant exit code.
     """
+    with tempfile.TemporaryDirectory(prefix="avocado-cbmc-") as scratch_dir:
+        return _run_cbmc_in_directory(
+            function_to_verify,
+            file_containing_function_to_verify,
+            include_dirs,
+            call_graph,
+            scratch_dir,
+            timeout_sec,
+        )
+
+
+def _run_cbmc_in_directory(
+    function_to_verify: str,
+    file_containing_function_to_verify: str,
+    include_dirs: list[str] | None,
+    call_graph: CallGraph | None,
+    cwd: str,
+    timeout_sec: int,
+) -> RunCbmcResult:
+    """Run CBMC on the given function as `run_cbmc` does, but run every subprocess in `cwd`.
+
+    Args:
+        function_to_verify (str): Name of the function to verify.
+        file_containing_function_to_verify (str): Path to the C file defining the function.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+        call_graph (CallGraph | None): A pre-built call graph, or None to construct one.
+        cwd (str): Working directory for every subprocess in the pipeline.
+        timeout_sec (int): Per-subprocess timeout in seconds.
+
+    Returns:
+        RunCbmcResult: The outcome of the run.
+    """
+    # The pipeline's commands are executed relative to `cwd`, so relative paths given by the
+    # caller (which are relative to the process's working directory) must be resolved first. The
+    # invocation log still records the path as the caller gave it.
+    resolved_file = str(Path(file_containing_function_to_verify).resolve())
+    include_dirs = [str(Path(d).resolve()) for d in include_dirs or []]
+
     if call_graph is None:
         path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)
         call_graph = CallGraph(json.loads(Path(path_to_raw_call_graph).read_text(encoding="utf-8")))
@@ -252,12 +434,13 @@ def run_cbmc(
     result, combined_stdout, combined_stderr = _run_pipeline(
         function_to_verify,
         callees,
-        file_containing_function_to_verify,
+        resolved_file,
         stub_paths=stub_paths,
         include_dirs=include_dirs,
         prevent_macro_expansion=False,
         subprocess_results=subprocess_results,
         cwd=cwd,
+        timeout_sec=timeout_sec,
     )
     # First, check if the run was successful or if it timed out.
     if result.cbmc_ran_successfully or result.timed_out:
@@ -279,12 +462,13 @@ def run_cbmc(
         result, combined_stdout, combined_stderr = _run_pipeline(
             function_to_verify,
             callees,
-            file_containing_function_to_verify,
+            resolved_file,
             stub_paths=stub_paths,
             include_dirs=include_dirs,
             prevent_macro_expansion=False,
             subprocess_results=subprocess_results,
             cwd=cwd,
+            timeout_sec=timeout_sec,
         )
 
     # Missing-body retry if unsuccessful: re-run with macro expansion suppressed.
@@ -296,12 +480,13 @@ def run_cbmc(
         result, combined_stdout, combined_stderr = _run_pipeline(
             function_to_verify,
             callees,
-            file_containing_function_to_verify,
+            resolved_file,
             stub_paths=stub_paths,
             include_dirs=include_dirs,
             prevent_macro_expansion=True,
             subprocess_results=subprocess_results,
             cwd=cwd,
+            timeout_sec=timeout_sec,
         )
 
     _log_invocation(file_containing_function_to_verify, result, subprocess_results, nondet_callees)
@@ -317,6 +502,7 @@ def _run_pipeline(
     prevent_macro_expansion: bool,
     subprocess_results: list[dict],
     cwd: str | None = None,
+    timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
 ) -> tuple[RunCbmcResult, str, str]:
     """Run the goto-cc → goto-instrument → cbmc pipeline once.
 
@@ -336,6 +522,7 @@ def _run_pipeline(
             JSONL row.
         cwd (str | None): Working directory for every subprocess, forwarded to `_run_step`. The
             pipeline's intermediate `.goto` files are written relative to this directory.
+        timeout_sec (int): Per-subprocess timeout in seconds, forwarded to `_run_command`.
 
     Returns:
         tuple[RunCbmcResult, str, str]: The result of the pipeline plus the concatenated
@@ -378,7 +565,9 @@ def _run_pipeline(
     per_step_stdout = []
     per_step_stderr = []
     for step, command in commands:
-        subprocess_result = _run_command(step, command, subprocess_results, cwd=cwd)
+        subprocess_result = _run_command(
+            step, command, subprocess_results, cwd=cwd, timeout_sec=timeout_sec
+        )
         per_step_stdout.append(subprocess_result.stdout)
         per_step_stderr.append(subprocess_result.stderr)
         if not subprocess_result.succeeded:
@@ -409,7 +598,11 @@ def _run_pipeline(
 
 
 def _run_command(
-    step: CbmcStep, command: str, subprocess_results, cwd: str | None = None
+    step: CbmcStep,
+    command: str,
+    subprocess_results,
+    cwd: str | None = None,
+    timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
 ) -> _SubprocessResult:
     """Run one pipeline step as a subprocess with the per-step timeout.
 
@@ -420,29 +613,23 @@ def _run_command(
         cwd (str | None): Working directory for the subprocess. When None, the subprocess
             inherits the current working directory. Distinct directories let concurrent
             pipelines for the same function avoid clobbering each other's `.goto` files.
+        timeout_sec (int): Seconds the subprocess may run before it is killed and reported as
+            timed out.
 
     Returns:
         _SubprocessResult: The captured outcome, including stdout/stderr or the timeout sentinel.
     """
-    try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            shell=True,
-            check=False,
-            timeout=_DEFAULT_RUN_CBMC_TIMEOUT_SEC,
-            cwd=cwd,
-        )
-        returncode = completed.returncode
-        stdout = completed.stdout
-        stderr = completed.stderr
-        timed_out = False
-    except TimeoutExpired:
+    completed = run_shell_command(command, timeout_sec, cwd=cwd)
+    if completed is None:
         returncode = _TIMEOUT_RETURNCODE
         stdout = ""
         stderr = ""
         timed_out = True
+    else:
+        returncode = completed.returncode
+        stdout = completed.stdout
+        stderr = completed.stderr
+        timed_out = False
 
     subprocess_results.append(
         {
@@ -458,6 +645,7 @@ def _run_command(
         stdout=stdout,
         stderr=stderr,
         timed_out=timed_out,
+        timeout_sec=timeout_sec,
     )
 
 
@@ -482,7 +670,7 @@ def _result_from_failure(
     if subprocess_result.timed_out:
         response = (
             f"Verification for '{function}' timed out after "
-            f"{_DEFAULT_RUN_CBMC_TIMEOUT_SEC} second(s) during {subprocess_result.step.value}"
+            f"{subprocess_result.timeout_sec} second(s) during {subprocess_result.step.value}"
         )
         return RunCbmcResult(
             function=function,
@@ -818,18 +1006,10 @@ def compile_with_goto_cc(
             (0 == compiled successfully).
     """
     compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
-    try:
-        result = subprocess.run(
-            compilation_command,
-            capture_output=True,
-            text=True,
-            shell=True,
-            check=False,
-            timeout=_GOTO_CC_TIMEOUT_SEC,
-        )
-    except TimeoutExpired:
+    completed = run_shell_command(compilation_command, _GOTO_CC_TIMEOUT_SEC)
+    if completed is None:
         return _TIMEOUT_RETURNCODE
-    return result.returncode
+    return completed.returncode
 
 
 if __name__ == "__main__":
