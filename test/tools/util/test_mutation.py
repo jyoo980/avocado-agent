@@ -1,22 +1,33 @@
 """Tests for `tools.util.mutation`."""
 
+import shutil
 from pathlib import Path
+
+import pytest
 
 from tools.util.mutation import MutationScore, generate_mutants_and_compute_score
 
-
-SOURCE = """int inc(int x)
-__CPROVER_requires(0 <= x && x < 8)
-__CPROVER_ensures(__CPROVER_return_value == x + 1)
-{ return x + 1; }
-"""
+INC_SOURCE = Path(__file__).resolve().parents[2] / "data" / "mutants" / "inc.c"
 
 
-def test_mutation_testing_leaves_no_per_mutant_files(tmp_path: Path) -> None:
-    source = tmp_path / "inc.c"
-    source.write_text(SOURCE)
+def test_mutation_testing_leaves_no_per_mutant_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    source = Path(shutil.copy(INC_SOURCE, source_dir))
+    working_dir = tmp_path / "cwd"
+    working_dir.mkdir()
+    monkeypatch.chdir(working_dir)
+
     result = generate_mutants_and_compute_score(str(source), "inc")
     assert isinstance(result, MutationScore) and result.num_mutants > 0
-    # Each mutant's source and its `-cbmc-runs.jsonl` log are deleted with it.
-    left = [path.name for path in tmp_path.iterdir() if "__mutant_" in path.name]
-    assert not [name for name in left if name.endswith((".c", "-cbmc-runs.jsonl"))], left
+
+    # Only the original source and the files that describe it remain.
+    assert {path.name for path in source_dir.iterdir()} == {
+        "inc.c",
+        "inc-callgraph.json",
+        "inc-cbmc-runs.jsonl",
+    }
+    # CBMC's intermediate `.goto` files are not written to the working directory.
+    assert not list(working_dir.iterdir())

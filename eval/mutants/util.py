@@ -1,6 +1,9 @@
 """Utilities for mutation testing."""
 
+from collections.abc import Iterable
 from pathlib import Path
+
+from loguru import logger
 
 from tools.run_cbmc import RunCbmcResult
 
@@ -58,3 +61,20 @@ def get_files_with_extension(path_str: str, extension: str) -> list[Path]:
     if path.is_dir():
         return sorted(path.rglob(f"*{extension}"))
     return [path] if path.suffix == extension else []
+
+
+def remove_files(paths: Iterable[Path]) -> None:
+    """Delete each of the given files, skipping any that do not exist.
+
+    A file that cannot be deleted is reported as a warning and does not stop the deletion of the
+    rest. Thus, this is safe to call in a `finally` block: it does not replace an in-flight
+    exception with a cleanup error.
+
+    Args:
+        paths (Iterable[Path]): The files to delete.
+    """
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning(f"Could not delete {path}: {e}")

@@ -205,6 +205,7 @@ def run_cbmc(
     include_dirs: list[str] | None = None,
     call_graph: CallGraph | None = None,
     cwd: str | None = None,
+    log_invocation: bool = True,
 ) -> RunCbmcResult:
     """Run CBMC on the given function with loop unwinding = `_UNWIND`, depth = `_DEPTH`.
 
@@ -231,6 +232,10 @@ def run_cbmc(
             relative to this directory, so concurrent runs of the same function (again, mutation
             testing) must each pass a distinct `cwd` to avoid clobbering one another. When None,
             subprocesses inherit the current working directory.
+        log_invocation (bool): When True, a record of the run is appended to the
+            `<stem>-cbmc-runs.jsonl` log next to `file_containing_function_to_verify`. Callers
+            that verify throwaway sources (e.g., mutants) can pass False so that no log is left
+            behind for a file that no longer exists.
 
     Returns:
         RunCbmcResult: The outcome of the run, naming the failed step (if any) and carrying
@@ -261,12 +266,13 @@ def run_cbmc(
     )
     # First, check if the run was successful or if it timed out.
     if result.cbmc_ran_successfully or result.timed_out:
-        _log_invocation(
-            file_containing_function_to_verify,
-            result,
-            subprocess_results,
-            nondet_callees,
-        )
+        if log_invocation:
+            _log_invocation(
+                file_containing_function_to_verify,
+                result,
+                subprocess_results,
+                nondet_callees,
+            )
         return result
 
     # Recursion-inlining retry.
@@ -304,7 +310,10 @@ def run_cbmc(
             cwd=cwd,
         )
 
-    _log_invocation(file_containing_function_to_verify, result, subprocess_results, nondet_callees)
+    if log_invocation:
+        _log_invocation(
+            file_containing_function_to_verify, result, subprocess_results, nondet_callees
+        )
     return result
 
 

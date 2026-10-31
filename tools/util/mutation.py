@@ -23,6 +23,7 @@ from eval.mutants.mutate_function import Mutant, get_mutants
 from eval.mutants.util import (
     check_expected_cbmc_return_code,
     is_valid_mutation_candidate,
+    remove_files,
 )
 from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import CbmcStep, run_cbmc
@@ -266,6 +267,8 @@ def generate_mutants_and_compute_score(
 
     Mutant `.c` files are written next to the original source by default to simplify compilation
     and instrumentation with CBMC. Mutants are removed unless keep_artifacts is set to `True`.
+    The CBMC run log (`<stem>-cbmc-runs.jsonl`) of each mutant is written only when keep_artifacts
+    is `True`. CBMC's intermediate `.goto` files are written to temporary directories.
 
     Args:
         file_path (str): Path to the C source defining the function.
@@ -274,7 +277,8 @@ def generate_mutants_and_compute_score(
             for both the original-function verification and every mutant run.
         workspace (Path | None): Directory to write mutant files into. Defaults to the
             source file's directory.
-        keep_artifacts (bool): When True, mutant `.c` files are kept for inspection.
+        keep_artifacts (bool): When True, mutant `.c` files and their CBMC run logs are kept for
+            inspection.
         skip_reverification (bool): When True, proceed with mutation testing regardless of whether
             the function verifies or not.
 
@@ -286,11 +290,17 @@ def generate_mutants_and_compute_score(
     if not mutants:
         return NoMutantsGenerated(file_path, target_function)
 
-    workspace = workspace or source_path.parent
+    # CBMC runs in temporary directories, so every path handed to it must be absolute.
+    workspace = (workspace or source_path.parent).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
+    if include_dirs:
+        include_dirs = [str(Path(include_dir).resolve()) for include_dir in include_dirs]
 
     if not skip_reverification:
-        cbmc_result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
+        with tempfile.TemporaryDirectory(prefix="avocado-baseline-") as scratch_dir:
+            cbmc_result = run_cbmc(
+                target_function, str(source_path), include_dirs=include_dirs, cwd=scratch_dir
+            )
         if not is_valid_mutation_candidate(cbmc_result):
             # No usable baseline if CBMC can't verify the unmutated function.
             return BaselineFailsVerification(file_path, target_function)
@@ -331,7 +341,14 @@ def generate_mutants_and_compute_score(
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_index = {
-                executor.submit(_verify_mutant, path, mutant, include_dirs, call_graph): index
+                executor.submit(
+                    _verify_mutant,
+                    path,
+                    mutant,
+                    include_dirs,
+                    call_graph,
+                    log_invocation=keep_artifacts,
+                ): index
                 for index, (path, mutant) in enumerate(paths_to_mutants.items())
             }
             try:
@@ -347,12 +364,7 @@ def generate_mutants_and_compute_score(
                 executor.shutdown(cancel_futures=True)
     finally:
         if not keep_artifacts:
-            for path in paths_to_mutants:
-                path.unlink(missing_ok=True)
-                # `run_cbmc` appends a `<stem>-cbmc-runs.jsonl` log next to every source it
-                # verifies, mutants included; drop those with the mutant so a directory that has
-                # been mutation tested many times is not littered with per-mutant logs.
-                path.with_name(f"{path.stem}-cbmc-runs.jsonl").unlink(missing_ok=True)
+            remove_files(paths_to_mutants)
 
     # Every future either stored a result above or raised (which would have propagated), so no
     # None slots remain; the filter just refines the type for the aggregator.
@@ -449,6 +461,8 @@ def _verify_mutant(
     mutant: Mutant,
     include_dirs: list[str] | None,
     call_graph: CallGraph,
+    *,
+    log_invocation: bool,
 ) -> MutantVerificationResult:
     """Return the result of verifying a mutant.
 
@@ -467,6 +481,7 @@ def _verify_mutant(
         call_graph (CallGraph): The original function's call graph, reused verbatim for this
             mutant (operator-swap mutants share the original's call graph) and passed to
             `run_cbmc()` so it skips re-parsing the mutant source.
+        log_invocation (bool): Whether `run_cbmc()` writes a run log next to the mutant.
 
     Returns:
         MutantVerificationResult: The result of verifying a mutant. The returned result's
@@ -486,6 +501,7 @@ def _verify_mutant(
             include_dirs=include_dirs,
             call_graph=call_graph,
             cwd=scratch_dir,
+            log_invocation=log_invocation,
         )
     if cbmc_result.timed_out:
         return MutantVerificationResult(
