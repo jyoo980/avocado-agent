@@ -338,6 +338,9 @@ def compute_clause_redundancy_score(
         if not keep_artifacts:
             for path in paths_to_removed_clauses:
                 path.unlink(missing_ok=True)
+                # `run_cbmc` appends a `<stem>-cbmc-runs.jsonl` log next to every source it
+                # verifies; drop it with the removed-clause source.
+                path.with_name(f"{path.stem}-cbmc-runs.jsonl").unlink(missing_ok=True)
 
     return _aggregate_clause_redundancy_score(
         in_isolation_results,
