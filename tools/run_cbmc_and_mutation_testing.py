@@ -1,10 +1,5 @@
 """Run CBMC on a function and perform mutation testing.
 
-This is the `avocado-run-cbmc` entry point that the inner agent calls. It wraps the shared pipeline
-in `tools.run_cbmc` (goto-cc → goto-instrument → cbmc), records the attempt in a sibling JSONL log
-that `avocado-verify` reads, and -- when the function verifies -- runs mutation testing and reports
-the kill score plus any surviving mutants.
-
 Usage:
     % avocado-run-cbmc --function <FUNCTION_NAME> \
                        --file <PATH_TO_C_FILE> \
