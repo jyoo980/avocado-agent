@@ -1018,11 +1018,11 @@ def test_the_tools_logs_are_mirrored_beside_the_canonical_file(tmp_path: Path) -
 def test_run_claude_names_the_session_so_a_timed_out_one_can_be_found(monkeypatch) -> None:
     commands: list[list[str]] = []
 
-    def times_out(command, **kwargs):
+    def times_out(command, timeout, cwd=None):
+        del timeout, cwd
         commands.append(command)
-        raise avocado_verify.TimeoutExpired(command, kwargs["timeout"])
 
-    monkeypatch.setattr(avocado_verify.subprocess, "run", times_out)
+    monkeypatch.setattr(avocado_verify, "run_command", times_out)
     run = avocado_verify._run_claude(["claude", "--print", "prompt"], 7)
     assert run.timed_out and run.transcript_path is None
     assert commands[0][:3] == ["claude", "--print", "prompt"]
