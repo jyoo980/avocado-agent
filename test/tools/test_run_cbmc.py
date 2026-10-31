@@ -15,6 +15,7 @@ from tools.run_cbmc import (
     _get_goto_instrument_add_library_command,
     _get_goto_instrument_contract_command,
     _get_goto_instrument_unwind_command,
+    _run_command,
     compile_with_goto_cc,
     run_cbmc,
 )
@@ -162,6 +163,13 @@ def test_run_cbmc_names_failed_step_for_uncompilable_source(tmp_path: Path) -> N
     assert result.failed_step is CbmcStep.GOTO_CC
     assert not result.cbmc_ran_successfully
     assert result.returncode != 0
+
+
+def test_run_command_honours_a_custom_timeout() -> None:
+    result = _run_command(CbmcStep.CBMC, "sleep 5", [], timeout_sec=1)
+    assert result.timed_out
+    assert result.timeout_sec == 1
+    assert not result.succeeded
 
 
 def test_format_failure_response_leads_with_failure_lines_for_cbmc_step() -> None:

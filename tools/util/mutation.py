@@ -25,8 +25,13 @@ from eval.mutants.util import (
     is_valid_mutation_candidate,
 )
 from tools.construct_call_graph import construct_call_graph
-from tools.run_cbmc import CbmcStep, run_cbmc
+from tools.run_cbmc import _DEFAULT_RUN_CBMC_TIMEOUT_SEC, CbmcStep, run_cbmc
 from tools.util.callgraph import CallGraph
+
+# Per-subprocess CBMC timeout applied to each mutant unless a caller overrides it. This is the
+# full pipeline timeout, so the evaluation metric (`evaluate_specification_quality.py`) decides
+# each mutant under the same budget as `run_cbmc` gives the original function.
+DEFAULT_MUTANT_TIMEOUT_SEC = _DEFAULT_RUN_CBMC_TIMEOUT_SEC
 
 # Matches the GNU `timeout(1)` convention used elsewhere in the codebase; surfaces in
 # MutantVerificationResult.returncode so consumers can distinguish a timed-out run from a
@@ -261,6 +266,7 @@ def generate_mutants_and_compute_score(
     workspace: Path | None = None,
     keep_artifacts: bool = False,
     skip_reverification: bool = False,
+    mutant_timeout_sec: int = DEFAULT_MUTANT_TIMEOUT_SEC,
 ) -> MutationTestingResult:
     """Return the mutation testing result for `target_function` in `file_path`.
 
@@ -277,6 +283,11 @@ def generate_mutants_and_compute_score(
         keep_artifacts (bool): When True, mutant `.c` files are kept for inspection.
         skip_reverification (bool): When True, proceed with mutation testing regardless of whether
             the function verifies or not.
+        mutant_timeout_sec (int): Per-subprocess CBMC timeout applied to each mutant's pipeline.
+            Defaults to the full `tools.run_cbmc` timeout, which the evaluation metric always
+            uses; the agent-facing tool passes a smaller budget so that a single hard mutant does
+            not stall the agent for the full timeout. A timed-out mutant is undecided (never
+            killed) regardless of the budget.
 
     Returns:
         MutationTestingResult: The result of running mutation testing on the target function.
@@ -316,8 +327,9 @@ def generate_mutants_and_compute_score(
     if mutants:
         print(
             f"Verified {target_function}; now running mutation testing on {total} "
-            f"mutants across up to {max_workers} worker(s) (one CBMC run each, up to 10 min "
-            "per mutant) -- this can take several minutes; do not interrupt.",
+            f"mutants across up to {max_workers} worker(s) (one CBMC run each, up to "
+            f"{mutant_timeout_sec} s per mutant) -- this can take several minutes; do not "
+            "interrupt.",
             file=sys.stderr,
             flush=True,
         )
@@ -331,7 +343,9 @@ def generate_mutants_and_compute_score(
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_index = {
-                executor.submit(_verify_mutant, path, mutant, include_dirs, call_graph): index
+                executor.submit(
+                    _verify_mutant, path, mutant, include_dirs, call_graph, mutant_timeout_sec
+                ): index
                 for index, (path, mutant) in enumerate(paths_to_mutants.items())
             }
             try:
@@ -445,6 +459,7 @@ def _verify_mutant(
     mutant: Mutant,
     include_dirs: list[str] | None,
     call_graph: CallGraph,
+    timeout_sec: int = DEFAULT_MUTANT_TIMEOUT_SEC,
 ) -> MutantVerificationResult:
     """Return the result of verifying a mutant.
 
@@ -463,6 +478,7 @@ def _verify_mutant(
         call_graph (CallGraph): The original function's call graph, reused verbatim for this
             mutant (operator-swap mutants share the original's call graph) and passed to
             `run_cbmc()` so it skips re-parsing the mutant source.
+        timeout_sec (int): Per-subprocess CBMC timeout for this mutant's pipeline.
 
     Returns:
         MutantVerificationResult: The result of verifying a mutant. The returned result's
@@ -482,6 +498,7 @@ def _verify_mutant(
             include_dirs=include_dirs,
             call_graph=call_graph,
             cwd=scratch_dir,
+            timeout_sec=timeout_sec,
         )
     if cbmc_result.timed_out:
         return MutantVerificationResult(
