@@ -20,6 +20,7 @@ from pathlib import Path
 from loguru import logger
 
 from tools.util import (
+    AUTO_INCLUDE_HELP,
     build_stub_index,
     get_call_graph,
     get_functions_with_cprover_annotations,
@@ -92,11 +93,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--auto-include",
-        help=(
-            "For each .c file <project>/<subdir>/<name>.c, pass <project>/include to CBMC "
-            "as an include path if that directory exists. "
-            "Fits projects whose include/ directory is a sibling of their src/ directory."
-        ),
+        help=AUTO_INCLUDE_HELP,
         action="store_true",
     )
     parser.add_argument(

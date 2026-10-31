@@ -33,7 +33,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from eval.mutants.compute_clause_redundancy import compute_clause_redundancy_score
 from eval.mutants.generate_mutants_and_compute_score import generate_mutants_and_compute_score
 from eval.mutants.util import get_files_with_extension
-from tools.util import get_functions_with_cprover_annotations, get_include_dirs
+from tools.util import (
+    AUTO_INCLUDE_HELP,
+    get_functions_with_cprover_annotations,
+    get_include_dirs,
+)
 from tools.util.mutation import MutationScore
 
 
@@ -45,11 +49,7 @@ def main() -> None:
     parser.add_argument("path", help="Path to a C file or directory of C files.")
     parser.add_argument(
         "--auto-include",
-        help=(
-            "For each .c file <project>/<subdir>/<name>.c, pass <project>/include to CBMC "
-            "as an include path if that directory exists. "
-            "Fits projects whose include/ directory is a sibling of their src/ directory."
-        ),
+        help=AUTO_INCLUDE_HELP,
         action="store_true",
     )
     parser.add_argument(

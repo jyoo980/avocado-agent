@@ -2,6 +2,13 @@
 
 from pathlib import Path
 
+AUTO_INCLUDE_HELP = (
+    "For each .c file <project>/<subdir>/<name>.c, pass <project>/include to CBMC "
+    "as an include path if that directory exists. "
+    "Fits projects whose include/ directory is a sibling of their src/ directory."
+)
+"""Help text for an `--auto-include` command-line option that is passed to `get_include_dirs`."""
+
 
 def get_include_dirs(source_file: str, include_dirs: list[str], *, auto_include: bool) -> list[str]:
     """Return the include directories with which to verify `source_file`.
@@ -12,8 +19,9 @@ def get_include_dirs(source_file: str, include_dirs: list[str], *, auto_include:
     `<project>/src/`. When that layout holds, the auto-detected directory lets CBMC resolve
     `#include "foo.h"` without the caller having to configure paths by hand.
 
-    The result contains no two entries that resolve to the same directory; the first occurrence
-    is kept. The result is a new list, never `include_dirs` itself.
+    Every directory in the result is absolute, with symlinks resolved; relative paths are resolved
+    against the current working directory. Absolute paths remain valid when CBMC runs in a
+    different working directory. The result contains no duplicates; the first occurrence is kept.
 
     Args:
         source_file (str): Path to a `.c` file.
@@ -22,18 +30,13 @@ def get_include_dirs(source_file: str, include_dirs: list[str], *, auto_include:
             `include_dirs`.
 
     Returns:
-        list[str]: The include directories, the auto-detected one first.
+        list[str]: A new list of the resolved include directories, without duplicates: the
+            auto-detected directory (if `auto_include` is true and that directory exists),
+            followed by `include_dirs`.
     """
-    candidates = list(include_dirs)
+    candidates = [Path(include_dir).resolve() for include_dir in include_dirs]
     if auto_include:
         detected = Path(source_file).resolve().parent.parent / "include"
         if detected.is_dir():
-            candidates.insert(0, str(detected))
-    result: list[str] = []
-    seen: set[Path] = set()
-    for include_dir in candidates:
-        resolved = Path(include_dir).resolve()
-        if resolved not in seen:
-            seen.add(resolved)
-            result.append(include_dir)
-    return result
+            candidates.insert(0, detected)
+    return [str(include_dir) for include_dir in dict.fromkeys(candidates)]
