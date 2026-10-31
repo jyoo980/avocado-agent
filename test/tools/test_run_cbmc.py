@@ -2,10 +2,16 @@
 
 import os
 import shutil
+import subprocess
+import sys
+import threading
 from pathlib import Path
 from subprocess import CompletedProcess
 
+import pytest
+
 from eval.mutants.mutate_function import Mutant
+from tools import run_cbmc as run_cbmc_module
 from tools.run_cbmc import (
     CbmcStep,
     RunCbmcResult,
@@ -18,7 +24,9 @@ from tools.run_cbmc import (
     _get_goto_instrument_unwind_command,
     _run_command,
     compile_with_goto_cc,
+    max_concurrent_subprocesses,
     run_cbmc,
+    run_shell_command,
 )
 from tools.util.mutation import MutantVerificationResult, MutationScore, _MAX_MUTATION_SECTION_CHARS, _print_mutation_progress, get_mutation_testing_results_for_client
 
@@ -198,6 +206,111 @@ def test_run_cbmc_leaves_no_goto_files_in_the_working_directory(tmp_path: Path) 
     assert result.is_function_verified, result.response
     assert list(work_dir.iterdir()) == [], "pipeline intermediates leaked into the cwd"
     assert not list(tmp_path.glob("*.goto")), "pipeline intermediates leaked next to the source"
+
+
+def _exclusive_command(busy_dir: Path) -> str:
+    """Return a 0.3 s shell command that fails if another instance of it is running.
+
+    `mkdir` of a directory that exists fails, so overlapping instances cannot all succeed.
+    """
+    return f"mkdir {busy_dir} && sleep 0.3 && rmdir {busy_dir}"
+
+
+def test_run_command_waits_for_a_slot_used_by_another_thread(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", tmp_path / "slots")
+    monkeypatch.setattr(run_cbmc_module, "max_concurrent_subprocesses", lambda: 1)
+    command = _exclusive_command(tmp_path / "busy")
+    records: list[dict] = []
+    results: list = []
+
+    def run() -> None:
+        results.append(_run_command(CbmcStep.CBMC, command, records))
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert all(result.succeeded for result in results), "commands overlapped despite one slot"
+
+
+def test_threads_waiting_for_a_slot_do_not_poll_the_slot_files(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", tmp_path / "slots")
+    monkeypatch.setattr(run_cbmc_module, "max_concurrent_subprocesses", lambda: 1)
+    flock = run_cbmc_module.fcntl.flock
+    lock_attempts: list[int] = []
+
+    def counting_flock(fd: int, operation: int) -> None:
+        lock_attempts.append(fd)
+        flock(fd, operation)
+
+    monkeypatch.setattr(run_cbmc_module.fcntl, "flock", counting_flock)
+    threads = [threading.Thread(target=run_shell_command, args=("sleep 0.5", 30)) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    # One attempt per thread: the second thread waits on this process's semaphore, not by
+    # retrying the lock every `_SLOT_POLL_SEC`.
+    assert len(lock_attempts) == 2
+
+
+def test_a_slot_directory_that_another_user_can_write_is_refused(
+    monkeypatch, tmp_path: Path
+) -> None:
+    slot_dir = tmp_path / "slots"
+    slot_dir.mkdir()
+    slot_dir.chmod(0o777)
+    monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", slot_dir)
+    with pytest.raises(PermissionError, match="no other user can write"):
+        run_shell_command("true", timeout=30)
+
+
+def test_a_slot_directory_that_is_a_symbolic_link_is_refused(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "elsewhere"
+    target.mkdir(mode=0o700)
+    slot_dir = tmp_path / "slots"
+    slot_dir.symlink_to(target)
+    monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", slot_dir)
+    with pytest.raises(PermissionError, match="no other user can write"):
+        run_shell_command("true", timeout=30)
+
+
+def test_run_shell_command_waits_for_a_slot_used_by_another_process(tmp_path: Path) -> None:
+    command = _exclusive_command(tmp_path / "busy")
+    script = (
+        "import sys; from tools.run_cbmc import run_shell_command; "
+        f"sys.exit(run_shell_command({command!r}, timeout=30).returncode)"
+    )
+    # Both processes put their slot files under the same temporary directory.
+    env = os.environ | {"TMPDIR": str(tmp_path), "AVOCADO_MAX_CONCURRENT_CBMC": "1"}
+    repo_root = Path(__file__).resolve().parents[2]
+    processes = [
+        subprocess.Popen([sys.executable, "-c", script], env=env, cwd=repo_root) for _ in range(2)
+    ]
+    assert [process.wait() for process in processes] == [0, 0]
+
+
+@pytest.mark.parametrize("setting", ["0", "-3", "auto", "8.0"])
+def test_max_concurrent_subprocesses_rejects_a_malformed_setting(monkeypatch, setting: str) -> None:
+    monkeypatch.setenv("AVOCADO_MAX_CONCURRENT_CBMC", setting)
+    max_concurrent_subprocesses.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="AVOCADO_MAX_CONCURRENT_CBMC"):
+            max_concurrent_subprocesses()
+    finally:
+        max_concurrent_subprocesses.cache_clear()
+
+
+def test_max_concurrent_subprocesses_is_bounded_by_the_cpu_count(monkeypatch) -> None:
+    cpus = os.process_cpu_count() or 1
+    try:
+        for setting, expected in [("1", 1), ("100000", cpus), ("", min(cpus, 32))]:
+            monkeypatch.setenv("AVOCADO_MAX_CONCURRENT_CBMC", setting)
+            max_concurrent_subprocesses.cache_clear()
+            assert max_concurrent_subprocesses() == expected
+    finally:
+        max_concurrent_subprocesses.cache_clear()
 
 
 def test_format_failure_response_leads_with_failure_lines_for_cbmc_step() -> None:
