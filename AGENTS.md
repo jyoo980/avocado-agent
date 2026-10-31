@@ -71,8 +71,9 @@ Work in this order, and do not skip the first CBMC run:
    run the tool in the background, and do not read the harness's `*.jsonl` logs: the tool's own
    output is the source of truth and already includes the diff of every surviving mutant. A
    `VACUOUS` result is a failed run: fix the contract as [Vacuous proofs](#vacuous-proofs) says.
-3. Strengthen the contract using the surviving-mutant diffs, and re-run `avocado-run-cbmc`. Stop as soon as every decided mutant is killed, or when two
-   consecutive runs leave the kill score unchanged.
+3. Strengthen the contract using the surviving-mutant diffs, and re-run `avocado-run-cbmc`. Stop
+   as soon as every decided mutant is killed, or when two consecutive runs leave the kill score
+   unchanged.
 
 Do not read the harness's Python sources, and do not experiment with CBMC's `--depth` or
 `--unwind` bounds: the bounds are fixed by the harness and are not yours to tune. Spend your turns

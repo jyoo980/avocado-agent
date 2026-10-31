@@ -1,15 +1,19 @@
 """Tests for the run_cbmc tool."""
 
+import json
 import os
 import shutil
 from pathlib import Path
 from subprocess import CompletedProcess
 
 from eval.mutants.mutate_function import Mutant
+from tools import run_cbmc as run_cbmc_module
 from tools.run_cbmc import (
     CbmcStep,
+    PipelineVariant,
     RunCbmcResult,
     _MAX_RESPONSE_CHARS,
+    _drop_missing_body_warnings,
     _format_failure_response,
     _get_cbmc_check_command,
     _get_goto_cc_command,
@@ -54,7 +58,7 @@ def test_get_goto_cc_command_no_stubs_no_includes() -> None:
 
 
 def test_get_goto_instrument_unwind_command_uses_partial_loops_and_unwind() -> None:
-    command = _get_goto_instrument_unwind_command("swap")
+    command = _get_goto_instrument_unwind_command("swap.goto")
     assert command == "goto-instrument --partial-loops --unwind 5 swap.goto swap.goto"
 
 
@@ -76,18 +80,22 @@ def test_get_goto_instrument_contract_command_includes_self_for_inductive_recurs
     assert "--enforce-contract quickSort" in command
 
 
-def test_get_goto_instrument_add_library_command_targets_the_instrumented_binary() -> None:
-    command = _get_goto_instrument_add_library_command("swap")
+def test_get_goto_instrument_add_library_command() -> None:
+    command = _get_goto_instrument_add_library_command("checking-swap-contracts.goto")
     assert command == (
         "goto-instrument --add-library checking-swap-contracts.goto checking-swap-contracts.goto"
     )
 
 
-def test_get_goto_instrument_unwind_command_on_another_binary() -> None:
-    command = _get_goto_instrument_unwind_command("swap", goto_file="checking-swap-contracts.goto")
-    assert command == (
-        "goto-instrument --partial-loops --unwind 5 "
-        "checking-swap-contracts.goto checking-swap-contracts.goto"
+def test_drop_missing_body_warnings_keeps_other_lines() -> None:
+    output = (
+        "Reading GOTO program from 'swap.goto'\n"
+        "file swap.c line 3 function swap: no body for function 'malloc'\n"
+        "Writing GOTO program to 'checking-swap-contracts.goto'\n"
+    )
+    assert _drop_missing_body_warnings(output) == (
+        "Reading GOTO program from 'swap.goto'\n"
+        "Writing GOTO program to 'checking-swap-contracts.goto'\n"
     )
 
 
@@ -198,6 +206,29 @@ def test_run_cbmc_leaves_no_goto_files_in_the_working_directory(tmp_path: Path) 
     assert result.is_function_verified, result.response
     assert list(work_dir.iterdir()) == [], "pipeline intermediates leaked into the cwd"
     assert not list(tmp_path.glob("*.goto")), "pipeline intermediates leaked next to the source"
+
+
+def test_a_result_records_the_pipeline_variant_that_produced_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    src = tmp_path / "quicksort.c"
+    shutil.copy(Path("test/data/quicksort.c"), src)
+    result = run_cbmc("swap", str(src))
+    assert result.is_function_verified, result.response
+    assert result.variant == PipelineVariant()
+
+    # Given a variant, `run_cbmc` runs the pipeline once, in that variant, and does not retry.
+    macro_expansion_flags: list[bool] = []
+    run_pipeline = run_cbmc_module._run_pipeline
+
+    def recording_run_pipeline(*args, **kwargs):
+        macro_expansion_flags.append(kwargs["prevent_macro_expansion"])
+        return run_pipeline(*args, **kwargs)
+
+    monkeypatch.setattr(run_cbmc_module, "_run_pipeline", recording_run_pipeline)
+    variant = PipelineVariant(prevent_macro_expansion=True)
+    assert run_cbmc("swap", str(src), variant=variant).variant == variant
+    assert macro_expansion_flags == [True]
 
 
 def test_format_failure_response_leads_with_failure_lines_for_cbmc_step() -> None:
@@ -459,3 +490,23 @@ def test_the_library_is_added_after_the_contract_is_enforced(tmp_path: Path) -> 
     assert results["mk"].cbmc_ran_successfully
     # abFree's contract leaves out the freed object, so the run fails in cbmc, not before.
     assert results["abFree"].failed_step is CbmcStep.CBMC
+    # The library models `free`, so the response does not tell the agent that `free` lacks a body.
+    assert "no body for function" not in results["abFree"].response
+    # abFree's verdict comes from the missing-body retry, which adds the library to the
+    # instrumented binary after enforcing the contract. (mk verifies on the first attempt, without
+    # the retry.)
+    log_lines = (tmp_path / "alloc-cbmc-runs.jsonl").read_text(encoding="utf-8").splitlines()
+    commands_by_function = {
+        record["function"]: [run["command"] for run in record["subprocess_results"]]
+        for record in map(json.loads, log_lines)
+    }
+    abfree_commands = commands_by_function["abFree"]
+    retry_start = max(i for i, c in enumerate(abfree_commands) if c.startswith("goto-cc"))
+    assert abfree_commands[retry_start + 1 :] == [
+        "goto-instrument --partial-loops --unwind 5 abFree.goto abFree.goto",
+        "goto-instrument --enforce-contract abFree abFree.goto checking-abFree-contracts.goto",
+        "goto-instrument --add-library checking-abFree-contracts.goto checking-abFree-contracts.goto",
+        "goto-instrument --partial-loops --unwind 5 "
+        "checking-abFree-contracts.goto checking-abFree-contracts.goto",
+        "cbmc checking-abFree-contracts.goto --function abFree --depth 200",
+    ]
