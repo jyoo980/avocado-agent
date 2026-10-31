@@ -36,7 +36,8 @@
 #   prompt.txt          (claude runner) the prompt that was sent
 #   command.txt         the command line the runner was launched with
 #   run.log             stdout+stderr of the run; with avocado-verify, the driver's log
-#   exit-code           the container's exit code (124 = --timeout hit)
+#   exit-code           the container's exit code (124 = --timeout hit; 137 = killed, by the
+#                       OOM killer or because it ignored --timeout's SIGTERM for a minute)
 #
 # Usage:
 #   eval/experiments/run.sh --subject <dir> --profile <env-file> [--file <c-file>] \
@@ -63,11 +64,12 @@ set -euo pipefail
 # SIGHUP to everything launched from that terminal; `nohup` does not help, because `timeout`
 # resets the handler and forwards the signal to `podman run`, which forwards it into the
 # container (the run then ends with exit code 129). Re-executing in a session of our own, with
-# no controlling terminal, keeps the signal out. The parent waits and returns the batch's exit
-# code, so a foreground launch still blocks until the batch is done; Ctrl-C only ends that
-# wait. Stop a batch with `kill $(cat <batch>/run.pid)`, which stops its containers too.
+# no controlling terminal, keeps the signal out; stdin is detached too, and stdout and stderr
+# are handled below. The parent waits and returns the batch's exit code, so a foreground launch
+# still blocks until the batch is done; Ctrl-C only ends that wait. Stop a batch with
+# `kill $(cat <batch>/run.pid)`, which stops its containers too.
 if [ -z "${AVOCADO_DETACHED:-}" ] && command -v setsid >/dev/null 2>&1; then
-  AVOCADO_DETACHED=1 exec setsid -w "${BASH_SOURCE[0]}" "$@"
+  AVOCADO_DETACHED=1 exec setsid -w "${BASH_SOURCE[0]}" "$@" </dev/null
 fi
 
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -178,13 +180,19 @@ fi
 echo "results: $BATCH_DIR"
 
 # `kill <pid>` (TERM or INT) stops this batch's containers; each run then publishes what it has
-# and records its exit code as usual before this script exits.
+# and records its exit code as usual before this script exits. The PID file is removed on exit,
+# so a stale one cannot direct that `kill` at an unrelated process that reuses the PID.
 echo $$ >"$BATCH_DIR/run.pid"
+trap 'rm -f "$BATCH_DIR/run.pid"' EXIT
 stop_batch() {
   trap - TERM INT
   echo "stopping batch $BATCH_ID" >&2
-  "$ENGINE" ps -q --filter "name=avocado-$TAG-$BATCH_ID-" | xargs -r "$ENGINE" stop -t 5 >/dev/null 2>&1 || true
-  wait
+  # A run that is still copying its subject starts its container after any one scan, so keep
+  # stopping containers until every run has ended.
+  while [ -n "$(jobs -rp)" ]; do
+    "$ENGINE" ps -q --filter "name=avocado-$TAG-$BATCH_ID-" | xargs -r "$ENGINE" stop -t 5 >/dev/null 2>&1 || true
+    sleep 1
+  done
   exit 143
 }
 trap stop_batch TERM INT
@@ -233,7 +241,9 @@ snapshot_harness "$BATCH_DIR/harness"
 
 # What the container receives on stdin: the driver script plus the harness snapshot, as one tar
 # stream. Nothing of the host checkout is mounted, so the agent cannot discover it through
-# /proc/mounts, and the only mounts it can see are its subject copy and an empty output dir.
+# /proc/mounts. The only mounts it can see are its subject copy, an empty output dir and, if
+# the login volume exists, /auth. The agent can read its credentials (/auth, its config dir,
+# and the profile's token variables), so they can end up in the results.
 boot_stream() {
   tar -C "$SCRIPT_ROOT/docker" -cf - run-isolated.sh
   tar -C "$BATCH_DIR" -cf - harness
@@ -250,10 +260,13 @@ LIMITS=()
 [ -n "$MEMORY" ] && LIMITS+=(--memory "$MEMORY" --memory-swap "$MEMORY")
 [ -n "$CPUS" ] && LIMITS+=(--cpus "$CPUS")
 
-# Wall-clock cap on a whole run; `timeout` on the host kills the container via `$ENGINE stop`.
+# Wall-clock cap on a whole run. `timeout` sends SIGTERM to the `$ENGINE run` client, which
+# forwards it into the container, so the run publishes its outputs and exits (124). If the
+# container has not stopped a minute later, `timeout` kills the client (137) and run_one stops
+# the container with `$ENGINE stop`.
 with_timeout() {
   if [ -n "$TIMEOUT" ]; then
-    timeout --foreground "$TIMEOUT" "$@"
+    timeout --foreground --kill-after=60 "$TIMEOUT" "$@"
   else
     "$@"
   fi
@@ -295,7 +308,7 @@ run_one() {
     >"$run_dir/run.log" 2>&1
   local rc=$?
   set -e
-  if [ "$rc" -eq 124 ]; then
+  if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
     "$ENGINE" stop -t 5 "$name" >/dev/null 2>&1 || true
   fi
   # Flatten: keep the container-facing /work/out layout out of the way of readers.

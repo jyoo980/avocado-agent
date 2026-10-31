@@ -41,10 +41,11 @@ give a treatment extra docs or tools, track them and add them to `HARNESS_FILES`
   into `/app/.venv` with `uv sync --frozen`, exactly as `docker/entrypoint.sh` does for
   `make run`, which puts `avocado-run-cbmc` and friends (and `avocado-verify`) on `PATH`. This
   downloads Python 3.13 and the dependencies afresh in every container, which costs a minute
-  or so per run. The only mounts the agent can find are its own subject copy and an empty
+  or so per run. The only mounts the agent can find are its own subject copy, an empty
   output directory, which is filled (result JSON, transcripts, prompt) only after the session
-  ends. The snapshot is kept as `<batch>/harness/` with a `harness-files.txt` listing, so every
-  batch records exactly what its agent was given.
+  ends, and, if `login.sh volume` created the login volume, a read-only `/auth`. The snapshot
+  is kept as `<batch>/harness/` with a `harness-files.txt` listing, so every batch records
+  exactly what its agent was given.
 - Results are written to the **host**, outside the repository and outside every container, so
   they persist after each container exits: by default
   `~/.local/share/avocado-experiments/<tag>/<timestamp>/run-<i>/` holds `subject/`,
@@ -55,6 +56,11 @@ give a treatment extra docs or tools, track them and add them to `HARNESS_FILES`
   `--results <dir>` or `AVOCADO_RESULTS_DIR`.
 - `--memory`/`--cpus` cap each container, so an OOM-killed CBMC only costs that one run,
   `--timeout <sec>` caps a run's wall-clock time, and `-j` runs several containers at once.
+- The agent is not isolated from its own credentials. It runs with
+  `--dangerously-skip-permissions` and can read the profile's token variables
+  (`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN`), the login copied into its config
+  directory, and `/auth`; if it prints one, the token lands in the transcripts or `subject/`.
+  Use a token you can revoke, and review results before sharing them.
 
 A worked example, full Avocado on `lz4_lib` with Opus 5.5, is in [EXAMPLE.md](EXAMPLE.md).
 
@@ -117,18 +123,23 @@ A batch detaches from the terminal it was launched from (it re-executes itself u
 not needed. The batch's progress lines go both to that terminal (while it exists) and to
 `batch.log` in the batch directory. Ctrl-C
 therefore does not stop a batch either. To stop one, kill the process recorded in its
-`run.pid`:
+`run.pid` (which exists only while the batch runs):
+
+```sh
+% kill $(cat ~/.local/share/avocado-experiments/<tag>/<timestamp>/run.pid)
+```
 
 This stops the batch's containers; each run then saves its transcript and records exit code
 `143`.
 
 ## Step 4: read the results
 
-Each `run-<i>/exit-code` is the runner's exit code (`124` means `--timeout` was hit;
-`avocado-verify` exits `2` when it stopped on a usage limit). `transcripts/` has the full
-conversation(s), as `<session-id>.jsonl` plus `<session-id>/subagents/*.jsonl` for any
-subagents, and `subject/` the specified program. With the `claude` runner
-`claude-output.json` has the session id, cost and final message. With `avocado-verify`,
-`run.log` is the driver's log (what the manual procedure saved as `claude-output.json`) and
-`subject/<file>-avocado-verify.jsonl` holds one record per function plus a final
-`run_summary` record.
+Each `run-<i>/exit-code` is the runner's exit code (`124` means `--timeout` was hit, and
+`137` that the container was killed, by the out-of-memory killer or because it did not stop
+within a minute of hitting `--timeout`; `avocado-verify` exits `2` when it stopped on a usage
+limit). `transcripts/` has the full conversation(s), as `<session-id>.jsonl` plus
+`<session-id>/subagents/*.jsonl` for any subagents, and `subject/` the specified program.
+With the `claude` runner `claude-output.json` has the session id, cost and final message.
+With `avocado-verify`, `run.log` is the driver's log (what the manual procedure saved as
+`claude-output.json`) and `subject/<file>-avocado-verify.jsonl` holds one record per function
+plus a final `run_summary` record.
