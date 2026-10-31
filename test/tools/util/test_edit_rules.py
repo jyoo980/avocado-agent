@@ -644,3 +644,44 @@ def test_an_original_comment_before_added_items_is_not_copied() -> None:
     merged, report = _merge_onto(canonical, snapshot, base)
     assert report.merged, report.reason
     assert merged == snapshot + b"int avocado_spec_other;\n"
+
+
+SHORT = b"int a;\nint f(int x) { return x; }\n"
+HELPER_H = b"int avocado_spec_h(int x) { return x; }\n"
+HELPER_H2 = b"int avocado_spec_h2(int x) { return avocado_spec_h(x); }\n"
+
+
+def test_added_items_go_after_those_other_sessions_added_at_the_same_place() -> None:
+    canonical = SHORT.replace(b"int a;\n", b"int a;\n" + HELPER_H)
+    snapshot = SHORT.replace(b"int a;\n", b"int a;\n" + HELPER_H + HELPER_H2)
+    merged, report = _merge_onto(canonical, snapshot, SHORT)
+    assert report.merged, report.reason
+    assert report.skipped_duplicates == ["function:avocado_spec_h"]
+    assert merged == snapshot
+
+
+def test_a_contract_edit_after_a_comment_marker_in_a_string_is_merged() -> None:
+    base = b'int f(const char *s)\n__CPROVER_requires(s[0] == "//"[0] && 1)\n{ return 0; }\n'
+    snapshot = base.replace(b"&& 1", b"&& s != 0")
+    merged, report = _merge_onto(base, snapshot, base)
+    assert report.merged and merged == snapshot
+
+
+def test_the_sessions_own_function_keeps_the_contract_of_the_copy() -> None:
+    canonical = SHORT.replace(b"int f(int x) {", b"int f(int x)\n__CPROVER_requires(x > 0)\n{")
+    merged, report = _merge_onto(canonical, SHORT, SHORT)
+    assert report.merged and merged == SHORT and report.changed_since_fork == ["f"]
+
+
+def test_rule_8_a_stray_false_precondition_does_not_excuse_one_in_a_new_helper() -> None:
+    base = SHORT.replace(b"int a;\n", b"int a;\n__CPROVER_requires(0)\n")
+    helper = b"int avocado_spec_h(int x)\n__CPROVER_requires(0)\n{ return x; }\n"
+    assert check_edits(base, base, "f") == []
+    assert _rules(base, base + helper, "f") == [8]
+
+
+def test_rule_5_assume_in_a_contract_clause() -> None:
+    snapshot = SHORT.replace(
+        b"int f(int x) {", b"int f(int x)\n__CPROVER_requires((__CPROVER_assume(x > 0), 1))\n{"
+    )
+    assert _rules(SHORT, snapshot, "f") == [5]

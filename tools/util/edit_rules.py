@@ -34,7 +34,7 @@ The comparison deliberately does not use tree-sitter. Comments and the contract 
 function bodies are erased, both files are split into tokens and then into top-level items by
 brace depth alone, and the two item sequences are aligned. That is robust to constructs the C
 grammar cannot parse (`__CPROVER_forall { ... }` in a helper, attribute macros, operator macros),
-which made an AST comparison reject merges that had changed no code.
+on which an AST comparison would reject merges that change no code.
 """
 
 from __future__ import annotations
@@ -86,8 +86,10 @@ _TOKEN = re.compile(
     """,
     re.VERBOSE | re.DOTALL,
 )
-_COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.DOTALL)
-_COMMENT_BYTES = re.compile(_COMMENT.pattern.encode(), re.DOTALL)
+# A comment, or a string or character literal, which can contain `//` or `/*`.
+_COMMENT_OR_LITERAL = re.compile(
+    rb"""(?P<literal>"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|/\*.*?\*/|//[^\n]*""", re.DOTALL
+)
 _DIRECTIVE_HEAD = re.compile(r"#\s*(\w*)\s*(\w*)")
 _IDENTIFIER = re.compile(r"[A-Za-z_]\w*\Z")
 _ASSUME = re.compile(r"\b__CPROVER_assume\b")
@@ -276,11 +278,11 @@ def check_edits(base: bytes, snapshot: bytes, function: str) -> list[Violation]:
     """
     comparison = _compare(base, snapshot)
     violations = list(comparison.violations)
-    violations += _check_function_intact(comparison.base_items, comparison.snapshot_items, function)
+    violations += _check_function_intact(comparison.base.items, comparison.snapshot.items, function)
     violations += _check_new_items(
-        comparison.base_items, comparison.snapshot_items, comparison.new_indices
+        comparison.base.items, comparison.snapshot.items, comparison.new_indices
     )
-    violations += _check_preconditions(base, snapshot, comparison)
+    violations += _check_new_clauses(base, snapshot, comparison)
     return sorted(violations, key=lambda violation: (violation.line or 0, violation.rule))
 
 
@@ -306,7 +308,8 @@ def merge_copy(
       item's contract also changed in the canonical file since the fork. In those cases the
       edit is left out and named in `MergeReport.dropped`; the rest of the copy still merges.
     - Items the session added are inserted after the original item they followed in the copy,
-      and after the original comments that preceded them there. A new conditional block, from
+      after the items other sessions added right after that original item, and after the
+      original comments that preceded them in the copy. A new conditional block, from
       its `#if` to its `#endif`, is handled as one unit, and so is every other new item. A unit
       that the canonical file already has among its new items, with the same text, is skipped;
       one that introduces a name that the canonical file's new items introduce fails the merge.
@@ -335,48 +338,44 @@ def merge_copy(
         tuple[bytes, MergeReport]: The merged file (or `canonical` unchanged on failure) and the
             report of what was kept and dropped.
     """
-    mine = _compare(fork_base, snapshot)
+    base = _parse(fork_base)
+    mine = _align(base, _parse(snapshot))
     if mine.violations:
         rendered = [str(violation) for violation in mine.violations]
         return canonical, MergeReport(
             False, f"the session copy breaks {len(rendered)} edit rule(s)", violations=rendered
         )
-    if not any(item.kind == "function" and item.name == function for item in mine.snapshot_items):
+    if not any(item.kind == "function" and item.name == function for item in mine.snapshot.items):
         return canonical, MergeReport(
             False,
             f"{function} could not be found as a function definition in the session copy, so its "
             "contract could not be merged; nothing was merged",
         )
-    theirs = mine if canonical == fork_base else _compare(fork_base, canonical)
-    if canonical != fork_base and theirs.violations:
+    theirs = _align(base, base if canonical == fork_base else _parse(canonical))
+    if theirs.violations:
         return canonical, MergeReport(
             False,
             "the code of the canonical file changed since the copy was taken: "
             f"{theirs.violations[0].message}",
         )
-    theirs_source = fork_base if canonical == fork_base else canonical
-    theirs_items = mine.base_items if canonical == fork_base else theirs.snapshot_items
-    theirs_index = (
-        {index: index for index in range(len(mine.base_items))}
-        if canonical == fork_base
-        else dict(theirs.pairs)
-    )
+    theirs_items = theirs.snapshot.items
+    theirs_index = dict(theirs.pairs)
 
     carried: list[str] = []
     dropped: list[str] = []
     changed_since_fork: list[str] = []
-    edits: list[tuple[int, int, bytes]] = []  # (start, end, replacement) in `theirs_source`
-    mine_to_theirs: dict[int, _Item] = {}
+    edits: list[tuple[int, int, bytes]] = []  # (start, end, replacement) in `canonical`
+    mine_to_theirs: dict[int, int] = {}  # index in the copy to index in the canonical file
     for base_index, snapshot_index in mine.pairs:
-        original = mine.base_items[base_index]
-        edited = mine.snapshot_items[snapshot_index]
+        original = mine.base.items[base_index]
+        edited = mine.snapshot.items[snapshot_index]
+        mine_to_theirs[snapshot_index] = theirs_index[base_index]
         current = theirs_items[theirs_index[base_index]]
-        mine_to_theirs[snapshot_index] = current
         if edited.kind == "directive":
             continue
         base_text = _code_text(fork_base[original.start : original.end])
         my_text = _code_text(snapshot[edited.start : edited.end])
-        their_text = _code_text(theirs_source[current.start : current.end])
+        their_text = _code_text(canonical[current.start : current.end])
         if (
             their_text != base_text
             and current.kind == "function"
@@ -384,7 +383,9 @@ def merge_copy(
             and current.name not in changed_since_fork
         ):
             changed_since_fork.append(current.name)
-        if my_text in (base_text, their_text):
+        # The session's own function takes its contract from the copy even when the copy left
+        # that contract as it was at the fork.
+        if my_text == their_text or (my_text == base_text and edited.name != function):
             continue
         if edited.name is None:
             return canonical, MergeReport(
@@ -405,40 +406,30 @@ def merge_copy(
                 carried.append(edited.name)
         edits.append((current.start, current.end, snapshot[edited.start : edited.end]))
 
-    their_units = (
-        []
-        if canonical == fork_base
-        else [
-            unit for run in _runs(theirs.new_indices) for unit in _units(theirs.snapshot_items, run)
-        ]
-    )
-    their_texts = {_unit_text(canonical, theirs.snapshot_items, unit) for unit in their_units}
-    their_names = {
-        theirs.snapshot_items[index].name
-        for unit in their_units
-        for index in unit
-        if theirs.snapshot_items[index].name
-    }
+    their_new = set(theirs.new_indices)
+    their_units = [unit for run in _runs(theirs.new_indices) for unit in _units(theirs_items, run)]
+    their_texts = {_unit_text(canonical, theirs_items, unit) for unit in their_units}
+    their_names = {theirs_items[index].name for index in their_new if theirs_items[index].name}
     snapshot_to_base = {snapshot_index: base_index for base_index, snapshot_index in mine.pairs}
     transplanted: list[str] = []
     skipped: list[str] = []
     for run in _runs(mine.new_indices):
         before = run[0] - 1  # the original item the run follows in the copy, or -1
-        gap_start = mine.snapshot_items[before].end if before >= 0 else 0
+        gap_start = mine.snapshot.items[before].end if before >= 0 else 0
         cut, leading = _leading_original_comments(
-            snapshot[gap_start : mine.snapshot_items[run[0]].start],
-            _base_gap(fork_base, mine.base_items, snapshot_to_base.get(before, -1)),
+            snapshot[gap_start : mine.snapshot.items[run[0]].start],
+            _base_gap(fork_base, mine.base.items, snapshot_to_base.get(before, -1)),
         )
         previous_end = gap_start + cut
         pieces: list[bytes] = []
-        for unit in _units(mine.snapshot_items, run):
-            items = [mine.snapshot_items[index] for index in unit]
+        for unit in _units(mine.snapshot.items, run):
+            items = [mine.snapshot.items[index] for index in unit]
             rendered = [
                 _render_new_item(item)
                 for item in items
                 if item.directive not in _CONDITIONAL_CONTINUATIONS
             ]
-            if _unit_text(snapshot, mine.snapshot_items, unit) in their_texts:
+            if _unit_text(snapshot, mine.snapshot.items, unit) in their_texts:
                 skipped += rendered
             else:
                 clash = next((item for item in items if item.name in their_names), None)
@@ -454,23 +445,24 @@ def merge_copy(
             previous_end = items[-1].end
         if not pieces:
             continue
-        anchor = mine_to_theirs.get(before)
+        # Go after the items other sessions added after the same original item, which the run's
+        # items can use: a duplicate that was skipped is one of them.
+        last = mine_to_theirs.get(before, -1)
+        while last + 1 in their_new:
+            last += 1
         position = _after_comments(
-            theirs_source,
-            theirs_items,
-            anchor.end if anchor is not None else 0,
-            leading,
+            canonical, theirs.snapshot.starts, theirs_items[last].end if last >= 0 else 0, leading
         )
         text = b"".join(pieces)
-        if not theirs_source[position : position + 1].isspace():
+        if not canonical[position : position + 1].isspace():
             text += b"\n"
         edits.append((position, position, text))
 
-    merged = theirs_source
+    merged = canonical
     for start, end, text in sorted(edits, key=itemgetter(0, 1), reverse=True):
         merged = merged[:start] + text + merged[end:]
-    check = _compare(canonical, merged)
-    if check.violations or _check_conditional_nesting(check.snapshot_items, set(check.new_indices)):
+    check = _align(theirs.snapshot, _parse(merged))
+    if check.violations or _check_conditional_nesting(check.snapshot.items, set(check.new_indices)):
         return canonical, MergeReport(
             False,
             "the merge would change code of the canonical file or enclose it in a new "
@@ -504,8 +496,8 @@ def functions_with_changed_contracts(before: bytes, after: bytes) -> list[str]:
     comparison = _compare(before, after)
     changed: list[str] = []
     for before_index, after_index in comparison.pairs:
-        old = comparison.base_items[before_index]
-        new = comparison.snapshot_items[after_index]
+        old = comparison.base.items[before_index]
+        new = comparison.snapshot.items[after_index]
         if old.kind != "function" or not old.name or old.name in changed:
             continue
         if _code_text(before[old.start : old.end]) != _code_text(after[new.start : new.end]):
@@ -718,10 +710,10 @@ def _leading_original_comments(gap: bytes, base_gap: bytes) -> tuple[int, list[b
         tuple[int, list[bytes]]: The offset in `gap` just past its last original comment (0 when
             there is none), and its original comments, in order.
     """
-    originals = Counter(match.group() for match in _COMMENT_BYTES.finditer(base_gap))
+    originals = Counter(match.group() for match in _comments(base_gap))
     end = 0
     found = []
-    for match in _COMMENT_BYTES.finditer(gap):
+    for match in _comments(gap):
         if originals[match.group()] > 0:
             originals[match.group()] -= 1
             end = match.end()
@@ -729,12 +721,12 @@ def _leading_original_comments(gap: bytes, base_gap: bytes) -> tuple[int, list[b
     return end, found
 
 
-def _after_comments(source: bytes, items: list[_Item], position: int, comments: list[bytes]) -> int:
+def _after_comments(source: bytes, starts: list[int], position: int, comments: list[bytes]) -> int:
     """Return the offset just past `comments`, matched in order, in the gap at `position`.
 
     Args:
         source (bytes): A source.
-        items (list[_Item]): Its items.
+        starts (list[int]): The offset each of its items starts at.
         position (int): An offset in `source` between two items.
         comments (list[bytes]): Comments to skip.
 
@@ -742,13 +734,12 @@ def _after_comments(source: bytes, items: list[_Item], position: int, comments: 
         int: The offset just past the last of `comments` found before the next item, or
             `position` when none is found.
     """
-    starts = [item.start for item in items]
     following = bisect_left(starts, position)
     end = starts[following] if following < len(starts) else len(source)
     remaining = iter(comments)
     expected = next(remaining, None)
     result = position
-    for match in _COMMENT_BYTES.finditer(source, position, end):
+    for match in _comments(source, position, end):
         if match.group() == expected:
             result = match.end()
             expected = next(remaining, None)
@@ -790,27 +781,66 @@ def function_line(source: bytes, function: str) -> int | None:
 
 
 @dataclass(frozen=True)
+class _Parsed:
+    """A file split into items.
+
+    Attributes:
+        items (list[_Item]): Its top-level items.
+        starts (list[int]): The offset each item starts at.
+        clauses (list[CbmcClauseSpan]): Its contract clauses outside brace groups, which are not
+            among the items' tokens.
+    """
+
+    items: list[_Item]
+    starts: list[int]
+    clauses: list[CbmcClauseSpan]
+
+    def item_at(self, offset: int) -> int:
+        """Return the index of the item that contains a byte offset.
+
+        Args:
+            offset (int): A byte offset in the file.
+
+        Returns:
+            int: The index of the item whose text contains `offset`, or -1 when it lies
+                between items.
+        """
+        index = bisect_right(self.starts, offset) - 1
+        return index if index >= 0 and offset < self.items[index].end else -1
+
+
+@dataclass(frozen=True)
 class _Comparison:
     """The base and the snapshot split into items and aligned.
 
     Attributes:
-        base_items (list[_Item]): The base's items.
-        snapshot_items (list[_Item]): The snapshot's items.
-        base_clauses (list[CbmcClauseSpan]): The base's contract clauses.
-        snapshot_clauses (list[CbmcClauseSpan]): The snapshot's contract clauses.
+        base (_Parsed): The base.
+        snapshot (_Parsed): The snapshot.
         violations (list[Violation]): The rule 1 and rule 2 violations the alignment shows.
-        new_indices (list[int]): Indices into `snapshot_items` of the items the session added.
+        new_indices (list[int]): Indices into `snapshot.items` of the items the session added.
         pairs (list[tuple[int, int]]): For each original item still present with the same code,
-            its index in `base_items` and in `snapshot_items`.
+            its index in `base.items` and in `snapshot.items`.
     """
 
-    base_items: list[_Item]
-    snapshot_items: list[_Item]
-    base_clauses: list[CbmcClauseSpan]
-    snapshot_clauses: list[CbmcClauseSpan]
+    base: _Parsed
+    snapshot: _Parsed
     violations: list[Violation] = field(default_factory=list)
     new_indices: list[int] = field(default_factory=list)
     pairs: list[tuple[int, int]] = field(default_factory=list)
+
+
+def _parse(source: bytes) -> _Parsed:
+    """Split a file into items.
+
+    Args:
+        source (bytes): A C source.
+
+    Returns:
+        _Parsed: Its items and its contract clauses.
+    """
+    tokens, clauses = _tokenize(source)
+    items = _split_items(tokens)
+    return _Parsed(items, [item.start for item in items], clauses)
 
 
 def _compare(base: bytes, snapshot: bytes) -> _Comparison:
@@ -823,14 +853,21 @@ def _compare(base: bytes, snapshot: bytes) -> _Comparison:
     Returns:
         _Comparison: The items, their alignment, and the rule 1 and 2 violations it shows.
     """
-    base_tokens, base_clauses = _tokenize(base)
-    snapshot_tokens, snapshot_clauses = _tokenize(snapshot)
-    base_items = _split_items(base_tokens)
-    snapshot_items = _split_items(snapshot_tokens)
-    violations, new_indices, pairs = _compare_items(base_items, snapshot_items)
-    return _Comparison(
-        base_items, snapshot_items, base_clauses, snapshot_clauses, violations, new_indices, pairs
-    )
+    return _align(_parse(base), _parse(snapshot))
+
+
+def _align(base: _Parsed, snapshot: _Parsed) -> _Comparison:
+    """Align the items of two files.
+
+    Args:
+        base (_Parsed): The file as it was when the session's copy was taken.
+        snapshot (_Parsed): The session's finished copy.
+
+    Returns:
+        _Comparison: The alignment, and the rule 1 and 2 violations it shows.
+    """
+    violations, new_indices, pairs = _compare_items(base.items, snapshot.items)
+    return _Comparison(base, snapshot, violations, new_indices, pairs)
 
 
 def _code_text(raw: bytes) -> bytes:
@@ -845,7 +882,36 @@ def _code_text(raw: bytes) -> bytes:
     Returns:
         bytes: The normalized text.
     """
-    return b" ".join(_COMMENT.sub(" ", raw.decode("latin-1")).encode("latin-1").split())
+    return b" ".join(_without_comments(raw).split())
+
+
+def _without_comments(text: bytes) -> bytes:
+    """Return `text` with each comment replaced by a space; string literals are left alone.
+
+    Args:
+        text (bytes): C source text.
+
+    Returns:
+        bytes: The text without comments.
+    """
+    return _COMMENT_OR_LITERAL.sub(
+        lambda match: match.group() if match.group("literal") else b" ", text
+    )
+
+
+def _comments(text: bytes, start: int = 0, end: int | None = None) -> list[re.Match[bytes]]:
+    """Return the comments of `text` between two offsets, skipping string literals.
+
+    Args:
+        text (bytes): C source text.
+        start (int): The offset to start at.
+        end (int | None): The offset to stop at; None for the end of `text`.
+
+    Returns:
+        list[re.Match[bytes]]: One match per comment, in order.
+    """
+    matches = _COMMENT_OR_LITERAL.finditer(text, start, len(text) if end is None else end)
+    return [match for match in matches if not match.group("literal")]
 
 
 def _render_new_item(item: _Item) -> str:
@@ -896,11 +962,12 @@ def _tokenize(source: bytes) -> tuple[list[_Token], list[CbmcClauseSpan]]:
         source (bytes): The original C source.
 
     Returns:
-        tuple[list[_Token], list[CbmcClauseSpan]]: The tokens in source order, and every
-            contract clause of the file, erased or not.
+        tuple[list[_Token], list[CbmcClauseSpan]]: The tokens in source order, and the erased
+            contract clauses.
     """
     _, clauses = strip_cbmc_clauses(source)
-    clause_ends = {clause.start_byte: clause.end_byte for clause in clauses}
+    clauses_at = {clause.start_byte: clause for clause in clauses}
+    erased: list[CbmcClauseSpan] = []
     text = source.decode("latin-1")  # one character per byte, so offsets are byte offsets
     tokens: list[_Token] = []
     position = 0
@@ -916,8 +983,9 @@ def _tokenize(source: bytes) -> tuple[list[_Token], list[CbmcClauseSpan]]:
             line += text.count("\n", position, end)
             position = end
             continue
-        if depth == 0 and position in clause_ends:
-            end = clause_ends[position]
+        if depth == 0 and position in clauses_at:
+            erased.append(clauses_at[position])
+            end = clauses_at[position].end_byte
             newlines = text.count("\n", position, end)
             line += newlines
             at_line_start = at_line_start or newlines > 0
@@ -941,7 +1009,7 @@ def _tokenize(source: bytes) -> tuple[list[_Token], list[CbmcClauseSpan]]:
                 depth = max(depth - 1, 0)
         line += value.count("\n")
         position = match.end()
-    return tokens, clauses
+    return tokens, erased
 
 
 def _logical_line_end(text: str, start: int) -> int:
@@ -985,8 +1053,8 @@ def _normalize_directive(text: str) -> str:
     Returns:
         str: The directive, starting with `#` immediately followed by its keyword.
     """
-    words = _COMMENT.sub(" ", text).replace("\\\n", " ").split()
-    normalized = " ".join(words)
+    uncommented = _without_comments(text.encode("latin-1")).decode("latin-1")
+    normalized = " ".join(uncommented.replace("\\\n", " ").split())
     return re.sub(r"^#\s+", "#", normalized)
 
 
@@ -1640,8 +1708,12 @@ def _check_conditional_nesting(snapshot_items: list[_Item], new: set[int]) -> li
     return violations
 
 
-def _check_preconditions(base: bytes, snapshot: bytes, comparison: _Comparison) -> list[Violation]:
-    """Check rule 8: no `__CPROVER_requires` clause the session wrote is constant false.
+def _check_new_clauses(base: bytes, snapshot: bytes, comparison: _Comparison) -> list[Violation]:
+    """Check rules 5 and 8 on the contract clauses the session wrote.
+
+    A clause is the session's unless the same item of the base has a clause with the same text.
+    None may use `__CPROVER_assume` (rule 5), and no `__CPROVER_requires` may be constant false
+    (rule 8).
 
     Args:
         base (bytes): The file as it was when the session started.
@@ -1649,69 +1721,60 @@ def _check_preconditions(base: bytes, snapshot: bytes, comparison: _Comparison) 
         comparison (_Comparison): The comparison of `base` with `snapshot`.
 
     Returns:
-        list[Violation]: One violation per such clause, unless the same item of the base already
-            has a clause with the same argument.
+        list[Violation]: The violations.
     """
-    already_there: dict[int | None, set[str]] = {}
-    for offset, _, text in _false_preconditions(base, comparison.base_clauses):
-        already_there.setdefault(_item_at(comparison.base_items, offset), set()).add(text)
-    snapshot_to_base: dict[int | None, int] = {
+    already_there: dict[int, set[str]] = {}  # base item index, or -1 for between items
+    for clause in comparison.base.clauses:
+        index = comparison.base.item_at(clause.start_byte)
+        already_there.setdefault(index, set()).add(_clause_text(base, clause))
+    snapshot_to_base = {
         snapshot_index: base_index for base_index, snapshot_index in comparison.pairs
     }
+    snapshot_to_base[-1] = -1
     violations = []
-    for offset, line, text in _false_preconditions(snapshot, comparison.snapshot_clauses):
-        base_index = snapshot_to_base.get(_item_at(comparison.snapshot_items, offset))
-        if text in already_there.get(base_index, ()):
+    for clause in comparison.snapshot.clauses:
+        text = _clause_text(snapshot, clause)
+        base_index = snapshot_to_base.get(comparison.snapshot.item_at(clause.start_byte))
+        if base_index is not None and text in already_there.get(base_index, ()):
             continue
-        violations.append(
-            Violation(
-                8,
-                f"__CPROVER_requires({text}) is false for every input, so the contract verifies "
-                "while proving nothing; state the real precondition",
-                line,
+        line = snapshot.count(b"\n", 0, clause.start_byte) + 1
+        if _ASSUME.search(text):
+            violations.append(
+                Violation(
+                    5,
+                    "__CPROVER_assume is not allowed in a contract clause; write the condition "
+                    "itself in a __CPROVER_requires",
+                    line,
+                )
             )
-        )
+        if clause.kind == "__CPROVER_requires":
+            argument = text[text.index("(") :]
+            while argument.startswith("(") and argument.endswith(")") and _wraps_whole(argument):
+                argument = argument[1:-1]
+            if argument in _FALSE_PRECONDITIONS:
+                violations.append(
+                    Violation(
+                        8,
+                        f"__CPROVER_requires({argument}) is false for every input, so the "
+                        "contract verifies while proving nothing; state the real precondition",
+                        line,
+                    )
+                )
     return violations
 
 
-def _item_at(items: list[_Item], offset: int) -> int | None:
-    """Return the index of the item that contains a byte offset.
-
-    Args:
-        items (list[_Item]): A file's items.
-        offset (int): A byte offset in the file.
-
-    Returns:
-        int | None: The index of the item whose text contains `offset`, or None when it lies
-            between items.
-    """
-    index = bisect_right([item.start for item in items], offset) - 1
-    return index if index >= 0 and offset < items[index].end else None
-
-
-def _false_preconditions(
-    source: bytes, clauses: list[CbmcClauseSpan]
-) -> list[tuple[int, int, str]]:
-    """Return the constant-false `__CPROVER_requires` clauses of a file.
+def _clause_text(source: bytes, clause: CbmcClauseSpan) -> str:
+    """Return a contract clause's text with comments and all whitespace removed.
 
     Args:
         source (bytes): A C source.
-        clauses (list[CbmcClauseSpan]): Its contract clauses.
+        clause (CbmcClauseSpan): One of its contract clauses.
 
     Returns:
-        list[tuple[int, int, str]]: The offset, line and normalized argument of each such clause.
+        str: The clause, for example `__CPROVER_requires(n>0)`.
     """
-    found = []
-    for span in clauses:
-        if span.kind != "__CPROVER_requires":
-            continue
-        clause = source[span.start_byte : span.end_byte].decode("latin-1")
-        argument = "".join(_COMMENT.sub(" ", clause[clause.index("(") :]).split())
-        while argument.startswith("(") and argument.endswith(")") and _wraps_whole(argument):
-            argument = argument[1:-1]
-        if argument in _FALSE_PRECONDITIONS:
-            found.append((span.start_byte, source.count(b"\n", 0, span.start_byte) + 1, argument))
-    return found
+    raw = source[clause.start_byte : clause.end_byte]
+    return b"".join(_without_comments(raw).split()).decode("latin-1")
 
 
 def _wraps_whole(text: str) -> bool:
