@@ -280,39 +280,35 @@ def main() -> None:
 def compute_clause_redundancy_score(
     file_path: str,
     function_name: str,
-    workspace: Path | None = None,
     keep_artifacts: bool = False,
 ) -> ClauseRedundancyScore | None:
     """Score clause redundancy for `function_name` in `file_path`.
 
-    Mutant `.c` files are written next to the original source by default to simplify compilation
-    and instrumentation with CBMC. Mutants are removed unless keep_artifacts is set to `True`.
+    Mutant `.c` files are written next to the original source, so that every `#include` resolves
+    as it does for the original source. Mutants are removed unless keep_artifacts is set to `True`.
 
     If the unmutated function does not verify, return None.
 
     Args:
         file_path (str): Path to the C source defining the function.
         function_name (str): The function whose contract clauses should be tested.
-        workspace (Path | None): Directory to write mutant files into. Defaults to the
-            source file's directory so relative `#include` paths still resolve.
         keep_artifacts (bool): When True, mutant `.c` files are kept for inspection.
 
     Returns:
         ClauseRedundancyScore: Aggregated counts plus the per-clause results.
     """
     source_path = Path(file_path).resolve()
-    workspace = workspace or source_path.parent
-    workspace.mkdir(parents=True, exist_ok=True)
 
-    # Check that the original function verifies in the first place.
-    result = run_cbmc(function_name, file_path)
+    # Check that the original function verifies in the first place. Verify the resolved path,
+    # which is next to the mutants, so that every `#include` resolves alike for both.
+    result = run_cbmc(function_name, str(source_path))
     if not is_valid_mutation_candidate(result):
         # No usable baseline; scoring would be meaningless without verifying the unmutated source.
         return None
 
     mutants = get_clause_mutants(str(source_path), function_name)
     paths_to_removed_clauses = {
-        _get_path_to_source_with_removed_clause(workspace, source_path, i): mutant
+        _get_path_to_source_with_removed_clause(source_path.parent, source_path, i): mutant
         for i, mutant in enumerate(mutants)
     }
 
