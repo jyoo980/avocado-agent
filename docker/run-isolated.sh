@@ -17,7 +17,7 @@
 #   /work/out            read-write bind mount, empty until this script exits
 #   /auth                (optional) read-only volume holding a `claude` login
 #
-# The layout mirrors the manual workflow (EXPERIMENTAL_PROCEDURE.md): the harness is installed
+# The layout mirrors the manual workflow: the harness is installed
 # at /app, the subject lives inside it, and the runner is launched from inside the subject
 # directory.
 #
@@ -35,7 +35,7 @@
 # ended. The agent never sees a log, a result file, or this script: the bootstrap directory is
 # deleted once the harness has been installed. If `AVOCADO_MODEL` is set
 # (e.g. by a LiteLLM profile), it is forwarded as `--model`. `avocado-verify` builds its own
-# `claude` command, so with # that runner `--settings` and `--model` reach every session through a
+# `claude` command, so with that runner `--settings` and `--model` reach every session through a
 # `claude` wrapper placed first on PATH.
 set -euo pipefail
 
@@ -65,27 +65,9 @@ if [ "$RUNNER" = avocado-verify ] && [ ! -f "$TARGET" ]; then
   exit 2
 fi
 
-# Install the harness next to the subject, then remove the bootstrap directory. Bash has
-# already opened this script, so deleting it mid-run is safe.
-cp -a "$BOOT_DIR/harness/." /app/
-rm -rf "$BOOT_DIR"
-
-# Install the treatment's Python package (its `avocado-*` tools and, where it has one, the
-# `avocado-verify` driver) the way docker/entrypoint.sh does for `make run`. The pure agentic
-# baseline ships no package, so this is skipped there.
-if [ -f /app/pyproject.toml ] && [ -f /app/uv.lock ]; then
-  echo "run-isolated: installing the harness package (uv sync --frozen)"
-  (cd /app && uv sync --frozen)
-  export VIRTUAL_ENV=/app/.venv
-  export PATH=/app/.venv/bin:$PATH
-fi
-if [ "$RUNNER" = avocado-verify ] && ! command -v avocado-verify >/dev/null 2>&1; then
-  echo "run-isolated: the harness does not provide an avocado-verify command" >&2
-  exit 2
-fi
-
 # Outputs accumulate here and are published to /work/out on exit, whether the session
-# finishes, fails, or is stopped by the host's --timeout (SIGTERM reaches this shell).
+# finishes, fails, or is stopped by the host (SIGTERM reaches this shell, which is the
+# container's PID 1).
 OUT_DIR="$(mktemp -d /tmp/avocado-out.XXXXXX)"
 # shellcheck disable=SC2329
 publish() {
@@ -102,19 +84,69 @@ publish() {
   cp -a "$OUT_DIR/." /work/out/ 2>/dev/null || true
 }
 trap publish EXIT
-# Bash only handles a signal once the foreground job ends, so the runner is run in the
-# background and waited on; on SIGTERM it is told to stop, and the EXIT trap then publishes
-# what exists.
-CLAUDE_PID=""
+# PID 1 ignores a signal it has no handler for, and Bash only runs a handler once the
+# foreground command ends. So the handler is installed before any slow step, and each slow
+# step (installing the package, the runner) is run in the background and waited on; on
+# SIGTERM it is told to stop, and the EXIT trap then publishes what exists.
+CHILD_PID=""
 # shellcheck disable=SC2329
 on_term() {
-  if [ -n "$CLAUDE_PID" ]; then
-    kill -TERM "$CLAUDE_PID" 2>/dev/null || true
-    wait "$CLAUDE_PID" 2>/dev/null || true
+  if [ -n "$CHILD_PID" ]; then
+    kill -TERM "$CHILD_PID" 2>/dev/null || true
+    wait "$CHILD_PID" 2>/dev/null || true
   fi
   exit 143
 }
 trap on_term TERM INT
+# Run a command in the background and wait for it; returns its exit code.
+run_child() {
+  "$@" &
+  CHILD_PID=$!
+  local rc=0
+  wait "$CHILD_PID" || rc=$?
+  CHILD_PID=""
+  return "$rc"
+}
+
+# Install the harness next to the subject, then remove the bootstrap directory. Bash has
+# already opened this script, so deleting it mid-run is safe.
+cp -a "$BOOT_DIR/harness/." /app/
+rm -rf "$BOOT_DIR"
+
+# Install the treatment's Python package (its `avocado-*` tools and, where it has one, the
+# `avocado-verify` driver) the way docker/entrypoint.sh does for `make run`. The pure agentic
+# baseline ships no package, so this is skipped there.
+if [ -f /app/pyproject.toml ] && [ -f /app/uv.lock ]; then
+  # --no-dev: the agent needs none of the development dependencies.
+  echo "run-isolated: installing the harness package (uv sync --frozen --no-dev)"
+  run_child uv --directory /app sync --frozen --no-dev
+  export VIRTUAL_ENV=/app/.venv
+  export PATH=/app/.venv/bin:$PATH
+  # The package can declare commands whose modules the snapshot leaves out (scripts/ is not
+  # given to the agent); remove those, so every command on the agent's PATH works.
+  python - <<'PY'
+import importlib.metadata
+import importlib.util
+import pathlib
+
+for ep in importlib.metadata.entry_points(group="console_scripts"):
+    script = pathlib.Path("/app/.venv/bin", ep.name)
+    if not script.exists():
+        continue
+    try:
+        found = importlib.util.find_spec(ep.module) is not None
+    except ModuleNotFoundError:
+        found = False
+    except Exception:  # Some other failure: leave the command alone.
+        found = True
+    if not found:
+        script.unlink()
+PY
+fi
+if [ "$RUNNER" = avocado-verify ] && ! command -v avocado-verify >/dev/null 2>&1; then
+  echo "run-isolated: the harness does not provide an avocado-verify command" >&2
+  exit 2
+fi
 
 # Fresh Claude Code state for every run. `.claude.json` carries onboarding state and
 # `.credentials.json` the OAuth login; nothing else (projects/, memory, todos) is copied.
@@ -145,12 +177,15 @@ fi
 # `claude --settings <file>` applies the file's env and permissions but ignores its "model"
 # key (verified with Claude Code 2.1.308: the account default is used instead), so the model
 # must be passed explicitly. A profile's AVOCADO_MODEL wins; otherwise take the settings
-# file's "model". The settings file may not be strict JSON, hence grep rather than jq.
+# file's top-level "model". The settings file may not be strict JSON; if jq cannot parse it,
+# fall back to the first "model" key that grep finds.
 MODEL="${AVOCADO_MODEL:-}"
 if [ -z "$MODEL" ] && [ -f /app/.claude/settings.json ]; then
-  # `|| true`: with no "model" key, grep fails, and pipefail would abort the script.
-  MODEL="$({ grep -oE '"model"[[:space:]]*:[[:space:]]*"[^"]+"' /app/.claude/settings.json || true; } \
-    | head -1 | sed -E 's/.*:[[:space:]]*"([^"]+)"/\1/')"
+  if ! MODEL="$(jq -r '.model // empty' /app/.claude/settings.json 2>/dev/null)"; then
+    # `|| true`: with no "model" key, grep fails, and pipefail would abort the script.
+    MODEL="$({ grep -oE '"model"[[:space:]]*:[[:space:]]*"[^"]+"' /app/.claude/settings.json || true; } \
+      | head -1 | sed -E 's/.*:[[:space:]]*"([^"]+)"/\1/')"
+  fi
 fi
 MODEL_ARGS=()
 if [ -n "$MODEL" ]; then
@@ -173,9 +208,6 @@ case "$RUNNER" in
       --add-dir /app
       "${SETTINGS_ARGS[@]}"
       "${MODEL_ARGS[@]}")
-    printf '%q ' "${COMMAND[@]}" >"$OUT_DIR/command.txt"
-    echo >>"$OUT_DIR/command.txt"
-    "${COMMAND[@]}" >"$OUT_DIR/claude-output.json" </dev/null &
     ;;
   avocado-verify)
     # The driver starts `claude -p` itself, one session per function, with neither --settings
@@ -196,15 +228,16 @@ case "$RUNNER" in
     export PATH="$SHIM_DIR:$PATH"
     echo "run-isolated: file: $TARGET"
     COMMAND=(avocado-verify --file "$TARGET")
-    printf '%q ' "${COMMAND[@]}" >"$OUT_DIR/command.txt"
-    echo >>"$OUT_DIR/command.txt"
-    "${COMMAND[@]}" </dev/null &
     ;;
 esac
-CLAUDE_PID=$!
+printf '%q ' "${COMMAND[@]}" >"$OUT_DIR/command.txt"
+echo >>"$OUT_DIR/command.txt"
 rc=0
-wait "$CLAUDE_PID" || rc=$?
-CLAUDE_PID=""
+if [ "$RUNNER" = claude ]; then
+  run_child "${COMMAND[@]}" >"$OUT_DIR/claude-output.json" </dev/null || rc=$?
+else
+  run_child "${COMMAND[@]}" </dev/null || rc=$?
+fi
 
 echo "run-isolated: $RUNNER exited with $rc; result:"
 case "$RUNNER" in

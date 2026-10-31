@@ -37,7 +37,7 @@
 #   command.txt         the command line the runner was launched with
 #   run.log             stdout+stderr of the run; with avocado-verify, the driver's log
 #   exit-code           the container's exit code (124 = --timeout hit; 137 = killed, by the
-#                       OOM killer or because it ignored --timeout's SIGTERM for a minute)
+#                       OOM killer or because it did not stop within a minute of --timeout)
 #
 # Usage:
 #   eval/experiments/run.sh --subject <dir> --profile <env-file> [--file <c-file>] \
@@ -50,9 +50,10 @@
 #
 # With the claude runner the prompt is sent from inside the subject copy. Its default is
 #   "Carefully read @../AGENTS.md. Then, verify the C source files in this directory"
-# when the harness tracks an AGENTS.md, and otherwise "Verify {file}" (which needs --file). It
-# may use {file} for the path, inside the container, of the file named by --file (relative to
-# --subject).
+# when the harness tracks an AGENTS.md ("Carefully read @../AGENTS.md. Then, verify {file}"
+# with --file), and otherwise "Verify {file}" (which needs --file). It may use {file} for the
+# path, inside the container, of the file named by --file (relative to --subject); a prompt
+# that uses {file} needs --file.
 #
 # -n is the number of runs; -j (--jobs) is how many of them run concurrently, each in its own
 # container with its own --memory/--cpus cap (default 1, i.e. sequential).
@@ -86,12 +87,16 @@ TIMEOUT=""
 # container exit, `make clean`, and re-cloning the harness. Override with --results or
 # AVOCADO_RESULTS_DIR.
 RESULTS="${AVOCADO_RESULTS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/avocado-experiments}"
+# Seconds a stopped run (by --timeout or by stopping the batch) gets to end its session and
+# publish its outputs before it is killed.
+STOP_GRACE=60
 TAG=""
 SUBJECT=""
 FILE=""
 PROFILE=""
 PROMPT=""
 DEFAULT_PROMPT_AGENTS="Carefully read @../AGENTS.md. Then, verify the C source files in this directory"
+DEFAULT_PROMPT_AGENTS_FILE="Carefully read @../AGENTS.md. Then, verify {file}"
 DEFAULT_PROMPT_FILE="Verify {file}"
 
 usage() { sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | grep '^#' | cut -c3-; exit "${1:-0}"; }
@@ -118,6 +123,8 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$ENGINE" ] || { echo "no docker or podman found" >&2; exit 1; }
+[[ "$RUNS" =~ ^[1-9][0-9]*$ ]] || { echo "-n must be a positive integer: '$RUNS'" >&2; exit 1; }
+[[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo "-j must be a positive integer: '$JOBS'" >&2; exit 1; }
 [ -d "$SUBJECT" ] || { echo "--subject must be a directory: '$SUBJECT'" >&2; exit 1; }
 [ -z "$FILE" ] || [ -f "$SUBJECT/$FILE" ] || { echo "--file must exist under the subject: '$SUBJECT/$FILE'" >&2; exit 1; }
 [ -f "$PROFILE" ] || { echo "--profile must be an env file: '$PROFILE'" >&2; exit 1; }
@@ -130,14 +137,32 @@ if ! git -C "$HARNESS_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; the
 fi
 # True iff the harness checkout tracks the given path (a file or a directory).
 tracked() { git -C "$HARNESS_ROOT" ls-files --error-unmatch -- "$1" >/dev/null 2>&1; }
+
+# The only harness files the agent may see, as git pathspecs: the instructions its prompt refers
+# to (AGENTS.md, or CLAUDE.md and the docs/ it points at) and the Claude Code settings.
+# Everything else in the checkout (driver scripts, logs, notes, build and CI files, tests) stays
+# out. Extend this list deliberately if a treatment adds docs or tools.
+HARNESS_FILES=(AGENTS.md CLAUDE.md docs .claude/settings.json)
+# A treatment that defines command-line tools for the agent ([project.scripts] in
+# pyproject.toml) also needs its Python package, which run-isolated.sh installs with
+# `uv sync --frozen`: the project files (the build backend insists on README.md), the
+# avocado-verify driver, the tools, the stubs/ that avocado-run-cbmc gives CBMC for library
+# functions (found at /app/stubs), and the mutation code they import.
+if tracked pyproject.toml && grep -q '^\[project\.scripts\]' "$HARNESS_ROOT/pyproject.toml"; then
+  HARNESS_FILES+=(pyproject.toml uv.lock .python-version README.md avocado_verify.py tools
+    stubs eval/__init__.py eval/mutants)
+fi
+
 SUBJECT="$(cd "$SUBJECT" && pwd)"
 SUBJECT_NAME="$(basename "$SUBJECT")"
-case "$SUBJECT_NAME" in
-  .|..|*/*|AGENTS.md|CLAUDE.md|README.md|.claude|.venv|.python-version|pyproject.toml|uv.lock\
-  |avocado_verify.py|docker|eval|docs|tools|scripts|test)
-    echo "--subject directory name '$SUBJECT_NAME' would shadow a harness path under /app; rename it" >&2
-    exit 1 ;;
-esac
+# The subject is mounted at /app/<name>, next to the harness snapshot and the .venv that
+# run-isolated.sh creates, so its name must differ from each of their top-level names.
+if [ "$SUBJECT_NAME" = / ] || [ "$SUBJECT_NAME" = .venv ] \
+  || git -C "$HARNESS_ROOT" ls-files -z -- "${HARNESS_FILES[@]}" | tr '\0' '\n' | cut -d/ -f1 \
+    | grep -xF -- "$SUBJECT_NAME" >/dev/null; then
+  echo "--subject directory name '$SUBJECT_NAME' would shadow a harness path under /app; rename it" >&2
+  exit 1
+fi
 PROFILE="$(cd "$(dirname "$PROFILE")" && pwd)/$(basename "$PROFILE")"
 
 # Which driver runs the agent: the treatment's own `avocado-verify` when the harness tracks one,
@@ -152,7 +177,9 @@ if [ "$RUNNER" = avocado-verify ]; then
   [ -z "$PROMPT" ] || { echo "--prompt is not used by the avocado-verify runner; it writes its own prompts" >&2; exit 1; }
   tracked avocado_verify.py || { echo "--runner avocado-verify needs a tracked avocado_verify.py in $HARNESS_ROOT" >&2; exit 1; }
 elif [ -z "$PROMPT" ]; then
-  if tracked AGENTS.md; then
+  if tracked AGENTS.md && [ -n "$FILE" ]; then
+    PROMPT="$DEFAULT_PROMPT_AGENTS_FILE"
+  elif tracked AGENTS.md; then
     PROMPT="$DEFAULT_PROMPT_AGENTS"
   elif [ -n "$FILE" ]; then
     PROMPT="$DEFAULT_PROMPT_FILE"
@@ -160,6 +187,10 @@ elif [ -z "$PROMPT" ]; then
     echo "$HARNESS_ROOT has no AGENTS.md for the default prompt; give --file (prompt \"$DEFAULT_PROMPT_FILE\") or --prompt" >&2
     exit 1
   fi
+fi
+if [[ "$PROMPT" == *"{file}"* ]] && [ -z "$FILE" ]; then
+  echo "the prompt uses {file}, so --file is required: '$PROMPT'" >&2
+  exit 1
 fi
 
 # The default tag includes the harness directory name, so several checkouts (e.g. one per
@@ -190,7 +221,8 @@ stop_batch() {
   # A run that is still copying its subject starts its container after any one scan, so keep
   # stopping containers until every run has ended.
   while [ -n "$(jobs -rp)" ]; do
-    "$ENGINE" ps -q --filter "name=avocado-$TAG-$BATCH_ID-" | xargs -r "$ENGINE" stop -t 5 >/dev/null 2>&1 || true
+    "$ENGINE" ps -q --filter "name=avocado-$TAG-$BATCH_ID-" \
+      | xargs -r "$ENGINE" stop -t "$STOP_GRACE" >/dev/null 2>&1 || true
     sleep 1
   done
   exit 143
@@ -208,19 +240,6 @@ else
   TARGET="$PROMPT"
 fi
 
-# The only harness files the agent may see, as git pathspecs: the instructions its prompt refers
-# to (AGENTS.md, or CLAUDE.md and the docs/ it points at) and the Claude Code settings.
-# Everything else in the checkout (driver scripts, logs, notes, build and CI files, tests) stays
-# out. Extend this list deliberately if a treatment adds docs or tools.
-HARNESS_FILES=(AGENTS.md CLAUDE.md docs .claude/settings.json)
-# A treatment that defines command-line tools for the agent ([project.scripts] in
-# pyproject.toml) also needs its Python package, which run-isolated.sh installs with
-# `uv sync --frozen`: the project files (the build backend insists on README.md), the
-# avocado-verify driver, the tools, and the mutation code they import.
-if tracked pyproject.toml && grep -q '^\[project\.scripts\]' "$HARNESS_ROOT/pyproject.toml"; then
-  HARNESS_FILES+=(pyproject.toml uv.lock .python-version README.md avocado_verify.py tools
-    eval/__init__.py eval/mutants)
-fi
 
 # Snapshot the harness the agent will see, with working-tree contents (so uncommitted edits to
 # AGENTS.md or .claude/settings.json are included). Only tracked files matching HARNESS_FILES
@@ -249,11 +268,16 @@ boot_stream() {
   tar -C "$BATCH_DIR" -cf - harness
 }
 
-# A `claude` login persisted by eval/experiments/login.sh; mounted read-only when present.
+# A `claude` login persisted by `eval/experiments/login.sh volume`, mounted read-only. It is used
+# only with a profile that supplies no credentials of its own, so a run never has two.
 AUTH_VOLUME="avocado-claude-auth"
 AUTH_MOUNT=()
-if "$ENGINE" volume inspect "$AUTH_VOLUME" >/dev/null 2>&1; then
-  AUTH_MOUNT=(-v "$AUTH_VOLUME:/auth:ro")
+if ! grep -qE '^[[:space:]]*(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY)=' "$PROFILE"; then
+  if "$ENGINE" volume inspect "$AUTH_VOLUME" >/dev/null 2>&1; then
+    AUTH_MOUNT=(-v "$AUTH_VOLUME:/auth:ro")
+  else
+    echo "warning: $PROFILE sets no token and there is no $AUTH_VOLUME volume; runs have no credentials" >&2
+  fi
 fi
 
 LIMITS=()
@@ -262,11 +286,11 @@ LIMITS=()
 
 # Wall-clock cap on a whole run. `timeout` sends SIGTERM to the `$ENGINE run` client, which
 # forwards it into the container, so the run publishes its outputs and exits (124). If the
-# container has not stopped a minute later, `timeout` kills the client (137) and run_one stops
-# the container with `$ENGINE stop`.
+# container has not stopped STOP_GRACE seconds later, `timeout` kills the client (137) and
+# run_one stops the container with `$ENGINE stop`.
 with_timeout() {
   if [ -n "$TIMEOUT" ]; then
-    timeout --foreground --kill-after=60 "$TIMEOUT" "$@"
+    timeout --foreground --kill-after="$STOP_GRACE" "$TIMEOUT" "$@"
   else
     "$@"
   fi
@@ -311,8 +335,19 @@ run_one() {
   if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
     "$ENGINE" stop -t 5 "$name" >/dev/null 2>&1 || true
   fi
+  # A rootful engine leaves what the container wrote (the outputs, and the agent's files under
+  # subject/) owned by the host's root, which the user can neither move nor delete; hand it
+  # back. With rootless docker or podman, the container's root already maps to the user.
+  if [ "$(id -u)" -ne 0 ] && [ -n "$(find "$run_dir" -user 0 -print -quit 2>/dev/null)" ]; then
+    "$ENGINE" run --rm -v "$run_dir:/run-dir" --entrypoint chown "$IMAGE" \
+      -R "$(id -u):$(id -g)" /run-dir >/dev/null 2>&1 \
+      || echo "[$TAG] run $i: could not take ownership of the files root owns under $run_dir" >&2
+  fi
   # Flatten: keep the container-facing /work/out layout out of the way of readers.
-  mv "$run_dir"/out/* "$run_dir"/ 2>/dev/null || true
+  if compgen -G "$run_dir/out/*" >/dev/null; then
+    mv "$run_dir"/out/* "$run_dir"/ \
+      || echo "[$TAG] run $i: could not move its results out of $run_dir/out" >&2
+  fi
   rmdir "$run_dir/out" 2>/dev/null || true
   echo "$rc" >"$run_dir/exit-code"
   echo "[$TAG] run $i/$RUNS finished with exit code $rc"
@@ -340,7 +375,10 @@ for i in $(seq 1 "$RUNS"); do
     wait -n || true
   fi
 done
-wait
+# Not a bare `wait`, which would also wait for the `tee` above, and that never ends.
+while [ -n "$(jobs -rp)" ]; do
+  wait -n || true
+done
 failed=0
 for i in $(seq 1 "$RUNS"); do
   if [ ! -f "$BATCH_DIR/run-$i/exit-code" ]; then
