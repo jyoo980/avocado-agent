@@ -234,7 +234,8 @@ trap stop_batch TERM INT
 # container.
 IN_FILE=""
 [ -z "$FILE" ] || IN_FILE="/app/$SUBJECT_NAME/$FILE"
-PROMPT="${PROMPT//\{file\}/$IN_FILE}"
+# The replacement is quoted so that an `&` in it is literal, not the matched text.
+PROMPT="${PROMPT//\{file\}/"$IN_FILE"}"
 if [ "$RUNNER" = avocado-verify ]; then
   TARGET="$IN_FILE"
 else
@@ -270,10 +271,11 @@ boot_stream() {
 }
 
 # A `claude` login persisted by `eval/experiments/login.sh volume`, mounted read-only. It is used
-# only with a profile that supplies no credentials of its own, so a run never has two.
+# only with a profile that supplies no credentials of its own, so a run never has two. A token
+# variable whose value is empty (such as `CLAUDE_CODE_OAUTH_TOKEN=`) supplies no credentials.
 AUTH_VOLUME="avocado-claude-auth"
 AUTH_MOUNT=()
-if ! grep -qE '^[[:space:]]*(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY)=' "$PROFILE"; then
+if ! grep -qE '^[[:space:]]*(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY)=[^[:space:]]' "$PROFILE"; then
   if "$ENGINE" volume inspect "$AUTH_VOLUME" >/dev/null 2>&1; then
     AUTH_MOUNT=(-v "$AUTH_VOLUME:/auth:ro")
   else
