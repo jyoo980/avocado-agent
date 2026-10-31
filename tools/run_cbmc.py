@@ -12,6 +12,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -65,6 +66,10 @@ _CBMC_DEPTH = 200
 # it also lists callees that the preprocessor removes (a call inside an `#ifdef` that is off).
 _CALLEE_NOT_COMPILED = re.compile(r"Function '([^']+)' was not found in the GOTO program")
 
+# One line of `goto-instrument --list-goto-functions`: `<name> /* <identifier>[, body not
+# available] */`. A contract is listed under the function's name with a `contract::` identifier.
+_LISTED_FUNCTION = re.compile(r"^\S+ /\* (\S+?)(?:, body not available)? \*/$")
+
 
 class CbmcStep(StrEnum):
     """Logical step in the CBMC verification pipeline.
@@ -92,6 +97,9 @@ class RunCbmcResult:
             exit code of the failing subprocess (cbmc's verification exit code when
             `failed_step` is CBMC).
         response (str): Printable summary — a success line or a truncated failure block.
+        no_contract (bool): True iff the pipeline passed but the function has no contract in the
+            compiled program. CBMC then checks an empty contract, which nothing can violate, so
+            such a pass proves nothing about the function and does not count as verified.
     """
 
     function: str
@@ -99,6 +107,7 @@ class RunCbmcResult:
     timed_out: bool
     returncode: int
     response: str
+    no_contract: bool = False
 
     @property
     def cbmc_ran_successfully(self) -> bool:
@@ -114,10 +123,10 @@ class RunCbmcResult:
     def is_function_verified(self) -> bool:
         """True iff the function for this verification run is successfully verified.
 
-        A function is successfully verified if all components of the CBMC pipeline ran successfully
-        and the return code is 0.
+        A function is successfully verified if all components of the CBMC pipeline ran successfully,
+        the return code is 0, and the function has a contract.
         """
-        return self.cbmc_ran_successfully and self.returncode == 0
+        return self.cbmc_ran_successfully and self.returncode == 0 and not self.no_contract
 
     def __str__(self) -> str:
         """Return the string representation of this result, used for logging.
@@ -129,6 +138,8 @@ class RunCbmcResult:
             return "TIMED_OUT"
         if self.failed_step:
             return f"{self.failed_step.value.upper()}_FAILED"
+        if self.no_contract:
+            return "NO_CONTRACT"
         if self.is_function_verified:
             return "PASS"
         return "FAIL"
@@ -905,6 +916,58 @@ def _get_cbmc_check_command(function: str) -> str:
     return (
         f"cbmc {_checking_goto_file(function)} --function {quoted_function} --depth {_CBMC_DEPTH}"
     )
+
+
+def has_contract(
+    function: str, file_path: str, include_dirs: list[str] | None = None
+) -> bool | None:
+    """Return whether `function`, as compiled from `file_path`, has a contract.
+
+    Asked of the compiled program rather than of the source text, so a function defined once per
+    preprocessor branch is judged by the definition that is actually built. goto-cc records a
+    `contract::<name>` symbol for a function iff that definition carries at least one contract
+    clause (`__CPROVER_requires`, `__CPROVER_ensures`, `__CPROVER_assigns`, ...).
+
+    Args:
+        function (str): The function.
+        file_path (str): Path to the C source file.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+
+    Returns:
+        bool | None: True or False, or None when the file could not be compiled or listed.
+    """
+    # The commands run in a scratch directory, so paths are resolved first.
+    include_flags = " ".join(
+        f"-I {shlex.quote(str(Path(d).resolve()))}" for d in include_dirs or []
+    )
+    source = shlex.quote(str(Path(file_path).resolve()))
+    try:
+        with tempfile.TemporaryDirectory(prefix="avocado-compiled-") as scratch_dir:
+            commands = (
+                f"goto-cc -o compiled.goto {include_flags} {source}",
+                "goto-instrument --list-goto-functions compiled.goto",
+            )
+            listing = ""
+            for command in commands:
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    shell=True,
+                    check=False,
+                    timeout=_GOTO_CC_TIMEOUT_SEC,
+                    cwd=scratch_dir,
+                )
+                if completed.returncode != 0:
+                    return None
+                listing = completed.stdout
+    except (OSError, TimeoutExpired):
+        return None
+    for line in listing.splitlines():
+        listed = _LISTED_FUNCTION.match(line.strip())
+        if listed is not None and listed.group(1) == f"contract::{function}":
+            return True
+    return False
 
 
 def compile_with_goto_cc(
