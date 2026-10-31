@@ -4,12 +4,29 @@ import os
 import time
 from pathlib import Path
 
+import psutil
+import pytest
+
 from tools.util.subprocesses import run_command
 
 
 def test_run_command_kills_every_descendant_on_timeout(tmp_path: Path) -> None:
     marker = tmp_path / "survived"
     # Killing only the shell would leave the background subshell running to create the marker.
+    completed = run_command(f"(sleep 1; touch {marker}) & sleep 10", timeout=0.3)
+    assert completed is None
+    time.sleep(1.5)
+    assert not marker.exists()
+
+
+def test_run_command_kills_every_descendant_even_if_none_can_be_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse_to_suspend(process: psutil.Process) -> None:
+        raise psutil.AccessDenied(process.pid)
+
+    monkeypatch.setattr(psutil.Process, "suspend", refuse_to_suspend)
+    marker = tmp_path / "survived"
     completed = run_command(f"(sleep 1; touch {marker}) & sleep 10", timeout=0.3)
     assert completed is None
     time.sleep(1.5)

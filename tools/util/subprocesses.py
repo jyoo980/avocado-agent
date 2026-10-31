@@ -59,7 +59,8 @@ def _kill_process_tree(pid: int) -> None:
     """Send SIGKILL to the given process and to every process descended from it.
 
     Each process is stopped before its children are listed, so that no process can start a child
-    that escapes the kill.
+    that escapes the kill. A process that cannot be stopped still has its children listed and is
+    still sent SIGKILL.
 
     Args:
         pid (int): The id of the root process.
@@ -68,16 +69,14 @@ def _kill_process_tree(pid: int) -> None:
         frontier = [psutil.Process(pid)]
     except psutil.Error:
         return
-    stopped: list[psutil.Process] = []
+    found: list[psutil.Process] = []
     while frontier:
         process = frontier.pop()
-        try:
+        found.append(process)
+        with suppress(psutil.Error):
             process.suspend()
-        except psutil.Error:
-            continue
-        stopped.append(process)
         with suppress(psutil.Error):
             frontier.extend(process.children())
-    for process in stopped:
+    for process in found:
         with suppress(psutil.Error):
             process.kill()
