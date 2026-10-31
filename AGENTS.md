@@ -63,15 +63,17 @@ You can also search the web for more CBMC documentation.
 - **To check your edits against the edit rules**, run:
 
   ```sh
-  avocado-validate edits --function <FUNCTION_NAME> \
-                         --file <PATH_TO_C_FILE> \
+  avocado-validate edits --file <PATH_TO_C_FILE> \
                          [-I <PATH_TO_INCLUDE_DIR(S)>]...
   ```
 
   Checks [edit rules](#edit-rules) 1-8 in a few seconds, without running CBMC. Exits with status 0
   if your copy breaks none of them, 1 if it breaks one (each line gives the rule, the line of your
-  file and what to change), and 2 if the check could not be made. The harness runs the same check
-  before it merges your copy, and a copy that fails it is not merged at all.
+  file and what to change), and 2 if the check could not be made. It checks the function your
+  session works on, which it learns from the harness. The harness checks the same rules before it
+  merges your copy, and a copy that breaks one is not merged at all. For rule 7, the harness
+  compiles the merged file, which also holds what other sessions merged while you worked, so the
+  merge can fail to compile even when this check passes.
 
 ## Workflow
 
@@ -176,7 +178,8 @@ In these rules, *original* means everything that was in the file when your sessi
 including helpers that earlier sessions added. *New* means what you add in this
 session.
 
-Rules checked by `avocado-validate edits` (fast; run it before each `avocado-run-cbmc` run):
+`avocado-validate edits` checks rules 1-8. Rules 9 and 10 are checked only when the harness merges
+your copy.
 
 1. **Original code is unchanged.** Every original top-level item -- function signatures and
    bodies, macros, typedefs, structs, globals, includes, declarations -- must still be present, in

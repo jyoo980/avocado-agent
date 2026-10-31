@@ -736,7 +736,8 @@ def _fork_session(function: str, canonical_file: Path) -> _Session:
 
     The session's identity and fork base are also written into the temporary root, beside the
     copied directory, for the tools the agent runs in the copy (`tools.util.session_state`). The
-    harness itself keeps using `fork_base` from memory.
+    harness itself uses `fork_base` from memory, so a failure to write them is logged and the
+    session goes ahead without them.
 
     Args:
         function (str): The function the session will work on.
@@ -750,7 +751,12 @@ def _fork_session(function: str, canonical_file: Path) -> _Session:
         root = Path(tempfile.mkdtemp(prefix=_SESSION_DIR_PREFIX))
         directory = root / canonical_file.parent.name
         shutil.copytree(canonical_file.parent, directory, ignore=_SNAPSHOT_IGNORE)
-    write_session_info(root, function=function, canonical_file=canonical_file, fork_base=fork_base)
+    try:
+        write_session_info(
+            root, function=function, canonical_file=canonical_file, fork_base=fork_base
+        )
+    except OSError as error:
+        logger.warning(f"{function}: could not write the session file into {root}: {error}")
     return _Session(
         function=function,
         directory=root,
@@ -1982,7 +1988,7 @@ def _build_prompt(
         str: The prompt text.
     """
     command = ["avocado-run-cbmc", "--function", function, "--file", file_path]
-    edits_command = ["avocado-validate", "edits", "--function", function, "--file", file_path]
+    edits_command = ["avocado-validate", "edits", "--file", file_path]
     for include_dir in include_dirs:
         command += ["-I", include_dir]
         edits_command += ["-I", include_dir]

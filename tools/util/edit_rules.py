@@ -17,7 +17,9 @@ A session's job is to add specifications. check_edits` compares the session's fi
 Rules 6 (only the source file is edited), 7 (the file compiles) and 9 (no verified function stops
 verifying, where a vacuous pass does not count as verifying) need the file system or CBMC and are
 checked by the callers: `tools.validate` for the agent and `avocado_verify._merge_and_verify` for
-the merge. Both call `check_edits`, so the agent's check and the merge agree by construction.
+the merge. Both call `check_edits` and `stray_file_violations`, so they agree on rules 1-6 by
+construction. They can disagree on rule 7: `tools.validate` compiles the session's copy, but the
+merge compiles the merged file, which also holds whatever other sessions merged since the fork.
 Rule 10 (no merge conflict) is decided by `merge_copy` below, which the merge also uses: an edit
 to another function's contract is left out when another live session is working on that function
 or when its contract changed in the shared file since the fork, and nothing merges when a new name

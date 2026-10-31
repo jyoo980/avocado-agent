@@ -138,6 +138,10 @@ def write_session_info(
     (session_root / SESSION_FILE_NAME).write_text(json.dumps(record), encoding="utf-8")
 
 
+class SessionFileError(Exception):
+    """The session file, or the fork base it names, cannot be read or is malformed."""
+
+
 def read_session_info(session_file: Path) -> SessionInfo | None:
     """Return the session a file in a private copy belongs to, or None if it belongs to none.
 
@@ -148,7 +152,12 @@ def read_session_info(session_file: Path) -> SessionInfo | None:
         session_file (Path): A file inside a session's private copy (normally the source file).
 
     Returns:
-        SessionInfo | None: The session, or None when no readable session file is found.
+        SessionInfo | None: The session, or None when no directory above `session_file` holds a
+            session file.
+
+    Raises:
+        SessionFileError: The nearest session file, or the fork base it names, cannot be read or
+            is malformed.
     """
     for directory in session_file.resolve().parents:
         candidate = directory / SESSION_FILE_NAME
@@ -161,8 +170,9 @@ def read_session_info(session_file: Path) -> SessionInfo | None:
                 canonical_file=Path(record["canonical_file"]),
                 fork_base=(directory / record["fork_base"]).read_bytes(),
             )
-        except (OSError, ValueError, KeyError, TypeError):
-            return None
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            message = f"session file {candidate} is damaged: {error!r}"
+            raise SessionFileError(message) from error
     return None
 
 
