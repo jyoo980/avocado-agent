@@ -48,5 +48,19 @@ def test_build_stub_index_rejects_function_modeled_in_two_files(tmp_path: Path) 
     (tmp_path / "a.c").write_text("/* FUNCTION: foo */\n")
     (tmp_path / "b.c").write_text("/* FUNCTION: foo */\n")
 
-    with pytest.raises(ValueError, match=r"'foo' is modeled by both .*a\.c and .*b\.c"):
+    with pytest.raises(ValueError, match=r"'foo' is modeled by .*a\.c and .*b\.c"):
         build_stub_index(tmp_path)
+
+
+def test_build_stub_index_reports_every_conflict(tmp_path: Path) -> None:
+    (tmp_path / "a.c").write_text("/* FUNCTION: foo */\n/* FUNCTION: bar */\n")
+    (tmp_path / "b.c").write_text("/* FUNCTION: foo */\n")
+    (tmp_path / "c.c").write_text("/* FUNCTION: bar */\n")
+
+    expected = r"'bar' is modeled by .*a\.c and .*c\.c; 'foo' is modeled by .*a\.c and .*b\.c"
+    with pytest.raises(ValueError, match=expected):
+        build_stub_index(tmp_path)
+
+
+def test_build_stub_index_accepts_shipped_stubs() -> None:
+    assert build_stub_index()

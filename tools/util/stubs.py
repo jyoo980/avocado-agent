@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -22,7 +23,7 @@ def build_stub_index(stubs_dir: Path = _STUBS_DIR) -> dict[str, Path]:
     """Return a mapping from modeled function name to the stub file defining it.
 
     Symbol names are read from `/* FUNCTION: <name> */` markers. If a name appears in more than
-    one stub file, a `ValueError` is raised.
+    one stub file, a `ValueError` is raised that names every such function and its files.
 
     Args:
         stubs_dir (Path): The directory containing CBMC stub `.c` files.
@@ -31,15 +32,19 @@ def build_stub_index(stubs_dir: Path = _STUBS_DIR) -> dict[str, Path]:
         dict[str, Path]: Mapping from function name to the stub file that models it (that is, the
             stub file that defines its stub).
     """
-    index: dict[str, Path] = {}
-    paths = sorted(stubs_dir.glob("*.c"))
-    for stub_path in paths:
+    paths_by_name: dict[str, set[Path]] = defaultdict(set)
+    for stub_path in stubs_dir.glob("*.c"):
         for name in _FUNCTION_MARKER.findall(stub_path.read_text(encoding="utf-8")):
-            if index.get(name, stub_path) != stub_path:
-                msg = f"Function '{name}' is modeled by both {index[name]} and {stub_path}"
-                raise ValueError(msg)
-            index[name] = stub_path
-    return index
+            paths_by_name[name].add(stub_path)
+    conflicts = [
+        f"'{name}' is modeled by {' and '.join(str(path) for path in sorted(paths))}"
+        for name, paths in sorted(paths_by_name.items())
+        if len(paths) > 1
+    ]
+    if conflicts:
+        msg = "Functions modeled by more than one stub file: " + "; ".join(conflicts)
+        raise ValueError(msg)
+    return {name: next(iter(paths)) for name, paths in paths_by_name.items()}
 
 
 def get_stub_paths_for(
