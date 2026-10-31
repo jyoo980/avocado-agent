@@ -12,19 +12,17 @@ import fcntl
 import json
 import os
 import shlex
-import signal
 import subprocess
 import sys
 import tempfile
 import time
 from collections.abc import Generator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
-from subprocess import TimeoutExpired
 
 from loguru import logger
 
@@ -34,6 +32,7 @@ from tools.util import (
     get_in_file_callees_for,
     get_stub_paths_for,
     get_unstubbed_external_callees_for,
+    run_command,
 )
 from tools.util.callgraph import CallGraph
 
@@ -234,17 +233,14 @@ class ShellCommandRun:
 
 
 def run_shell_command(command: str, timeout: float, cwd: str | None = None) -> ShellCommandRun:
-    """Run a shell command, capturing its output, once a subprocess slot is free.
+    """Run a shell command with `run_command`, once a subprocess slot is free.
 
     Every pipeline subprocess (`goto-cc`, `goto-instrument`, `cbmc`) should be run through this
     function. Then the number of them running at once, across all threads and all processes that
     share `_SLOT_DIR`, never exceeds `max_concurrent_subprocesses()` (or, if those processes
     disagree about the cap, the largest of their caps). The timeout starts once the subprocess is
-    launched; waiting for a slot does not count against it.
-
-    The command runs in a new session, so it and every process it starts share a process group. On
-    timeout (or any other exception) the whole group is killed, not just the shell, so no `cbmc`
-    outlives its shell and keeps running without holding a subprocess slot.
+    launched; waiting for a slot does not count against it. On timeout, the command and every
+    process it started are killed, so no `cbmc` keeps running without holding a subprocess slot.
 
     Args:
         command (str): The shell command to run.
@@ -259,7 +255,7 @@ def run_shell_command(command: str, timeout: float, cwd: str | None = None) -> S
     requested = time.monotonic()
     with _subprocess_slot():
         launched = time.monotonic()
-        completed = _run_in_new_process_group(command, timeout, cwd)
+        completed = run_command(command, timeout, cwd=cwd)
         finished = time.monotonic()
     return ShellCommandRun(
         completed=completed,
@@ -297,50 +293,6 @@ def _subprocess_slot() -> Generator[None]:
                 os.close(fd)
             return
         time.sleep(_SLOT_POLL_SEC)
-
-
-def _run_in_new_process_group(
-    command: str, timeout: float, cwd: str | None
-) -> subprocess.CompletedProcess[str] | None:
-    """Run a shell command in a new process group, and kill the whole group on timeout.
-
-    Args:
-        command (str): The shell command to run.
-        timeout (float): Seconds after which the process group is killed.
-        cwd (str | None): Working directory for the subprocess, or None to inherit this one's.
-
-    Returns:
-        subprocess.CompletedProcess[str] | None: The finished subprocess, or None on timeout.
-    """
-    with subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        shell=True,
-        cwd=cwd,
-        start_new_session=True,
-    ) as process:
-        try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except TimeoutExpired:
-            _kill_process_group(process.pid)
-            process.communicate()
-            return None
-        except BaseException:
-            _kill_process_group(process.pid)
-            raise
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
-
-
-def _kill_process_group(pgid: int) -> None:
-    """Send SIGKILL to every process in the given process group, if any remain.
-
-    Args:
-        pgid (int): The process group id.
-    """
-    with suppress(ProcessLookupError):
-        os.killpg(pgid, signal.SIGKILL)
 
 
 def main() -> None:
