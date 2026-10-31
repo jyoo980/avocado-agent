@@ -1202,11 +1202,35 @@ def compile_with_goto_cc(
 
     Returns:
         int: the return code of the subprocess used to invoke `goto-cc`,
-            (0 == compiled successfully).
+            (0 == compiled successfully), or `_TIMEOUT_RETURNCODE` on timeout.
+    """
+    result = run_goto_cc(function, file_path, include_dirs=include_dirs, cwd=cwd)
+    return _TIMEOUT_RETURNCODE if result is None else result.returncode
+
+
+def run_goto_cc(
+    function: str,
+    file_path: str,
+    include_dirs: list[str] | None = None,
+    cwd: str | None = None,
+) -> subprocess.CompletedProcess[str] | None:
+    """Run only the goto-cc compile command on a C file and return the finished process.
+
+    Args:
+        function (str): The function used as the goto-binary entry point.
+        file_path (str): Path to the C file to compile.
+        include_dirs (list[str] | None): Directories forwarded as `-I` flags.
+        cwd (str | None): Working directory for the subprocess; the `<function>.goto` output
+            lands there. When None, it lands in the current working directory.
+
+    Returns:
+        subprocess.CompletedProcess[str] | None: The process, with its exit code and its captured
+            standard output and standard error, or None if goto-cc did not finish within
+            `_GOTO_CC_TIMEOUT_SEC` seconds.
     """
     compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
     try:
-        result = subprocess.run(
+        return subprocess.run(
             compilation_command,
             capture_output=True,
             text=True,
@@ -1216,8 +1240,7 @@ def compile_with_goto_cc(
             cwd=cwd,
         )
     except TimeoutExpired:
-        return _TIMEOUT_RETURNCODE
-    return result.returncode
+        return None
 
 
 if __name__ == "__main__":

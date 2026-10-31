@@ -18,6 +18,7 @@ nothing an agent does to these files can change what is merged.
 
 from __future__ import annotations
 
+import filecmp
 import json
 import shutil
 from dataclasses import dataclass, field
@@ -166,32 +167,73 @@ def write_session_info(
     (session_root / SESSION_FILE_NAME).write_text(json.dumps(record), encoding="utf-8")
 
 
-def read_session_info(session_file: Path) -> SessionInfo | None:
-    """Return the session a file in a private copy belongs to, or None if it belongs to none.
+class SessionFileError(Exception):
+    """The session file, or the fork base it names, cannot be read or is malformed."""
 
-    The session file is looked for in every directory above `session_file`, nearest first, so the
-    tool finds it whatever the depth of the source file inside the copied directory.
+
+def session_root_of(session_file: Path) -> Path:
+    """Return the temporary root of the session whose copy of the source file is `session_file`.
+
+    The harness copies the source directory into the root, so the source file is two levels below
+    it. This does not check that `session_file` is in a session copy.
 
     Args:
-        session_file (Path): A file inside a session's private copy (normally the source file).
+        session_file (Path): The session's private copy of the source file.
 
     Returns:
-        SessionInfo | None: The session, or None when no readable session file is found.
+        Path: The directory that holds the session file, if `session_file` is in a session copy.
     """
-    for directory in session_file.resolve().parents:
-        candidate = directory / SESSION_FILE_NAME
-        if not candidate.is_file():
-            continue
-        try:
-            record = json.loads(candidate.read_text(encoding="utf-8"))
-            return SessionInfo(
-                function=record["function"],
-                canonical_file=Path(record["canonical_file"]),
-                fork_base=(directory / record["fork_base"]).read_bytes(),
-            )
-        except (OSError, ValueError, KeyError, TypeError):
-            return None
-    return None
+    return session_file.resolve().parent.parent
+
+
+def read_session_info(session_file: Path) -> SessionInfo | None:
+    """Return the session whose copy of the source file is `session_file`, if there is one.
+
+    The session file is looked for only in `session_root_of(session_file)`. This does not check
+    that `session_file` is the session's copy of the source file rather than another file beside
+    it.
+
+    Args:
+        session_file (Path): The session's private copy of the source file.
+
+    Returns:
+        SessionInfo | None: The session, or None when `session_root_of(session_file)` holds no
+            session file.
+
+    Raises:
+        SessionFileError: The session file, or the fork base it names, cannot be read or is
+            malformed.
+    """
+    root = session_root_of(session_file)
+    candidate = root / SESSION_FILE_NAME
+    if not candidate.is_file():
+        return None
+    try:
+        record = json.loads(candidate.read_text(encoding="utf-8"))
+        fields = [record["function"], record["canonical_file"], record["fork_base"]]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise SessionFileError(_damaged(candidate, repr(error))) from error
+    if not all(isinstance(value, str) for value in fields):
+        raise SessionFileError(_damaged(candidate, f"a field is not a string: {fields!r}"))
+    function, canonical_file, fork_base_name = fields
+    try:
+        fork_base = (root / fork_base_name).read_bytes()
+    except OSError as error:
+        raise SessionFileError(_damaged(candidate, repr(error))) from error
+    return SessionInfo(function=function, canonical_file=Path(canonical_file), fork_base=fork_base)
+
+
+def _damaged(session_file: Path, problem: str) -> str:
+    """Return the message for a session file that cannot be used.
+
+    Args:
+        session_file (Path): The session file.
+        problem (str): What is wrong with it.
+
+    Returns:
+        str: The message.
+    """
+    return f"session file {session_file} is damaged: {problem}"
 
 
 def run_state_path(canonical_file: Path) -> Path:
@@ -289,6 +331,6 @@ def find_stray_files(session_file: Path, canonical_dir: Path) -> list[str]:
         original = canonical_dir / relative
         if not original.is_file():
             stray.append(f"added:{relative}")
-        elif original.read_bytes() != path.read_bytes():
+        elif not filecmp.cmp(original, path, shallow=False):
             stray.append(f"modified:{relative}")
     return stray
