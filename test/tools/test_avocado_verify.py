@@ -194,6 +194,7 @@ def test_prompt_states_the_isolation_rule() -> None:
     assert "A contract you fix on another function in this file is kept too" in prompt
     assert "Edits to other files and to headers are always discarded" in prompt
     assert "must stay exactly as it was" in prompt and "contract and body" not in prompt
+    assert "A copy that breaks an edit rule is not merged at all" in prompt
     assert prompt.endswith("avocado-validate reverify --function swap --file /tmp/copy/q.c")
 
 
@@ -204,12 +205,23 @@ def test_prompt_reverify_command_carries_the_include_dirs() -> None:
         call_graph=_quicksort_call_graph(),
         include_dirs=["/src/include"],
     )
-    for check in ("edits", "reverify"):
-        expected = f"avocado-validate {check} --function partition --file /src/quicksort.c"
-        assert f"{expected} -I /src/include" in prompt
+    assert "avocado-validate edits --file /src/quicksort.c -I /src/include" in prompt
+    expected = "avocado-validate reverify --function partition --file /src/quicksort.c"
+    assert prompt.endswith(f"{expected} -I /src/include")
     assert "avocado-validate conflicts --function partition --file /src/quicksort.c\n" in prompt
     assert prompt.index("avocado-validate edits") < prompt.index("avocado-validate reverify")
-    assert "A copy that breaks an edit rule is not merged at all" in prompt
+
+
+def test_prompt_commands_carry_absolute_include_dirs(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    prompt = _build_prompt(
+        "partition",
+        file_path="/src/quicksort.c",
+        call_graph=_quicksort_call_graph(),
+        include_dirs=["include"],
+    )
+    absolute = tmp_path.resolve() / "include"
+    assert prompt.count(f"-I {absolute}") == 3, prompt
 
 
 def test_append_jsonl_is_safe_under_threads(tmp_path: Path) -> None:
