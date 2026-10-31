@@ -3,7 +3,8 @@
 from pathlib import Path
 
 import avocado_verify
-from tools.run_cbmc import list_compiled_functions, run_cbmc
+from tools import run_cbmc as run_cbmc_module
+from tools.run_cbmc import has_contract, list_compiled_functions, run_cbmc
 from tools.util import get_call_graph
 
 SOURCE = b"""static int twice(int x)
@@ -42,6 +43,26 @@ def test_the_compiler_says_which_functions_exist(tmp_path: Path) -> None:
     assert list_compiled_functions(str(source)) == {"twice", "scale"}
     # Nothing is left behind beside the source.
     assert [path.name for path in tmp_path.iterdir()] == ["build.c"]
+
+
+def test_listing_the_compiled_functions_runs_through_run_shell_command(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Like every pipeline subprocess, `goto-cc` and `goto-instrument` run through
+    # `run_shell_command`, which takes a subprocess slot and kills the whole process tree on
+    # timeout.
+    commands: list[str] = []
+    run_shell_command = run_cbmc_module.run_shell_command
+
+    def recording_run_shell_command(command: str, *args, **kwargs):
+        commands.append(command)
+        return run_shell_command(command, *args, **kwargs)
+
+    monkeypatch.setattr(run_cbmc_module, "run_shell_command", recording_run_shell_command)
+    source = _source(tmp_path)
+    assert list_compiled_functions(str(source)) == {"twice", "scale"}
+    assert has_contract("scale", str(source)) is True
+    assert [command.split()[0] for command in commands] == ["goto-cc", "goto-instrument"] * 2
 
 
 def test_a_file_that_does_not_compile_lists_nothing(tmp_path: Path) -> None:
