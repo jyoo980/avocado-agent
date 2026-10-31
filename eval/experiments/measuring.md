@@ -21,11 +21,13 @@ either kind of launcher writes.
 
 ## Where the data goes
 
-Everything the host-side scripts write lands in `avocado-experimental-data/` at
-the repository root, which **`.gitignore` excludes**. Every JSONL and `.time`
-file they produce is therefore local to the machine that produced it: a fresh
-clone has the scripts but none of the data. To re-derive the data, re-run the
-scripts.
+By default, everything the host-side scripts write lands in
+`avocado-experimental-data/` at the repository root, which **`.gitignore`
+excludes**. Every JSONL and `.time` file they produce is therefore local to the
+machine that produced it: a fresh clone has the scripts but none of the data.
+To re-derive the data, re-run the scripts. Setting `AVOCADO_DATA_DIR` sends the
+output elsewhere; `.gitignore` does not cover such a directory, so keep it out
+of version control yourself.
 
 ## Deterministic measurement, no agent involved
 

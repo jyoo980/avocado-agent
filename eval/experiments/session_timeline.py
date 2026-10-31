@@ -89,9 +89,18 @@ def analyse(path: Path, timeout: float, killed: bool) -> dict | None:
             and its longest tool calls; None when the transcript cannot be read or is empty.
     """
     try:
-        lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+        text = path.read_text(encoding="utf-8")
     except OSError:
         return None
+    lines = []
+    for line in text.splitlines():
+        if not line:
+            continue
+        try:
+            lines.append(json.loads(line))
+        except json.JSONDecodeError:
+            # A session killed mid-write can leave a partial final line.
+            continue
     events = [r for r in lines if r.get("type") in ("user", "assistant") and r.get("timestamp")]
     if not events:
         return None
@@ -198,6 +207,9 @@ def main() -> None:
                 tool_totals.update(res["tools"])
                 sessions.append((res["span"], record["function"], res))
 
+    if total_span == 0:
+        print(f"sessions: {len(sessions)}   wall-clock: 0s; no transcript time to attribute")
+        return
     tool_time = sum(tool_totals.values())
     print(f"sessions: {len(sessions)}   wall-clock: {total_span:,.0f}s")
     print(f"  model generation: {total_model:,.0f}s ({total_model / total_span:.0%})")

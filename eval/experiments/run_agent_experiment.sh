@@ -22,8 +22,11 @@
 #   CLAUDE_TIMEOUT      Per-function `claude -p` timeout in seconds, forwarded to
 #                       `--claude-timeout` when set.
 #   AVOCADO_JOBS        Forwarded to `avocado-verify --jobs` when set: how many functions of one
-#                       file are specified concurrently (default 1, sequential). Set it only
-#                       for a checkout whose `avocado-verify` has a `--jobs` option.
+#                       file are specified concurrently. When it is unset, `avocado-verify`'s own
+#                       default applies: 4 concurrent functions for an `avocado-verify` that has a
+#                       `--jobs` option, sequential for one that does not. Set it to 1 for a
+#                       sequential run. Set it only for a checkout whose `avocado-verify` has a
+#                       `--jobs` option.
 #   AVOCADO_REPO_ROOT   Checkout whose harness (`avocado-verify`, `avocado-run-cbmc`, `CLAUDE.md`,
 #                       `.claude/settings.json`) the run should use. Defaults to the checkout this
 #                       script lives in. Point it at a separate `git worktree` (with its own
