@@ -1,6 +1,6 @@
 """Tests for `tools.util.edit_rules`: splitting a C file into top-level items."""
 
-from tools.util.edit_rules import function_body_offsets
+from tools.util.edit_rules import _split_items, _tokenize, function_body_offsets
 
 CONDITIONAL_DEFINITIONS = b"""#ifdef FAST
 static int pick(int x) { return x; }
@@ -51,3 +51,58 @@ def test_a_struct_parameter_does_not_hide_the_function_or_the_ones_after_it() ->
     # The type definitions are still declarations, not functions.
     assert function_body_offsets(STRUCT_PARAMETERS, "abuf") == []
     assert function_body_offsets(STRUCT_PARAMETERS, "erow") == []
+
+
+def _names(source: bytes) -> list[str | None]:
+    return [item.name for item in _split_items(_tokenize(source))]
+
+
+def test_a_comment_opener_in_a_directive_string_does_not_hide_the_functions_after_it() -> None:
+    source = b'#define GLOB "/*"\nint f(void) { return 1; }\nint g(void) { return 2; }\n/* x */\n'
+    assert len(function_body_offsets(source, "f")) == 1
+    assert len(function_body_offsets(source, "g")) == 1
+
+
+def test_an_apostrophe_in_a_directive_does_not_hide_the_functions_after_it() -> None:
+    source = b"#error don't\nint f(void) { return 1; }\nint g(void) { return '2'; }\n"
+    assert len(function_body_offsets(source, "f")) == 1
+    assert len(function_body_offsets(source, "g")) == 1
+
+
+def test_a_header_that_differs_between_branches_has_one_body_offset_per_header() -> None:
+    source = (
+        b"#ifdef X\nvoid f(int a) {\n#else\nvoid f(int a, int b) {\n#endif\n  return;\n}\n"
+        b"int g(void) { return 0; }\n"
+    )
+    offsets = function_body_offsets(source, "f")
+    assert len(offsets) == 2
+    assert all(source[offset : offset + 1] == b"{" for offset in offsets)
+    assert len(function_body_offsets(source, "g")) == 1
+
+
+def test_braces_opened_in_each_branch_of_a_conditional_inside_a_body_count_once() -> None:
+    source = (
+        b"int f(int a) {\n#ifdef X\n  if (a) {\n#else\n  if (!a) {\n#endif\n"
+        b"    a++;\n  }\n  return a;\n}\nint g(void) { return 0; }\n"
+    )
+    assert len(function_body_offsets(source, "f")) == 1
+    assert len(function_body_offsets(source, "g")) == 1
+
+
+def test_a_prototype_is_not_named_after_a_function_pointer_parameter() -> None:
+    assert _names(b"void sort(int *a, int (*cmp)(int, int));") == ["sort"]
+    assert _names(b"int (*handler)(int);") == ["handler"]
+    assert _names(b"typedef int (*cmp_t)(int, int);") == ["cmp_t"]
+
+
+def test_an_attribute_after_the_declarator_is_not_the_name() -> None:
+    assert _names(b"int x __attribute__((aligned(4)));") == ["x"]
+    assert _names(b"int f(void) __attribute__((pure));") == ["f"]
+    assert _names(b'int y asm("real_y");') == ["y"]
+    assert _names(b"__attribute__((unused)) static int z;") == ["z"]
+
+
+def test_a_struct_defined_in_the_return_type_does_not_hide_the_function_name() -> None:
+    source = b"struct S { int a; } f(void) { struct S s = {0}; return s; }\n"
+    offsets = function_body_offsets(source, "f")
+    assert offsets == [source.index(b"{", source.index(b"f(void)"))]

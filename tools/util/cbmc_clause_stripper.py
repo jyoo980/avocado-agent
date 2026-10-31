@@ -210,13 +210,17 @@ def _skip_identifier(source: bytes, i: int) -> int:
 def _skip_literal(source: bytes, i: int, quote: int) -> int:
     """Return the byte offset just past the string/character literal at ``i``.
 
+    A literal cannot span lines, so an unterminated one (such as the apostrophe in
+    ``#error don't``) ends at the end of its line.
+
     Args:
         source: The source bytes.
         i: Offset of the opening quote byte.
         quote: The opening quote byte (``"`` or ``'``).
 
     Returns:
-        The offset of the byte immediately after the closing quote.
+        The offset of the byte immediately after the closing quote, or of the newline that ends
+        an unterminated literal.
     """
     length = len(source)
     j = i + 1
@@ -227,6 +231,8 @@ def _skip_literal(source: bytes, i: int, quote: int) -> int:
             continue
         if b == quote:
             return j + 1
+        if b == ord("\n"):
+            return j
         j += 1
     return length
 
