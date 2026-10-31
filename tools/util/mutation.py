@@ -10,9 +10,7 @@ that perturbation.
 from __future__ import annotations
 
 import json
-import os
 import sys
-import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -26,12 +24,17 @@ from eval.mutants.util import (
     is_valid_mutation_candidate,
 )
 from tools.construct_call_graph import construct_call_graph
-from tools.run_cbmc import _DEFAULT_RUN_CBMC_TIMEOUT_SEC, CbmcStep, run_cbmc
+from tools.run_cbmc import (
+    _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
+    MAX_CONCURRENT_SUBPROCESSES,
+    CbmcStep,
+    run_cbmc,
+)
 from tools.util.callgraph import CallGraph
 
 # Per-subprocess CBMC timeout applied to each mutant unless a caller overrides it. This is the
 # full pipeline timeout, so the evaluation metric (`evaluate_specification_quality.py`) decides
-# mutants under exactly the same budget as before.
+# each mutant under the same budget as `run_cbmc` gives the original function.
 DEFAULT_MUTANT_TIMEOUT_SEC = _DEFAULT_RUN_CBMC_TIMEOUT_SEC
 
 # Matches the GNU `timeout(1)` convention used elsewhere in the codebase; surfaces in
@@ -44,10 +47,10 @@ _VERIFICATION_FAILURE_RETURNCODE = 10
 # output is capped, dropping trailing survivors behind an explicit omission marker.
 _MAX_MUTATION_SECTION_CHARS = 50_000
 
-# Mutants are verified concurrently by up to `os.cpu_count()` worker threads (see
-# `_mutation_worker_count`). Each worker drives a full CBMC pipeline; the process-wide subprocess
-# cap in `tools.run_cbmc` (`AVOCADO_MAX_CONCURRENT_CBMC`) bounds how many of those pipelines can
-# actually be running at once, so lower that if mutation runs exhaust RAM.
+# Mutants are verified concurrently by worker threads (see `_mutation_worker_count`). Each worker
+# drives a full CBMC pipeline; the process-wide subprocess cap in `tools.run_cbmc`
+# (`AVOCADO_MAX_CONCURRENT_CBMC`) bounds how many of those pipelines can actually be running at
+# once, so lower that if mutation runs exhaust RAM.
 
 
 @dataclass(frozen=True)
@@ -304,17 +307,7 @@ def generate_mutants_and_compute_score(
     workspace.mkdir(parents=True, exist_ok=True)
 
     if not skip_reverification:
-        # Run the baseline verification in a private scratch directory too (see `_verify_mutant`)
-        # so that callers scoring several functions -- or several files -- concurrently cannot
-        # clobber one another's `<function>.goto` intermediates. Paths are resolved first because
-        # the pipeline's commands are executed relative to that directory.
-        with tempfile.TemporaryDirectory(prefix="avocado-baseline-") as scratch_dir:
-            cbmc_result = run_cbmc(
-                target_function,
-                str(source_path),
-                include_dirs=[str(Path(d).resolve()) for d in include_dirs or []],
-                cwd=scratch_dir,
-            )
+        cbmc_result = run_cbmc(target_function, str(source_path), include_dirs=include_dirs)
         if not is_valid_mutation_candidate(cbmc_result):
             # No usable baseline if CBMC can't verify the unmutated function.
             return BaselineFailsVerification(file_path, target_function)
@@ -390,10 +383,10 @@ def generate_mutants_and_compute_score(
 def _mutation_worker_count(num_mutants: int) -> int:
     """Return how many mutants to verify concurrently.
 
-    Bounded by the machine's CPU count and the number of mutants, and never below 1 (a
-    `ThreadPoolExecutor` requires a positive worker count, even when there are no mutants to run).
-    Machine-wide load is bounded separately by the subprocess cap in `tools.run_cbmc`, which is
-    why no smaller fixed cap is applied here.
+    Bounded by the process-wide subprocess cap in `tools.run_cbmc` (more workers than that could
+    only wait for a subprocess slot, while each holds its own mutant file) and by the number of
+    mutants, and never below 1 (a `ThreadPoolExecutor` requires a positive worker count, even when
+    there are no mutants to run).
 
     Args:
         num_mutants (int): The total number of mutants to verify.
@@ -401,7 +394,7 @@ def _mutation_worker_count(num_mutants: int) -> int:
     Returns:
         int: The number of worker threads to use.
     """
-    return max(1, min(num_mutants, os.cpu_count() or 1))
+    return max(1, min(num_mutants, MAX_CONCURRENT_SUBPROCESSES))
 
 
 def _print_mutation_progress(
@@ -485,8 +478,8 @@ def _verify_mutant(
     returned with `compile_failed=True`; this prevents `check_expected_cbmc_return_code` from
     raising on goto-cc's exit code and lets callers exclude these mutants from the kill rate.
 
-    Safe to call concurrently for sibling mutants of one function: the CBMC pipeline runs in a
-    private scratch directory so its function-name-derived `.goto` intermediates never collide,
+    Safe to call concurrently for sibling mutants of one function: `run_cbmc` runs each pipeline in
+    a private scratch directory so its function-name-derived `.goto` intermediates never collide,
     and the shared `call_graph` is read-only.
 
     Args:
@@ -504,21 +497,14 @@ def _verify_mutant(
             not run.
     """
     path_to_write_mutant.write_text(mutant.mutant_source, encoding="utf-8")
-    # The CBMC pipeline writes intermediate `<function>.goto` / `checking-<function>-contracts.goto`
-    # files named only by the function name -- identical across all mutants of one function -- into
-    # its working directory. Give each run a private scratch dir so concurrent mutants don't clobber
-    # one another's goto-binaries (this also keeps the source directory clean). The result is read
-    # entirely from the in-memory `cbmc_result`, so the scratch dir can be torn down immediately.
     started = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix="avocado-mutant-") as scratch_dir:
-        cbmc_result = run_cbmc(
-            function_to_verify=mutant.function,
-            file_containing_function_to_verify=str(path_to_write_mutant),
-            include_dirs=include_dirs,
-            call_graph=call_graph,
-            cwd=scratch_dir,
-            timeout_sec=timeout_sec,
-        )
+    cbmc_result = run_cbmc(
+        function_to_verify=mutant.function,
+        file_containing_function_to_verify=str(path_to_write_mutant),
+        include_dirs=include_dirs,
+        call_graph=call_graph,
+        timeout_sec=timeout_sec,
+    )
     seconds = round(time.monotonic() - started, 3)
     if cbmc_result.timed_out:
         return MutantVerificationResult(
