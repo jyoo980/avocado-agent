@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from tools.run_cbmc import VACUOUS_VERDICT
+
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
@@ -87,11 +89,6 @@ class RunState:
     verified: frozenset[str]
     active: frozenset[str]
     unverified: dict[str, str] = field(default_factory=dict)
-
-
-# The CBMC verdict of a proof that passed vacuously, as it opens the status of such a function
-# in `RunState.unverified` and in the harness's run log.
-VACUOUS_VERDICT = "VACUOUS"
 
 
 def vacuous_status(vacuity: str | None) -> str:
