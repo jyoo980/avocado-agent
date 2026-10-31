@@ -20,7 +20,8 @@ caller checks.
 Usage:
     % ./eval/compute_clause_redundancy.py --function <NAME> \
         --file <PATH_TO_C_FILE> \
-        [-I <PATH_TO_INCLUDE_DIR>]... \
+        [--auto-include] \
+        [--include-dirs <PATH_TO_INCLUDE_DIR>]... \
         [--keep-artifacts]
         [--jsonl PATH]
 """
@@ -40,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from eval.mutants.mutate_specification import ClauseMutant, get_clause_mutants
 from eval.mutants.util import (
+    autodetect_include_dirs,
     check_expected_cbmc_return_code,
     is_valid_mutation_candidate,
 )
@@ -206,11 +208,18 @@ def main() -> None:
     parser.add_argument("--function", required=True)
     parser.add_argument("--file", required=True)
     parser.add_argument(
+        "--auto-include",
+        help=(
+            "Look for a sibling include/ directory at <source>/../include and pass it to CBMC "
+            "as an include path. Fits projects whose headers live next to their src/ tree."
+        ),
+        action="store_true",
+    )
+    parser.add_argument(
         "-I",
-        "--include-dir",
+        "--include-dirs",
         action="append",
         default=[],
-        dest="include_dirs",
         metavar="DIR",
         help="Directory to add to the include search path. May be repeated.",
     )
@@ -218,10 +227,15 @@ def main() -> None:
     parser.add_argument("--keep-artifacts", action="store_true")
     args = parser.parse_args()
 
+    include_dirs = (
+        [*autodetect_include_dirs(args.file), *args.include_dirs]
+        if args.auto_include
+        else args.include_dirs
+    )
     clause_redundancy_score = compute_clause_redundancy_score(
         file_path=args.file,
         function_name=args.function,
-        include_dirs=args.include_dirs,
+        include_dirs=include_dirs,
         keep_artifacts=args.keep_artifacts,
     )
 
@@ -296,8 +310,9 @@ def compute_clause_redundancy_score(
 ) -> ClauseRedundancyScore | None:
     """Score clause redundancy for `function_name` in `file_path`.
 
-    Mutant `.c` files are written next to the original source by default to simplify compilation
-    and instrumentation with CBMC. Mutants are removed unless keep_artifacts is set to `True`.
+    Mutant `.c` files are written to `workspace` and are removed unless keep_artifacts is set to
+    `True`. Each mutant is verified with the original source's directory on its include path, so a
+    quoted `#include` resolves as it does for the original source wherever `workspace` is.
 
     If the unmutated function does not verify, return None.
 
@@ -305,7 +320,7 @@ def compute_clause_redundancy_score(
         file_path (str): Path to the C source defining the function.
         function_name (str): The function whose contract clauses should be tested.
         workspace (Path | None): Directory to write mutant files into. Defaults to the
-            source file's directory so relative `#include` paths still resolve.
+            source file's directory.
         keep_artifacts (bool): When True, mutant `.c` files are kept for inspection.
         include_dirs (list[str] | None): Directories forwarded to `run_cbmc()` as `-I` flags for
             every verification run.
@@ -314,8 +329,15 @@ def compute_clause_redundancy_score(
         ClauseRedundancyScore: Aggregated counts plus the per-clause results.
     """
     source_path = Path(file_path).resolve()
-    workspace = workspace or source_path.parent
+    workspace = (workspace or source_path.parent).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
+    # A quoted `#include` is resolved relative to the including file's directory first. A mutant
+    # outside the original source's directory needs that directory on its include path instead.
+    mutant_include_dirs = (
+        include_dirs
+        if workspace == source_path.parent
+        else [str(source_path.parent), *(include_dirs or [])]
+    )
 
     # Check that the original function verifies in the first place.
     result = run_cbmc(function_name, file_path, include_dirs=include_dirs)
@@ -336,7 +358,7 @@ def compute_clause_redundancy_score(
 
     try:
         in_isolation_results = [
-            _verify_removed_clause_source(mutant_path, mutant, include_dirs)
+            _verify_removed_clause_source(mutant_path, mutant, mutant_include_dirs)
             for mutant_path, mutant in paths_to_removed_clauses.items()
         ]
         caller_side_results = [
@@ -345,7 +367,7 @@ def compute_clause_redundancy_score(
                 mutant,
                 in_file_callers,
                 in_file_callers_to_baseline_verification_results,
-                include_dirs,
+                mutant_include_dirs,
             )
             for mutant_path, mutant in paths_to_removed_clauses.items()
         ]
