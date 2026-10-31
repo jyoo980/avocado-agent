@@ -258,7 +258,6 @@ def generate_mutants_and_compute_score(
     target_function: str,
     *,
     include_dirs: list[str] | None = None,
-    call_graph: CallGraph | None = None,
     workspace: Path | None = None,
     keep_artifacts: bool = False,
     skip_reverification: bool = False,
@@ -273,8 +272,6 @@ def generate_mutants_and_compute_score(
         target_function (str): The function for which to generate mutants.
         include_dirs (list[str] | None): Directories forwarded to `run_cbmc()` as `-I` flags
             for both the original-function verification and every mutant run.
-        call_graph (CallGraph | None): The call graph of `file_path`. When None, it is
-            constructed from `file_path`.
         workspace (Path | None): Directory to write mutant files into. Defaults to the
             source file's directory.
         keep_artifacts (bool): When True, mutant `.c` files are kept for inspection.
@@ -293,22 +290,19 @@ def generate_mutants_and_compute_score(
     workspace.mkdir(parents=True, exist_ok=True)
 
     if not skip_reverification:
-        cbmc_result = run_cbmc(
-            target_function, file_path, include_dirs=include_dirs, call_graph=call_graph
-        )
+        cbmc_result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
         if not is_valid_mutation_candidate(cbmc_result):
             # No usable baseline if CBMC can't verify the unmutated function.
             return BaselineFailsVerification(file_path, target_function)
 
     # Operator-swap mutations never add or remove calls (or rename functions), so the call graph
-    # is identical for the original and every mutant. Use one call graph for every mutant's
-    # run_cbmc below. Besides avoiding redundant parsing, this keeps the non-thread-safe
-    # tree-sitter parser out of the concurrent section: no call graph is constructed inside the
-    # worker threads.
-    if call_graph is None:
-        call_graph = CallGraph(
-            json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
-        )
+    # is identical for the original and every mutant. Build it once -- cache-hitting the JSON the
+    # baseline run above already wrote -- and pass it into each mutant's run_cbmc below. Besides
+    # avoiding redundant parsing, this keeps the non-thread-safe tree-sitter parser out of the
+    # concurrent section: no call graph is constructed inside the worker threads.
+    call_graph = CallGraph(
+        json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
+    )
 
     paths_to_mutants = {
         _get_path_for_mutated_source(workspace, source_path, i): mutant
