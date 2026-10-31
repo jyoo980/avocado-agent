@@ -354,8 +354,8 @@ def _run_pipeline(
             stdout and stderr across every subprocess that ran. The concatenated output is used by
             the retry triggers in `run_cbmc`.
     """
-    contract_command = _get_goto_instrument_contract_command(function_to_verify, callees)
-    commands: list[tuple[CbmcStep, str]] = [
+    # Each entry is (step, command, whether to drop the command's missing-body warnings).
+    commands: list[tuple[CbmcStep, str, bool]] = [
         (
             CbmcStep.GOTO_CC,
             _get_goto_cc_command(
@@ -365,12 +365,22 @@ def _run_pipeline(
                 include_dirs=include_dirs,
                 prevent_macro_expansion=prevent_macro_expansion,
             ),
+            False,
         ),
         (
             CbmcStep.GOTO_INSTRUMENT,
             _get_goto_instrument_unwind_command(_compiled_goto_file(function_to_verify)),
+            False,
         ),
-        (CbmcStep.GOTO_INSTRUMENT, contract_command),
+        # When the library is added later, contract enforcement warns about every library
+        # function, such as `malloc`. Those warnings would lead the agent to write stubs that hide
+        # CBMC's models. `cbmc` itself reports each callee that still lacks a body ("no body for
+        # callee").
+        (
+            CbmcStep.GOTO_INSTRUMENT,
+            _get_goto_instrument_contract_command(function_to_verify, callees),
+            prevent_macro_expansion,
+        ),
     ]
     if prevent_macro_expansion:
         # The library goes in only once the contract is enforced. Enforcing it on a binary that
@@ -384,28 +394,26 @@ def _run_pipeline(
                 (
                     CbmcStep.GOTO_INSTRUMENT,
                     _get_goto_instrument_add_library_command(checking_goto),
+                    False,
                 ),
                 (
                     CbmcStep.GOTO_INSTRUMENT,
                     _get_goto_instrument_unwind_command(checking_goto),
+                    False,
                 ),
             ]
         )
-    commands.append((CbmcStep.CBMC, _get_cbmc_check_command(function_to_verify)))
+    commands.append((CbmcStep.CBMC, _get_cbmc_check_command(function_to_verify), False))
 
     per_step_stdout = []
     per_step_stderr = []
-    for step, command in commands:
+    for step, command, drop_missing_body_warnings in commands:
         subprocess_result = _run_command(
             step, command, subprocess_results, cwd=cwd, timeout_sec=timeout_sec
         )
         stdout = subprocess_result.stdout
         stderr = subprocess_result.stderr
-        if prevent_macro_expansion and command == contract_command:
-            # Contract enforcement runs before the library is added, so it warns about every
-            # library function, such as `malloc`. Those warnings would lead the agent to write
-            # stubs that hide CBMC's models. `cbmc` itself reports each callee that still lacks a
-            # body ("no body for callee").
+        if drop_missing_body_warnings:
             stdout = _drop_missing_body_warnings(stdout)
             stderr = _drop_missing_body_warnings(stderr)
         per_step_stdout.append(stdout)
@@ -767,7 +775,7 @@ def _get_goto_cc_command(
     return " ".join(
         (
             f"goto-cc {flags_disabling_macro_expansion}",
-            f"-o {quoted_function}.goto",
+            f"-o {_compiled_goto_file(function)}",
             include_flags,
             shlex.quote(file_containing_function),
             extra_stub_args,

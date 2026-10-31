@@ -451,13 +451,20 @@ def test_the_library_is_added_after_the_contract_is_enforced(tmp_path: Path) -> 
     # The library models `free`, so the response does not tell the agent that `free` lacks a body.
     assert "no body for function" not in results["abFree"].response
     # abFree's verdict comes from the missing-body retry, which adds the library to the
-    # instrumented binary. (mk verifies on the first attempt, without the retry.)
+    # instrumented binary after enforcing the contract. (mk verifies on the first attempt, without
+    # the retry.)
     log_lines = (tmp_path / "alloc-cbmc-runs.jsonl").read_text(encoding="utf-8").splitlines()
     commands_by_function = {
         record["function"]: [run["command"] for run in record["subprocess_results"]]
         for record in map(json.loads, log_lines)
     }
-    assert (
-        "goto-instrument --add-library checking-abFree-contracts.goto checking-abFree-contracts.goto"
-        in commands_by_function["abFree"]
-    )
+    abfree_commands = commands_by_function["abFree"]
+    retry_start = max(i for i, c in enumerate(abfree_commands) if c.startswith("goto-cc"))
+    assert abfree_commands[retry_start + 1 :] == [
+        "goto-instrument --partial-loops --unwind 5 abFree.goto abFree.goto",
+        "goto-instrument --enforce-contract abFree abFree.goto checking-abFree-contracts.goto",
+        "goto-instrument --add-library checking-abFree-contracts.goto checking-abFree-contracts.goto",
+        "goto-instrument --partial-loops --unwind 5 "
+        "checking-abFree-contracts.goto checking-abFree-contracts.goto",
+        "cbmc checking-abFree-contracts.goto --function abFree --depth 200",
+    ]
