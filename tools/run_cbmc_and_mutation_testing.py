@@ -53,10 +53,11 @@ def main() -> None:
             "Run CBMC on a function, with bounded loop unwinding and bounded depth. "
             "Exits with status 0 on verification success. "
             "On success, additionally runs mutation testing, which re-runs the full CBMC "
-            "pipeline once per mutant (several mutants in parallel, up to "
-            f"{_AGENT_MUTANT_TIMEOUT_SEC} s each); this can take a few minutes, during which the "
-            "tool is mostly silent. This is expected, not a hang -- do not interrupt the process. "
-            "Consider running it in the background and polling for completion."
+            "pipeline once per mutant (several mutants in parallel, with a timeout of "
+            f"{_AGENT_MUTANT_TIMEOUT_SEC} s on each CBMC step); this can take a few minutes, "
+            "during which the tool is mostly silent. This is expected, not a hang -- do not "
+            "interrupt the process. Consider running it in the background and polling for "
+            "completion."
         )
     )
     parser.add_argument("--function", required=True, help="Name of the function to verify.")

@@ -327,9 +327,9 @@ def generate_mutants_and_compute_score(
     if mutants:
         print(
             f"Verified {target_function}; now running mutation testing on {total} "
-            f"mutants across up to {max_workers} worker(s) (one CBMC run each, up to "
-            f"{mutant_timeout_sec} s per mutant) -- this can take several minutes; do not "
-            "interrupt.",
+            f"mutants across up to {max_workers} worker(s) (one CBMC run each, with a timeout "
+            f"of {mutant_timeout_sec} s on each CBMC step) -- this can take several minutes; "
+            "do not interrupt.",
             file=sys.stderr,
             flush=True,
         )
