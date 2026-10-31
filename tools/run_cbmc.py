@@ -35,7 +35,8 @@ from tools.util.callgraph import CallGraph
 _MAX_RESPONSE_CHARS = 100_000
 
 # Of the budget left after the header and the leading FAILURE lines, this fraction is given to
-# the stdout tail section; the remainder goes to the stderr tail section.
+# the stdout tail section and the remainder to the stderr tail section. When one section needs
+# less than its share, the other section gets the rest.
 _STDOUT_TAIL_SHARE = 0.7
 
 _DISABLE_MACRO_FLAGS = [
@@ -576,18 +577,20 @@ def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, 
 
     failure_section = _failure_lines_section(stdout)
 
-    # Lead with the FAILURE lines, then show both streams in full when everything fits.
-    full = f"{header}{failure_section}--- stderr ---\n{stderr}\n--- stdout ---\n{stdout}"
-    if len(full) <= _MAX_RESPONSE_CHARS:
-        return full
+    # Lead with the FAILURE lines, then show both streams in full when everything fits. The
+    # length is checked before concatenating, because the streams can be hundreds of MB.
+    full_parts = [header, failure_section, "--- stderr ---\n", stderr, "\n--- stdout ---\n", stdout]
+    if sum(len(part) for part in full_parts) <= _MAX_RESPONSE_CHARS:
+        return "".join(full_parts)
 
     # Over budget: keep the leading FAILURE lines and replace each stream with its tail.
     remaining = max(_MAX_RESPONSE_CHARS - len(header) - len(failure_section), 0)
     stdout_budget = int(remaining * _STDOUT_TAIL_SHARE)
-    stderr_budget = remaining - stdout_budget
-
-    stderr_section = _tail_section("stderr (tail)", stderr, stderr_budget)
+    # Give stderr whatever stdout's share does not need, then give stdout whatever stderr does
+    # not use. When both streams are long, the sections get their shares of `remaining`.
     stdout_section = _tail_section("stdout (tail)", stdout, stdout_budget)
+    stderr_section = _tail_section("stderr (tail)", stderr, remaining - len(stdout_section))
+    stdout_section = _tail_section("stdout (tail)", stdout, remaining - len(stderr_section))
 
     response = f"{header}{failure_section}{stderr_section}{stdout_section}"
     # Hard clamp: each section fits its budget unless the budget cannot hold even the section's
