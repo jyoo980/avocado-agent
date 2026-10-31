@@ -33,7 +33,7 @@ from loguru import logger
 from eval.mutants.mutate_function import get_mutants
 from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
-from tools.run_cbmc import RunCbmcResult, run_cbmc
+from tools.run_cbmc import CbmcStep, RunCbmcResult, list_compiled_functions, run_cbmc
 from tools.run_cbmc_and_mutation_testing import VERIFICATION_ATTEMPTS_LOG_SUFFIX
 from tools.util.callgraph import CallGraph
 
@@ -151,6 +151,9 @@ class FunctionVerificationResult:
             `avocado-run-cbmc`) for this function across all its sessions.
         agent_sessions (int): How many `claude -p` sessions this function received before the
             harness moved on (>= 1; > 1 when re-runs were needed to reach the attempt floor).
+        not_in_build (bool): True iff the function is in the source text but not in the compiled
+            program (the preprocessor removes it), so it was given no session and no CBMC run
+            (see `_functions_not_in_build`). It is recorded as unverified.
     """
 
     function: str
@@ -160,6 +163,7 @@ class FunctionVerificationResult:
     internal_callees: list[str]
     verification_attempts: int
     agent_sessions: int
+    not_in_build: bool = False
 
     def to_record(self) -> dict:
         """Return a JSON-serializable record of this result for the run log.
@@ -188,6 +192,7 @@ class FunctionVerificationResult:
                 if self.cbmc.failed_step is None
                 else self.cbmc.failed_step.value,
             },
+            "not_in_build": self.not_in_build,
             "total_cost_to_verify_usd": total_cost_to_verify_usd,
         }
 
@@ -254,6 +259,20 @@ def main() -> None:
         )
         attempts_log_path.write_text("", encoding="utf-8")  # Scope the attempts log to this run.
 
+    # Functions the preprocessor removes cannot be verified and are never really called, so they
+    # get no session and are taken out of every other function's callees.
+    not_in_build = _functions_not_in_build(functions, str(file_path), include_dirs)
+    if not_in_build:
+        logger.warning(
+            f"{len(not_in_build)} function(s) are in the source but not in the compiled program "
+            f"and are recorded as unverified without a session: {', '.join(not_in_build)}"
+        )
+        call_graph = _without_functions(call_graph, not_in_build)
+        for function in not_in_build:
+            if function not in already_done:
+                _append_jsonl(log_path, _not_in_build_result(function).to_record())
+                already_done.add(function)
+
     num_functions = len(functions)
     pending = [function for function in functions if function not in already_done]
     if args.resume_from and already_done:
@@ -265,7 +284,12 @@ def main() -> None:
     if not pending:
         logger.info(f"Nothing to do; all {num_functions} function(s) already complete.")
         _finalize_run(
-            log_path, functions=functions, remaining=[], status="completed", stopped_early=False
+            log_path,
+            functions=functions,
+            remaining=[],
+            status="completed",
+            stopped_early=False,
+            not_in_build=not_in_build,
         )
 
     logger.info(
@@ -301,11 +325,99 @@ def main() -> None:
                 remaining=[function, *remaining],
                 status="usage_limited",
                 stopped_early=True,
+                not_in_build=not_in_build,
             )
 
     _log_summary(results, log_path)
     _finalize_run(
-        log_path, functions=functions, remaining=[], status="completed", stopped_early=False
+        log_path,
+        functions=functions,
+        remaining=[],
+        status="completed",
+        stopped_early=False,
+        not_in_build=not_in_build,
+    )
+
+
+def _functions_not_in_build(
+    functions: list[str], file_path: str, include_dirs: list[str]
+) -> list[str]:
+    """Return the functions that are in the source text but not in the compiled program.
+
+    The call graph is read from the source without preprocessing, so it lists functions inside
+    conditional blocks that this build leaves out. CBMC has no such function: a session for one
+    cannot succeed, and a caller whose callee list names one fails at `goto-instrument`.
+
+    Args:
+        functions (list[str]): The verifiable functions found in the source text.
+        file_path (str): Absolute path to the C file.
+        include_dirs (list[str]): Include directories forwarded to `goto-cc`.
+
+    Returns:
+        list[str]: The functions the compiler does not build, in the order of `functions`; empty
+            when the file could not be compiled, since nothing is then known.
+    """
+    compiled = list_compiled_functions(file_path, include_dirs)
+    if compiled is None:
+        logger.warning(
+            f"could not list the functions compiled from {file_path}; treating every function "
+            "in the source as part of the build"
+        )
+        return []
+    return [function for function in functions if function not in compiled]
+
+
+def _without_functions(call_graph: CallGraph, removed: list[str]) -> CallGraph:
+    """Return a call graph without the given functions, as nodes and as callees.
+
+    Args:
+        call_graph (CallGraph): A call graph.
+        removed (list[str]): Functions to take out.
+
+    Returns:
+        CallGraph: A new call graph in which no function is, or calls, one of `removed`.
+    """
+    gone = set(removed)
+    return CallGraph(
+        {
+            function: {
+                "internal": [callee for callee in callees.internal if callee not in gone],
+                "external": list(callees.external),
+            }
+            for function, callees in call_graph.items()
+            if function not in gone
+        }
+    )
+
+
+def _not_in_build_result(function: str) -> FunctionVerificationResult:
+    """Return the result recorded for a function that is not in the compiled program.
+
+    It is recorded the way such a function ended up before it was recognised -- unverified,
+    because goto-cc finds no such function -- but without the session that used to be spent
+    finding that out, and marked `not_in_build`.
+
+    Args:
+        function (str): A function the compiler does not build.
+
+    Returns:
+        FunctionVerificationResult: An unverified result with no sessions and no cost.
+    """
+    return FunctionVerificationResult(
+        function=function,
+        outcome=GroundTruthVerificationResult.UNVERIFIED,
+        claude_sessions=[],
+        cbmc=RunCbmcResult(
+            function=function,
+            failed_step=CbmcStep.GOTO_CC,
+            timed_out=False,
+            returncode=1,
+            response=f"{function} is not in the compiled program: the preprocessor removes it",
+        ),
+        internal_callees=[],
+        verification_attempts=0,
+        agent_sessions=0,
+        not_in_build=True,
     )
 
 
@@ -325,6 +437,7 @@ def _finalize_run(
     remaining: list[str],
     status: str,
     stopped_early: bool,
+    not_in_build: list[str] | None = None,
 ) -> None:
     """Append the terminal run-summary record and exit with the appropriate code.
 
@@ -337,6 +450,8 @@ def _finalize_run(
         remaining (list[str]): Functions still pending (empty on normal completion).
         status (str): "usage_limited" or "completed" for the summary record.
         stopped_early (bool): True iff the run stopped on a usage limit; selects the exit code.
+        not_in_build (list[str] | None): Functions that are not in the compiled program. They
+            are part of `functions` and count as unverified; the summary names them.
     """
     verified_set = _verified_functions(log_path)
     verified = sum(1 for function in functions if function in verified_set)
@@ -344,7 +459,12 @@ def _finalize_run(
     _append_jsonl(
         log_path,
         _run_summary_record(
-            status, done=done, remaining=remaining, verified=verified, total=len(functions)
+            status,
+            done=done,
+            remaining=remaining,
+            verified=verified,
+            total=len(functions),
+            not_in_build=not_in_build,
         ),
     )
     if stopped_early:
@@ -608,7 +728,13 @@ def _verified_functions(log_path: Path) -> set[str]:
 
 
 def _run_summary_record(
-    status: str, *, done: list[str], remaining: list[str], verified: int, total: int
+    status: str,
+    *,
+    done: list[str],
+    remaining: list[str],
+    verified: int,
+    total: int,
+    not_in_build: list[str] | None = None,
 ) -> dict:
     """Build the terminal run-summary record appended to the run log.
 
@@ -621,6 +747,8 @@ def _run_summary_record(
         remaining (list[str]): Functions still pending, in topological order.
         verified (int): Count of functions verified across all runs.
         total (int): Total verifiable functions in the file.
+        not_in_build (list[str] | None): Functions that are in the source but not in the
+            compiled program. They are included in `total` and are not verified.
 
     Returns:
         dict: A JSON-serializable terminal run-summary record.
@@ -633,6 +761,7 @@ def _run_summary_record(
         "remaining": remaining,
         "verified": verified,
         "total": total,
+        "not_in_build": list(not_in_build or []),
     }
 
 
