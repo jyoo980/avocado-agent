@@ -15,17 +15,9 @@ Usage:
 import argparse
 import json
 import tempfile
-import threading
 from pathlib import Path
 
 from tools.util import get_call_graph
-
-# `construct_call_graph` caches its JSON next to the source and is called from concurrent code
-# paths (e.g. the evaluation driver scoring several functions of one file at once). The lock keeps
-# threads of one process from parsing the same file redundantly (tree-sitter parsing is not
-# thread-safe); the atomic rename in `construct_call_graph` keeps other processes from reading a
-# partially written file.
-_CALL_GRAPH_LOCK = threading.Lock()
 
 
 def main() -> None:
@@ -55,21 +47,21 @@ def construct_call_graph(
     """
     source_path = Path(path_to_file_to_verify)
     path_to_call_graph = source_path.with_name(f"{source_path.stem}-callgraph.json")
-    with _CALL_GRAPH_LOCK:
-        call_graph = get_call_graph(path_to_file_to_verify)
-        # Write to a uniquely named sibling and rename it into place, so that a concurrent process
-        # sees either no file or a complete one. Two processes that race both write identical
-        # content, so whichever rename lands last is harmless.
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=path_to_call_graph.parent,
-            prefix=f".{path_to_call_graph.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as tmp:
-            tmp.write(json.dumps(call_graph, indent=4))
-        Path(tmp.name).replace(path_to_call_graph)
+    call_graph = get_call_graph(path_to_file_to_verify)
+    # `construct_call_graph` is called from concurrent code paths (e.g. the evaluation driver
+    # scoring several functions of one file at once), in one process or several. Write to a
+    # uniquely named sibling and rename it into place, so that a concurrent reader sees either the
+    # previous file or a complete new one, never a partially written one.
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=path_to_call_graph.parent,
+        prefix=f".{path_to_call_graph.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as tmp:
+        tmp.write(json.dumps(call_graph, indent=4))
+    Path(tmp.name).replace(path_to_call_graph)
     return str(path_to_call_graph)
 
 
