@@ -13,7 +13,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -86,6 +86,25 @@ class CbmcStep(StrEnum):
 
 
 @dataclass(frozen=True)
+class PipelineVariant:
+    """Which of the pipeline's variants a run used.
+
+    `run_cbmc` first runs the plain pipeline and, when that fails in one of two recognisable
+    ways, runs it again differently. A result says which variant produced it, so that a later
+    run that must be comparable with it (the vacuity check) can be made the same way.
+
+    Attributes:
+        replace_self_call (bool): True iff a self-recursive function's own contract was
+            substituted for its recursive calls (the recursion-inlining retry).
+        prevent_macro_expansion (bool): True iff macros CBMC cannot model were disabled and the
+            bundled C-library models were added (the missing-body retry).
+    """
+
+    replace_self_call: bool = False
+    prevent_macro_expansion: bool = False
+
+
+@dataclass(frozen=True)
 class RunCbmcResult:
     """The outcome of running CBMC on a function.
 
@@ -97,6 +116,8 @@ class RunCbmcResult:
             exit code of the failing subprocess (cbmc's verification exit code when
             `failed_step` is CBMC).
         response (str): Printable summary — a success line or a truncated failure block.
+        variant (PipelineVariant | None): The variant of the pipeline that produced this result,
+            when it came from `run_cbmc`.
         no_contract (bool): True iff the pipeline passed but the function has no contract in the
             compiled program. CBMC then checks an empty contract, which nothing can violate, so
             such a pass proves nothing about the function and does not count as verified.
@@ -107,6 +128,7 @@ class RunCbmcResult:
     timed_out: bool
     returncode: int
     response: str
+    variant: PipelineVariant | None = None
     no_contract: bool = False
 
     @property
@@ -224,6 +246,7 @@ def run_cbmc(
     include_dirs: list[str] | None = None,
     call_graph: CallGraph | None = None,
     timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
+    variant: PipelineVariant | None = None,
 ) -> RunCbmcResult:
     """Run CBMC on the given function with loop unwinding = `_UNWIND`, depth = `_DEPTH`.
 
@@ -256,6 +279,10 @@ def run_cbmc(
             `_DEFAULT_RUN_CBMC_TIMEOUT_SEC`; callers that only need a quick verdict (e.g. mutation
             feedback for the agent) can pass a smaller budget. A timed-out run is reported as such
             and is never mistaken for a verification result.
+        variant (PipelineVariant | None): When given, the pipeline is run exactly once, in this
+            variant, and nothing is retried. The vacuity check passes the variant of the run it
+            is checking: its own run fails by design, and a failure must not be allowed to
+            trigger a retry that would judge a different pipeline from the one that passed.
 
     Returns:
         RunCbmcResult: The outcome of the run, naming the failed step (if any) and carrying
@@ -269,6 +296,7 @@ def run_cbmc(
             call_graph,
             scratch_dir,
             timeout_sec,
+            variant,
         )
 
 
@@ -279,6 +307,7 @@ def _run_cbmc_in_directory(
     call_graph: CallGraph | None,
     cwd: str,
     timeout_sec: int,
+    variant: PipelineVariant | None,
 ) -> RunCbmcResult:
     """Run CBMC on the given function as `run_cbmc` does, but run every subprocess in `cwd`.
 
@@ -289,6 +318,7 @@ def _run_cbmc_in_directory(
         call_graph (CallGraph | None): A pre-built call graph, or None to construct one.
         cwd (str): Working directory for every subprocess in the pipeline.
         timeout_sec (int): Per-subprocess timeout in seconds.
+        variant (PipelineVariant | None): When given, the only variant of the pipeline to run.
 
     Returns:
         RunCbmcResult: The outcome of the run.
@@ -311,6 +341,31 @@ def _run_cbmc_in_directory(
 
     subprocess_results: list[dict] = []
 
+    if variant is not None:
+        if variant.replace_self_call:
+            callees = get_in_file_callees_for(
+                function_to_verify,
+                call_graph,
+                include_self=call_graph.is_self_recursive(function_to_verify),
+            )
+        result, _, _ = _run_pipeline(
+            function_to_verify,
+            callees,
+            resolved_file,
+            stub_paths=stub_paths,
+            include_dirs=include_dirs,
+            prevent_macro_expansion=variant.prevent_macro_expansion,
+            subprocess_results=subprocess_results,
+            cwd=cwd,
+            timeout_sec=timeout_sec,
+        )
+        result = replace(result, variant=variant)
+        _log_invocation(
+            file_containing_function_to_verify, result, subprocess_results, nondet_callees
+        )
+        return result
+
+    used = PipelineVariant()
     # Initial attempt.
     result, combined_stdout, combined_stderr = _run_pipeline(
         function_to_verify,
@@ -325,6 +380,7 @@ def _run_cbmc_in_directory(
     )
     # First, check if the run was successful or if it timed out.
     if result.cbmc_ran_successfully or result.timed_out:
+        result = replace(result, variant=used)
         _log_invocation(
             file_containing_function_to_verify,
             result,
@@ -340,6 +396,7 @@ def _run_cbmc_in_directory(
             call_graph,
             include_self=call_graph.is_self_recursive(function_to_verify),
         )
+        used = replace(used, replace_self_call=True)
         result, combined_stdout, combined_stderr = _run_pipeline(
             function_to_verify,
             callees,
@@ -358,6 +415,7 @@ def _run_cbmc_in_directory(
         and not result.timed_out
         and has_missing_body_for_callee_or_function_message(combined_stdout, combined_stderr)
     ):
+        used = replace(used, prevent_macro_expansion=True)
         result, combined_stdout, combined_stderr = _run_pipeline(
             function_to_verify,
             callees,
@@ -370,6 +428,7 @@ def _run_cbmc_in_directory(
             timeout_sec=timeout_sec,
         )
 
+    result = replace(result, variant=used)
     _log_invocation(file_containing_function_to_verify, result, subprocess_results, nondet_callees)
     return result
 
