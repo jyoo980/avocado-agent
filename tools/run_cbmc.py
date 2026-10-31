@@ -7,17 +7,21 @@ Usage:
 """
 
 import argparse
+import fcntl
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import time
+from collections.abc import Generator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from functools import cache
 from pathlib import Path
 from subprocess import TimeoutExpired
 
@@ -63,26 +67,52 @@ _CBMC_UNWIND = 5
 # `--depth` argument to CBMC.
 _CBMC_DEPTH = 200
 
-# Process-wide cap on how many pipeline subprocesses (`goto-cc`, `goto-instrument`, `cbmc`) may run
-# at once. Several layers spawn pipelines concurrently -- mutants of one function run in a thread
-# pool, and the evaluation driver scores several functions at once -- and without a shared bound
-# the product of those fan-outs could oversubscribe the machine, turning slow-but-decidable CBMC
-# runs into timeouts. Defaults to the CPU count, but at most `_DEFAULT_MAX_CONCURRENT_SUBPROCESSES`
-# because each CBMC run can use a lot of memory, so RAM rather than CPUs is the binding constraint
-# on many-core hosts. Override with `AVOCADO_MAX_CONCURRENT_CBMC` (e.g. lower it if mutation runs
-# exhaust RAM). Waiting for a slot does not count against a step's timeout, which only starts once
-# the subprocess is launched.
+# Machine-wide cap on how many pipeline subprocesses (`goto-cc`, `goto-instrument`, `cbmc`) may run
+# at once. Pipelines are spawned concurrently both within a process (mutants of one function run
+# in a thread pool) and across processes (for example, several `avocado-run-cbmc` invocations at
+# once), and without a shared bound the product of those fan-outs could oversubscribe the machine,
+# turning slow-but-decidable CBMC runs into timeouts. See `max_concurrent_subprocesses` for how the
+# cap is chosen and `run_shell_command` for how it is enforced.
+_MAX_CONCURRENT_SUBPROCESSES_ENV_VAR = "AVOCADO_MAX_CONCURRENT_CBMC"
 _DEFAULT_MAX_CONCURRENT_SUBPROCESSES = 32
-MAX_CONCURRENT_SUBPROCESSES = max(
-    1,
-    int(
-        os.environ.get(
-            "AVOCADO_MAX_CONCURRENT_CBMC",
-            min(os.cpu_count() or 1, _DEFAULT_MAX_CONCURRENT_SUBPROCESSES),
-        )
-    ),
-)
-_SUBPROCESS_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_SUBPROCESSES)
+
+# Directory of the slot files that enforce the cap. It is shared by every process of this user
+# that has the same temporary directory, which is the whole container under Docker.
+_SLOT_DIR = Path(tempfile.gettempdir()) / f"avocado-cbmc-slots-{os.getuid()}"
+
+# How often a caller waiting for a subprocess slot checks whether one has become free.
+_SLOT_POLL_SEC = 0.1
+
+
+@cache
+def max_concurrent_subprocesses() -> int:
+    """Return the cap on how many pipeline subprocesses may run at once.
+
+    The cap is the number of CPUs available to this process, further limited by
+    `AVOCADO_MAX_CONCURRENT_CBMC` if that environment variable is set to a non-empty value, and
+    otherwise by `_DEFAULT_MAX_CONCURRENT_SUBPROCESSES`. The CPU count is not the only limit
+    because each CBMC run can use a lot of memory, so on many-core hosts RAM rather than CPUs is the
+    binding constraint; lower `AVOCADO_MAX_CONCURRENT_CBMC` if mutation runs exhaust RAM.
+
+    Returns:
+        int: The cap, which is at least 1.
+
+    Raises:
+        ValueError: If `AVOCADO_MAX_CONCURRENT_CBMC` is set to something other than a positive
+            integer.
+    """
+    limit = _DEFAULT_MAX_CONCURRENT_SUBPROCESSES
+    setting = os.environ.get(_MAX_CONCURRENT_SUBPROCESSES_ENV_VAR, "").strip()
+    if setting:
+        try:
+            limit = int(setting)
+        except ValueError:
+            limit = 0
+        if limit < 1:
+            env_var = _MAX_CONCURRENT_SUBPROCESSES_ENV_VAR
+            message = f"{env_var} must be a positive integer, not {setting!r}"
+            raise ValueError(message)
+    return min(os.process_cpu_count() or 1, limit)
 
 
 class CbmcStep(StrEnum):
@@ -180,6 +210,96 @@ class _SubprocessResult:
     def succeeded(self) -> bool:
         """True iff the subprocess exited zero and did not time out."""
         return self.returncode == 0 and not self.timed_out
+
+
+def run_shell_command(
+    command: str, timeout: float, cwd: str | None = None
+) -> subprocess.CompletedProcess[str] | None:
+    """Run a shell command, capturing its output, once a subprocess slot is free.
+
+    Every pipeline subprocess (`goto-cc`, `goto-instrument`, `cbmc`) should be run through this
+    function. Then the number of them running at once, across all threads and all processes that
+    share `_SLOT_DIR`, never exceeds `max_concurrent_subprocesses()` (or, if those processes
+    disagree about the cap, the largest of their caps). The timeout starts once the subprocess is
+    launched; waiting for a slot does not count against it.
+
+    The command runs in a new session, so it and every process it starts share a process group. On
+    timeout (or any other exception) the whole group is killed, not just the shell, so no `cbmc`
+    outlives its shell and keeps running without holding a subprocess slot.
+
+    Args:
+        command (str): The shell command to run.
+        timeout (float): Seconds after which the command and every process it started are killed.
+        cwd (str | None): Working directory for the subprocess. When None, the subprocess
+            inherits the current working directory.
+
+    Returns:
+        subprocess.CompletedProcess[str] | None: The finished subprocess, with its captured stdout
+            and stderr, or None if it hit the timeout.
+    """
+    with (
+        _subprocess_slot(),
+        subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            shell=True,
+            cwd=cwd,
+            start_new_session=True,
+        ) as process,
+    ):
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except TimeoutExpired:
+            _kill_process_group(process.pid)
+            process.communicate()
+            return None
+        except BaseException:
+            _kill_process_group(process.pid)
+            raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+@contextmanager
+def _subprocess_slot() -> Generator[None]:
+    """Hold one of the `max_concurrent_subprocesses()` subprocess slots for the `with` body.
+
+    Each slot is an exclusive `flock` on a file in `_SLOT_DIR`. An `flock` belongs to an open file
+    description, so it excludes other threads of this process as well as other processes, and the
+    kernel releases it when its process dies, so a killed process never leaks a slot. The lock's
+    file descriptor is not inherited by subprocesses. Blocks, polling every `_SLOT_POLL_SEC`, until
+    a slot is free.
+
+    Yields:
+        None: Control, while the slot is held.
+    """
+    _SLOT_DIR.mkdir(mode=0o700, exist_ok=True)
+    slot_paths = [_SLOT_DIR / f"slot-{i}" for i in range(max_concurrent_subprocesses())]
+    while True:
+        for slot_path in slot_paths:
+            fd = os.open(slot_path, os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                os.close(fd)
+                continue
+            try:
+                yield
+            finally:
+                os.close(fd)
+            return
+        time.sleep(_SLOT_POLL_SEC)
+
+
+def _kill_process_group(pgid: int) -> None:
+    """Send SIGKILL to every process in the given process group, if any remain.
+
+    Args:
+        pgid (int): The process group id.
+    """
+    with suppress(ProcessLookupError):
+        os.killpg(pgid, signal.SIGKILL)
 
 
 def main() -> None:
@@ -495,10 +615,6 @@ def _run_command(
 ) -> _SubprocessResult:
     """Run one pipeline step as a subprocess with the per-step timeout.
 
-    The subprocess is launched only once a slot in `_SUBPROCESS_SLOTS` is available, so the
-    number of concurrently running pipeline steps across every thread in this process never
-    exceeds `MAX_CONCURRENT_SUBPROCESSES`.
-
     Args:
         step (CbmcStep): The logical step this subprocess belongs to.
         command (str): The shell command to run.
@@ -512,36 +628,23 @@ def _run_command(
     Returns:
         _SubprocessResult: The captured outcome, including stdout/stderr or the timeout sentinel.
     """
-    started = time.monotonic()
-    try:
-        with _SUBPROCESS_SLOTS:
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                shell=True,
-                check=False,
-                timeout=timeout_sec,
-                cwd=cwd,
-            )
-        returncode = completed.returncode
-        stdout = completed.stdout
-        stderr = completed.stderr
-        timed_out = False
-    except TimeoutExpired:
+    completed = run_shell_command(command, timeout_sec, cwd=cwd)
+    if completed is None:
         returncode = _TIMEOUT_RETURNCODE
         stdout = ""
         stderr = ""
         timed_out = True
+    else:
+        returncode = completed.returncode
+        stdout = completed.stdout
+        stderr = completed.stderr
+        timed_out = False
 
     subprocess_results.append(
         {
             "step": step.value,
             "command": command,
             "returncode": returncode,
-            # Wall-clock seconds including any wait for a subprocess slot; lets the run log show
-            # which steps (and which mutants) dominate harness time.
-            "seconds": round(time.monotonic() - started, 3),
         }
     )
     return _SubprocessResult(
@@ -912,18 +1015,10 @@ def compile_with_goto_cc(
             (0 == compiled successfully).
     """
     compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
-    try:
-        result = subprocess.run(
-            compilation_command,
-            capture_output=True,
-            text=True,
-            shell=True,
-            check=False,
-            timeout=_GOTO_CC_TIMEOUT_SEC,
-        )
-    except TimeoutExpired:
+    completed = run_shell_command(compilation_command, _GOTO_CC_TIMEOUT_SEC)
+    if completed is None:
         return _TIMEOUT_RETURNCODE
-    return result.returncode
+    return completed.returncode
 
 
 if __name__ == "__main__":
