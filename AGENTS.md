@@ -75,9 +75,8 @@ Work in this order, and do not skip the first CBMC run:
    consecutive runs leave the kill score unchanged.
 
 Do not read the harness's Python sources, and do not experiment with CBMC's `--depth` or
-`--unwind` bounds: the bounds are fixed by the harness and are not yours to tune. Do not probe
-whether a proof is vacuous by hand either: `avocado-run-cbmc` checks every passing run and tells
-you. Spend your turns on the contract itself.
+`--unwind` bounds: the bounds are fixed by the harness and are not yours to tune. Spend your turns
+on the contract itself.
 
 ## Vacuous proofs
 
@@ -87,8 +86,8 @@ CBMC reports no failure whatever the postconditions say. Such a proof is *vacuou
 nothing, every mutant survives it, and it does not count as verified.
 
 `avocado-run-cbmc` checks each passing run with one more CBMC run, on a copy of your file to which
-it adds a false postcondition and a false assertion at the top of the body. It reports `VACUOUS`
-with one of two causes:
+it adds a false postcondition and a false assertion at the top of the body, so do not probe by hand
+whether a proof is vacuous. It reports `VACUOUS` with one of two causes:
 
 - **The preconditions cannot all hold** (no execution enters the body). Remove the
   `__CPROVER_requires` clauses one at a time and re-run to find the one responsible, then restate
