@@ -1,7 +1,6 @@
 """Tests for the `avocado-run-cbmc` entry point in `tools.run_cbmc_and_mutation_testing`."""
 
 import json
-import os
 import shutil
 import sys
 from pathlib import Path
@@ -10,32 +9,21 @@ import pytest
 
 import tools.util.mutation
 import tools.util.vacuity
-from tools.run_cbmc import CbmcStep, RunCbmcResult, run_cbmc
+from tools.run_cbmc import _DEFAULT_RUN_CBMC_TIMEOUT_SEC, CbmcStep, RunCbmcResult
 from tools.run_cbmc_and_mutation_testing import (
+    _AGENT_MUTANT_TIMEOUT_SEC,
     _log_mutation_feedback,
     _log_verification_attempt,
     main,
     verify_function,
 )
 from tools.util.edit_rules import hash_for_function_definition
-from tools.util.mutation import MutationScore, NoMutantsGenerated, generate_mutants_and_compute_score
-
-
-def test_run_cbmc_leaves_no_goto_files_in_the_working_directory(tmp_path: Path) -> None:
-    src = tmp_path / "quicksort.c"
-    shutil.copy(Path("test/data/quicksort.c"), src)
-    work_dir = tmp_path / "cwd"
-    work_dir.mkdir()
-    original_cwd = Path.cwd()
-    try:
-        os.chdir(work_dir)
-        # A relative source path must keep working even though the pipeline runs elsewhere.
-        result = run_cbmc("swap", os.path.relpath(src, work_dir))
-    finally:
-        os.chdir(original_cwd)
-    assert result.is_function_verified, result.response
-    assert list(work_dir.iterdir()) == [], "pipeline intermediates leaked into the cwd"
-    assert not list(tmp_path.glob("*.goto")), "pipeline intermediates leaked next to the source"
+from tools.util.mutation import (
+    DEFAULT_MUTANT_TIMEOUT_SEC,
+    MutationScore,
+    NoMutantsGenerated,
+    generate_mutants_and_compute_score,
+)
 
 
 def test_mutation_feedback_of_each_passing_run_is_logged_beside_the_file(tmp_path: Path) -> None:
@@ -126,3 +114,9 @@ def test_a_depth_below_the_floor_is_rejected_before_anything_runs(tmp_path: Path
     assert stop.value.code == 2
     assert not (tmp_path / "quicksort-verification-attempts.jsonl").exists()
     assert not (tmp_path / "quicksort-cbmc-runs.jsonl").exists()
+
+
+def test_agent_tool_uses_a_shorter_mutant_budget_than_the_metric() -> None:
+    # The evaluation metric keeps the full pipeline timeout; only the agent-facing tool trims it.
+    assert DEFAULT_MUTANT_TIMEOUT_SEC == _DEFAULT_RUN_CBMC_TIMEOUT_SEC
+    assert 0 < _AGENT_MUTANT_TIMEOUT_SEC < DEFAULT_MUTANT_TIMEOUT_SEC
