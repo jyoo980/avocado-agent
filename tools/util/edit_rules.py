@@ -27,8 +27,6 @@ _COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.DOTALL)
 _DIRECTIVE_HEAD = re.compile(r"#\s*(\w*)\s*(\w*)")
 _IDENTIFIER = re.compile(r"[A-Za-z_]\w*\Z")
 _AGGREGATE_KEYWORDS = frozenset({"struct", "union", "enum"})
-# How many tokens of context a message quotes.
-_QUOTED_TOKENS = 6
 
 
 @dataclass(frozen=True)
@@ -38,14 +36,12 @@ class _Token:
     Attributes:
         text (str): The token. A preprocessor directive is a single token holding its whole
             logical line, whitespace-normalized, starting with `#`.
-        line (int): The 1-based line the token starts on.
         offset (int): The byte offset the token starts at.
         end (int): The byte offset just past the token.
         depth (int): The brace depth before the token.
     """
 
     text: str
-    line: int
     offset: int
     end: int
     depth: int
@@ -63,7 +59,6 @@ class _Item:
     Attributes:
         tokens (tuple[str, ...]): The texts of the item's tokens; two items are the same code iff
             these are equal.
-        lines (tuple[int, ...]): The line of each token.
         kind (str): `directive`, `function`, `declaration`, `linkage` for the opening or closing
             of an `extern "C" { ... }` block, or `incomplete` for trailing tokens that end the
             file without a terminator.
@@ -73,40 +68,10 @@ class _Item:
     """
 
     tokens: tuple[str, ...]
-    lines: tuple[int, ...]
     kind: str
     name: str | None
     start: int
     end: int
-
-    @property
-    def line(self) -> int:
-        """The line the item starts on."""
-        return self.lines[0]
-
-    @property
-    def directive(self) -> str:
-        """The directive's keyword (`define`, `if`, ...), or "" for other items."""
-        if self.kind != "directive":
-            return ""
-        match = _DIRECTIVE_HEAD.match(self.tokens[0])
-        return match.group(1) if match else ""
-
-    def describe(self) -> str:
-        """Return a short description of the item for a message.
-
-        Returns:
-            str: For example `function swap`, `macro CAP` or `the declaration of table`.
-        """
-        if self.kind == "function" and self.name:
-            return f"function {self.name}"
-        if self.kind == "directive":
-            if self.directive == "define" and self.name:
-                return f"macro {self.name}"
-            return f"`{_quote(self.tokens)}`"
-        if self.name:
-            return f"the declaration of {self.name}"
-        return f"`{_quote(self.tokens)}`"
 
 
 def function_body_offsets(source: bytes, function: str) -> list[int]:
@@ -147,7 +112,6 @@ def _tokenize(source: bytes) -> list[_Token]:
     original = source.decode("latin-1")
     tokens: list[_Token] = []
     position = 0
-    line = 1
     depth = 0
     at_line_start = True
     length = len(text)
@@ -155,8 +119,7 @@ def _tokenize(source: bytes) -> list[_Token]:
         if at_line_start and text[position] == "#":
             end = _logical_line_end(text, position)
             directive = _normalize_directive(original[position:end])
-            tokens.append(_Token(directive, line, position, end, depth))
-            line += text.count("\n", position, end)
+            tokens.append(_Token(directive, position, end, depth))
             position = end
             continue
         match = _TOKEN.match(text, position)
@@ -169,13 +132,12 @@ def _tokenize(source: bytes) -> list[_Token]:
             at_line_start = True
         elif kind not in ("space", "comment"):
             at_line_start = False
-            tokens.append(_Token(value, line, position, match.end(), depth))
+            tokens.append(_Token(value, position, match.end(), depth))
             if value == "{":
                 # The brace of `extern "C" {` groups declarations without nesting them.
                 depth += 0 if _opens_linkage_block(tokens) else 1
             elif value == "}":
                 depth = max(depth - 1, 0)
-        line += value.count("\n")
         position = match.end()
     return tokens
 
@@ -338,7 +300,6 @@ def _make_item(tokens: list[_Token], kind: str) -> _Item:
         name = None
     return _Item(
         tokens=texts,
-        lines=tuple(token.line for token in tokens),
         kind=kind,
         name=name,
         start=tokens[0].offset,
@@ -457,20 +418,3 @@ def _top_level(texts: list[str]) -> list[str]:
         elif depth == 0:
             kept.append(text)
     return kept
-
-
-def _quote(texts: tuple[str, ...]) -> str:
-    """Return the first few tokens of `texts` as one string, for a message.
-
-    Args:
-        texts (tuple[str, ...]): Tokens.
-
-    Returns:
-        str: Up to `_QUOTED_TOKENS` tokens joined by spaces, with `...` when there are more.
-    """
-    if not texts:
-        return "(end of the item)"
-    quoted = " ".join(texts[:_QUOTED_TOKENS])
-    if len(quoted) > 80:
-        quoted = quoted[:77] + "..."
-    return quoted + (" ..." if len(texts) > _QUOTED_TOKENS else "")
