@@ -11,9 +11,11 @@ import fcntl
 import json
 import os
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -81,6 +83,12 @@ _SLOT_DIR = Path(tempfile.gettempdir()) / f"avocado-cbmc-slots-{os.getuid()}"
 
 # How often a caller waiting for a subprocess slot checks whether one has become free.
 _SLOT_POLL_SEC = 0.1
+
+# For each cap, a semaphore with that many permits. A thread holds a permit while it waits for a
+# subprocess slot and while it uses the slot, so at most the cap's number of threads of this
+# process poll the slot files; other threads of this process block on the semaphore instead.
+_IN_PROCESS_SLOTS: dict[int, threading.BoundedSemaphore] = {}
+_IN_PROCESS_SLOTS_LOCK = threading.Lock()
 
 
 @cache
@@ -244,28 +252,45 @@ def _subprocess_slot() -> Generator[None]:
     Each slot is an exclusive `flock` on a file in `_SLOT_DIR`. An `flock` belongs to an open file
     description, so it excludes other threads of this process as well as other processes, and the
     kernel releases it when its process dies, so a killed process never leaks a slot. The lock's
-    file descriptor is not inherited by subprocesses. Blocks, polling every `_SLOT_POLL_SEC`, until
-    a slot is free.
+    file descriptor is not inherited by subprocesses. Blocks until a slot is free: a thread first
+    waits for a permit from this process's semaphore for the cap, then polls the slot files every
+    `_SLOT_POLL_SEC`.
 
     Yields:
         None: Control, while the slot is held.
+
+    Raises:
+        PermissionError: If `_SLOT_DIR` is not a directory that this user owns and that no other
+            user can write, since another user could then hold the slots or plant symbolic links.
     """
     _SLOT_DIR.mkdir(mode=0o700, exist_ok=True)
-    slot_paths = [_SLOT_DIR / f"slot-{i}" for i in range(max_concurrent_subprocesses())]
-    while True:
-        for slot_path in slot_paths:
-            fd = os.open(slot_path, os.O_RDWR | os.O_CREAT, 0o600)
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                os.close(fd)
-                continue
-            try:
-                yield
-            finally:
-                os.close(fd)
-            return
-        time.sleep(_SLOT_POLL_SEC)
+    slot_dir_status = os.lstat(_SLOT_DIR)
+    if (
+        not stat.S_ISDIR(slot_dir_status.st_mode)
+        or slot_dir_status.st_uid != os.getuid()
+        or slot_dir_status.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        message = f"{_SLOT_DIR} must be a directory that this user owns and no other user can write"
+        raise PermissionError(message)
+    cap = max_concurrent_subprocesses()
+    with _IN_PROCESS_SLOTS_LOCK:
+        in_process_slots = _IN_PROCESS_SLOTS.setdefault(cap, threading.BoundedSemaphore(cap))
+    slot_paths = [_SLOT_DIR / f"slot-{i}" for i in range(cap)]
+    with in_process_slots:
+        while True:
+            for slot_path in slot_paths:
+                fd = os.open(slot_path, os.O_RDWR | os.O_CREAT, 0o600)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    os.close(fd)
+                    continue
+                try:
+                    yield
+                finally:
+                    os.close(fd)
+                return
+            time.sleep(_SLOT_POLL_SEC)
 
 
 def main() -> None:
