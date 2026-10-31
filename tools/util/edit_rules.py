@@ -7,7 +7,8 @@ A session's job is to add specifications. `check_edits` compares the session's f
    with the same text. Whitespace, comments and contract clauses outside function bodies do not
    count; a clause inside a body, such as a loop contract, is code like any other.
 2. Insertions go in two places only: the contract slot of a function, or file scope. Nothing is
-   inserted inside an existing item, and no contract clause sits inside a function body.
+   inserted inside an existing item, so no contract clause is added inside an original function
+   body.
 3. The session's function is intact: it is defined as many times as it was when the session
    started (once, unless it is defined per preprocessor branch).
 4. New names carry the reserved prefix and do not already exist in the file. No new `#undef`,
@@ -48,13 +49,12 @@ from itertools import islice
 from operator import itemgetter
 from typing import TYPE_CHECKING
 
-from tools.util.cbmc_clause_stripper import CBMC_CLAUSE_NAMES, strip_cbmc_clauses
+from tools.util.cbmc_clause_stripper import CBMC_CLAUSE_NAMES, CbmcClauseSpan, _consume_clause
 
 if TYPE_CHECKING:
     from collections.abc import Collection
 
     from tools.util.callgraph import CallGraph
-    from tools.util.cbmc_clause_stripper import CbmcClauseSpan
 
 # The prefixes a new top-level name must start with: the first for macros, the second for
 # functions, variables and types. Either is accepted for any kind of name; what matters is that no
@@ -86,9 +86,11 @@ _TOKEN = re.compile(
     """,
     re.VERBOSE | re.DOTALL,
 )
+_LITERAL_PATTERN = r""""(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'"""
+_LITERAL = re.compile(_LITERAL_PATTERN)
 # A comment, or a string or character literal, which can contain `//` or `/*`.
 _COMMENT_OR_LITERAL = re.compile(
-    rb"""(?P<literal>"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|/\*.*?\*/|//[^\n]*""", re.DOTALL
+    rf"(?P<literal>{_LITERAL_PATTERN})|/\*.*?\*/|//[^\n]*".encode(), re.DOTALL
 )
 _DIRECTIVE_HEAD = re.compile(r"#\s*(\w*)\s*(\w*)")
 _IDENTIFIER = re.compile(r"[A-Za-z_]\w*\Z")
@@ -100,6 +102,10 @@ _CONDITIONAL_CONTINUATIONS = _CONDITIONAL_BRANCHES | {"endif"}
 # The directives whose second word is a name they introduce or remove.
 _NAMING_DIRECTIVES = frozenset({"define", "undef"})
 _AGGREGATE_KEYWORDS = frozenset({"struct", "union", "enum"})
+# Keywords followed by a parenthesized group that is neither a parameter list nor a declarator.
+_ATTRIBUTE_KEYWORDS = frozenset(
+    {"__attribute__", "__attribute", "__declspec", "_Alignas", "alignas"}
+)
 
 # `__CPROVER_requires` arguments that are false whatever the inputs, with whitespace, comments and
 # redundant outer parentheses removed.
@@ -310,12 +316,16 @@ def merge_copy(
     - Items the session added are inserted after the original item they followed in the copy,
       after the items other sessions added right after that original item, and after the
       original comments that preceded them in the copy. A new conditional block, from
-      its `#if` to its `#endif`, is handled as one unit, and so is every other new item. A unit
-      that the canonical file already has among its new items, with the same text, is skipped;
-      one that introduces a name that the canonical file's new items introduce fails the merge.
+      its `#if` to its `#endif`, is handled as one unit, and so is every other new item.
+    - A unit that the canonical file already has among its new items, with the same text, is
+      skipped when the canonical file has it before the place the unit would go. When it is
+      later, it is moved to that place, because the session's items and contracts after the
+      unit can use it. A unit that introduces a name that the canonical file's new items
+      introduce fails the merge, unless one is a function prototype and the other a definition.
 
     When the canonical file is still the fork base -- always the case with one session at a time
-    -- this reduces to taking the copy itself, minus the edits that are left out.
+    -- this reduces to taking the copy itself, minus the edits that are left out. (One
+    exception: a comment the session wrote before an original comment ends up after it.)
 
     The session's own contract is never left out silently: the merge fails, and says why, when
     the session's function cannot be found as a function definition in the copy, or when the
@@ -408,20 +418,37 @@ def merge_copy(
 
     their_new = set(theirs.new_indices)
     their_units = [unit for run in _runs(theirs.new_indices) for unit in _units(theirs_items, run)]
-    their_texts = {_unit_text(canonical, theirs_items, unit) for unit in their_units}
-    their_names = {theirs_items[index].name for index in their_new if theirs_items[index].name}
+    their_by_text = {_unit_text(canonical, theirs_items, unit): unit for unit in their_units}
+    their_by_name: dict[str, list[_Item]] = {}
+    for index in sorted(their_new):
+        if (name := theirs_items[index].name) is not None:
+            their_by_name.setdefault(name, []).append(theirs_items[index])
     snapshot_to_base = {snapshot_index: base_index for base_index, snapshot_index in mine.pairs}
     transplanted: list[str] = []
     skipped: list[str] = []
+    removals: list[
+        tuple[int, int]
+    ] = []  # other sessions' units moved to where the session has them
     for run in _runs(mine.new_indices):
         before = run[0] - 1  # the original item the run follows in the copy, or -1
         gap_start = mine.snapshot.items[before].end if before >= 0 else 0
-        cut, leading = _leading_original_comments(
+        cut, leading, new_comments = _leading_original_comments(
             snapshot[gap_start : mine.snapshot.items[run[0]].start],
             _base_gap(fork_base, mine.base.items, snapshot_to_base.get(before, -1)),
         )
+        # Go after the items other sessions added after the same original item, which the run's
+        # items can use, and after the original comments that precede the run in the copy.
+        last = mine_to_theirs.get(before, -1)
+        while last + 1 in their_new:
+            last += 1
+        position = _after_comments(
+            canonical, theirs.snapshot.starts, theirs_items[last].end if last >= 0 else 0, leading
+        )
+        for start, end in removals:
+            if start < position <= end:
+                position = start
         previous_end = gap_start + cut
-        pieces: list[bytes] = []
+        pieces: list[bytes] = [b"".join(b"\n" + comment for comment in new_comments)]
         for unit in _units(mine.snapshot.items, run):
             items = [mine.snapshot.items[index] for index in unit]
             rendered = [
@@ -429,10 +456,22 @@ def merge_copy(
                 for item in items
                 if item.directive not in _CONDITIONAL_CONTINUATIONS
             ]
-            if _unit_text(snapshot, mine.snapshot.items, unit) in their_texts:
+            theirs_unit = their_by_text.get(_unit_text(snapshot, mine.snapshot.items, unit))
+            if theirs_unit is not None and theirs_items[theirs_unit[0]].start < position:
                 skipped += rendered
+            elif theirs_unit is not None:
+                del their_by_text[_unit_text(snapshot, mine.snapshot.items, unit)]
+                end = theirs_items[theirs_unit[-1]].end
+                removals.append(
+                    (theirs_items[theirs_unit[0]].start, end + canonical[end:].startswith(b"\n"))
+                )
+                skipped += [f"{label} (moved before its first use)" for label in rendered]
+                pieces.append(snapshot[previous_end : items[-1].end])
             else:
-                clash = next((item for item in items if item.name in their_names), None)
+                clash = next(
+                    (item for item in items if _clashes(item, their_by_name.get(item.name or ""))),
+                    None,
+                )
                 if clash is not None:
                     return canonical, MergeReport(
                         False,
@@ -443,25 +482,20 @@ def merge_copy(
                 transplanted += rendered
                 pieces.append(snapshot[previous_end : items[-1].end])
             previous_end = items[-1].end
-        if not pieces:
+        if len(pieces) == 1:
             continue
-        # Go after the items other sessions added after the same original item, which the run's
-        # items can use: a duplicate that was skipped is one of them.
-        last = mine_to_theirs.get(before, -1)
-        while last + 1 in their_new:
-            last += 1
-        position = _after_comments(
-            canonical, theirs.snapshot.starts, theirs_items[last].end if last >= 0 else 0, leading
-        )
         text = b"".join(pieces)
         if not canonical[position : position + 1].isspace():
             text += b"\n"
         edits.append((position, position, text))
 
-    merged = canonical
-    for start, end, text in sorted(edits, key=itemgetter(0, 1), reverse=True):
-        merged = merged[:start] + text + merged[end:]
-    check = _align(theirs.snapshot, _parse(merged))
+    merged = _apply(canonical, edits + [(start, end, b"") for start, end in removals])
+    reference = (
+        _parse(_apply(canonical, [(start, end, b"") for start, end in removals]))
+        if removals
+        else theirs.snapshot
+    )
+    check = _align(reference, _parse(merged))
     if check.violations or _check_conditional_nesting(check.snapshot.items, set(check.new_indices)):
         return canonical, MergeReport(
             False,
@@ -699,7 +733,7 @@ def _base_gap(fork_base: bytes, base_items: list[_Item], before: int) -> bytes:
     return fork_base[start:end]
 
 
-def _leading_original_comments(gap: bytes, base_gap: bytes) -> tuple[int, list[bytes]]:
+def _leading_original_comments(gap: bytes, base_gap: bytes) -> tuple[int, list[bytes], list[bytes]]:
     """Return the original comments in the copy's text before a run of added items.
 
     Args:
@@ -707,18 +741,70 @@ def _leading_original_comments(gap: bytes, base_gap: bytes) -> tuple[int, list[b
         base_gap (bytes): The fork base's text between that original item and the next one.
 
     Returns:
-        tuple[int, list[bytes]]: The offset in `gap` just past its last original comment (0 when
-            there is none), and its original comments, in order.
+        tuple[int, list[bytes], list[bytes]]: The offset in `gap` just past its last original
+            comment (0 when there is none), its original comments, and the comments the session
+            wrote before that offset, each list in order.
     """
     originals = Counter(match.group() for match in _comments(base_gap))
     end = 0
     found = []
+    written = []
     for match in _comments(gap):
         if originals[match.group()] > 0:
             originals[match.group()] -= 1
             end = match.end()
             found.append(match.group())
-    return end, found
+        else:
+            written.append(match)
+    return end, found, [match.group() for match in written if match.end() <= end]
+
+
+def _apply(source: bytes, edits: list[tuple[int, int, bytes]]) -> bytes:
+    """Return `source` with each range replaced by its text.
+
+    Args:
+        source (bytes): A source.
+        edits (list[tuple[int, int, bytes]]): Non-overlapping `(start, end, text)` replacements,
+            with offsets into `source`.
+
+    Returns:
+        bytes: The edited source.
+    """
+    for start, end, text in sorted(edits, key=itemgetter(0, 1), reverse=True):
+        source = source[:start] + text + source[end:]
+    return source
+
+
+def _clashes(item: _Item, others: list[_Item] | None) -> bool:
+    """Return True iff a new item cannot be added beside the items that already use its name.
+
+    Args:
+        item (_Item): An item the session added.
+        others (list[_Item] | None): The items other sessions added with the same name.
+
+    Returns:
+        bool: True unless every one of `others` pairs a function prototype with a definition.
+    """
+    return any(
+        not (_is_prototype(item) and other.kind == "function")
+        and not (item.kind == "function" and _is_prototype(other))
+        for other in others or ()
+    )
+
+
+def _is_prototype(item: _Item) -> bool:
+    """Return True iff an item is a function declaration without a body.
+
+    Args:
+        item (_Item): An item.
+
+    Returns:
+        bool: True iff the item declares a named function and is not a `typedef`.
+    """
+    if item.kind != "declaration" or item.name is None or item.tokens[0] == "typedef":
+        return False
+    index = item.tokens.index(item.name)
+    return item.tokens[index + 1 : index + 2] == ("(",)
 
 
 def _after_comments(source: bytes, starts: list[int], position: int, comments: list[bytes]) -> int:
@@ -965,8 +1051,6 @@ def _tokenize(source: bytes) -> tuple[list[_Token], list[CbmcClauseSpan]]:
         tuple[list[_Token], list[CbmcClauseSpan]]: The tokens in source order, and the erased
             contract clauses.
     """
-    _, clauses = strip_cbmc_clauses(source)
-    clauses_at = {clause.start_byte: clause for clause in clauses}
     erased: list[CbmcClauseSpan] = []
     text = source.decode("latin-1")  # one character per byte, so offsets are byte offsets
     tokens: list[_Token] = []
@@ -983,20 +1067,21 @@ def _tokenize(source: bytes) -> tuple[list[_Token], list[CbmcClauseSpan]]:
             line += text.count("\n", position, end)
             position = end
             continue
-        if depth == 0 and position in clauses_at:
-            erased.append(clauses_at[position])
-            end = clauses_at[position].end_byte
-            newlines = text.count("\n", position, end)
-            line += newlines
-            at_line_start = at_line_start or newlines > 0
-            position = end
-            continue
         match = _TOKEN.match(text, position)
         if match is None:  # cannot happen: the last alternative matches any character
             position += 1
             continue
         kind = match.lastgroup
         value = match.group()
+        if kind == "word" and depth == 0 and value in CBMC_CLAUSE_NAMES:
+            end = _consume_clause(source, match.end())
+            if end is not None:
+                erased.append(CbmcClauseSpan(value, position, end))
+                newlines = text.count("\n", position, end)
+                line += newlines
+                at_line_start = at_line_start or newlines > 0
+                position = end
+                continue
         if kind == "newline":
             at_line_start = True
         elif kind not in ("space", "comment"):
@@ -1016,7 +1101,9 @@ def _logical_line_end(text: str, start: int) -> int:
     """Return the offset just past the preprocessor directive that starts at `start`.
 
     A directive runs to the end of its line, continuing over backslash-newlines and over block
-    comments that span lines.
+    comments that span lines. A string or character literal is skipped, so `/*` or `//` inside
+    one does not start a comment; a quote that is not closed on its line, as in `#error don't`,
+    is an ordinary character.
 
     Args:
         text (str): The source text.
@@ -1031,7 +1118,10 @@ def _logical_line_end(text: str, start: int) -> int:
         character = text[position]
         if character == "\n":
             return position
-        if character == "\\" and text.startswith("\\\n", position):
+        literal = _LITERAL.match(text, position) if character in "\"'" else None
+        if literal is not None:
+            position = literal.end()
+        elif character == "\\" and text.startswith("\\\n", position):
             position += 2
         elif text.startswith("/*", position):
             closing = text.find("*/", position + 2)
@@ -1133,7 +1223,7 @@ def _opens_function_body(prefix: list[_Token]) -> bool:
     Returns:
         bool: True iff the brace opens a function body.
     """
-    texts = [token.text for token in prefix if not token.is_directive]
+    texts = _without_attributes([token.text for token in prefix if not token.is_directive])
     if "=" in texts:
         return False
     last_aggregate = -1
@@ -1203,7 +1293,7 @@ def _function_name(texts: tuple[str, ...]) -> str | None:
             depth -= 1
     if body is None:
         return None
-    return _name_before_last_group(texts[:body])
+    return _name_before_last_group(tuple(_without_attributes(list(texts[:body]))))
 
 
 def _name_before_last_group(texts: tuple[str, ...]) -> str | None:
@@ -1242,7 +1332,7 @@ def _declared_name(texts: tuple[str, ...]) -> str | None:
     Returns:
         str | None: The name, or None when the shape is not recognised.
     """
-    body = [text for text in texts[:-1] if not text.startswith("#")]
+    body = _without_attributes([text for text in texts[:-1] if not text.startswith("#")])
     if not body:
         return None
     top_level = _top_level(body)
@@ -1266,6 +1356,32 @@ def _declared_name(texts: tuple[str, ...]) -> str | None:
         top_level = top_level[: top_level.index("[")]
     candidate = top_level[-1] if top_level else ""
     return candidate if _IDENTIFIER.match(candidate) else None
+
+
+def _without_attributes(texts: list[str]) -> list[str]:
+    """Return `texts` without attribute specifiers such as `__attribute__((packed))`.
+
+    Args:
+        texts (list[str]): Tokens of a declaration or of a function definition.
+
+    Returns:
+        list[str]: The tokens, minus each attribute keyword and the parenthesized group after it.
+    """
+    kept: list[str] = []
+    index = 0
+    while index < len(texts):
+        if texts[index] in _ATTRIBUTE_KEYWORDS and texts[index + 1 : index + 2] == ["("]:
+            depth = 0
+            index += 1
+            while index < len(texts):
+                depth += {"(": 1, ")": -1}.get(texts[index], 0)
+                index += 1
+                if depth == 0:
+                    break
+            continue
+        kept.append(texts[index])
+        index += 1
+    return kept
 
 
 def _top_level(texts: list[str]) -> list[str]:
@@ -1521,10 +1637,7 @@ def _count_definitions(items: list[_Item], function: str) -> int:
 def _check_new_items(
     base_items: list[_Item], snapshot_items: list[_Item], new_indices: list[int]
 ) -> list[Violation]:
-    """Check rules 4 and 5, and rule 2 for contract clauses, on the items the session added.
-
-    A contract clause inside an original item is reported by the alignment, as text inserted
-    into that item.
+    """Check rules 4 and 5 on the items the session added.
 
     Args:
         base_items (list[_Item]): The base's items.
@@ -1543,15 +1656,6 @@ def _check_new_items(
         for text, line in zip(item.tokens, item.lines, strict=True):
             if text.startswith("#") and item.kind != "directive":
                 violations += _check_new_directive(text, line, existing_names)
-            if text in CBMC_CLAUSE_NAMES:  # only a clause inside braces is a token
-                violations.append(
-                    Violation(
-                        2,
-                        f"{text} is inside a function body; a contract clause belongs between "
-                        "the function's signature and its opening brace",
-                        line,
-                    )
-                )
             if _ASSUME.search(text):
                 violations.append(
                     Violation(
