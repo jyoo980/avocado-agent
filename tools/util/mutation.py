@@ -307,7 +307,7 @@ def generate_mutants_and_compute_score(
     workspace.mkdir(parents=True, exist_ok=True)
 
     if not skip_reverification:
-        cbmc_result = run_cbmc(target_function, str(source_path), include_dirs=include_dirs)
+        cbmc_result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
         if not is_valid_mutation_candidate(cbmc_result):
             # No usable baseline if CBMC can't verify the unmutated function.
             return BaselineFailsVerification(file_path, target_function)
@@ -333,9 +333,9 @@ def generate_mutants_and_compute_score(
     if mutants:
         print(
             f"Verified {target_function}; now running mutation testing on {total} "
-            f"mutants across up to {max_workers} worker(s) (one CBMC run each, up to "
-            f"{mutant_timeout_sec} s per mutant) -- this can take several minutes; do not "
-            "interrupt.",
+            f"mutants across up to {max_workers} worker(s) (one CBMC run each, with a timeout "
+            f"of {mutant_timeout_sec} s on each CBMC step) -- this can take several minutes; "
+            "do not interrupt.",
             file=sys.stderr,
             flush=True,
         )
@@ -363,7 +363,7 @@ def generate_mutants_and_compute_score(
             finally:
                 # If we exit early (an unexpected error or a Ctrl-C), stop launching mutants that
                 # haven't started yet rather than kicking off more 10-minute CBMC runs; the `with`
-                # block still waits for runs in-progress to drain.
+                # block still waits for any in-flight runs to drain.
                 executor.shutdown(cancel_futures=True)
     finally:
         if not keep_artifacts:
