@@ -17,9 +17,8 @@ from pathlib import Path
 
 from loguru import logger
 
-from tools.construct_call_graph import construct_call_graph
+from tools.construct_call_graph import load_call_graph
 from tools.run_cbmc import RunCbmcResult, run_cbmc
-from tools.util.callgraph import CallGraph
 from tools.util.mutation import (
     generate_mutants_and_compute_score,
     get_mutation_testing_results_for_client,
@@ -70,9 +69,7 @@ def main() -> None:
     )
 
     # Built once and shared by verification and mutation testing.
-    call_graph = CallGraph(
-        json.loads(Path(construct_call_graph(args.file)).read_text(encoding="utf-8"))
-    )
+    call_graph = load_call_graph(args.file)
     result = run_cbmc(
         function_to_verify=args.function,
         file_containing_function_to_verify=args.file,

@@ -43,10 +43,9 @@ from eval.mutants.util import (
     check_expected_cbmc_return_code,
     is_valid_mutation_candidate,
 )
-from tools.construct_call_graph import construct_call_graph
+from tools.construct_call_graph import load_call_graph
 from tools.run_cbmc import run_cbmc
 from tools.util import get_in_file_callers_of
-from tools.util.callgraph import CallGraph
 
 # Matches the GNU `timeout(1)` convention used elsewhere; surfaces in `returncode` for
 # timed-out CBMC runs so the value is distinguishable from CBMC's real 0/10 exit codes.
@@ -432,8 +431,7 @@ def _get_in_file_callers(source_path: Path, function_name: str) -> list[str]:
     Returns:
         list[str]: The names of the in-file callers of the given name.
     """
-    call_graph_path = construct_call_graph(str(source_path))
-    call_graph = CallGraph(json.loads(Path(call_graph_path).read_text(encoding="utf-8")))
+    call_graph = load_call_graph(str(source_path))
     if function_name not in call_graph:
         msg = f"'{function_name}' was missing from the call graph"
         raise ValueError(msg)
