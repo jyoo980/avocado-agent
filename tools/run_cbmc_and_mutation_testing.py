@@ -126,10 +126,8 @@ def verify_function(
     (`tools.util.vacuity.check_vacuity`), with one more run of the pipeline. A vacuous pass is
     returned with `RunCbmcResult.vacuity_check_result` set, so it does not count as verified
     (`is_function_verified` is False and it prints as `VACUOUS`), and with a response that says
-    what was found. This is the one function through which the agent's tool, the harness's ground
-    truth and both re-verification checks verify a function, so they all agree on what a
-    contract-less or vacuous proof is. When the check itself gives no answer the pass stands,
-    with a `vacuity_check_result` whose vacuity is `Vacuity.UNKNOWN`.
+    what was found. When the check itself gives no answer the pass stands, with a
+    `vacuity_check_result` whose vacuity is `Vacuity.UNKNOWN`.
 
     Args:
         function (str): Name of the function to verify.
