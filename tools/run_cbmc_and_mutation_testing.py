@@ -4,6 +4,9 @@ Usage:
     % avocado-run-cbmc --function <FUNCTION_NAME> \
                        --file <PATH_TO_C_FILE> \
                        [-I <PATH_TO_INCLUDE_DIR(S)>]...
+
+The CBMC pipeline itself lives in `tools.run_cbmc`; this module adds the command-line interface,
+the verification-attempt log, and mutation testing.
 """
 
 import argparse
