@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -290,7 +289,7 @@ def generate_mutants_and_compute_score(
     workspace.mkdir(parents=True, exist_ok=True)
 
     if not skip_reverification:
-        cbmc_result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
+        cbmc_result = run_cbmc(target_function, str(source_path), include_dirs=include_dirs)
         if not is_valid_mutation_candidate(cbmc_result):
             # No usable baseline if CBMC can't verify the unmutated function.
             return BaselineFailsVerification(file_path, target_function)
@@ -452,8 +451,8 @@ def _verify_mutant(
     returned with `compile_failed=True`; this prevents `check_expected_cbmc_return_code` from
     raising on goto-cc's exit code and lets callers exclude these mutants from the kill rate.
 
-    Safe to call concurrently for sibling mutants of one function: the CBMC pipeline runs in a
-    private scratch directory so its function-name-derived `.goto` intermediates never collide,
+    Safe to call concurrently for sibling mutants of one function: `run_cbmc` runs each pipeline in
+    a private scratch directory so its function-name-derived `.goto` intermediates never collide,
     and the shared `call_graph` is read-only.
 
     Args:
@@ -470,19 +469,12 @@ def _verify_mutant(
             not run.
     """
     path_to_write_mutant.write_text(mutant.mutant_source, encoding="utf-8")
-    # The CBMC pipeline writes intermediate `<function>.goto` / `checking-<function>-contracts.goto`
-    # files named only by the function name -- identical across all mutants of one function -- into
-    # its working directory. Give each run a private scratch dir so concurrent mutants don't clobber
-    # one another's goto-binaries (this also keeps the source directory clean). The result is read
-    # entirely from the in-memory `cbmc_result`, so the scratch dir can be torn down immediately.
-    with tempfile.TemporaryDirectory(prefix="avocado-mutant-") as scratch_dir:
-        cbmc_result = run_cbmc(
-            function_to_verify=mutant.function,
-            file_containing_function_to_verify=str(path_to_write_mutant),
-            include_dirs=include_dirs,
-            call_graph=call_graph,
-            cwd=scratch_dir,
-        )
+    cbmc_result = run_cbmc(
+        function_to_verify=mutant.function,
+        file_containing_function_to_verify=str(path_to_write_mutant),
+        include_dirs=include_dirs,
+        call_graph=call_graph,
+    )
     if cbmc_result.timed_out:
         return MutantVerificationResult(
             mutant,
