@@ -105,6 +105,10 @@ class PipelineVariant:
     prevent_macro_expansion: bool = False
 
 
+# How `RunCbmcResult` prints a proof that passed vacuously.
+VACUOUS_VERDICT = "VACUOUS"
+
+
 @dataclass(frozen=True)
 class RunCbmcResult:
     """The outcome of running CBMC on a function.
@@ -179,7 +183,7 @@ class RunCbmcResult:
         if self.no_contract:
             return "NO_CONTRACT"
         if self.is_vacuous:
-            return "VACUOUS"
+            return VACUOUS_VERDICT
         if self.is_function_verified:
             return "PASS"
         return "FAIL"
