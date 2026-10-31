@@ -23,7 +23,6 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
-from subprocess import TimeoutExpired
 
 from loguru import logger
 
@@ -1051,19 +1050,11 @@ def _list_goto_functions(
             )
             listing = ""
             for command in commands:
-                completed = subprocess.run(
-                    command,
-                    capture_output=True,
-                    text=True,
-                    shell=True,
-                    check=False,
-                    timeout=_GOTO_CC_TIMEOUT_SEC,
-                    cwd=scratch_dir,
-                )
-                if completed.returncode != 0:
+                completed = run_shell_command(command, _GOTO_CC_TIMEOUT_SEC, cwd=scratch_dir)
+                if completed is None or completed.returncode != 0:
                     return None
                 listing = completed.stdout
-    except (OSError, TimeoutExpired):
+    except OSError:
         return None
     compiled: set[str] = set()
     contracted: set[str] = set()
