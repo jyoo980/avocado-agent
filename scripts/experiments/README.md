@@ -50,7 +50,7 @@ so they exist only where the work was done.
   specifications from one checkout. Use it whenever a scoring pass was
   interrupted, or to make sure both arms were scored by identical code.
 
-## Two traps that cost real runs
+## Traps
 
 - `AVOCADO_SCORER_ROOT` changes which *script* scores a run, but `uv` still
   resolves the *modules* from the arm's own checkout. Mixing them crashed two
@@ -58,3 +58,8 @@ so they exist only where the work was done.
   checkout afterwards.
 - Do not run `make clean-mutants` from the repository root while an experiment
   is running: it deletes in-progress artifacts under `avocado-experimental-data/`.
+- Claude Code's auto-memory gives each agent session a persistent notes
+  directory, keyed by the repository's main worktree and therefore shared by
+  every worktree of it. Two arms run on one machine from worktrees of one
+  repository share those notes, so what one arm learns can carry over to the
+  other, unless the experiment gives each arm its own notes directory.
