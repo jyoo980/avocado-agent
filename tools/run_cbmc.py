@@ -68,7 +68,7 @@ _CALLEE_NOT_COMPILED = re.compile(r"Function '([^']+)' was not found in the GOTO
 
 # One line of `goto-instrument --list-goto-functions`: `<name> /* <identifier>[, body not
 # available] */`. A contract is listed under the function's name with a `contract::` identifier.
-_LISTED_FUNCTION = re.compile(r"^\S+ /\* (\S+?)(?:, body not available)? \*/$")
+_LISTED_FUNCTION = re.compile(r"^(\S+) /\* (\S+?)(, body not available)? \*/$")
 
 
 class CbmcStep(StrEnum):
@@ -918,6 +918,28 @@ def _get_cbmc_check_command(function: str) -> str:
     )
 
 
+def list_compiled_functions(
+    file_path: str, include_dirs: list[str] | None = None
+) -> set[str] | None:
+    """Return the names of the functions that are compiled when `file_path` is built.
+
+    The harness finds a file's functions by reading its text, without running the preprocessor,
+    so it also finds the ones inside conditional blocks that this build leaves out. Such a
+    function does not exist as far as CBMC is concerned: it cannot be verified, and its contract
+    cannot be substituted at a call site. This asks the compiler, once, which functions do exist.
+
+    Args:
+        file_path (str): Path to the C source file.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+
+    Returns:
+        set[str] | None: The functions that have a body in the compiled program, or None when
+            the file could not be compiled or listed, in which case nothing is known.
+    """
+    listing = _list_goto_functions(file_path, include_dirs)
+    return None if listing is None else listing[0]
+
+
 def has_contract(
     function: str, file_path: str, include_dirs: list[str] | None = None
 ) -> bool | None:
@@ -935,6 +957,23 @@ def has_contract(
 
     Returns:
         bool | None: True or False, or None when the file could not be compiled or listed.
+    """
+    listing = _list_goto_functions(file_path, include_dirs)
+    return None if listing is None else function in listing[1]
+
+
+def _list_goto_functions(
+    file_path: str, include_dirs: list[str] | None
+) -> tuple[set[str], set[str]] | None:
+    """Compile `file_path` and list its functions and the functions that have contracts.
+
+    Args:
+        file_path (str): Path to the C source file.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+
+    Returns:
+        tuple[set[str], set[str]] | None: The functions with a body, and the functions with a
+            contract, in the compiled program; None when it could not be compiled or listed.
     """
     # The commands run in a scratch directory, so paths are resolved first.
     include_flags = " ".join(
@@ -963,11 +1002,18 @@ def has_contract(
                 listing = completed.stdout
     except (OSError, TimeoutExpired):
         return None
+    compiled: set[str] = set()
+    contracted: set[str] = set()
     for line in listing.splitlines():
         listed = _LISTED_FUNCTION.match(line.strip())
-        if listed is not None and listed.group(1) == f"contract::{function}":
-            return True
-    return False
+        if listed is None:
+            continue
+        name, identifier, no_body = listed.groups()
+        if identifier == name and no_body is None:
+            compiled.add(name)
+        elif identifier == f"contract::{name}":
+            contracted.add(name)
+    return compiled, contracted
 
 
 def compile_with_goto_cc(

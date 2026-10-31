@@ -70,4 +70,6 @@ You can also search the web for more CBMC documentation.
   - You need information from a callee's verification run to help verify a caller.
 - You must not delete any scripts if you create and use them to help you.
 - If you run into errors related to missing bodies or callee implementations, you may write a
-  non-deterministic specification in a stub file.
+  non-deterministic specification in a stub file. A function inside a preprocessor block that this
+  build leaves out is not part of the program: the harness gives it no session and leaves it out
+  of its callers' callees, so you need neither a contract for it nor a `#define` to switch it on.
