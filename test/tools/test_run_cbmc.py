@@ -15,6 +15,7 @@ from tools.run_cbmc import (
     _get_goto_instrument_add_library_command,
     _get_goto_instrument_contract_command,
     _get_goto_instrument_unwind_command,
+    _get_tail_within_budget,
     _tail_section,
     compile_with_goto_cc,
     run_cbmc,
@@ -246,6 +247,42 @@ def test_format_failure_response_truncates_but_keeps_failures_leading() -> None:
     assert "[f.assertion.7] line 3: FAILURE" in response[:2000]
     assert "--- stderr (tail) ---" in response
     assert "--- stdout (tail) ---" in response
+
+
+def test_get_tail_within_budget_returns_short_content_unchanged() -> None:
+    assert _get_tail_within_budget("a\nb\n", 10) == ("a\nb\n", 0)
+
+
+def test_get_tail_within_budget_drops_short_partial_leading_line() -> None:
+    content = "line one\n" * 10
+    tail, dropped = _get_tail_within_budget(content, 25)
+
+    assert tail == "line one\nline one\n"
+    assert dropped == len(content) - len(tail)
+
+
+def test_get_tail_within_budget_keeps_first_line_when_window_starts_at_line_boundary() -> None:
+    assert _get_tail_within_budget("aaa\nbbb\nccc\n", 8) == ("bbb\nccc\n", 4)
+
+
+def test_get_tail_within_budget_keeps_single_long_line() -> None:
+    # The only newline in the window is the trailing one; trimming to it would keep nothing.
+    content = "x" * 40_000 + "\n"
+    tail, dropped = _get_tail_within_budget(content, 15_000)
+
+    assert tail == content[-15_000:]
+    assert dropped == 25_001
+
+
+def test_get_tail_within_budget_keeps_long_partial_line_before_short_last_line() -> None:
+    content = "x" * 40_000 + "\nshort\n"
+    tail, _ = _get_tail_within_budget(content, 15_000)
+
+    assert tail == content[-15_000:]
+
+
+def test_get_tail_within_budget_zero_budget_keeps_nothing() -> None:
+    assert _get_tail_within_budget("abc\n", 0) == ("", 4)
 
 
 def test_format_mutation_success_section_renders_kill_score_and_survivor_diff() -> None:

@@ -617,22 +617,48 @@ def _failure_lines_section(stdout: str) -> str:
         return ""
     failure_block = "\n".join(failure_lines)
     failure_cap = _MAX_RESPONSE_CHARS // 2
-    if len(failure_block) > failure_cap:
-        dropped = len(failure_block) - failure_cap
-        failure_block = (
-            f"[... {dropped} characters of FAILURE lines truncated ...]\n"
-            f"{failure_block[-failure_cap:]}"
-        )
+    tail, dropped = _get_tail_within_budget(failure_block, failure_cap)
+    if dropped:
+        failure_block = f"[... {dropped} characters of FAILURE lines truncated ...]\n{tail}"
     return f"--- FAILURE lines ---\n{failure_block}\n"
+
+
+def _get_tail_within_budget(content: str, budget: int) -> tuple[str, int]:
+    """Return at most the last `budget` chars of `content`, preferably starting at a line boundary.
+
+    When `content` is truncated and the kept window starts in the middle of a line, that partial
+    line is discarded so that the tail starts at a line boundary, unless the partial line fills
+    at least half the window. In that case, the partial line is kept, because discarding it would
+    discard most of the output (for example, when the output is one very long line).
+
+    Args:
+        content (str): The content to truncate to its tail.
+        budget (int): The maximum number of characters to keep; must be non-negative.
+
+    Returns:
+        tuple[str, int]: The kept tail and the number of characters dropped from the front
+            (0 when `content` already fits within `budget`). Because a partial leading line can
+            be discarded, the kept tail can be shorter than `budget`.
+    """
+    if len(content) <= budget:
+        return content, 0
+    # Not `content[-budget:]`, which is all of `content` when `budget` is 0.
+    start = len(content) - budget
+    tail = content[start:]
+    if content[start - 1] != "\n":
+        partial_line_length = tail.find("\n")
+        if 0 <= partial_line_length < budget // 2:
+            tail = tail[partial_line_length + 1 :]
+    return tail, len(content) - len(tail)
 
 
 def _tail_section(label: str, content: str, budget: int) -> str:
     """Render a labeled section containing as much of the tail of content as fits in budget chars.
 
     The section is a label line, then the content, then a newline. If the whole section does
-    not fit in `budget` chars, the content is replaced by a truncation marker and the longest
-    tail of the content that fits. The section exceeds `budget` only if `budget` cannot hold
-    even the label line, the truncation marker, and the newline.
+    not fit in `budget` chars, the content is replaced by a truncation marker and a tail of the
+    content that fits, chosen by `_get_tail_within_budget`. The section exceeds `budget` only if
+    `budget` cannot hold even the label line, the truncation marker, and the newline.
 
     Args:
         label (str): The label of the section.
@@ -649,8 +675,7 @@ def _tail_section(label: str, content: str, budget: int) -> str:
     # long as the actual marker.
     longest_marker = f"[... {len(content)} characters truncated ...]\n"
     tail_len = max(budget - len(label_line) - len(longest_marker) - 1, 0)
-    dropped = len(content) - tail_len
-    tail = content[dropped:]
+    tail, dropped = _get_tail_within_budget(content, tail_len)
     return f"{label_line}[... {dropped} characters truncated ...]\n{tail}\n"
 
 
