@@ -312,7 +312,7 @@ def compute_clause_redundancy_score(
 
     mutants = get_clause_mutants(str(source_path), function_name)
     paths_to_removed_clauses = {
-        _get_path_to_source_with_removed_clause(workspace, source_path, i): mutant
+        _get_path_to_source_with_removed_clause(workspace, source_path, function_name, i): mutant
         for i, mutant in enumerate(mutants)
     }
 
@@ -441,23 +441,28 @@ def _get_in_file_callers(source_path: Path, function_name: str) -> list[str]:
 
 
 def _get_path_to_source_with_removed_clause(
-    workspace_path: Path, path_to_original_source: Path, index: int
+    workspace_path: Path, path_to_original_source: Path, function: str, index: int
 ) -> Path:
     """Return the path to which to write a source file with a removed clause.
 
-    For example, given the path `/app/test/data/foo.c`, return `/app/test/data/foo__clause_drop_1.c`
+    For example, given the path `/app/test/data/foo.c` and function `bar`, return
+    `/app/test/data/foo__clause_drop_bar_1.c`. The function name is part of the file name so that
+    removed-clause sources of different functions in the same file -- which may be scored
+    concurrently -- never overwrite one another; the files still match the `*__clause_drop_*.c`
+    pattern that `make clean-mutants` removes.
 
     Args:
-        workspace_path (Path): The directory under redundancy score computation occurs.
+        workspace_path (Path): The directory under which redundancy score computation occurs.
         path_to_original_source (Path): The path to the original source file.
+        function (str): The function whose clause was removed.
         index (int): The index of the mutant, used as a identifier for the mutant source path.
 
     Returns:
         Path: The path to which to write a mutated source file.
     """
-    return (
-        workspace_path
-        / f"{path_to_original_source.stem}__clause_drop_{index}{path_to_original_source.suffix}"
+    return workspace_path / (
+        f"{path_to_original_source.stem}__clause_drop_{function}_{index}"
+        f"{path_to_original_source.suffix}"
     )
 
 
