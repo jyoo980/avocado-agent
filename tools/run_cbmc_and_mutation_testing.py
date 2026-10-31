@@ -9,6 +9,9 @@ Usage:
     % avocado-run-cbmc --function <FUNCTION_NAME> \
                        --file <PATH_TO_C_FILE> \
                        [-I <PATH_TO_INCLUDE_DIR(S)>]...
+
+The CBMC pipeline itself lives in `tools.run_cbmc`; this module adds the command-line interface,
+the verification-attempt log, and mutation testing.
 """
 
 import argparse
@@ -42,15 +45,18 @@ VERIFICATION_ATTEMPTS_LOG_SUFFIX = "-verification-attempts.jsonl"
 
 def main() -> None:
     """Run CBMC on a function."""
+    # The description omits the unwinding and depth bounds, to avoid inviting the agent to hard-code
+    # them into specifications (which AGENTS.md forbids). This does not hide the bounds from the
+    # agent: docs/running-cbmc-directly.md states them, because its commands must be runnable.
     parser = argparse.ArgumentParser(
         description=(
-            "Run CBMC on a function with loop unwinding = _CBMC_UNWIND, depth = _CBMC_DEPTH. "
+            "Run CBMC on a function, with bounded loop unwinding and bounded depth. "
             "Exits with status 0 on verification success. "
             "On success, additionally runs mutation testing, which re-runs the full CBMC "
-            f"pipeline once per mutant (concurrently, up to {_AGENT_MUTANT_TIMEOUT_SEC} s each); "
-            "this can take a few minutes, during which the tool is mostly silent. This is "
-            "expected, not a hang -- do not interrupt the process. Consider running it in the "
-            "background and polling for completion."
+            "pipeline once per mutant (several mutants in parallel, up to "
+            f"{_AGENT_MUTANT_TIMEOUT_SEC} s each); this can take a few minutes, during which the "
+            "tool is mostly silent. This is expected, not a hang -- do not interrupt the process. "
+            "Consider running it in the background and polling for completion."
         )
     )
     parser.add_argument("--function", required=True, help="Name of the function to verify.")
@@ -93,9 +99,8 @@ def main() -> None:
             skip_reverification=True,
             mutant_timeout_sec=_AGENT_MUTANT_TIMEOUT_SEC,
         )
-        if score:
-            print(result.response)
-            print(get_mutation_testing_results_for_client(score))
+        print(result.response)
+        print(get_mutation_testing_results_for_client(score))
         sys.exit(0)
     else:
         print(result.response)
