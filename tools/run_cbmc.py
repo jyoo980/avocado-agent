@@ -206,7 +206,7 @@ def run_cbmc(
     call_graph: CallGraph | None = None,
     cwd: str | None = None,
 ) -> RunCbmcResult:
-    """Run CBMC on the given function with loop unwinding = `_UNWIND`, depth = `_DEPTH`.
+    """Run CBMC on the given function with loop unwinding = `_CBMC_UNWIND`, depth = `_CBMC_DEPTH`.
 
     The pipeline is split into three logical steps — `goto-cc`, `goto-instrument`, and
     `cbmc` — each run as its own subprocess so that failures can be attributed to a
