@@ -31,8 +31,7 @@ checks:
 
 # Delete artifacts from CBMC runs.
 clean:
-	find . \( -name '*.goto' -o -name '*callgraph.json' -o -name '*.jsonl' \
-		-o -name '*-avocado-run-state.json' \) -delete
+	find . \( -name '*.goto' -o -name '*callgraph.json' -o -name '*.jsonl' \) -delete
 	find . -type d -name '__pycache__' -exec rm -rf {} +
 
 # Delete artifacts from mutation testing runs.
