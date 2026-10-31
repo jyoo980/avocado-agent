@@ -34,8 +34,9 @@ from tools.util.callgraph import CallGraph
 # the verdict survives that head-only preview rather than being buried in the stdout tail.
 _MAX_RESPONSE_CHARS = 100_000
 
-# Of the budget left after the header, the leading FAILURE lines, and section labels, this
-# fraction is given to the stdout tail; the remainder goes to the stderr tail.
+# Of the budget left after the header and the leading FAILURE lines, this fraction is given to
+# the stdout tail section and the remainder to the stderr tail section. When one section needs
+# less than its share, the other section gets the rest.
 _STDOUT_TAIL_SHARE = 0.7
 
 _DISABLE_MACRO_FLAGS = [
@@ -576,29 +577,24 @@ def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, 
 
     failure_section = _failure_lines_section(stdout)
 
-    # Lead with the FAILURE lines, then show both streams in full when everything fits.
-    full = f"{header}{failure_section}--- stderr ---\n{stderr}\n--- stdout ---\n{stdout}"
-    if len(full) <= _MAX_RESPONSE_CHARS:
-        return full
+    # Lead with the FAILURE lines, then show both streams in full when everything fits. The
+    # length is checked before concatenating, because the streams can be hundreds of MB.
+    full_parts = [header, failure_section, "--- stderr ---\n", stderr, "\n--- stdout ---\n", stdout]
+    if sum(len(part) for part in full_parts) <= _MAX_RESPONSE_CHARS:
+        return "".join(full_parts)
 
     # Over budget: keep the leading FAILURE lines and replace each stream with its tail.
-    # The `_MAX_RESPONSE_CHARS`-wide placeholder pads the marker's digit count so the
-    # actual marker (with the real dropped count) cannot push us over budget.
-    digit_pad = str(_MAX_RESPONSE_CHARS)
-    marker = f"[... {digit_pad} characters truncated ...]\n"
-    fixed = (
-        f"{header}{failure_section}--- stderr (tail) ---\n{marker}--- stdout (tail) ---\n{marker}"
-    )
-    remaining = max(_MAX_RESPONSE_CHARS - len(fixed), 0)
+    remaining = max(_MAX_RESPONSE_CHARS - len(header) - len(failure_section), 0)
     stdout_budget = int(remaining * _STDOUT_TAIL_SHARE)
-    stderr_budget = remaining - stdout_budget
-
-    stderr_section = _tail_section("stderr (tail)", stderr, stderr_budget)
+    # Give stderr whatever stdout's share does not need, then give stdout whatever stderr does
+    # not use. When both streams are long, the sections get their shares of `remaining`.
     stdout_section = _tail_section("stdout (tail)", stdout, stdout_budget)
+    stderr_section = _tail_section("stderr (tail)", stderr, remaining - len(stdout_section))
+    stdout_section = _tail_section("stdout (tail)", stdout, remaining - len(stderr_section))
 
     response = f"{header}{failure_section}{stderr_section}{stdout_section}"
-    # Hard clamp: the per-section budget accounting can drift by a few chars
-    # against the `fixed` estimate, so guarantee we never exceed the cap.
+    # Hard clamp: each section fits its budget unless the budget cannot hold even the section's
+    # label and truncation marker.
     return response[:_MAX_RESPONSE_CHARS]
 
 
@@ -631,22 +627,31 @@ def _failure_lines_section(stdout: str) -> str:
 
 
 def _tail_section(label: str, content: str, budget: int) -> str:
-    """Render a labeled section containing the tail of content within budget chars.
+    """Render a labeled section containing as much of the tail of content as fits in budget chars.
+
+    The section is a label line, then the content, then a newline. If the whole section does
+    not fit in `budget` chars, the content is replaced by a truncation marker and the longest
+    tail of the content that fits. The section exceeds `budget` only if `budget` cannot hold
+    even the label line, the truncation marker, and the newline.
 
     Args:
         label (str): The label of the section.
         content (str): The content to truncate.
-        budget (int): The maximum number of characters to include in the section.
+        budget (int): The maximum number of characters in the section.
 
     Returns:
-        str: The labeled section containing the tail of content within budget chars.
+        str: The labeled section containing the tail of content.
     """
-    if len(content) <= budget:
-        body = content
-    else:
-        dropped = len(content) - budget
-        body = f"[... {dropped} characters truncated ...]\n{content[-budget:]}"
-    return f"--- {label} ---\n{body}\n"
+    label_line = f"--- {label} ---\n"
+    if len(label_line) + len(content) + 1 <= budget:
+        return f"{label_line}{content}\n"
+    # At most all of the content is dropped, so a marker sized for that count is at least as
+    # long as the actual marker.
+    longest_marker = f"[... {len(content)} characters truncated ...]\n"
+    tail_len = max(budget - len(label_line) - len(longest_marker) - 1, 0)
+    dropped = len(content) - tail_len
+    tail = content[dropped:]
+    return f"{label_line}[... {dropped} characters truncated ...]\n{tail}\n"
 
 
 def _log_invocation(

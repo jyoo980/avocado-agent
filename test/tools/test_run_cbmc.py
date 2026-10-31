@@ -15,6 +15,7 @@ from tools.run_cbmc import (
     _get_goto_instrument_add_library_command,
     _get_goto_instrument_contract_command,
     _get_goto_instrument_unwind_command,
+    _tail_section,
     compile_with_goto_cc,
     run_cbmc,
 )
@@ -191,6 +192,47 @@ def test_format_failure_response_omits_failure_section_for_compile_failure() -> 
     assert "--- FAILURE lines ---" not in response
     assert response.index("--- stderr ---") < response.index("--- stdout ---")
     assert "failed at goto-cc" in response
+
+
+def test_format_failure_response_keeps_end_of_stdout_when_streams_are_huge() -> None:
+    # Each dropped count has more digits than `_MAX_RESPONSE_CHARS`; the response must still
+    # fit the budget without clipping the end of the stdout tail.
+    stdout = "noise\n" * 400_000 + "VERIFICATION FAILED\n"
+    response = _format_failure_response("f", CbmcStep.CBMC, stdout=stdout, stderr="e\n" * 1_200_000)
+
+    assert len(response) <= _MAX_RESPONSE_CHARS
+    assert response.endswith("VERIFICATION FAILED\n\n")
+
+
+def test_format_failure_response_gives_stdout_the_budget_that_stderr_does_not_need() -> None:
+    stdout = "x" * 200_000 + "VERIFICATION FAILED\n"
+    response = _format_failure_response("f", CbmcStep.CBMC, stdout=stdout, stderr="short\n")
+
+    assert _MAX_RESPONSE_CHARS - 100 <= len(response) <= _MAX_RESPONSE_CHARS
+    assert response.endswith("VERIFICATION FAILED\n\n")
+
+
+def test_format_failure_response_gives_stderr_the_budget_that_stdout_does_not_need() -> None:
+    stderr = "e" * 200_000 + "END OF STDERR\n"
+    response = _format_failure_response("f", CbmcStep.CBMC, stdout="short\n", stderr=stderr)
+
+    assert _MAX_RESPONSE_CHARS - 100 <= len(response) <= _MAX_RESPONSE_CHARS
+    assert "END OF STDERR\n" in response
+    assert response.endswith("--- stdout (tail) ---\nshort\n\n")
+
+
+def test_tail_section_fits_budget_and_keeps_end_of_content() -> None:
+    section = _tail_section("stdout (tail)", "x" * 1000 + "END", 100)
+
+    assert len(section) <= 100
+    assert section.endswith("END\n")
+
+
+def test_tail_section_with_zero_budget_has_empty_tail() -> None:
+    assert (
+        _tail_section("stdout (tail)", "abc", 0)
+        == "--- stdout (tail) ---\n[... 3 characters truncated ...]\n\n"
+    )
 
 
 def test_format_failure_response_truncates_but_keeps_failures_leading() -> None:
