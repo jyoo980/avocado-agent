@@ -8,9 +8,12 @@ Usage:
 
 import argparse
 import json
+import os
 import shlex
+import signal
 import subprocess
 import sys
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -153,6 +156,57 @@ class _SubprocessResult:
     def succeeded(self) -> bool:
         """True iff the subprocess exited zero and did not time out."""
         return self.returncode == 0 and not self.timed_out
+
+
+def run_shell_command(
+    command: str, timeout: float, cwd: str | None = None
+) -> subprocess.CompletedProcess[str] | None:
+    """Run a shell command, capturing its output, and kill its whole process group on timeout.
+
+    Every pipeline subprocess (`goto-cc`, `goto-instrument`, `cbmc`) should be run through this
+    function. The command runs in a new session, so it and every process it starts share a process
+    group. On timeout (or any other exception) the whole group is killed, not just the shell, so no
+    `cbmc` outlives its shell.
+
+    Args:
+        command (str): The shell command to run.
+        timeout (float): Seconds after which the command and every process it started are killed.
+        cwd (str | None): Working directory for the subprocess. When None, the subprocess
+            inherits the current working directory.
+
+    Returns:
+        subprocess.CompletedProcess[str] | None: The finished subprocess, with its captured stdout
+            and stderr, or None if it hit the timeout.
+    """
+    with subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        shell=True,
+        cwd=cwd,
+        start_new_session=True,
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except TimeoutExpired:
+            _kill_process_group(process.pid)
+            process.communicate()
+            return None
+        except BaseException:
+            _kill_process_group(process.pid)
+            raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _kill_process_group(pgid: int) -> None:
+    """Send SIGKILL to every process in the given process group, if any remain.
+
+    Args:
+        pgid (int): The process group id.
+    """
+    with suppress(ProcessLookupError):
+        os.killpg(pgid, signal.SIGKILL)
 
 
 def main() -> None:
@@ -424,25 +478,17 @@ def _run_command(
     Returns:
         _SubprocessResult: The captured outcome, including stdout/stderr or the timeout sentinel.
     """
-    try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            shell=True,
-            check=False,
-            timeout=_DEFAULT_RUN_CBMC_TIMEOUT_SEC,
-            cwd=cwd,
-        )
-        returncode = completed.returncode
-        stdout = completed.stdout
-        stderr = completed.stderr
-        timed_out = False
-    except TimeoutExpired:
+    completed = run_shell_command(command, _DEFAULT_RUN_CBMC_TIMEOUT_SEC, cwd=cwd)
+    if completed is None:
         returncode = _TIMEOUT_RETURNCODE
         stdout = ""
         stderr = ""
         timed_out = True
+    else:
+        returncode = completed.returncode
+        stdout = completed.stdout
+        stderr = completed.stderr
+        timed_out = False
 
     subprocess_results.append(
         {
@@ -818,18 +864,10 @@ def compile_with_goto_cc(
             (0 == compiled successfully).
     """
     compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
-    try:
-        result = subprocess.run(
-            compilation_command,
-            capture_output=True,
-            text=True,
-            shell=True,
-            check=False,
-            timeout=_GOTO_CC_TIMEOUT_SEC,
-        )
-    except TimeoutExpired:
+    completed = run_shell_command(compilation_command, _GOTO_CC_TIMEOUT_SEC)
+    if completed is None:
         return _TIMEOUT_RETURNCODE
-    return result.returncode
+    return completed.returncode
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 """Tests for the run_cbmc tool."""
 
 import os
+import time
 from pathlib import Path
 from subprocess import CompletedProcess
 
@@ -17,6 +18,7 @@ from tools.run_cbmc import (
     _get_goto_instrument_unwind_command,
     compile_with_goto_cc,
     run_cbmc,
+    run_shell_command,
 )
 from tools.util.mutation import MutantVerificationResult, MutationScore, _MAX_MUTATION_SECTION_CHARS, _print_mutation_progress, get_mutation_testing_results_for_client
 
@@ -162,6 +164,15 @@ def test_run_cbmc_names_failed_step_for_uncompilable_source(tmp_path: Path) -> N
     assert result.failed_step is CbmcStep.GOTO_CC
     assert not result.cbmc_ran_successfully
     assert result.returncode != 0
+
+
+def test_run_shell_command_kills_the_whole_process_group_on_timeout(tmp_path: Path) -> None:
+    marker = tmp_path / "survived"
+    # Killing only the shell would leave the background subshell running to create the marker.
+    completed = run_shell_command(f"(sleep 1; touch {marker}) & sleep 10", timeout=0.3)
+    assert completed is None
+    time.sleep(1.5)
+    assert not marker.exists()
 
 
 def test_format_failure_response_leads_with_failure_lines_for_cbmc_step() -> None:
