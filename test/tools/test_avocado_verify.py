@@ -1038,12 +1038,19 @@ def test_the_tools_logs_are_mirrored_beside_the_canonical_file(tmp_path: Path) -
     session = _fork_session("swap", canonical)
     try:
         _log_attempts(session.file, "swap")
+        feedback = session.file.with_name("quicksort-mutation-feedback.jsonl")
+        feedback.write_text(json.dumps({"function": "swap", "kill_score": 0.5}) + "\n")
         avocado_verify._mirror_tool_logs(session, canonical)
         avocado_verify._mirror_tool_logs(session, canonical)
     finally:
         shutil.rmtree(session.directory, ignore_errors=True)
     attempts = canonical.with_name("quicksort-verification-attempts.jsonl")
+    mirrored = canonical.with_name("quicksort-mutation-feedback.jsonl")
     assert len(attempts.read_text().splitlines()) == 4
+    assert [json.loads(line)["kill_score"] for line in mirrored.read_text().splitlines()] == [
+        0.5,
+        0.5,
+    ]
 
 
 def test_run_claude_names_the_session_so_a_timed_out_one_can_be_found(monkeypatch) -> None:
