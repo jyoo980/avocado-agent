@@ -3,6 +3,22 @@
 Scripts for measuring Avocado Agent while changing it: scoring specifications,
 running agent experiments on the host, and summarizing and comparing runs.
 
+## Which launcher to use
+
+Two kinds of script in this directory start agent runs:
+
+- `run.sh` runs each run in a fresh container, so no run can see another's
+  specifications, session transcripts or memory. Use it for measurements that
+  must be repeatable and isolated, such as numbers to report.
+- `run_agent_experiment.sh` and `run_paired_batches.sh` run `avocado-verify`
+  on the host, from a local checkout, and score the result. They are quicker to
+  set up and suit iterating on a change; `run_paired_batches.sh` puts two arms
+  under the same machine load. Runs on one machine share Claude Code's
+  auto-memory (see the last item under [Traps](#traps)).
+
+The summarizing and comparison scripts below read the run directories that
+either kind of launcher writes.
+
 ## Where the data goes
 
 By default, everything the host-side scripts write lands in
