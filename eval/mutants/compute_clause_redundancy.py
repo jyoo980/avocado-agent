@@ -18,9 +18,9 @@ file (`tools/run_cbmc.py`); extending it to accept extra source files would unlo
 caller checks.
 
 Usage:
-    % ./eval/compute_clause_redundancy.py --function <NAME> \
+    % ./eval/mutants/compute_clause_redundancy.py --function <NAME> \
         --file <PATH_TO_C_FILE> \
-        [--keep-artifacts]
+        [--keep-artifacts] \
         [--jsonl PATH]
 """
 
