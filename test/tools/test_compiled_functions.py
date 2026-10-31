@@ -45,7 +45,9 @@ def test_the_compiler_says_which_functions_exist(tmp_path: Path) -> None:
     assert [path.name for path in tmp_path.iterdir()] == ["build.c"]
 
 
-def test_listing_the_compiled_functions_takes_subprocess_slots(tmp_path: Path, monkeypatch) -> None:
+def test_listing_the_compiled_functions_runs_through_run_shell_command(
+    tmp_path: Path, monkeypatch
+) -> None:
     # Like every pipeline subprocess, `goto-cc` and `goto-instrument` run through
     # `run_shell_command`, which takes a subprocess slot and kills the whole process tree on
     # timeout.

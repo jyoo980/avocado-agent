@@ -1042,20 +1042,17 @@ def _list_goto_functions(
         f"-I {shlex.quote(str(Path(d).resolve()))}" for d in include_dirs or []
     )
     source = shlex.quote(str(Path(file_path).resolve()))
-    try:
-        with tempfile.TemporaryDirectory(prefix="avocado-compiled-") as scratch_dir:
-            commands = (
-                f"goto-cc -o compiled.goto {include_flags} {source}",
-                "goto-instrument --list-goto-functions compiled.goto",
-            )
-            listing = ""
-            for command in commands:
-                completed = run_shell_command(command, _GOTO_CC_TIMEOUT_SEC, cwd=scratch_dir)
-                if completed is None or completed.returncode != 0:
-                    return None
-                listing = completed.stdout
-    except OSError:
-        return None
+    with tempfile.TemporaryDirectory(prefix="avocado-compiled-") as scratch_dir:
+        commands = (
+            f"goto-cc -o compiled.goto {include_flags} {source}",
+            "goto-instrument --list-goto-functions compiled.goto",
+        )
+        listing = ""
+        for command in commands:
+            completed = run_shell_command(command, _GOTO_CC_TIMEOUT_SEC, cwd=scratch_dir)
+            if completed is None or completed.returncode != 0:
+                return None
+            listing = completed.stdout
     compiled: set[str] = set()
     contracted: set[str] = set()
     for line in listing.splitlines():
