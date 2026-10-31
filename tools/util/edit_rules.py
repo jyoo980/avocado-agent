@@ -618,7 +618,7 @@ def hash_for_function_definition(source: bytes, function: str) -> str | None:
     """
     definitions = [
         _code_text(source[item.start : item.end])
-        for item in _split_items(_tokenize(source))
+        for item in _parse(source).items
         if item.kind == "function" and item.name == function
     ]
     if not definitions:
