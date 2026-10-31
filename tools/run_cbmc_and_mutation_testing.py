@@ -13,13 +13,13 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from enum import StrEnum
 from pathlib import Path
 from subprocess import TimeoutExpired
 
 from loguru import logger
 
 from tools.construct_call_graph import construct_call_graph
+from tools.run_cbmc import CbmcStep, _format_failure_response
 from tools.util import (
     build_stub_index,
     get_in_file_callees_for,
@@ -31,16 +31,6 @@ from tools.util.mutation import (
     generate_mutants_and_compute_score,
     get_mutation_testing_results_for_client,
 )
-
-# Char budget for failure responses. The harness persists full tool output to a file but
-# previews only the head inline, so we keep responses bounded (a pathological CBMC run can
-# emit hundreds of MB) and lead with the FAILURE lines (see `_format_failure_response`) so
-# the verdict survives that head-only preview rather than being buried in the stdout tail.
-_MAX_RESPONSE_CHARS = 100_000
-
-# Of the budget left after the header, the leading FAILURE lines, and section labels, this
-# fraction is given to the stdout tail; the remainder goes to the stderr tail.
-_STDOUT_TAIL_SHARE = 0.7
 
 _DISABLE_MACRO_FLAGS = [
     "-D__NO_CTYPE"  # for ctype.h
@@ -65,20 +55,6 @@ _CBMC_DEPTH = 200
 # attempt (i.e., per `avocado-run-cbmc` invocation). Public because `avocado-verify` reads this
 # log to count how many times the agent attempted to verify a function. Keep the two in sync.
 VERIFICATION_ATTEMPTS_LOG_SUFFIX = "-verification-attempts.jsonl"
-
-
-class CbmcStep(StrEnum):
-    """Logical step in the CBMC verification pipeline.
-
-    `run_cbmc` runs the pipeline as three logical steps; each maps to one or more
-    underlying subprocess invocations. When a step fails, the result names the step
-    so callers can distinguish e.g. a goto-cc compile rejection from a cbmc
-    verification failure.
-    """
-
-    GOTO_CC = "goto-cc"
-    GOTO_INSTRUMENT = "goto-instrument"
-    CBMC = "cbmc"
 
 
 @dataclass(frozen=True)
@@ -522,107 +498,6 @@ def has_missing_body_for_callee_or_function_message(stdout: str, stderr: str) ->
         or missing_function_indicator in stdout
         or missing_function_indicator in stderr
     )
-
-
-def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, stderr: str) -> str:
-    """Format a CBMC failure response, leading with the FAILURE lines.
-
-    After the header, the response always begins with the FAILURE lines extracted from
-    stdout, so the verdict survives the harness's head-only inline preview: CBMC prints its
-    FAILURE lines and verdict at the *tail* of stdout, which a positional truncation would
-    otherwise bury. The full stderr and stdout follow; when the combined output exceeds
-    `_MAX_RESPONSE_CHARS`, each stream is replaced by its tail behind a truncation marker.
-    For `goto-cc`/`goto-instrument` failures stdout has no FAILURE lines, so the response
-    leads with stderr, where those tools print their diagnostics.
-
-    Args:
-        function (str): The name of the function that failed verification.
-        failed_step (CbmcStep): The pipeline step that failed.
-        stdout (str): The concatenated stdout across every step that ran.
-        stderr (str): The concatenated stderr across every step that ran.
-
-    Returns:
-        str: The formatted CBMC failure response, leading with the FAILURE lines and
-            truncated iff it has exceeded the char budget.
-    """
-    if failed_step is CbmcStep.CBMC:
-        header = f"{function} failed to verify with the following errors:\n\n"
-    else:
-        header = f"{function} failed at {failed_step.value} with the following errors:\n\n"
-
-    failure_section = _failure_lines_section(stdout)
-
-    # Lead with the FAILURE lines, then show both streams in full when everything fits.
-    full = f"{header}{failure_section}--- stderr ---\n{stderr}\n--- stdout ---\n{stdout}"
-    if len(full) <= _MAX_RESPONSE_CHARS:
-        return full
-
-    # Over budget: keep the leading FAILURE lines and replace each stream with its tail.
-    # The `_MAX_RESPONSE_CHARS`-wide placeholder pads the marker's digit count so the
-    # actual marker (with the real dropped count) cannot push us over budget.
-    digit_pad = str(_MAX_RESPONSE_CHARS)
-    marker = f"[... {digit_pad} characters truncated ...]\n"
-    fixed = (
-        f"{header}{failure_section}--- stderr (tail) ---\n{marker}--- stdout (tail) ---\n{marker}"
-    )
-    remaining = max(_MAX_RESPONSE_CHARS - len(fixed), 0)
-    stdout_budget = int(remaining * _STDOUT_TAIL_SHARE)
-    stderr_budget = remaining - stdout_budget
-
-    stderr_section = _tail_section("stderr (tail)", stderr, stderr_budget)
-    stdout_section = _tail_section("stdout (tail)", stdout, stdout_budget)
-
-    response = f"{header}{failure_section}{stderr_section}{stdout_section}"
-    # Hard clamp: the per-section budget accounting can drift by a few chars
-    # against the `fixed` estimate, so guarantee we never exceed the cap.
-    return response[:_MAX_RESPONSE_CHARS]
-
-
-def _failure_lines_section(stdout: str) -> str:
-    """Render the leading "FAILURE lines" section of a failure response, or "" if none.
-
-    Extracts the FAILURE lines from `stdout` and renders them as a labeled section, capped
-    at half the total budget so a pathological run with tens of thousands of FAILURE lines
-    can't blow past the limit on its own. Returns the empty string when stdout has no
-    FAILURE lines (e.g. a goto-cc compile failure), so callers naturally lead with stderr.
-
-    Args:
-        stdout (str): The concatenated stdout across every step that ran.
-
-    Returns:
-        str: The labeled FAILURE-lines section ending in a newline, or "" if there are none.
-    """
-    failure_lines = [line for line in stdout.split("\n") if "FAILURE" in line]
-    if not failure_lines:
-        return ""
-    failure_block = "\n".join(failure_lines)
-    failure_cap = _MAX_RESPONSE_CHARS // 2
-    if len(failure_block) > failure_cap:
-        dropped = len(failure_block) - failure_cap
-        failure_block = (
-            f"[... {dropped} characters of FAILURE lines truncated ...]\n"
-            f"{failure_block[-failure_cap:]}"
-        )
-    return f"--- FAILURE lines ---\n{failure_block}\n"
-
-
-def _tail_section(label: str, content: str, budget: int) -> str:
-    """Render a labeled section containing the tail of content within budget chars.
-
-    Args:
-        label (str): The label of the section.
-        content (str): The content to truncate.
-        budget (int): The maximum number of characters to include in the section.
-
-    Returns:
-        str: The labeled section containing the tail of content within budget chars.
-    """
-    if len(content) <= budget:
-        body = content
-    else:
-        dropped = len(content) - budget
-        body = f"[... {dropped} characters truncated ...]\n{content[-budget:]}"
-    return f"--- {label} ---\n{body}\n"
 
 
 def _log_invocation(

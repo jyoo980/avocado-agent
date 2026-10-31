@@ -15,6 +15,7 @@ from tools.run_cbmc import (
     _get_goto_instrument_add_library_command,
     _get_goto_instrument_contract_command,
     _get_goto_instrument_unwind_command,
+    _tail_section,
     compile_with_goto_cc,
     run_cbmc,
 )
@@ -201,6 +202,20 @@ def test_format_failure_response_keeps_end_of_stdout_when_streams_are_huge() -> 
 
     assert len(response) <= _MAX_RESPONSE_CHARS
     assert response.endswith("VERIFICATION FAILED\n\n")
+
+
+def test_tail_section_fits_budget_and_keeps_end_of_content() -> None:
+    section = _tail_section("stdout (tail)", "x" * 1000 + "END", 100)
+
+    assert len(section) <= 100
+    assert section.endswith("END\n")
+
+
+def test_tail_section_with_zero_budget_has_empty_tail() -> None:
+    assert (
+        _tail_section("stdout (tail)", "abc", 0)
+        == "--- stdout (tail) ---\n[... 3 characters truncated ...]\n\n"
+    )
 
 
 def test_format_failure_response_truncates_but_keeps_failures_leading() -> None:
