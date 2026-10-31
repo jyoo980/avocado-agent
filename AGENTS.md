@@ -137,8 +137,7 @@ slower and another hit the ten-minute timeout), and a contract that verified at 
 verifying until it is strengthened. The vacuity check and mutation testing use the depth you pass.
 The depth of your last passing run on the final contract is the one the harness holds the
 function to from then on, so keep using it once you raise it; you may back off to a lower value
-between runs, never below 200. Do not probe whether a proof is vacuous by hand either:
-`avocado-run-cbmc` checks every passing run and tells you. Spend your turns on the contract itself.
+between runs, never below 200. Spend your turns on the contract itself.
 
 ## Vacuous proofs
 
@@ -148,8 +147,8 @@ CBMC reports no failure whatever the postconditions say. Such a proof is *vacuou
 nothing, every mutant survives it, and it does not count as verified.
 
 `avocado-run-cbmc` checks each passing run with one more CBMC run, on a copy of your file to which
-it adds a false postcondition and a false assertion at the top of the body. It reports `VACUOUS`
-with one of two causes:
+it adds a false postcondition and a false assertion at the top of the body, so do not probe by hand
+whether a proof is vacuous. It reports `VACUOUS` with one of two causes:
 
 - **The preconditions cannot all hold** (no execution enters the body). Remove the
   `__CPROVER_requires` clauses one at a time and re-run to find the one responsible, then restate
