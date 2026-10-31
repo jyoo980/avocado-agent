@@ -218,7 +218,7 @@ def run_cbmc(
     specific step. Up to three pipeline attempts are made: an initial run, a retry
     when an apparent recursive-inlining error is detected, and a retry when a missing
     callee body is detected. The timeout is per subprocess, not a total
-    budget; a timeout in any single step terminates the whole pipeline.
+    budget; a timeout in any single step terminates the whole call, with no further retries.
 
     Args:
         function_to_verify (str): Name of the function to verify.
@@ -253,20 +253,24 @@ def run_cbmc(
     stub_paths = get_stub_paths_for(function_to_verify, call_graph, stub_index)
     nondet_callees = get_unstubbed_external_callees_for(function_to_verify, call_graph, stub_index)
 
-    include_dirs = include_dirs or []
     subprocess_results: list[dict] = []
 
     def attempt(
-        callees: list[str], prevent_macro_expansion: bool
+        callees_to_replace: list[str], prevent_macro_expansion: bool
     ) -> tuple[RunCbmcResult, str, str]:
         """Build and run the pipeline once, recording its subprocesses in `subprocess_results`.
+
+        Args:
+            callees_to_replace (list[str]): The functions whose calls are replaced by their
+                contracts. See `_get_pipeline`.
+            prevent_macro_expansion (bool): See `_get_pipeline`.
 
         Returns:
             tuple[RunCbmcResult, str, str]: See `_run_pipeline`.
         """
         pipeline = _get_pipeline(
             function_to_verify,
-            callees,
+            callees_to_replace,
             file_containing_function_to_verify,
             prevent_macro_expansion=prevent_macro_expansion,
             stub_paths=stub_paths,
@@ -316,8 +320,8 @@ def _get_pipeline(
     callees: list[str],
     file_containing_function: str,
     prevent_macro_expansion: bool,
-    stub_paths: list[str],
-    include_dirs: list[str],
+    stub_paths: list[str] | None,
+    include_dirs: list[str] | None,
 ) -> list[tuple[CbmcStep, str]]:
     """Return the pipeline of CBMC commands to execute to verify a function.
 
@@ -327,8 +331,8 @@ def _get_pipeline(
         file_containing_function (str): The C source file containing the function.
         prevent_macro_expansion (bool): When True, disable macros CBMC can't model and inject the
             bundled C-library models before contract enforcement.
-        stub_paths (list[str]): Extra `.c` stub files compiled in alongside the source.
-        include_dirs (list[str]): Directories forwarded to `goto-cc` as `-I` flags.
+        stub_paths (list[str] | None): Extra `.c` stub files compiled in alongside the source.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
 
     Returns:
         list[tuple[CbmcStep, str]]: The sequence of CBMC commands used to verify a function.
@@ -376,17 +380,20 @@ def _run_pipeline(
 ) -> tuple[RunCbmcResult, str, str]:
     """Run the CBMC verification pipeline for the given function.
 
+    The commands run in order, each as its own subprocess, and the first command that fails or
+    times out stops the pipeline, so that the failure can be attributed to its logical step.
+
     Args:
         function_to_verify (str): The name of the function to verify.
         cbmc_commands (list[tuple[CbmcStep, str]]): The CBMC commands used to verify the function.
         subprocess_results (list[dict]): Subprocess result(s) collected from running each CBMC
             command, mutated in-place by `_run_command`.
-        cwd (str | None): The working directory in which this pipeline is executed.
-
+        cwd (str | None): The working directory for every subprocess. The pipeline's intermediate
+            `.goto` files are written relative to this directory.
 
     Returns:
-        tuple[RunCbmcResult, str, str]: The result of running CBMC on the given function, along
-            with per-command stdout and stderr collected from running the pipeline.
+        tuple[RunCbmcResult, str, str]: The result of running CBMC on the given function, plus
+            the concatenated stdout and stderr of every command that ran.
     """
     per_command_stdout = []
     per_command_stderr = []
