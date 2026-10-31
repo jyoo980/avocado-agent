@@ -217,8 +217,8 @@ class _SubprocessResult:
 
 
 @dataclass(frozen=True)
-class SlottedRun:
-    """Outcome of `run_in_subprocess_slot`.
+class ShellCommandRun:
+    """Outcome of `run_shell_command`.
 
     Attributes:
         completed (subprocess.CompletedProcess[str] | None): The finished subprocess, with its
@@ -233,7 +233,7 @@ class SlottedRun:
     wait_seconds: float
 
 
-def run_in_subprocess_slot(command: str, timeout: float, cwd: str | None = None) -> SlottedRun:
+def run_shell_command(command: str, timeout: float, cwd: str | None = None) -> ShellCommandRun:
     """Run a shell command, capturing its output, once a subprocess slot is free.
 
     Every pipeline subprocess (`goto-cc`, `goto-instrument`, `cbmc`) should be run through this
@@ -249,14 +249,14 @@ def run_in_subprocess_slot(command: str, timeout: float, cwd: str | None = None)
             inherits the current working directory.
 
     Returns:
-        SlottedRun: The finished subprocess (or None on timeout) and how long it waited and ran.
+        ShellCommandRun: The finished subprocess (or None on timeout) and how long it waited and ran.
     """
     requested = time.monotonic()
     with _subprocess_slot():
         launched = time.monotonic()
-        completed = _run_shell_command(command, timeout, cwd)
+        completed = _run_in_new_process_group(command, timeout, cwd)
         finished = time.monotonic()
-    return SlottedRun(
+    return ShellCommandRun(
         completed=completed,
         run_seconds=round(finished - launched, 3),
         wait_seconds=round(launched - requested, 3),
@@ -294,7 +294,7 @@ def _subprocess_slot() -> Generator[None]:
         time.sleep(_SLOT_POLL_SEC)
 
 
-def _run_shell_command(
+def _run_in_new_process_group(
     command: str, timeout: float, cwd: str | None
 ) -> subprocess.CompletedProcess[str] | None:
     """Run a shell command, capturing its output, and kill its whole process group on timeout.
@@ -632,7 +632,7 @@ def _run_command(
     Returns:
         _SubprocessResult: The captured outcome, including stdout/stderr or the timeout sentinel.
     """
-    run = run_in_subprocess_slot(command, _DEFAULT_RUN_CBMC_TIMEOUT_SEC, cwd=cwd)
+    run = run_shell_command(command, _DEFAULT_RUN_CBMC_TIMEOUT_SEC, cwd=cwd)
     if run.completed is None:
         returncode = _TIMEOUT_RETURNCODE
         stdout = ""
@@ -1024,7 +1024,7 @@ def compile_with_goto_cc(
             (0 == compiled successfully).
     """
     compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
-    completed = run_in_subprocess_slot(compilation_command, _GOTO_CC_TIMEOUT_SEC).completed
+    completed = run_shell_command(compilation_command, _GOTO_CC_TIMEOUT_SEC).completed
     if completed is None:
         return _TIMEOUT_RETURNCODE
     return completed.returncode

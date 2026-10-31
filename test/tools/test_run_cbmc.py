@@ -26,7 +26,7 @@ from tools.run_cbmc import (
     compile_with_goto_cc,
     max_concurrent_subprocesses,
     run_cbmc,
-    run_in_subprocess_slot,
+    run_shell_command,
 )
 from tools.util.mutation import MutantVerificationResult, MutationScore, _MAX_MUTATION_SECTION_CHARS, _print_mutation_progress, get_mutation_testing_results_for_client
 
@@ -203,11 +203,11 @@ def test_run_command_waits_for_a_slot_used_by_another_thread(monkeypatch, tmp_pa
     assert all(record["seconds"] < 1 for record in records)
 
 
-def test_run_in_subprocess_slot_waits_for_a_slot_used_by_another_process(tmp_path: Path) -> None:
+def test_run_shell_command_waits_for_a_slot_used_by_another_process(tmp_path: Path) -> None:
     command = _exclusive_command(tmp_path / "busy")
     script = (
-        "import sys; from tools.run_cbmc import run_in_subprocess_slot; "
-        f"sys.exit(run_in_subprocess_slot({command!r}, timeout=30).completed.returncode)"
+        "import sys; from tools.run_cbmc import run_shell_command; "
+        f"sys.exit(run_shell_command({command!r}, timeout=30).completed.returncode)"
     )
     # Both processes put their slot files under the same temporary directory.
     env = os.environ | {"TMPDIR": str(tmp_path), "AVOCADO_MAX_CONCURRENT_CBMC": "1"}
@@ -218,13 +218,13 @@ def test_run_in_subprocess_slot_waits_for_a_slot_used_by_another_process(tmp_pat
     assert [process.wait() for process in processes] == [0, 0]
 
 
-def test_run_in_subprocess_slot_kills_the_whole_process_group_on_timeout(
+def test_run_shell_command_kills_the_whole_process_group_on_timeout(
     monkeypatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", tmp_path / "slots")
     marker = tmp_path / "survived"
     # Killing only the shell would leave the background subshell running to create the marker.
-    run = run_in_subprocess_slot(f"(sleep 1; touch {marker}) & sleep 10", timeout=0.3)
+    run = run_shell_command(f"(sleep 1; touch {marker}) & sleep 10", timeout=0.3)
     assert run.completed is None
     time.sleep(1.5)
     assert not marker.exists()
