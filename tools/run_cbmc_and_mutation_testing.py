@@ -406,8 +406,6 @@ def _run_pipeline(
 def _run_step(step: CbmcStep, command: str) -> _StepRun:
     """Run one pipeline step as a subprocess with the per-step timeout.
 
-    The subprocess is run by `run_in_subprocess_slot`, so it waits for a subprocess slot.
-
     Args:
         step (CbmcStep): The logical step this subprocess belongs to.
         command (str): The shell command to run.
@@ -415,7 +413,7 @@ def _run_step(step: CbmcStep, command: str) -> _StepRun:
     Returns:
         _StepRun: The captured outcome, including stdout/stderr or the timeout sentinel.
     """
-    completed = run_shell_command(command, _DEFAULT_RUN_CBMC_TIMEOUT_SEC).completed
+    completed = run_shell_command(command, _DEFAULT_RUN_CBMC_TIMEOUT_SEC)
     if completed is None:
         return _StepRun(
             step=step,
@@ -814,7 +812,7 @@ def compile_with_goto_cc(
         int: goto-cc's exit code (0 == compiled successfully).
     """
     compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
-    completed = run_shell_command(compilation_command, _GOTO_CC_TIMEOUT_SEC).completed
+    completed = run_shell_command(compilation_command, _GOTO_CC_TIMEOUT_SEC)
     if completed is None:
         return _TIMEOUT_RETURNCODE
     return completed.returncode

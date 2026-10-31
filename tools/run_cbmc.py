@@ -7,7 +7,6 @@ Usage:
 """
 
 import argparse
-import dataclasses
 import fcntl
 import json
 import os
@@ -73,7 +72,7 @@ _CBMC_DEPTH = 200
 # in a thread pool) and across processes (for example, several `avocado-run-cbmc` invocations at
 # once), and without a shared bound the product of those fan-outs could oversubscribe the machine,
 # turning slow-but-decidable CBMC runs into timeouts. See `max_concurrent_subprocesses` for how the
-# cap is chosen and `run_in_subprocess_slot` for how it is enforced.
+# cap is chosen and `run_shell_command` for how it is enforced.
 _MAX_CONCURRENT_SUBPROCESSES_ENV_VAR = "AVOCADO_MAX_CONCURRENT_CBMC"
 _DEFAULT_MAX_CONCURRENT_SUBPROCESSES = 32
 
@@ -142,9 +141,6 @@ class RunCbmcResult:
             exit code of the failing subprocess (cbmc's verification exit code when
             `failed_step` is CBMC).
         response (str): Printable summary — a success line or a truncated failure block.
-        run_seconds (float): Total wall-clock seconds that the pipeline's subprocesses ran,
-            excluding time spent waiting for a subprocess slot.
-        wait_seconds (float): Total wall-clock seconds spent waiting for subprocess slots.
     """
 
     function: str
@@ -152,8 +148,6 @@ class RunCbmcResult:
     timed_out: bool
     returncode: int
     response: str
-    run_seconds: float = 0.0
-    wait_seconds: float = 0.0
 
     @property
     def cbmc_ran_successfully(self) -> bool:
@@ -216,24 +210,9 @@ class _SubprocessResult:
         return self.returncode == 0 and not self.timed_out
 
 
-@dataclass(frozen=True)
-class ShellCommandRun:
-    """Outcome of `run_shell_command`.
-
-    Attributes:
-        completed (subprocess.CompletedProcess[str] | None): The finished subprocess, with its
-            captured stdout and stderr, or None if it hit the timeout.
-        run_seconds (float): Wall-clock seconds the subprocess ran.
-        wait_seconds (float): Wall-clock seconds spent waiting for a subprocess slot before the
-            subprocess was launched.
-    """
-
-    completed: subprocess.CompletedProcess[str] | None
-    run_seconds: float
-    wait_seconds: float
-
-
-def run_shell_command(command: str, timeout: float, cwd: str | None = None) -> ShellCommandRun:
+def run_shell_command(
+    command: str, timeout: float, cwd: str | None = None
+) -> subprocess.CompletedProcess[str] | None:
     """Run a shell command, capturing its output, once a subprocess slot is free.
 
     Every pipeline subprocess (`goto-cc`, `goto-instrument`, `cbmc`) should be run through this
@@ -242,6 +221,10 @@ def run_shell_command(command: str, timeout: float, cwd: str | None = None) -> S
     disagree about the cap, the largest of their caps). The timeout starts once the subprocess is
     launched; waiting for a slot does not count against it.
 
+    The command runs in a new session, so it and every process it starts share a process group. On
+    timeout (or any other exception) the whole group is killed, not just the shell, so no `cbmc`
+    outlives its shell and keeps running without holding a subprocess slot.
+
     Args:
         command (str): The shell command to run.
         timeout (float): Seconds after which the command and every process it started are killed.
@@ -249,18 +232,31 @@ def run_shell_command(command: str, timeout: float, cwd: str | None = None) -> S
             inherits the current working directory.
 
     Returns:
-        ShellCommandRun: The finished subprocess (or None on timeout) and how long it waited and ran.
+        subprocess.CompletedProcess[str] | None: The finished subprocess, with its captured stdout
+            and stderr, or None if it hit the timeout.
     """
-    requested = time.monotonic()
-    with _subprocess_slot():
-        launched = time.monotonic()
-        completed = _run_in_new_process_group(command, timeout, cwd)
-        finished = time.monotonic()
-    return ShellCommandRun(
-        completed=completed,
-        run_seconds=round(finished - launched, 3),
-        wait_seconds=round(launched - requested, 3),
-    )
+    with (
+        _subprocess_slot(),
+        subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            shell=True,
+            cwd=cwd,
+            start_new_session=True,
+        ) as process,
+    ):
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except TimeoutExpired:
+            _kill_process_group(process.pid)
+            process.communicate()
+            return None
+        except BaseException:
+            _kill_process_group(process.pid)
+            raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 @contextmanager
@@ -292,44 +288,6 @@ def _subprocess_slot() -> Generator[None]:
                 os.close(fd)
             return
         time.sleep(_SLOT_POLL_SEC)
-
-
-def _run_in_new_process_group(
-    command: str, timeout: float, cwd: str | None
-) -> subprocess.CompletedProcess[str] | None:
-    """Run a shell command, capturing its output, and kill its whole process group on timeout.
-
-    The command runs in a new session, so it and every process it starts share a process group.
-    On timeout (or any other exception) the whole group is killed, not just the shell; a `cbmc`
-    that outlived its shell would keep running while no longer holding a subprocess slot.
-
-    Args:
-        command (str): The shell command to run.
-        timeout (float): Seconds after which the process group is killed.
-        cwd (str | None): Working directory for the subprocess, or None to inherit this one's.
-
-    Returns:
-        subprocess.CompletedProcess[str] | None: The finished subprocess, or None on timeout.
-    """
-    with subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        shell=True,
-        cwd=cwd,
-        start_new_session=True,
-    ) as process:
-        try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except TimeoutExpired:
-            _kill_process_group(process.pid)
-            process.communicate()
-            return None
-        except BaseException:
-            _kill_process_group(process.pid)
-            raise
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 def _kill_process_group(pgid: int) -> None:
@@ -448,7 +406,6 @@ def run_cbmc(
     )
     # First, check if the run was successful or if it timed out.
     if result.cbmc_ran_successfully or result.timed_out:
-        result = _with_timings(result, subprocess_results)
         _log_invocation(
             file_containing_function_to_verify,
             result,
@@ -492,26 +449,8 @@ def run_cbmc(
             cwd=cwd,
         )
 
-    result = _with_timings(result, subprocess_results)
     _log_invocation(file_containing_function_to_verify, result, subprocess_results, nondet_callees)
     return result
-
-
-def _with_timings(result: RunCbmcResult, subprocess_results: list[dict]) -> RunCbmcResult:
-    """Return a copy of `result` whose timings are the totals over `subprocess_results`.
-
-    Args:
-        result (RunCbmcResult): The outcome of a `run_cbmc` call.
-        subprocess_results (list[dict]): The records of every subprocess that call ran.
-
-    Returns:
-        RunCbmcResult: `result` with `run_seconds` and `wait_seconds` filled in.
-    """
-    return dataclasses.replace(
-        result,
-        run_seconds=round(sum(record["seconds"] for record in subprocess_results), 3),
-        wait_seconds=round(sum(record["wait_seconds"] for record in subprocess_results), 3),
-    )
 
 
 def _run_pipeline(
@@ -619,8 +558,6 @@ def _run_command(
 ) -> _SubprocessResult:
     """Run one pipeline step as a subprocess with the per-step timeout.
 
-    The subprocess is run by `run_in_subprocess_slot`, so it waits for a subprocess slot.
-
     Args:
         step (CbmcStep): The logical step this subprocess belongs to.
         command (str): The shell command to run.
@@ -632,16 +569,16 @@ def _run_command(
     Returns:
         _SubprocessResult: The captured outcome, including stdout/stderr or the timeout sentinel.
     """
-    run = run_shell_command(command, _DEFAULT_RUN_CBMC_TIMEOUT_SEC, cwd=cwd)
-    if run.completed is None:
+    completed = run_shell_command(command, _DEFAULT_RUN_CBMC_TIMEOUT_SEC, cwd=cwd)
+    if completed is None:
         returncode = _TIMEOUT_RETURNCODE
         stdout = ""
         stderr = ""
         timed_out = True
     else:
-        returncode = run.completed.returncode
-        stdout = run.completed.stdout
-        stderr = run.completed.stderr
+        returncode = completed.returncode
+        stdout = completed.stdout
+        stderr = completed.stderr
         timed_out = False
 
     subprocess_results.append(
@@ -649,10 +586,6 @@ def _run_command(
             "step": step.value,
             "command": command,
             "returncode": returncode,
-            # Wall-clock timings that let the run log show which steps (and which mutants)
-            # dominate harness time, separately from time spent queued for a subprocess slot.
-            "seconds": run.run_seconds,
-            "wait_seconds": run.wait_seconds,
         }
     )
     return _SubprocessResult(
@@ -865,9 +798,7 @@ def _log_invocation(
         file_under_verification (str): The file that contains the function under verification.
         result (RunCbmcResult): The final outcome of the `run_cbmc` call.
         subprocess_results (list[dict]): Per-subprocess records (one entry per subprocess invocation
-            across every pipeline attempt), each with keys `step`, `command`, `returncode`,
-            `seconds` (how long the subprocess ran), and `wait_seconds` (how long it waited for a
-            subprocess slot before being launched).
+            across every pipeline attempt), each with keys `step`, `command`, `returncode`.
         nondet_callees (list[str]): The list of callees that CBMC treated as non-deterministic
             during verification.
     """
@@ -1024,7 +955,7 @@ def compile_with_goto_cc(
             (0 == compiled successfully).
     """
     compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
-    completed = run_shell_command(compilation_command, _GOTO_CC_TIMEOUT_SEC).completed
+    completed = run_shell_command(compilation_command, _GOTO_CC_TIMEOUT_SEC)
     if completed is None:
         return _TIMEOUT_RETURNCODE
     return completed.returncode

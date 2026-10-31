@@ -61,10 +61,6 @@ class MutantVerificationResult:
             mutant is undecided: CBMC never ran, so the spec's strength is not evidenced.
         instrumentation_failed (bool): True iff any of the goto-instrument steps failed.
             These failures are not necessarily indicative of errors with the specification.
-        seconds (float): Total wall-clock seconds that the mutant's CBMC pipeline subprocesses
-            ran, excluding `wait_seconds`. Diagnostic only; lets slow mutants be identified.
-        wait_seconds (float): Total wall-clock seconds that the mutant's CBMC pipeline waited for
-            subprocess slots. Diagnostic only.
     """
 
     mutant: Mutant
@@ -74,8 +70,6 @@ class MutantVerificationResult:
     timed_out: bool = False
     compile_failed: bool = False
     instrumentation_failed: bool = False
-    seconds: float = 0.0
-    wait_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -495,8 +489,6 @@ def _verify_mutant(
             killed=False,
             returncode=cbmc_result.returncode,
             timed_out=True,
-            seconds=cbmc_result.run_seconds,
-            wait_seconds=cbmc_result.wait_seconds,
         )
     if failed_step := cbmc_result.failed_step:
         if failed_step == CbmcStep.CBMC:
@@ -508,8 +500,6 @@ def _verify_mutant(
                 path_to_mutant=str(path_to_write_mutant),
                 killed=cbmc_result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
                 returncode=cbmc_result.returncode,
-                seconds=cbmc_result.run_seconds,
-                wait_seconds=cbmc_result.wait_seconds,
             )
         compile_failed = cbmc_result.failed_step == CbmcStep.GOTO_CC
         if compile_failed:
@@ -526,8 +516,6 @@ def _verify_mutant(
             returncode=cbmc_result.returncode,
             compile_failed=compile_failed,
             instrumentation_failed=cbmc_result.failed_step == CbmcStep.GOTO_INSTRUMENT,
-            seconds=cbmc_result.run_seconds,
-            wait_seconds=cbmc_result.wait_seconds,
         )
 
     check_expected_cbmc_return_code(cbmc_result.returncode)
@@ -536,8 +524,6 @@ def _verify_mutant(
         path_to_mutant=str(path_to_write_mutant),
         killed=cbmc_result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
         returncode=cbmc_result.returncode,
-        seconds=cbmc_result.run_seconds,
-        wait_seconds=cbmc_result.wait_seconds,
     )
 
 
