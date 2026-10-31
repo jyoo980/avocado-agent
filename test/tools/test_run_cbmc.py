@@ -7,7 +7,6 @@ from subprocess import CompletedProcess
 from eval.mutants.mutate_function import Mutant
 from tools.run_cbmc import (
     CbmcStep,
-    PipelineVariant,
     RunCbmcResult,
     _MAX_RESPONSE_CHARS,
     _format_failure_response,
@@ -424,13 +423,10 @@ def test_the_library_is_added_after_the_contract_is_enforced(tmp_path: Path) -> 
     # so the run ends in a verdict, not a crash.
     source = tmp_path / "alloc.c"
     source.write_text(ALLOCATING_SOURCE, encoding="utf-8")
-    variant = PipelineVariant(prevent_macro_expansion=True)
     results = {
         function: run_cbmc(
             function_to_verify=function,
             file_containing_function_to_verify=str(source),
-            cwd=str(tmp_path),
-            variant=variant,
         )
         for function in ("mk", "abFree")
     }

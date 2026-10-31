@@ -178,13 +178,13 @@ def test_the_probe_run_uses_the_variant_that_passed_and_is_never_retried(
     monkeypatch.setattr(tools.run_cbmc, "_run_pipeline", failing_pipeline)
     monkeypatch.setattr(tools.run_cbmc, "_log_invocation", lambda *a, **k: None)
     # An ordinary run takes that failure as a reason to run the other variant.
-    retried = run_cbmc("clamp", str(source), cwd=str(tmp_path))
+    retried = run_cbmc("clamp", str(source))
     assert runs == [False, True] and retried.variant == PipelineVariant(
         prevent_macro_expansion=True
     )
     # The probe run is made once, in the variant it is told, so its verdict is about that one.
     runs.clear()
-    probe = run_cbmc("clamp", str(source), cwd=str(tmp_path), variant=PipelineVariant())
+    probe = run_cbmc("clamp", str(source), variant=PipelineVariant())
     assert runs == [False] and probe.variant == PipelineVariant()
     runs.clear()
     vacuity_check_result = check_vacuity("clamp", str(source), variant=PipelineVariant(True, True))

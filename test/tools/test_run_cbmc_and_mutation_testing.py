@@ -5,11 +5,12 @@ import os
 import shutil
 from pathlib import Path
 
-from tools.run_cbmc_and_mutation_testing import _log_mutation_feedback, verify_function
+from tools.run_cbmc import run_cbmc
+from tools.run_cbmc_and_mutation_testing import _log_mutation_feedback
 from tools.util.mutation import MutationScore, NoMutantsGenerated
 
 
-def test_verify_function_leaves_no_goto_files_in_the_working_directory(tmp_path: Path) -> None:
+def test_run_cbmc_leaves_no_goto_files_in_the_working_directory(tmp_path: Path) -> None:
     src = tmp_path / "quicksort.c"
     shutil.copy(Path("test/data/quicksort.c"), src)
     work_dir = tmp_path / "cwd"
@@ -18,7 +19,7 @@ def test_verify_function_leaves_no_goto_files_in_the_working_directory(tmp_path:
     try:
         os.chdir(work_dir)
         # A relative source path must keep working even though the pipeline runs elsewhere.
-        result = verify_function("swap", os.path.relpath(src, work_dir))
+        result = run_cbmc("swap", os.path.relpath(src, work_dir))
     finally:
         os.chdir(original_cwd)
     assert result.is_function_verified, result.response
