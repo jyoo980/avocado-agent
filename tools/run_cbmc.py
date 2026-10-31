@@ -19,7 +19,7 @@ from subprocess import TimeoutExpired
 
 from loguru import logger
 
-from tools.construct_call_graph import construct_call_graph
+from tools.construct_call_graph import load_call_graph
 from tools.util import (
     build_stub_index,
     get_in_file_callees_for,
@@ -237,8 +237,7 @@ def run_cbmc(
             a printable response and the relevant exit code.
     """
     if call_graph is None:
-        path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)
-        call_graph = CallGraph(json.loads(Path(path_to_raw_call_graph).read_text(encoding="utf-8")))
+        call_graph = load_call_graph(file_containing_function_to_verify)
     callees = get_in_file_callees_for(function_to_verify, call_graph)
     # Building the stub index is inexpensive for now (there is a single file).
     # Re-visit this if/when we have more stub files to parse.

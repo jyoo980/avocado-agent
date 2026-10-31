@@ -17,6 +17,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from tools.construct_call_graph import load_call_graph
 from tools.run_cbmc import RunCbmcResult, run_cbmc
 from tools.util.mutation import (
     generate_mutants_and_compute_score,
@@ -67,10 +68,13 @@ def main() -> None:
         filter=lambda record: "failed to compile" in record["message"],
     )
 
+    # Built once and shared by verification and mutation testing.
+    call_graph = load_call_graph(args.file)
     result = run_cbmc(
         function_to_verify=args.function,
         file_containing_function_to_verify=args.file,
         include_dirs=args.include_dirs,
+        call_graph=call_graph,
     )
     # Record this top-level verification attempt (pass or fail) so `avocado-verify` can gate its
     # per-function loop on the agent having actually attempted verification often enough.
@@ -82,6 +86,7 @@ def main() -> None:
             file_path=args.file,
             target_function=args.function,
             include_dirs=args.include_dirs,
+            call_graph=call_graph,
             skip_reverification=True,
         )
         print(result.response)
