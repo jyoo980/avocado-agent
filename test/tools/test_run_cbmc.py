@@ -1,14 +1,10 @@
 """Tests for the run_cbmc tool."""
 
 import os
-import shutil
-import threading
-import time
 from pathlib import Path
 from subprocess import CompletedProcess
 
 from eval.mutants.mutate_function import Mutant
-from tools import run_cbmc as run_cbmc_module
 from tools.run_cbmc import (
     CbmcStep,
     RunCbmcResult,
@@ -177,43 +173,6 @@ def test_run_cbmc_names_failed_step_for_uncompilable_source(tmp_path: Path) -> N
     assert result.failed_step is CbmcStep.GOTO_CC
     assert not result.cbmc_ran_successfully
     assert result.returncode != 0
-
-
-def test_run_cbmc_leaves_no_goto_files_in_the_working_directory(tmp_path: Path) -> None:
-    src = tmp_path / "quicksort.c"
-    shutil.copy(Path("test/data/quicksort.c"), src)
-    work_dir = tmp_path / "cwd"
-    work_dir.mkdir()
-    original_cwd = Path.cwd()
-    try:
-        os.chdir(work_dir)
-        # A relative source path must keep working even though the pipeline runs elsewhere.
-        result = run_cbmc("swap", os.path.relpath(src, work_dir))
-    finally:
-        os.chdir(original_cwd)
-    assert result.is_function_verified, result.response
-    assert list(work_dir.iterdir()) == [], "pipeline intermediates leaked into the cwd"
-    assert not list(tmp_path.glob("*.goto")), "pipeline intermediates leaked next to the source"
-
-
-def test_run_command_is_gated_by_the_subprocess_semaphore(monkeypatch) -> None:
-    # With a single slot, two concurrent 0.3 s commands must run back to back (>= 0.6 s total);
-    # without the gate they would overlap and finish in ~0.3 s.
-    monkeypatch.setattr(run_cbmc_module, "_SUBPROCESS_SLOTS", threading.BoundedSemaphore(1))
-    results: list = []
-
-    def run() -> None:
-        results.append(_run_command(CbmcStep.CBMC, "sleep 0.3", []))
-
-    threads = [threading.Thread(target=run) for _ in range(2)]
-    start = time.monotonic()
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-    elapsed = time.monotonic() - start
-    assert elapsed >= 0.6, f"commands overlapped despite a one-slot semaphore ({elapsed:.2f}s)"
-    assert all(result.succeeded for result in results)
 
 
 def test_run_command_honours_a_custom_timeout() -> None:

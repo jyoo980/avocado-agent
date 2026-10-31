@@ -1,15 +1,14 @@
 """Run CBMC on a function and perform mutation testing.
 
-This is the `avocado-run-cbmc` entry point that the inner agent calls. It wraps the shared pipeline
-in `tools.run_cbmc` (goto-cc → goto-instrument → cbmc), checks that a passing function has a
-contract and that the run is not vacuous (`tools.util.vacuity`), records the attempt in a sibling
-JSONL log that `avocado-verify` reads, and -- when the function verifies, and not vacuously --
-runs mutation testing and reports the kill score plus any surviving mutants.
-
 Usage:
     % avocado-run-cbmc --function <FUNCTION_NAME> \
                        --file <PATH_TO_C_FILE> \
                        [-I <PATH_TO_INCLUDE_DIR(S)>]...
+
+The CBMC pipeline itself lives in `tools.run_cbmc`; this module adds the command-line interface,
+the checks that a passing function has a contract and that the run is not vacuous
+(`tools.util.vacuity`), the verification-attempt log, and mutation testing (only when the function
+verifies, and not vacuously).
 """
 
 import argparse
@@ -49,17 +48,21 @@ VERIFICATION_ATTEMPTS_LOG_SUFFIX = "-verification-attempts.jsonl"
 
 def main() -> None:
     """Run CBMC on a function."""
+    # The description omits the unwinding and depth bounds, to avoid inviting the agent to hard-code
+    # them into specifications (which AGENTS.md forbids). This does not hide the bounds from the
+    # agent: docs/running-cbmc-directly.md states them, because its commands must be runnable.
     parser = argparse.ArgumentParser(
         description=(
-            "Run CBMC on a function with loop unwinding = _CBMC_UNWIND, depth = _CBMC_DEPTH. "
+            "Run CBMC on a function, with bounded loop unwinding and bounded depth. "
             "Exits with status 0 on verification success. A run that passes is checked for "
             "vacuity with one more CBMC run; a vacuous pass is reported as VACUOUS and exits "
             "with a non-zero status. "
             "On success, additionally runs mutation testing, which re-runs the full CBMC "
-            f"pipeline once per mutant (concurrently, up to {_AGENT_MUTANT_TIMEOUT_SEC} s each); "
-            "this can take a few minutes, during which the tool is mostly silent. This is "
-            "expected, not a hang -- do not interrupt the process. Consider running it in the "
-            "background and polling for completion."
+            "pipeline once per mutant (several mutants in parallel, with a timeout of "
+            f"{_AGENT_MUTANT_TIMEOUT_SEC} s on each CBMC step); this can take a few minutes, "
+            "during which the tool is mostly silent. This is expected, not a hang -- do not "
+            "interrupt the process. Consider running it in the background and polling for "
+            "completion."
         )
     )
     parser.add_argument("--function", required=True, help="Name of the function to verify.")
@@ -98,9 +101,8 @@ def main() -> None:
             skip_reverification=True,
             mutant_timeout_sec=_AGENT_MUTANT_TIMEOUT_SEC,
         )
-        if score:
-            print(result.response)
-            print(get_mutation_testing_results_for_client(score))
+        print(result.response)
+        print(get_mutation_testing_results_for_client(score))
         sys.exit(0)
     else:
         print(result.response)
