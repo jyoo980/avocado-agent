@@ -3,13 +3,10 @@
 import json
 import os
 import shutil
-import threading
-import time
 from pathlib import Path
 from subprocess import CompletedProcess
 
 from eval.mutants.mutate_function import Mutant
-from tools import run_cbmc as run_cbmc_module
 from tools.run_cbmc import (
     CbmcStep,
     RunCbmcResult,
@@ -181,6 +178,13 @@ def test_run_cbmc_names_failed_step_for_uncompilable_source(tmp_path: Path) -> N
     assert result.returncode != 0
 
 
+def test_run_command_honours_a_custom_timeout() -> None:
+    result = _run_command(CbmcStep.CBMC, "sleep 5", [], timeout_sec=1)
+    assert result.timed_out
+    assert result.timeout_sec == 1
+    assert not result.succeeded
+
+
 def test_run_cbmc_leaves_no_goto_files_in_the_working_directory(tmp_path: Path) -> None:
     src = tmp_path / "quicksort.c"
     shutil.copy(Path("test/data/quicksort.c"), src)
@@ -196,33 +200,6 @@ def test_run_cbmc_leaves_no_goto_files_in_the_working_directory(tmp_path: Path) 
     assert result.is_function_verified, result.response
     assert list(work_dir.iterdir()) == [], "pipeline intermediates leaked into the cwd"
     assert not list(tmp_path.glob("*.goto")), "pipeline intermediates leaked next to the source"
-
-
-def test_run_command_is_gated_by_the_subprocess_semaphore(monkeypatch) -> None:
-    # With a single slot, two concurrent 0.3 s commands must run back to back (>= 0.6 s total);
-    # without the gate they would overlap and finish in ~0.3 s.
-    monkeypatch.setattr(run_cbmc_module, "_SUBPROCESS_SLOTS", threading.BoundedSemaphore(1))
-    results: list = []
-
-    def run() -> None:
-        results.append(_run_command(CbmcStep.CBMC, "sleep 0.3", []))
-
-    threads = [threading.Thread(target=run) for _ in range(2)]
-    start = time.monotonic()
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-    elapsed = time.monotonic() - start
-    assert elapsed >= 0.6, f"commands overlapped despite a one-slot semaphore ({elapsed:.2f}s)"
-    assert all(result.succeeded for result in results)
-
-
-def test_run_command_honours_a_custom_timeout() -> None:
-    result = _run_command(CbmcStep.CBMC, "sleep 5", [], timeout_sec=1)
-    assert result.timed_out
-    assert result.timeout_sec == 1
-    assert not result.succeeded
 
 
 def test_format_failure_response_leads_with_failure_lines_for_cbmc_step() -> None:

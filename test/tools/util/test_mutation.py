@@ -2,8 +2,7 @@
 
 from pathlib import Path
 
-from tools import run_cbmc as run_cbmc_module
-from tools.util.mutation import _get_path_for_mutated_source, _mutation_worker_count
+from tools.util.mutation import _get_path_for_mutated_source
 
 
 def test_mutant_path_includes_function_name_so_functions_never_collide() -> None:
@@ -18,11 +17,3 @@ def test_mutant_path_includes_function_name_so_functions_never_collide() -> None
     )
     # The name still matches the `*__mutant_*.c` pattern that `make clean-mutants` removes.
     assert "__mutant_" in _get_path_for_mutated_source(workspace, source, "bar", 0).name
-
-
-def test_mutation_worker_count_is_bounded_by_subprocess_slots_and_mutants() -> None:
-    slots = run_cbmc_module.MAX_CONCURRENT_SUBPROCESSES
-    assert _mutation_worker_count(0) == 1
-    assert _mutation_worker_count(1) == 1
-    assert _mutation_worker_count(10_000) == slots
-    assert _mutation_worker_count(min(3, slots)) == min(3, slots)

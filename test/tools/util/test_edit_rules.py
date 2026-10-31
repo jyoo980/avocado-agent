@@ -558,3 +558,31 @@ def test_a_contract_edit_to_an_item_the_merge_cannot_name_fails_the_merge(monkey
     )
     assert not report.merged and merged == base
     assert "the merge cannot name" in report.reason and "the contract of pick" in report.reason
+
+
+CONDITIONAL_DEFINITIONS = b"""#ifdef FAST
+static int pick(int x) { return x; }
+#else
+static int pick(int x) { return x + 1; }
+#endif
+int pick_twice(int x);
+"""
+
+
+def test_each_definition_of_a_function_is_found() -> None:
+    offsets = function_body_offsets(CONDITIONAL_DEFINITIONS, "pick")
+    assert len(offsets) == 2
+    assert all(CONDITIONAL_DEFINITIONS[offset : offset + 1] == b"{" for offset in offsets)
+    # A declaration has no body.
+    assert function_body_offsets(CONDITIONAL_DEFINITIONS, "pick_twice") == []
+    assert function_body_offsets(CONDITIONAL_DEFINITIONS, "missing") == []
+
+
+def test_a_function_inside_an_extern_c_block_is_found() -> None:
+    source = (
+        b'#if defined (__cplusplus)\nextern "C" {\n#endif\n'
+        b"int first(int a);\nint second(int a) { return a; }\n"
+        b"#if defined (__cplusplus)\n}\n#endif\n"
+    )
+    assert function_body_offsets(source, "first") == []
+    assert len(function_body_offsets(source, "second")) == 1
