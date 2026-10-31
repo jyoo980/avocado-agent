@@ -87,8 +87,8 @@ CBMC reports no failure whatever the postconditions say. Such a proof is *vacuou
 nothing, every mutant survives it, and it does not count as verified.
 
 `avocado-run-cbmc` checks each passing run with one more CBMC run, on a copy of your file to which
-it adds a false postcondition and a false assertion at the top of the body. It reports `VACUOUS`
-with one of two causes:
+it adds a false postcondition and a false assertion at the top of the body, so do not probe by hand
+whether a proof is vacuous. It reports `VACUOUS` with one of two causes:
 
 - **The preconditions cannot all hold** (no execution enters the body). Remove the
   `__CPROVER_requires` clauses one at a time and re-run to find the one responsible, then restate
