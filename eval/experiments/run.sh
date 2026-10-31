@@ -37,7 +37,8 @@
 #   command.txt         the command line the runner was launched with
 #   run.log             stdout+stderr of the run; with avocado-verify, the driver's log
 #   exit-code           the container's exit code (124 = --timeout hit; 137 = killed, by the
-#                       OOM killer or because it did not stop within a minute of --timeout)
+#                       OOM killer or because it did not stop within a minute of --timeout;
+#                       125 = the container could not be started, which fails the batch)
 #
 # Usage:
 #   eval/experiments/run.sh --subject <dir> --profile <env-file> [--file <c-file>] \
@@ -379,10 +380,16 @@ done
 while [ -n "$(jobs -rp)" ]; do
   wait -n || true
 done
+# The batch fails if any run did not get as far as its container. A runner's own failure is a
+# result of the experiment, not of the batch. Docker and podman exit with 125 when they cannot
+# start the container.
 failed=0
 for i in $(seq 1 "$RUNS"); do
   if [ ! -f "$BATCH_DIR/run-$i/exit-code" ]; then
     echo "[$TAG] run $i/$RUNS failed before its container finished; see the error above" >&2
+    failed=1
+  elif [ "$(cat "$BATCH_DIR/run-$i/exit-code")" = 125 ]; then
+    echo "[$TAG] run $i/$RUNS: $ENGINE could not start its container; see $BATCH_DIR/run-$i/run.log" >&2
     failed=1
   fi
 done

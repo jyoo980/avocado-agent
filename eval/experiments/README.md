@@ -139,10 +139,11 @@ saves its transcript and records exit code `143`.
 
 ## Step 4: read the results
 
-Each `run-<i>/exit-code` is the runner's exit code (`124` means `--timeout` was hit, and
-`137` that the container was killed, by the out-of-memory killer or because it did not stop
-within a minute of hitting `--timeout`; `avocado-verify` exits `2` when it stopped on a usage
-limit). `transcripts/` has the full conversation(s), as `<session-id>.jsonl` plus
+Each `run-<i>/exit-code` is the runner's exit code. `124` means `--timeout` was hit; `137`
+means the container was killed, by the out-of-memory killer or because it did not stop within a
+minute of hitting `--timeout`; `125` means the container engine could not start the container,
+and then `run.sh` itself exits with status 1. `avocado-verify` exits `2` when it stopped on a
+usage limit. `transcripts/` has the full conversation(s), as `<session-id>.jsonl` plus
 `<session-id>/subagents/*.jsonl` for any subagents, and `subject/` the specified program.
 With the `claude` runner `claude-output.json` has the session id, cost and final message.
 With `avocado-verify`, `run.log` is the driver's log (what the manual procedure saved as
