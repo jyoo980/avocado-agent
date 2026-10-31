@@ -56,6 +56,7 @@ from tools.run_cbmc import (
     list_compiled_functions,
 )
 from tools.run_cbmc_and_mutation_testing import (
+    MUTATION_FEEDBACK_LOG_SUFFIX,
     VERIFICATION_ATTEMPTS_LOG_SUFFIX,
     verify_function,
 )
@@ -1344,16 +1345,17 @@ def _report_stray_edits(session: _Session, canonical_dir: Path) -> list[str]:
 def _mirror_tool_logs(session: _Session, canonical_file: Path) -> None:
     """Append the logs `avocado-run-cbmc` wrote beside the session copy to the canonical-side logs.
 
-    That is the verification-attempts log. The harness itself reads attempts from the session copy;
-    the canonical-side logs are kept for post-hoc analysis of a run, where readers expect one log
-    beside the source file and the session copy is gone. Failures to read or write are swallowed so
-    logging never affects a run.
+    Those are the verification-attempts log and the mutation-feedback log (the kill score of each
+    passing attempt). The harness itself reads attempts from the session copy; the canonical-side
+    logs are kept for post-hoc analysis of a run, where readers expect one log beside the source
+    file and the session copy is gone. Failures to read or write are swallowed so logging never
+    affects a run.
 
     Args:
         session (_Session): The finished session.
         canonical_file (Path): Absolute path to the canonical source file.
     """
-    for suffix in (VERIFICATION_ATTEMPTS_LOG_SUFFIX,):
+    for suffix in (VERIFICATION_ATTEMPTS_LOG_SUFFIX, MUTATION_FEEDBACK_LOG_SUFFIX):
         source_log = session.file.with_name(f"{session.file.stem}{suffix}")
         target_log = canonical_file.with_name(f"{canonical_file.stem}{suffix}")
         try:
