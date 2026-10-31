@@ -17,7 +17,7 @@ CBMC cannot verify all correct C code.  Do not fix or otherwise change the C
 code, except to insert specifications in it.
 
 This `AGENTS.md` file and directory `docs/` contain basic information about using CBMC.
-The main documentation can be found at https://diffblue.github.io/cbmc/index.html,
+The main documentation can be found at <https://diffblue.github.io/cbmc/index.html>,
 which includes a [User Guide](https://diffblue.github.io/cbmc/user_guide.html)
 and [The CPROVER Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 You can also search the web for more CBMC documentation.
@@ -60,6 +60,23 @@ You can also search the web for more CBMC documentation.
 
   Prints function names callees-first, one per line.
 
+- **To check your edits against the edit rules**, run:
+
+  ```sh
+  avocado-validate edits --file <PATH_TO_C_FILE> \
+                         [-I <PATH_TO_INCLUDE_DIR(S)>]...
+  ```
+
+  Checks [edit rules](#edit-rules) 1-8 in a few seconds, without running CBMC. Exits with status 0
+  if your copy breaks none of them, 1 if it breaks one or more (each line gives the rule, the line
+  of your file and what to change), and 2 if it breaks none of the rules it could check but could
+  not check them all. When it reports a violation but `goto-cc` is missing or timed out, it exits 1
+  and says that rule 7 is unchecked. It checks the function your session works on, which it learns
+  from the harness. The harness checks the same rules before it merges your copy, and a copy that
+  breaks one is not merged at all. For rule 7, the harness compiles the merged file, which also
+  holds what other sessions merged while you worked, so the merge can fail to compile even when this
+  check passes.
+
 ## Workflow
 
 Work in this order, and do not skip the first CBMC run:
@@ -67,13 +84,14 @@ Work in this order, and do not skip the first CBMC run:
 1. Read the function, the contracts already written for its in-file callees (they are replaced by
    their contracts during verification, so what they promise is all you get), and any callers in
    the same file, so your preconditions are satisfiable at every call site.
-2. Write the contract, then run `avocado-run-cbmc` right away. Do not run CBMC by hand, do not
+2. Write the contract, run `avocado-validate edits` and fix whatever it reports, then run
+   `avocado-run-cbmc` right away. Do not run CBMC by hand, do not
    run the tool in the background, and do not read the harness's `*.jsonl` logs: the tool's own
    output is the source of truth and already includes the diff of every surviving mutant. A
    `VACUOUS` result is a failed run: fix the contract as [Vacuous proofs](#vacuous-proofs) says.
-3. Strengthen the contract using the surviving-mutant diffs, and re-run `avocado-run-cbmc`. Stop
-   as soon as every decided mutant is killed, or when two consecutive runs leave the kill score
-   unchanged.
+3. Strengthen the contract using the surviving-mutant diffs, run the check again, and re-run
+   `avocado-run-cbmc`. Stop as soon as every decided mutant is killed, or when two
+   consecutive runs leave the kill score unchanged.
 
 Do not read the harness's Python sources, and do not experiment with CBMC's `--depth` or
 `--unwind` bounds: the bounds are fixed by the harness and are not yours to tune. Spend your turns
@@ -155,11 +173,15 @@ your copy of the source file into the shared file that every later session build
 specifications only: the program must behave exactly as it did before you touched it, and a
 function that already verified must stay verified. A copy that breaks any of rules 1-8 is not
 merged at all: none of the session's work is kept. The harness checks every rule below when it
-merges your copy.
+merges your copy. Run `avocado-validate edits` before each `avocado-run-cbmc` run so that
+rules 1-8 never come as a surprise.
 
 In these rules, *original* means everything that was in the file when your session started,
 including helpers that earlier sessions added. *New* means what you add in this
 session.
+
+`avocado-validate edits` checks rules 1-8. Rules 9 and 10 are checked only when the harness merges
+your copy.
 
 1. **Original code is unchanged.** Every original top-level item -- function signatures and
    bodies, macros, typedefs, structs, globals, includes, declarations -- must still be present, in
