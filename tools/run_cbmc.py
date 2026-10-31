@@ -354,6 +354,7 @@ def _run_pipeline(
             stdout and stderr across every subprocess that ran. The concatenated output is used by
             the retry triggers in `run_cbmc`.
     """
+    contract_command = _get_goto_instrument_contract_command(function_to_verify, callees)
     commands: list[tuple[CbmcStep, str]] = [
         (
             CbmcStep.GOTO_CC,
@@ -367,30 +368,26 @@ def _run_pipeline(
         ),
         (
             CbmcStep.GOTO_INSTRUMENT,
-            _get_goto_instrument_unwind_command(function_to_verify),
+            _get_goto_instrument_unwind_command(_compiled_goto_file(function_to_verify)),
         ),
-        (
-            CbmcStep.GOTO_INSTRUMENT,
-            _get_goto_instrument_contract_command(function_to_verify, callees),
-        ),
+        (CbmcStep.GOTO_INSTRUMENT, contract_command),
     ]
     if prevent_macro_expansion:
         # The library goes in only once the contract is enforced. Enforcing it on a binary that
         # already holds the library makes goto-instrument abort on the `__CPROVER_bool` locals of
-        # the `malloc`, `free` and `read` models. The library's own loops are then unwound like
-        # the function's.
+        # the `malloc`, `free` and `read` models. `cbmc` would link the same models itself; adding
+        # them here lets the second unwind cut the library's own loops at `_CBMC_UNWIND`, like the
+        # function's.
         checking_goto = _checking_goto_file(function_to_verify)
         commands.extend(
             [
                 (
                     CbmcStep.GOTO_INSTRUMENT,
-                    _get_goto_instrument_add_library_command(function_to_verify),
+                    _get_goto_instrument_add_library_command(checking_goto),
                 ),
                 (
                     CbmcStep.GOTO_INSTRUMENT,
-                    _get_goto_instrument_unwind_command(
-                        function_to_verify, goto_file=checking_goto
-                    ),
+                    _get_goto_instrument_unwind_command(checking_goto),
                 ),
             ]
         )
@@ -402,8 +399,17 @@ def _run_pipeline(
         subprocess_result = _run_command(
             step, command, subprocess_results, cwd=cwd, timeout_sec=timeout_sec
         )
-        per_step_stdout.append(subprocess_result.stdout)
-        per_step_stderr.append(subprocess_result.stderr)
+        stdout = subprocess_result.stdout
+        stderr = subprocess_result.stderr
+        if prevent_macro_expansion and command == contract_command:
+            # Contract enforcement runs before the library is added, so it warns about every
+            # library function, such as `malloc`. Those warnings would lead the agent to write
+            # stubs that hide CBMC's models. `cbmc` itself reports each callee that still lacks a
+            # body ("no body for callee").
+            stdout = _drop_missing_body_warnings(stdout)
+            stderr = _drop_missing_body_warnings(stderr)
+        per_step_stdout.append(stdout)
+        per_step_stderr.append(stderr)
         if not subprocess_result.succeeded:
             combined_stdout = "".join(per_step_stdout)
             combined_stderr = "".join(per_step_stderr)
@@ -575,6 +581,20 @@ def has_missing_body_for_callee_or_function_message(stdout: str, stderr: str) ->
         or missing_callee_indicator in stderr
         or missing_function_indicator in stdout
         or missing_function_indicator in stderr
+    )
+
+
+def _drop_missing_body_warnings(output: str) -> str:
+    """Return `output` without its "no body for function" warning lines.
+
+    Args:
+        output (str): The stdout or stderr of a goto-instrument command.
+
+    Returns:
+        str: `output` with every line that contains "no body for function" removed.
+    """
+    return "".join(
+        line for line in output.splitlines(keepends=True) if "no body for function" not in line
     )
 
 
@@ -756,6 +776,18 @@ def _get_goto_cc_command(
     )
 
 
+def _compiled_goto_file(function: str) -> str:
+    """Return the name of the goto-binary that `goto-cc` writes for `function`.
+
+    Args:
+        function (str): The function under verification.
+
+    Returns:
+        str: The file name, quoted for the shell.
+    """
+    return f"{shlex.quote(function)}.goto"
+
+
 def _checking_goto_file(function: str) -> str:
     """Return the name of the goto-binary that `--enforce-contract` writes for `function`.
 
@@ -768,38 +800,33 @@ def _checking_goto_file(function: str) -> str:
     return f"checking-{shlex.quote(function)}-contracts.goto"
 
 
-def _get_goto_instrument_add_library_command(function: str) -> str:
-    """Return the `goto-instrument --add-library` command for `function`'s instrumented binary.
+def _get_goto_instrument_add_library_command(goto_file: str) -> str:
+    """Return the `goto-instrument --add-library` command for `goto_file`.
 
-    This step injects CBMC's bundled C-library models (`isspace`, `strchr`, etc.) into the
-    goto-binary that contract enforcement produced. It's only used when macro expansion is
-    suppressed; without it, those calls are treated as nondeterministic, which loosens precision.
-    It runs after `--enforce-contract`, not before: enforcing a contract on a binary that holds
-    the library aborts goto-instrument on the `__CPROVER_bool` locals of models such as `malloc`.
+    The command adds CBMC's bundled C-library models (`isspace`, `strchr`, etc.) to the
+    goto-binary in place. `cbmc` links the same models itself when it checks a binary that lacks
+    them, so adding them earlier matters only to later goto-instrument steps, such as an unwind
+    that should also bound the models' loops.
 
     Args:
-        function (str): The function whose instrumented goto-binary should receive the models.
+        goto_file (str): The goto-binary to receive the models, quoted for the shell.
 
     Returns:
         str: A single shell command.
     """
-    checking_goto = _checking_goto_file(function)
-    return f"goto-instrument --add-library {checking_goto} {checking_goto}"
+    return f"goto-instrument --add-library {goto_file} {goto_file}"
 
 
-def _get_goto_instrument_unwind_command(function: str, goto_file: str | None = None) -> str:
-    """Return the `goto-instrument --partial-loops --unwind _CBMC_UNWIND` command for `function`.
+def _get_goto_instrument_unwind_command(goto_file: str) -> str:
+    """Return the `goto-instrument --partial-loops --unwind _CBMC_UNWIND` command for `goto_file`.
 
     Args:
-        function (str): The function whose goto-binary should be unwound.
-        goto_file (str | None): The goto-binary to unwind, already quoted for the shell; None
-            means `function`'s compiled binary.
+        goto_file (str): The goto-binary to unwind in place, quoted for the shell.
 
     Returns:
         str: A single shell command.
     """
-    target = goto_file or f"{shlex.quote(function)}.goto"
-    return f"goto-instrument --partial-loops --unwind {_CBMC_UNWIND} {target} {target}"
+    return f"goto-instrument --partial-loops --unwind {_CBMC_UNWIND} {goto_file} {goto_file}"
 
 
 def _get_goto_instrument_contract_command(function: str, callees: list[str]) -> str:
@@ -818,8 +845,8 @@ def _get_goto_instrument_contract_command(function: str, callees: list[str]) -> 
     return (
         f"goto-instrument{replace_calls} "
         f"--enforce-contract {quoted_function} "
-        f"{quoted_function}.goto "
-        f"checking-{quoted_function}-contracts.goto"
+        f"{_compiled_goto_file(function)} "
+        f"{_checking_goto_file(function)}"
     )
 
 
@@ -834,8 +861,7 @@ def _get_cbmc_check_command(function: str) -> str:
     """
     quoted_function = shlex.quote(function)
     return (
-        f"cbmc checking-{quoted_function}-contracts.goto "
-        f"--function {quoted_function} --depth {_CBMC_DEPTH}"
+        f"cbmc {_checking_goto_file(function)} --function {quoted_function} --depth {_CBMC_DEPTH}"
     )
 
 
