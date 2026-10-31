@@ -7,6 +7,7 @@ Usage:
 """
 
 import argparse
+import dataclasses
 import fcntl
 import json
 import os
@@ -148,6 +149,9 @@ class RunCbmcResult:
             exit code of the failing subprocess (cbmc's verification exit code when
             `failed_step` is CBMC).
         response (str): Printable summary — a success line or a truncated failure block.
+        run_seconds (float): Total wall-clock seconds that the pipeline's subprocesses ran,
+            excluding time spent waiting for a subprocess slot.
+        wait_seconds (float): Total wall-clock seconds spent waiting for subprocess slots.
     """
 
     function: str
@@ -155,6 +159,8 @@ class RunCbmcResult:
     timed_out: bool
     returncode: int
     response: str
+    run_seconds: float = 0.0
+    wait_seconds: float = 0.0
 
     @property
     def cbmc_ran_successfully(self) -> bool:
@@ -217,9 +223,24 @@ class _SubprocessResult:
         return self.returncode == 0 and not self.timed_out
 
 
-def run_shell_command(
-    command: str, timeout: float, cwd: str | None = None
-) -> subprocess.CompletedProcess[str] | None:
+@dataclass(frozen=True)
+class ShellCommandRun:
+    """Outcome of `run_shell_command`.
+
+    Attributes:
+        completed (subprocess.CompletedProcess[str] | None): The finished subprocess, with its
+            captured stdout and stderr, or None if it hit the timeout.
+        run_seconds (float): Wall-clock seconds the subprocess ran.
+        wait_seconds (float): Wall-clock seconds spent waiting for a subprocess slot before the
+            subprocess was launched.
+    """
+
+    completed: subprocess.CompletedProcess[str] | None
+    run_seconds: float
+    wait_seconds: float
+
+
+def run_shell_command(command: str, timeout: float, cwd: str | None = None) -> ShellCommandRun:
     """Run a shell command with `run_command`, once a subprocess slot is free.
 
     Every pipeline subprocess (`goto-cc`, `goto-instrument`, `cbmc`) should be run through this
@@ -236,11 +257,19 @@ def run_shell_command(
             inherits the current working directory.
 
     Returns:
-        subprocess.CompletedProcess[str] | None: The finished subprocess, with its captured stdout
-            and stderr, or None if it hit the timeout.
+        ShellCommandRun: The finished subprocess (or None on timeout), and how long it waited
+            and ran.
     """
+    requested = time.monotonic()
     with _subprocess_slot():
-        return run_command(command, timeout, cwd=cwd)
+        launched = time.monotonic()
+        completed = run_command(command, timeout, cwd=cwd)
+        finished = time.monotonic()
+    return ShellCommandRun(
+        completed=completed,
+        run_seconds=round(finished - launched, 3),
+        wait_seconds=round(launched - requested, 3),
+    )
 
 
 @contextmanager
@@ -397,6 +426,7 @@ def run_cbmc(
     )
     # First, check if the run was successful or if it timed out.
     if result.cbmc_ran_successfully or result.timed_out:
+        result = _with_timings(result, subprocess_results)
         _log_invocation(
             file_containing_function_to_verify,
             result,
@@ -440,8 +470,26 @@ def run_cbmc(
             cwd=cwd,
         )
 
+    result = _with_timings(result, subprocess_results)
     _log_invocation(file_containing_function_to_verify, result, subprocess_results, nondet_callees)
     return result
+
+
+def _with_timings(result: RunCbmcResult, subprocess_results: list[dict]) -> RunCbmcResult:
+    """Return a copy of `result` whose timings are the totals over `subprocess_results`.
+
+    Args:
+        result (RunCbmcResult): The outcome of a `run_cbmc` call.
+        subprocess_results (list[dict]): The records of every subprocess that call ran.
+
+    Returns:
+        RunCbmcResult: `result` with `run_seconds` and `wait_seconds` filled in.
+    """
+    return dataclasses.replace(
+        result,
+        run_seconds=round(sum(record["seconds"] for record in subprocess_results), 3),
+        wait_seconds=round(sum(record["wait_seconds"] for record in subprocess_results), 3),
+    )
 
 
 def _run_pipeline(
@@ -560,16 +608,16 @@ def _run_command(
     Returns:
         _SubprocessResult: The captured outcome, including stdout/stderr or the timeout sentinel.
     """
-    completed = run_shell_command(command, _DEFAULT_RUN_CBMC_TIMEOUT_SEC, cwd=cwd)
-    if completed is None:
+    run = run_shell_command(command, _DEFAULT_RUN_CBMC_TIMEOUT_SEC, cwd=cwd)
+    if run.completed is None:
         returncode = _TIMEOUT_RETURNCODE
         stdout = ""
         stderr = ""
         timed_out = True
     else:
-        returncode = completed.returncode
-        stdout = completed.stdout
-        stderr = completed.stderr
+        returncode = run.completed.returncode
+        stdout = run.completed.stdout
+        stderr = run.completed.stderr
         timed_out = False
 
     subprocess_results.append(
@@ -577,6 +625,10 @@ def _run_command(
             "step": step.value,
             "command": command,
             "returncode": returncode,
+            # Wall-clock timings that let the run log show which steps (and which mutants)
+            # dominate harness time, separately from time spent queued for a subprocess slot.
+            "seconds": run.run_seconds,
+            "wait_seconds": run.wait_seconds,
         }
     )
     return _SubprocessResult(
@@ -789,7 +841,9 @@ def _log_invocation(
         file_under_verification (str): The file that contains the function under verification.
         result (RunCbmcResult): The final outcome of the `run_cbmc` call.
         subprocess_results (list[dict]): Per-subprocess records (one entry per subprocess invocation
-            across every pipeline attempt), each with keys `step`, `command`, `returncode`.
+            across every pipeline attempt), each with keys `step`, `command`, `returncode`,
+            `seconds` (how long the subprocess ran), and `wait_seconds` (how long it waited for a
+            subprocess slot before being launched).
         nondet_callees (list[str]): The list of callees that CBMC treated as non-deterministic
             during verification.
     """
@@ -946,7 +1000,7 @@ def compile_with_goto_cc(
             (0 == compiled successfully).
     """
     compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
-    completed = run_shell_command(compilation_command, _GOTO_CC_TIMEOUT_SEC)
+    completed = run_shell_command(compilation_command, _GOTO_CC_TIMEOUT_SEC).completed
     if completed is None:
         return _TIMEOUT_RETURNCODE
     return completed.returncode

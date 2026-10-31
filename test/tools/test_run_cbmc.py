@@ -197,6 +197,9 @@ def test_run_command_waits_for_a_slot_used_by_another_thread(monkeypatch, tmp_pa
     for thread in threads:
         thread.join()
     assert all(result.succeeded for result in results), "commands overlapped despite one slot"
+    # One command queued behind the other, and its record says so rather than inflating `seconds`.
+    assert max(record["wait_seconds"] for record in records) >= 0.2
+    assert all(record["seconds"] < 1 for record in records)
 
 
 def test_threads_waiting_for_a_slot_do_not_poll_the_slot_files(monkeypatch, tmp_path: Path) -> None:
@@ -245,7 +248,7 @@ def test_run_shell_command_waits_for_a_slot_used_by_another_process(tmp_path: Pa
     command = _exclusive_command(tmp_path / "busy")
     script = (
         "import sys; from tools.run_cbmc import run_shell_command; "
-        f"sys.exit(run_shell_command({command!r}, timeout=30).returncode)"
+        f"sys.exit(run_shell_command({command!r}, timeout=30).completed.returncode)"
     )
     # Both processes put their slot files under the same temporary directory.
     env = os.environ | {"TMPDIR": str(tmp_path), "AVOCADO_MAX_CONCURRENT_CBMC": "1"}
