@@ -50,6 +50,7 @@ from eval.mutants.mutate_function import get_mutants
 from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
 from tools.run_cbmc import (
+    VACUOUS_VERDICT,
     CbmcStep,
     RunCbmcResult,
     compile_with_goto_cc,
@@ -73,7 +74,6 @@ from tools.util.edit_rules import (
 from tools.util.session_state import (
     SNAPSHOT_IGNORE,
     TRANSCRIPTS_DIR_SUFFIX,
-    VACUOUS_VERDICT,
     find_stray_files,
     is_vacuous_status,
     rechecked_on_change,
