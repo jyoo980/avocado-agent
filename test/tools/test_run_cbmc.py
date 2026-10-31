@@ -1,5 +1,6 @@
 """Tests for the run_cbmc tool."""
 
+import json
 import os
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -9,6 +10,7 @@ from tools.run_cbmc import (
     CbmcStep,
     RunCbmcResult,
     _MAX_RESPONSE_CHARS,
+    _drop_missing_body_warnings,
     _format_failure_response,
     _get_cbmc_check_command,
     _get_goto_cc_command,
@@ -53,7 +55,7 @@ def test_get_goto_cc_command_no_stubs_no_includes() -> None:
 
 
 def test_get_goto_instrument_unwind_command_uses_partial_loops_and_unwind() -> None:
-    command = _get_goto_instrument_unwind_command("swap")
+    command = _get_goto_instrument_unwind_command("swap.goto")
     assert command == "goto-instrument --partial-loops --unwind 5 swap.goto swap.goto"
 
 
@@ -76,8 +78,22 @@ def test_get_goto_instrument_contract_command_includes_self_for_inductive_recurs
 
 
 def test_get_goto_instrument_add_library_command() -> None:
-    command = _get_goto_instrument_add_library_command("swap")
-    assert command == "goto-instrument --add-library swap.goto swap.goto"
+    command = _get_goto_instrument_add_library_command("checking-swap-contracts.goto")
+    assert command == (
+        "goto-instrument --add-library checking-swap-contracts.goto checking-swap-contracts.goto"
+    )
+
+
+def test_drop_missing_body_warnings_keeps_other_lines() -> None:
+    output = (
+        "Reading GOTO program from 'swap.goto'\n"
+        "file swap.c line 3 function swap: no body for function 'malloc'\n"
+        "Writing GOTO program to 'checking-swap-contracts.goto'\n"
+    )
+    assert _drop_missing_body_warnings(output) == (
+        "Reading GOTO program from 'swap.goto'\n"
+        "Writing GOTO program to 'checking-swap-contracts.goto'\n"
+    )
 
 
 def test_get_cbmc_check_command() -> None:
@@ -394,3 +410,61 @@ def test_print_mutation_progress_buckets_undecided_mutants(capsys) -> None:
         "[mutation testing] 2/2 done "
         "(killed=0 survived=0 timed_out=1 compile_failed=1 instrumentation_failed=0)" in capsys.readouterr().err
     )
+
+
+ALLOCATING_SOURCE = """#include <stdlib.h>
+struct abuf { char *b; int len; };
+
+char *mk(int n)
+__CPROVER_requires(n > 0 && n < 8)
+__CPROVER_ensures(__CPROVER_return_value == NULL || __CPROVER_r_ok(__CPROVER_return_value, n))
+{
+    return malloc(n);
+}
+
+void abFree(struct abuf *ab)
+__CPROVER_requires(__CPROVER_is_fresh(ab, sizeof(struct abuf)))
+__CPROVER_assigns()
+{
+    free(ab->b);
+}
+"""
+
+
+def test_the_library_is_added_after_the_contract_is_enforced(tmp_path: Path) -> None:
+    # goto-instrument aborts when it enforces a contract on a binary that already holds the
+    # library's `malloc` and `free` models. The missing-body retry adds the library afterwards,
+    # so the run ends in a verdict, not a crash.
+    source = tmp_path / "alloc.c"
+    source.write_text(ALLOCATING_SOURCE, encoding="utf-8")
+    results = {
+        function: run_cbmc(
+            function_to_verify=function,
+            file_containing_function_to_verify=str(source),
+            cwd=str(tmp_path),
+        )
+        for function in ("mk", "abFree")
+    }
+    assert results["mk"].cbmc_ran_successfully
+    # abFree's contract leaves out the freed object, so the run fails in cbmc, not before.
+    assert results["abFree"].failed_step is CbmcStep.CBMC
+    # The library models `free`, so the response does not tell the agent that `free` lacks a body.
+    assert "no body for function" not in results["abFree"].response
+    # abFree's verdict comes from the missing-body retry, which adds the library to the
+    # instrumented binary after enforcing the contract. (mk verifies on the first attempt, without
+    # the retry.)
+    log_lines = (tmp_path / "alloc-cbmc-runs.jsonl").read_text(encoding="utf-8").splitlines()
+    commands_by_function = {
+        record["function"]: [run["command"] for run in record["subprocess_results"]]
+        for record in map(json.loads, log_lines)
+    }
+    abfree_commands = commands_by_function["abFree"]
+    retry_start = max(i for i, c in enumerate(abfree_commands) if c.startswith("goto-cc"))
+    assert abfree_commands[retry_start + 1 :] == [
+        "goto-instrument --partial-loops --unwind 5 abFree.goto abFree.goto",
+        "goto-instrument --enforce-contract abFree abFree.goto checking-abFree-contracts.goto",
+        "goto-instrument --add-library checking-abFree-contracts.goto checking-abFree-contracts.goto",
+        "goto-instrument --partial-loops --unwind 5 "
+        "checking-abFree-contracts.goto checking-abFree-contracts.goto",
+        "cbmc checking-abFree-contracts.goto --function abFree --depth 200",
+    ]
