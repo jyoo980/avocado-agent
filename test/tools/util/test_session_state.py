@@ -1,7 +1,7 @@
 """Tests for `tools.util.session_state`: the one place that says what a merge rechecks."""
 
+from tools.run_cbmc import VACUOUS_VERDICT
 from tools.util.session_state import (
-    VACUOUS_VERDICT,
     is_vacuous_status,
     rechecked_on_change,
     vacuous_status,
