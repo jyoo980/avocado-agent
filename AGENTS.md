@@ -60,6 +60,11 @@ You can also search the web for more CBMC documentation.
 
   Prints function names callees-first, one per line.
 
+Do not read the harness's Python sources, and do not experiment with CBMC's `--depth` or
+`--unwind` bounds: the bounds are fixed by the harness and are not yours to tune. Do not probe
+whether a proof is vacuous by hand either: `avocado-run-cbmc` checks every passing run and tells
+you. Spend your turns on the contract itself.
+
 ## Vacuous proofs
 
 A contract is checked by assuming its preconditions, running the body and asserting its
@@ -103,6 +108,27 @@ with one of two causes:
   continues past the call -- check and, if need be, fix that callee's contract -- or the
   preconditions allow only executions too long for the harness's bounds. Bound sizes and counts by
   smaller constants so that a complete execution fits.
+
+## Writing contracts that verify and kill mutants
+
+- `__CPROVER_is_fresh(p, n)` demands a *separate* object for every such pointer at each call
+  site. A helper that callers invoke with two pointers into the same array (e.g.
+  `swap(&arr[i], &arr[j])`) must use `__CPROVER_w_ok(p, n)` / `__CPROVER_r_ok(p, n)` instead,
+  or its callers can never verify. For a `void *` parameter, or whenever `n` is more than one
+  element of the pointed-to type, `w_ok` / `r_ok` alone is vacuous; use the
+  `__CPROVER_w_ok(p, n) || __CPROVER_is_fresh(p, n)` form from
+  [Vacuous proofs](#vacuous-proofs), which callers can still satisfy with pointers into one array.
+- A mutant survives when no clause distinguishes the mutated behaviour. Postconditions that state
+  the exact result -- `__CPROVER_return_value == <expression over the inputs>`, `*out ==
+  __CPROVER_old(...)`-based equalities, and `__CPROVER_forall` over the whole affected range --
+  kill far more mutants than bounds or one-directional implications. Cover error and early-return
+  paths explicitly (`cond ==> __CPROVER_return_value == -1`, and the converse).
+- Bound sizes and counts in preconditions (a small constant such as 8 or 16 elements) so that
+  CBMC decides every mutant quickly; an unbounded precondition makes mutants time out instead of
+  being killed, which does not raise the kill score.
+- `__CPROVER_assigns` must list everything the function writes (use `__CPROVER_object_whole` /
+  `__CPROVER_object_upto` for buffers); a missing target fails verification, an over-broad one
+  weakens callers.
 
 ## Rules
 
