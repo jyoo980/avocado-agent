@@ -44,7 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from eval.mutants.compute_clause_redundancy import compute_clause_redundancy_score
 from eval.mutants.generate_mutants_and_compute_score import generate_mutants_and_compute_score
 from eval.mutants.util import get_files_with_extension
-from tools.run_cbmc import MAX_CONCURRENT_SUBPROCESSES
+from tools.run_cbmc import max_concurrent_subprocesses
 from tools.util import get_functions_with_cprover_annotations
 from tools.util.mutation import MutationScore
 
@@ -87,12 +87,12 @@ def main() -> None:
         type=int,
         # More functions than subprocess slots could only wait for a slot, while each holds its
         # own pool of mutant threads.
-        default=MAX_CONCURRENT_SUBPROCESSES,
+        default=max_concurrent_subprocesses(),
         metavar="N",
         help=(
             "Score up to N functions concurrently (mutation metric only). Defaults to the "
-            "subprocess cap (`AVOCADO_MAX_CONCURRENT_CBMC`, or the CPU count up to 32); use 1 for "
-            "a fully sequential run."
+            "subprocess cap (the CPU count, limited by `AVOCADO_MAX_CONCURRENT_CBMC` or else by "
+            "32); use 1 for a fully sequential run."
         ),
     )
     parser.add_argument("--jsonl", default=None, help="Write records to this JSONL file.")
