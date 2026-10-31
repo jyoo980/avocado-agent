@@ -104,6 +104,7 @@ class PipelineVariant:
     replace_self_call: bool = False
     prevent_macro_expansion: bool = False
 
+
 # How `RunCbmcResult` prints a proof that passed vacuously.
 VACUOUS_VERDICT = "VACUOUS"
 
