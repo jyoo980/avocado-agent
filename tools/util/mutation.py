@@ -132,7 +132,7 @@ class MutationScore(MutationTestingResult):
             "survived": self.num_survived,
             "timed_out": self.num_timed_out,
             "compile_failed": self.num_compile_failed,
-            "instrumentation_failed": self.num_compile_failed,
+            "instrumentation_failed": self.num_instrumentation_failed,
             "kill_score": f"{self.kill_score:.4f}",
         }
 

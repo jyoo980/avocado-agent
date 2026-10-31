@@ -386,3 +386,23 @@ def test_print_mutation_progress_buckets_undecided_mutants(capsys) -> None:
         "[mutation testing] 2/2 done "
         "(killed=0 survived=0 timed_out=1 compile_failed=1 instrumentation_failed=0)" in capsys.readouterr().err
     )
+
+
+def test_mutation_score_summary_reports_each_undecided_count() -> None:
+    score = MutationScore(
+        file="quicksort.c",
+        target_function="f",
+        num_mutants=6,
+        num_killed=1,
+        num_survived=1,
+        num_timed_out=1,
+        num_compile_failed=2,
+        num_instrumentation_failed=1,
+        kill_score=0.5,
+    )
+
+    summary = score.summary()
+
+    assert summary["timed_out"] == 1
+    assert summary["compile_failed"] == 2
+    assert summary["instrumentation_failed"] == 1
