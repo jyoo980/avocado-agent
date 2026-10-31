@@ -263,7 +263,9 @@ def _log_verification_attempt(
         "file": file_under_verification,
         "verified": result.is_function_verified,
         "verdict": str(result),
-        "vacuity": str(None or result.vacuity_check_result),
+        "vacuity": None
+        if result.vacuity_check_result is None
+        else str(result.vacuity_check_result.vacuity),
         "depth": result.depth,
         "definition_sha256": definition_hash,
     }
