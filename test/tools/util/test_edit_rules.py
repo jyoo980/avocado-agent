@@ -300,7 +300,7 @@ def test_merge_does_not_need_the_file_to_parse_as_c() -> None:
     assert report.merged and merged == snapshot and report.carried == ["clamp"]
 
 
-def test_merge_falls_back_to_the_three_way_merge_when_the_canonical_file_moved() -> None:
+def test_merge_onto_a_canonical_file_that_changed_since_the_fork() -> None:
     canonical = BASE.replace(b"/* swap two ints */", b"#define AVOCADO_SPEC_OTHER 1")
     merged, report = _merge(_with_swap_contract(), canonical=canonical)
     assert report.merged, report.reason
@@ -353,6 +353,9 @@ def test_two_sessions_forked_from_the_same_base_both_merge() -> None:
     assert merged.index(SWAP_HELPER) < merged.index(b"void swap(")
     assert merged.index(CLAMP_HELPER) < merged.index(b"int clamp(")
     assert check_edits(BASE, merged, "clamp") == []
+    # The original comment before the swap session's helper is not copied along with it.
+    assert after_swap.count(b"/* swap two ints */") == 1
+    assert merged.count(b"/* swap two ints */") == 1
 
 
 def test_an_edit_to_a_contract_that_someone_else_changed_meanwhile_is_left_out() -> None:
@@ -567,3 +570,77 @@ def test_a_function_inside_an_extern_c_block_is_found() -> None:
     )
     assert function_body_offsets(source, "first") == []
     assert len(function_body_offsets(source, "second")) == 1
+
+
+LOOP = b"""int f(int n) {
+    int i;
+    for (i = 0; i < n; i++)
+    __CPROVER_assigns(i)
+    __CPROVER_loop_invariant(0 <= i && i <= n)
+    { }
+    return i;
+}
+"""
+
+
+def test_an_original_clause_in_a_body_is_code() -> None:
+    assert check_edits(LOOP, LOOP, "f") == []
+    assert _rules(LOOP, LOOP.replace(b"    __CPROVER_assigns(i)\n", b""), "f") == [1]
+    assert _rules(LOOP, LOOP.replace(b"__CPROVER_assigns(i)", b"__CPROVER_assigns(n)"), "f") == [1]
+    contract = LOOP.replace(b"int f(int n) {", b"int f(int n)\n__CPROVER_requires(n >= 0)\n{")
+    assert check_edits(LOOP, contract, "f") == []
+
+
+def test_rule_8_compares_with_the_preconditions_of_the_same_item() -> None:
+    base = b"int g(int x)\n__CPROVER_requires(0)\n{ return x; }\nint f(int x) { return x; }\n"
+    snapshot = base.replace(b"int f(int x) {", b"int f(int x)\n__CPROVER_requires(0)\n{")
+    violations = check_edits(base, snapshot, "f")
+    assert [violation.rule for violation in violations] == [8] and violations[0].line == 5
+
+
+TAIL = b"int g(int x) { return x; }\n#ifdef X\nvoid f(void) { }\n#endif\n"
+
+
+def _merge_onto(canonical: bytes, snapshot: bytes, base: bytes = TAIL):
+    return merge_copy(canonical=canonical, snapshot=snapshot, fork_base=base, function="f")
+
+
+def test_a_conditional_block_both_sessions_add_is_skipped_whole() -> None:
+    block = b"#ifdef AVOCADO_SPEC_G\nint avocado_spec_a;\n#endif\n"
+    merged, report = _merge_onto(TAIL + block, TAIL + block)
+    assert report.merged, report.reason
+    assert merged == TAIL + block and report.transplanted == []
+    assert report.skipped_duplicates == ["ifdef:#ifdef AVOCADO_SPEC_G", "declaration:avocado_spec_a"]
+
+
+def test_conditional_blocks_with_different_conditions_both_merge() -> None:
+    theirs = b"#if defined(AVOCADO_SPEC_A)\nint avocado_spec_a;\n#endif\n"
+    mine = b"#if defined(AVOCADO_SPEC_B)\nint avocado_spec_b;\n#endif\n"
+    merged, report = _merge_onto(TAIL + theirs, TAIL + mine)
+    assert report.merged, report.reason
+    assert theirs in merged and mine in merged
+
+
+def test_an_endif_is_aligned_with_the_endif_of_its_own_block() -> None:
+    inner = b"#ifdef AVOCADO_SPEC_Y\nint avocado_spec_y;\n#endif\n"
+    canonical = TAIL.replace(b"void f(void) { }\n", b"void f(void) { }\n" + inner)
+    assert check_edits(TAIL, canonical, "f") == []
+    merged, report = _merge_onto(canonical, TAIL + b"int avocado_spec_z;\n")
+    assert report.merged, report.reason
+    assert merged == canonical + b"int avocado_spec_z;\n"
+
+
+def test_a_new_name_two_sessions_add_as_different_kinds_is_a_conflict() -> None:
+    theirs = b"int avocado_spec_a(int x) { return x; }\n"
+    merged, report = _merge_onto(TAIL + theirs, TAIL + b"int avocado_spec_a;\n")
+    assert not report.merged and merged == TAIL + theirs
+    assert "declaration:avocado_spec_a is already defined differently" in report.reason
+
+
+def test_an_original_comment_before_added_items_is_not_copied() -> None:
+    base = b"/* License */\nint g(int x) { return x; }\nvoid f(void) { }\n"
+    canonical = base + b"int avocado_spec_other;\n"
+    snapshot = base.replace(b"/* License */\n", b"/* License */\nint avocado_spec_q;\n")
+    merged, report = _merge_onto(canonical, snapshot, base)
+    assert report.merged, report.reason
+    assert merged == snapshot + b"int avocado_spec_other;\n"
