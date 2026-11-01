@@ -377,7 +377,7 @@ def _verify_via_agent(
     Returns:
         FunctionVerificationResult: The combined Claude/CBMC outcome for the function.
     """
-    prompt = f"Verify {function} in {file_path}"
+    prompt = _build_prompt(function, file_path=file_path, include_dirs=include_dirs)
     command = _build_claude_command(prompt, file_path=file_path, include_dirs=include_dirs)
     attempts_log_path = Path(file_path).with_name(
         f"{Path(file_path).stem}{VERIFICATION_ATTEMPTS_LOG_SUFFIX}"
@@ -634,6 +634,28 @@ def _run_summary_record(
         "verified": verified,
         "total": total,
     }
+
+
+def _build_prompt(function: str, *, file_path: str, include_dirs: list[str]) -> str:
+    """Return the prompt for a `claude -p` session that verifies `function`.
+
+    When `include_dirs` is non-empty, the prompt tells the agent to pass them to
+    `avocado-run-cbmc`, so that the agent's CBMC runs use the same include search path as the
+    harness's final run.
+
+    Args:
+        function (str): The function to specify and verify.
+        file_path (str): Absolute path to the C file defining the function.
+        include_dirs (list[str]): Include directories, in search order.
+
+    Returns:
+        str: The prompt.
+    """
+    prompt = f"Verify {function} in {file_path}"
+    if include_dirs:
+        include_flags = shlex.join(flag for include_dir in include_dirs for flag in ("-I", include_dir))
+        prompt += f". Whenever you run avocado-run-cbmc, pass `{include_flags}`, in that order."
+    return prompt
 
 
 def _build_claude_command(prompt: str, *, file_path: str, include_dirs: list[str]) -> list[str]:
