@@ -653,7 +653,9 @@ def _build_prompt(function: str, *, file_path: str, include_dirs: list[str]) -> 
     """
     prompt = f"Verify {function} in {file_path}"
     if include_dirs:
-        include_flags = shlex.join(flag for include_dir in include_dirs for flag in ("-I", include_dir))
+        include_flags = shlex.join(
+            flag for include_dir in include_dirs for flag in ("-I", include_dir)
+        )
         prompt += f". Whenever you run avocado-run-cbmc, pass `{include_flags}`, in that order."
     return prompt
 
