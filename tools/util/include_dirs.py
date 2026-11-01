@@ -6,11 +6,15 @@ from pathlib import Path
 from loguru import logger
 
 AUTO_INCLUDE_HELP = (
-    "For each .c file <project>/<subdir>/<name>.c, pass <project>/include to CBMC "
-    "as an include path if that directory exists, after any explicitly given include directories. "
+    "For a C file <project>/src/<name>.c, pass <project>/include to CBMC as an include path "
+    "if that directory exists. "
     "Fits projects whose include/ directory is a sibling of their src/ directory."
 )
-"""Help text for an `--auto-include` command-line option that is passed to `get_include_dirs`."""
+"""Help text for an `--auto-include` command-line option that is passed to `get_include_dirs`.
+
+The text does not state the option's default, nor how the auto-detected directory is ordered
+relative to other include directories; each client describes those.
+"""
 
 
 def resolve_include_dirs(include_dirs: list[str]) -> list[str]:
@@ -38,15 +42,20 @@ def resolve_include_dirs(include_dirs: list[str]) -> list[str]:
 def get_include_dirs(source_file: str, include_dirs: list[str], *, auto_include: bool) -> list[str]:
     """Return the include directories with which to verify `source_file`, and log them.
 
-    When `auto_include` is true, the result ends with the auto-detected directory: for a source
-    file `<project>/<subdir>/<name>.c`, that is `<project>/include`, if that directory exists.
-    Explicitly given directories come first so that their headers (such as stubs) take
-    precedence over the auto-detected ones.
+    When `auto_include` is true, the auto-detected directory is appended to `include_dirs`
+    unless `include_dirs` already contains it. For a source file `<project>/src/<name>.c`, the
+    auto-detected directory is `<project>/include`, if that directory exists. No directory is
+    auto-detected for a source file whose parent directory is not named `src`.
     Many CMake projects keep public headers in `<project>/include/` while sources live in
     `<project>/src/`. When that layout holds, the auto-detected directory lets CBMC resolve
-    `#include "foo.h"` without the caller having to configure paths by hand. `<project>` is
-    determined from `source_file` as written, without following symlinks, so a symlinked source
-    file uses the `include/` directory of the project that contains the symlink.
+    `#include "foo.h"` without the caller having to configure paths by hand. Because the
+    auto-detected directory follows the explicitly given ones, CBMC searches it after them.
+    That ordering governs only the `-I` search path: for `#include "foo.h"`, the preprocessor
+    first searches the directory of the file that contains the directive. For example, if
+    `<project>/include/a.h` includes `"b.h"`, it gets `<project>/include/b.h` even when an
+    explicitly given directory also contains a `b.h`.
+    `<project>` is determined from `source_file` as written, without following symlinks, so a
+    symlinked source file uses the `include/` directory of the project that contains the symlink.
 
     Args:
         source_file (str): Path to a `.c` file.
@@ -57,14 +66,15 @@ def get_include_dirs(source_file: str, include_dirs: list[str], *, auto_include:
 
     Returns:
         list[str]: A new list of absolute include directories, without duplicates:
-            `include_dirs`, followed by the auto-detected directory (if `auto_include` is true and
-            that directory exists).
+            `include_dirs`, followed by the auto-detected directory if `auto_include` is true, that
+            directory exists, and `include_dirs` does not already contain it.
     """
     result = list(include_dirs)
     if auto_include:
         # Unlike `Path.resolve`, `os.path.abspath` does not follow symlinks.
-        detected = Path(os.path.abspath(source_file)).parent.parent / "include"  # ruff: ignore[os-path-abspath] - must not follow symlinks.
-        if detected.is_dir():
+        source_dir = Path(os.path.abspath(source_file)).parent  # ruff: ignore[os-path-abspath] - must not follow symlinks.
+        detected = source_dir.parent / "include"
+        if source_dir.name == "src" and detected.is_dir():
             result = list(dict.fromkeys([*result, str(detected.resolve())]))
     if result:
         logger.debug(f"[include-dirs] using {result}")

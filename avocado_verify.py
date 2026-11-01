@@ -14,7 +14,8 @@ CBMC to record a ground-truth verification result.
 Usage:
     % avocado-verify --file <PATH_TO_C_FILE> \
         [--claude-timeout <TIMEOUT>] \
-        [--resume-from <PATH_TO_JSONL_LOG>]
+        [--resume-from <PATH_TO_JSONL_LOG>] \
+        [--no-auto-include]
 """
 
 import argparse
@@ -231,6 +232,7 @@ def main() -> None:
             AUTO_INCLUDE_HELP
             + " The directory is also made accessible to the agent via `claude --add-dir`."
             + " Use --no-auto-include if that directory is unrelated to the C file."
+            + " (default: %(default)s)"
         ),
     )
     args = parser.parse_args()

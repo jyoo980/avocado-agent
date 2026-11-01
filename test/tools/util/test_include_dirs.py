@@ -72,6 +72,13 @@ def test_get_include_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     assert get_include_dirs(source, [detected, stubs], auto_include=True) == [detected, stubs]
 
 
+def test_get_include_dirs_requires_src(tmp_path: Path) -> None:
+    (tmp_path / "include").mkdir()
+    for subdir in ["lib", "scratch", "src-old"]:
+        source = str(tmp_path / subdir / "foo.c")
+        assert get_include_dirs(source, [], auto_include=True) == []
+
+
 def test_get_include_dirs_returns_new_list(tmp_path: Path) -> None:
     include_dirs = [str(tmp_path.resolve())]
     result = get_include_dirs(str(tmp_path / "src" / "foo.c"), include_dirs, auto_include=False)

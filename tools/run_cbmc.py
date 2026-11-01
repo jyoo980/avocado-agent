@@ -217,7 +217,8 @@ def run_cbmc(
 
     Args:
         function_to_verify (str): Name of the function to verify.
-        file_containing_function_to_verify (str): Path to the C file defining the function.
+        file_containing_function_to_verify (str): Path to the C file defining the function. A
+            relative path is relative to the current working directory, even when `cwd` is given.
         include_dirs (list[str] | None): Directories to add to the C preprocessor's include
             search path. Forwarded to `goto-cc` as `-I` flags. A relative directory is relative
             to the current working directory, even when `cwd` is given.
@@ -237,9 +238,9 @@ def run_cbmc(
         RunCbmcResult: The outcome of the run, naming the failed step (if any) and carrying
             a printable response and the relevant exit code.
     """
+    # Otherwise, a subprocess that runs in `cwd` would interpret a relative path relative to `cwd`.
+    file_containing_function_to_verify = str(Path(file_containing_function_to_verify).absolute())
     if include_dirs:
-        # Otherwise, a subprocess that runs in `cwd` would interpret a relative path relative to
-        # `cwd`.
         include_dirs = [str(Path(include_dir).absolute()) for include_dir in include_dirs]
     if call_graph is None:
         path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)

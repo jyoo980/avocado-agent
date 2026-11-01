@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from subprocess import CompletedProcess
 
+import pytest
+
 from eval.mutants.mutate_function import Mutant
 from tools.run_cbmc import (
     CbmcStep,
@@ -388,24 +390,22 @@ def test_print_mutation_progress_buckets_undecided_mutants(capsys) -> None:
     )
 
 
-def test_run_cbmc_resolves_relative_include_dirs_against_callers_cwd(tmp_path: Path) -> None:
-    # The subprocesses run in `scratch`, but the relative include directory names a directory
-    # relative to the caller's working directory.
+def test_run_cbmc_resolves_relative_paths_against_callers_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The subprocesses run in `scratch`, but the relative source file and include directory name
+    # files relative to the caller's working directory.
     (tmp_path / "include").mkdir()
     (tmp_path / "include" / "seven.h").write_text("#define SEVEN 7\n", encoding="utf-8")
     src = tmp_path / "seven.c"
     src.write_text('#include "seven.h"\nint seven(void) { return SEVEN; }\n', encoding="utf-8")
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    original_cwd = Path.cwd()
-    try:
-        os.chdir(tmp_path)
-        result = run_cbmc(
-            function_to_verify="seven",
-            file_containing_function_to_verify=str(src),
-            include_dirs=["include"],
-            cwd=str(scratch),
-        )
-    finally:
-        os.chdir(original_cwd)
+    monkeypatch.chdir(tmp_path)
+    result = run_cbmc(
+        function_to_verify="seven",
+        file_containing_function_to_verify="seven.c",
+        include_dirs=["include"],
+        cwd=str(scratch),
+    )
     assert result.failed_step is not CbmcStep.GOTO_CC
