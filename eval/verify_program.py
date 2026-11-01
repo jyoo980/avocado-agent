@@ -26,6 +26,7 @@ from tools.util import (
     get_functions_with_cprover_annotations,
     get_include_dirs,
     get_unstubbed_external_callees_for,
+    resolve_include_dirs,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -110,10 +111,13 @@ def main() -> int:
         logger.info(f"No .c files found at: {args.path}")
         return 1
 
+    try:
+        include_dirs_from_cli = resolve_include_dirs(args.include_dirs or [])
+    except ValueError as e:
+        parser.error(str(e))
     files_to_program_verification_results: dict[str, ProgramVerificationResult] = {}
     for file in files:
         logger.info(f"=== {file} ===")
-        include_dirs_from_cli = args.include_dirs or []
         results_for_file = _verify_program(
             str(file),
             skip_unannotated_functions=args.skip_unannotated_functions,
@@ -162,7 +166,7 @@ def _verify_program(
         skip_unannotated_functions (bool): True iff unannotated functions should be skipped
             (i.e., CBMC should not be run on them).
         include_dirs (list[str]): List of directories containing files (e.g., headers) that should
-            be included in verification.
+            be included in verification, as returned by `resolve_include_dirs()`.
         auto_include (bool): True iff the auto-detected include directory (see
             `get_include_dirs()`) should be added to CBMC's include search path. Defaults to False.
 
@@ -179,8 +183,6 @@ def _verify_program(
         skipped_functions = set(call_graph.keys()).difference(names_of_functions_to_verify)
 
     include_dirs = get_include_dirs(file, include_dirs, auto_include=auto_include)
-    if include_dirs:
-        logger.debug(f"[include-dirs] using {include_dirs}")
 
     results: list[FunctionVerificationResult] = []
     for function in names_of_functions_to_verify:

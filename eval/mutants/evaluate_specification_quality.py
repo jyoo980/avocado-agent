@@ -37,6 +37,7 @@ from tools.util import (
     AUTO_INCLUDE_HELP,
     get_functions_with_cprover_annotations,
     get_include_dirs,
+    resolve_include_dirs,
 )
 from tools.util.mutation import MutationScore
 
@@ -85,12 +86,15 @@ def main() -> None:
         logger.error(f"No .c files found at: {args.path}")
         sys.exit(1)
 
+    try:
+        include_dirs_from_cli = resolve_include_dirs(args.include_dirs or [])
+    except ValueError as e:
+        parser.error(str(e))
     # This stream is closed in a `finally` block.
     output_stream: IO[str] = (
         Path(args.jsonl).open("w", encoding="utf-8") if args.jsonl else sys.stdout  # ruff: ignore[open-file-with-context-handler]
     )
     try:
-        include_dirs_from_cli = args.include_dirs or []
         for source in input_files:
             _process_file(
                 source=source,
@@ -121,10 +125,10 @@ def _process_file(
     Arguments:
         source (Path): The path to the file for evaluation.
         out (IO[str]): The output.
-        auto_include (bool): True iff an `include` dir (i.e., a dir containing headers) should be
-            automatically detected.
+        auto_include (bool): True iff the auto-detected include directory (see
+            `get_include_dirs()`) should be added to CBMC's include search path.
         include_dirs (list[str]): List of directories containing files (e.g., headers) that should
-            be included in verification.
+            be included in verification, as returned by `resolve_include_dirs()`.
         run_mutation (bool): True iff mutation testing should be reported.
         run_redundancy (bool): True iff redundancy scoring should be reported.
         keep_artifacts (bool): True iff the mutant files should be retained after evaluation.
@@ -137,8 +141,6 @@ def _process_file(
         return
 
     include_dirs = get_include_dirs(str(source), include_dirs, auto_include=auto_include)
-    if include_dirs:
-        logger.debug(f"[include-dirs] using {include_dirs}")
 
     for function in functions_with_cprover_annotations:
         if run_mutation:
