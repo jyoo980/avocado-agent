@@ -16,7 +16,8 @@ mutants were all undecided (timed out, failed to compile, or failed instrumentat
 
 When several JSONL files are given (e.g. three independent agent runs), a final block reports the
 mean and spread (min..max) of both aggregates across files, which is the noise floor for
-agent-time experiments.
+agent-time experiments.  A file with no mutation summary records, such as the output of a failed
+run, is reported, left out of that block, and makes the script exit with a non-zero status.
 
 Usage:
     % eval/experiments/summarize_quality.py <JSONL> [<JSONL> ...] [--quiet]
@@ -48,9 +49,13 @@ def main() -> None:
     args = parser.parse_args()
 
     aggregates: list[dict[str, float | int]] = []
+    files_without_records: list[str] = []
     for path in args.jsonl:
         aggregate = summarize(Path(path), verbose=not args.quiet)
-        aggregates.append(aggregate)
+        if aggregate is None:
+            files_without_records.append(path)
+        else:
+            aggregates.append(aggregate)
     if len(aggregates) > 1:
         print("\n== across files ==")
         for key in (
@@ -68,9 +73,15 @@ def main() -> None:
             print(
                 f"{key:18s} mean={statistics.fmean(values):.4f} spread={spread} stdev={stdev:.4f}"
             )
+    if files_without_records:
+        print(
+            f"error: no mutation summary records in: {', '.join(files_without_records)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
-def summarize(path: Path, *, verbose: bool) -> dict[str, float | int]:
+def summarize(path: Path, *, verbose: bool) -> dict[str, float | int] | None:
     """Print a summary of one JSONL file and return its aggregates.
 
     Args:
@@ -78,11 +89,16 @@ def summarize(path: Path, *, verbose: bool) -> dict[str, float | int]:
         verbose (bool): When True, print one line per function.
 
     Returns:
-        dict[str, float | int]: The aggregate metrics for the file.
+        dict[str, float | int] | None: The aggregate metrics for the file, or None if the file has
+            no mutation summary records.
     """
     records = group_by_summary_type(yield_records(str(path))).get(
         SpecificationQualitySummary.SUMMARY_FOR_MUTATION_TESTING, []
     )
+    print(f"== {path}")
+    if not records:
+        print("  no mutation summary records")
+        return None
     tested = [r for r in records if r.get("was_mutation_tested") and _num_decided(r) > 0]
     undecided = [r for r in records if r.get("was_mutation_tested") and _num_decided(r) == 0]
     untested = [r for r in records if not r.get("was_mutation_tested")]
@@ -98,7 +114,6 @@ def summarize(path: Path, *, verbose: bool) -> dict[str, float | int]:
         "undecided": len(undecided),
         "untested": len(untested),
     }
-    print(f"== {path}")
     if verbose:
         for r in tested:
             print(
