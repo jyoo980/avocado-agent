@@ -24,7 +24,6 @@ _TOKEN = re.compile(
     """,
     re.VERBOSE | re.DOTALL,
 )
-_COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.DOTALL)
 _DIRECTIVE_HEAD = re.compile(r"#\s*(\w*)\s*(\w*)")
 _IDENTIFIER = re.compile(r"[A-Za-z_]\w*\Z")
 _AGGREGATE_KEYWORDS = frozenset({"struct", "union", "enum"})
@@ -106,12 +105,14 @@ def function_body_offsets(source: bytes, function: str) -> list[int]:
 def _tokenize(source: bytes) -> list[_Token]:
     """Split a source file into tokens, with contract clauses and comments erased.
 
-    Args:
-        source (bytes): The original C source.
-
     Each branch of a preprocessor conditional starts at the brace depth that the conditional
     starts at, so a brace that every branch opens (as in a function header that differs between
-    branches) is counted once. After `#endif`, the depth is the one that the last branch ends at.
+    branches) is counted once. After `#endif`, the depth is the one that the first branch ends
+    at, so a brace opened in one conditional and closed in a later one with the same condition
+    is counted even when the first conditional has an empty `#else`.
+
+    Args:
+        source (bytes): The original C source.
 
     Returns:
         list[_Token]: The tokens in source order.
@@ -123,28 +124,33 @@ def _tokenize(source: bytes) -> list[_Token]:
     tokens: list[_Token] = []
     position = 0
     depth = 0
-    conditional_depths: list[int] = []  # The depth at each enclosing `#if`.
+    # For each enclosing `#if`: the depth it starts at, and the depth its first branch ends at
+    # (None until that branch ends).
+    conditionals: list[tuple[int, int | None]] = []
     at_line_start = True
     length = len(text)
     while position < length:
         if at_line_start and text[position] == "#":
-            end = _logical_line_end(stripped, position)
+            # The original keeps the backslash of a line continuation inside a contract clause.
+            end = _logical_line_end(source, position)
             directive = _normalize_directive(original[position:end])
             tokens.append(_Token(directive, position, end, depth))
             head = _DIRECTIVE_HEAD.match(directive)
             keyword = head.group(1) if head else ""
             if keyword in ("if", "ifdef", "ifndef"):
-                conditional_depths.append(depth)
-            elif keyword in ("elif", "elifdef", "elifndef", "else") and conditional_depths:
-                depth = conditional_depths[-1]
-            elif keyword == "endif" and conditional_depths:
-                conditional_depths.pop()
+                conditionals.append((depth, None))
+            elif keyword in ("elif", "elifdef", "elifndef", "else") and conditionals:
+                start, first_end = conditionals[-1]
+                conditionals[-1] = (start, depth if first_end is None else first_end)
+                depth = start
+            elif keyword == "endif" and conditionals:
+                _, first_end = conditionals.pop()
+                if first_end is not None:
+                    depth = first_end
             position = end
             continue
         match = _TOKEN.match(text, position)
-        if match is None:  # cannot happen: the last alternative matches any character
-            position += 1
-            continue
+        assert match is not None, "the last alternative matches any character"
         kind = match.lastgroup
         value = match.group()
         if kind == "newline":
@@ -162,7 +168,9 @@ def _tokenize(source: bytes) -> list[_Token]:
 
 
 def _normalize_directive(text: str) -> str:
-    """Return a directive's text with comments removed and whitespace collapsed.
+    """Return a directive's text with each run of whitespace and comments replaced by one space.
+
+    String and character literals are kept verbatim.
 
     Args:
         text (str): The directive's logical line.
@@ -170,9 +178,17 @@ def _normalize_directive(text: str) -> str:
     Returns:
         str: The directive, starting with `#` immediately followed by its keyword.
     """
-    words = _COMMENT.sub(" ", text).replace("\\\n", " ").split()
-    normalized = " ".join(words)
-    return re.sub(r"^#\s+", "#", normalized)
+    parts: list[str] = []
+    separated = False
+    for match in _TOKEN.finditer(text):
+        if match.lastgroup in ("space", "newline", "comment"):
+            separated = True
+            continue
+        if separated and parts:
+            parts.append(" ")
+        parts.append(match.group())
+        separated = False
+    return re.sub(r"^#\s+", "#", "".join(parts))
 
 
 def _opens_linkage_block(tokens: list[_Token]) -> bool:
@@ -345,14 +361,6 @@ def _declared_name(texts: tuple[str, ...]) -> str | None:
     if not body:
         return None
     top_level = _without_attributes(_top_level(body))
-    if (
-        body[0] in _AGGREGATE_KEYWORDS
-        and len(body) > 2
-        and _IDENTIFIER.match(body[1])
-        and body[2] == "{"
-        and body[-1] == "}"
-    ):
-        return body[1]
     if "=" in top_level:
         top_level = top_level[: top_level.index("=")]
     # A pointer declarator `( * name )` outside every parameter list, as in `int (*fp)(int);`.

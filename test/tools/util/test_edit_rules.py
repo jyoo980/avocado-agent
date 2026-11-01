@@ -106,3 +106,33 @@ def test_a_struct_defined_in_the_return_type_does_not_hide_the_function_name() -
     source = b"struct S { int a; } f(void) { struct S s = {0}; return s; }\n"
     offsets = function_body_offsets(source, "f")
     assert offsets == [source.index(b"{", source.index(b"f(void)"))]
+
+
+def test_a_brace_opened_and_closed_in_separate_conditionals_counts_once() -> None:
+    source = (
+        b"int f(int a) {\n#ifdef X\n  if (a) {\n#else\n#endif\n  a++;\n"
+        b"#ifdef X\n  }\n#endif\n  return a;\n}\nint g(void) { return 0; }\n"
+    )
+    assert _names(source)[-2:] == ["f", "g"]
+    assert len(function_body_offsets(source, "g")) == 1
+
+
+def test_comment_delimiters_and_spaces_inside_a_directive_string_are_kept() -> None:
+    def directive(source: bytes) -> tuple[str, ...]:
+        return _split_items(_tokenize(source))[0].tokens
+
+    assert directive(b'#define U "http://a.com"\n') == ('#define U "http://a.com"',)
+    assert directive(b'#define U "http://a.com"\n') != directive(b'#define U "http://b.com"\n')
+    assert directive(b'#define S "a  b"\n') != directive(b'#define S "a b"\n')
+    assert directive(b"#  define  F(x)   /* c */ x\n") == ("#define F(x) x",)
+    assert directive(b"#define F(x) x\n") != directive(b"#define F (x) x\n")
+
+
+def test_a_multi_line_contract_clause_does_not_end_a_macro_early() -> None:
+    source = (
+        b"#define C(a) __CPROVER_requires(a > 0 && \\\n a < 9) \\\n"
+        b"  int helper(void) { return a; }\n"
+        b"int f(void) { return 0; }\n"
+    )
+    assert _names(source) == ["C", "f"]
+    assert function_body_offsets(source, "helper") == []

@@ -70,7 +70,7 @@ def blank_preprocessor_conditionals(source: bytes) -> bytes:
     i = 0
     while i < length:
         at_line_start = i == 0 or source[i - 1] == _NEWLINE
-        if at_line_start:
+        if at_line_start and _starts_directive(source, i):
             line_end = _logical_line_end(source, i)
             match = _CONDITIONAL_DIRECTIVE.fullmatch(source, i, line_end)
             if match:
@@ -94,12 +94,9 @@ def blank_preprocessor_conditionals(source: bytes) -> bytes:
                         _blank(buffer, i, line_end)
                 elif brace_depth > 0:
                     _blank(buffer, i, line_end)
-                i = line_end + 1
-                continue
-            if source[i:line_end].lstrip().startswith(b"#"):
-                # Any other directive (`#define`, `#include`, ...): braces on it don't count.
-                i = line_end + 1
-                continue
+            # Braces on a directive (`#define`, `#include`, ...) don't count.
+            i = line_end + 1
+            continue
         if dead_branch_start is not None:
             # Dead code: only look for the directive that ends it.
             i += 1
@@ -130,6 +127,23 @@ def blank_preprocessor_conditionals(source: bytes) -> bytes:
     result = bytes(buffer)
     assert len(result) == len(source), "blanking must preserve length"
     return result
+
+
+def _starts_directive(source: bytes, start: int) -> bool:
+    """Return True iff the line starting at ``start`` is a preprocessor directive.
+
+    Args:
+        source: The C source as bytes.
+        start: Offset of the first byte of the line.
+
+    Returns:
+        True iff the line's first byte other than horizontal whitespace is ``#``.
+    """
+    i = start
+    length = len(source)
+    while i < length and source[i] in b" \t\f\v\r":
+        i += 1
+    return i < length and source[i] == ord("#")
 
 
 def _logical_line_end(source: bytes, start: int) -> int:
