@@ -230,7 +230,8 @@ def main() -> None:
         logger.error(f"No such file: {file_path}")
         sys.exit(1)
 
-    if include_dirs := get_include_dirs(str(file_path), [], auto_include=True):
+    # Pass `args.file`, not `file_path`, so that auto-detection does not follow symlinks.
+    if include_dirs := get_include_dirs(args.file, [], auto_include=True):
         logger.info(f"[auto-include] using {include_dirs}")
 
     path_to_call_graph = construct_call_graph(str(file_path))
