@@ -263,7 +263,8 @@ def _opens_function_body(prefix: list[_Token]) -> bool:
     It does not when the item has an initializer (`= {`), or names a `struct`, `union` or `enum`
     with no parameter list after the keyword (a type definition). Only keywords outside
     parentheses count: the `struct` in `void f(struct S *s) {` belongs to a parameter, and the
-    brace still opens the body of `f`.
+    brace still opens the body of `f`. Attributes are ignored, so the parentheses of
+    `struct __attribute__((packed)) S {` are not a parameter list.
 
     Args:
         prefix (list[_Token]): The item's tokens before the `{`.
@@ -271,7 +272,7 @@ def _opens_function_body(prefix: list[_Token]) -> bool:
     Returns:
         bool: True iff the brace opens a function body.
     """
-    texts = [token.text for token in prefix if not token.is_directive]
+    texts = _without_attributes([token.text for token in prefix if not token.is_directive])
     if "=" in texts:
         return False
     last_aggregate = -1
@@ -382,6 +383,9 @@ def _declared_name(texts: tuple[str, ...]) -> str | None:
     if "[" in top_level:
         top_level = top_level[: top_level.index("[")]
     candidate = top_level[-1] if top_level else ""
+    # An anonymous `enum { ... };` has no name.
+    if candidate in _AGGREGATE_KEYWORDS:
+        return None
     return candidate if _IDENTIFIER.match(candidate) else None
 
 

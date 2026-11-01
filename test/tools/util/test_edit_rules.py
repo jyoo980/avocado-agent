@@ -136,3 +136,30 @@ def test_a_multi_line_contract_clause_does_not_end_a_macro_early() -> None:
     )
     assert _names(source) == ["C", "f"]
     assert function_body_offsets(source, "helper") == []
+
+
+def test_an_attribute_after_an_aggregate_keyword_does_not_make_a_function() -> None:
+    def kinds_and_names(source: bytes) -> list[tuple[str, str | None]]:
+        return [(item.kind, item.name) for item in _split_items(_tokenize(source))]
+
+    assert kinds_and_names(b"struct __attribute__((packed)) S { int a; };") == [
+        ("declaration", "S")
+    ]
+    assert kinds_and_names(b"typedef struct __attribute__((packed)) { int a; } T;") == [
+        ("declaration", "T")
+    ]
+    assert kinds_and_names(b"__attribute__((noinline)) int f(void) { return 0; }") == [
+        ("function", "f")
+    ]
+
+
+def test_an_anonymous_aggregate_has_no_name() -> None:
+    assert _names(b"enum { A, B };") == [None]
+    assert _names(b"union { int a; };") == [None]
+    assert _names(b"struct S;") == ["S"]
+
+
+def test_a_comment_after_an_unmatched_apostrophe_continues_a_directive() -> None:
+    source = b"#error don't /* x\n } */\nint g(void) { return 1; }\n"
+    assert [item.kind for item in _split_items(_tokenize(source))] == ["directive", "function"]
+    assert len(function_body_offsets(source, "g")) == 1
