@@ -62,13 +62,14 @@ def test_get_include_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     assert get_include_dirs(source, [], auto_include=False) == []
     assert get_include_dirs(source, [], auto_include=True) == [detected]
     assert get_include_dirs(source, [stubs], auto_include=False) == [stubs]
-    assert get_include_dirs(source, [stubs], auto_include=True) == [detected, stubs]
+    assert get_include_dirs(source, [stubs], auto_include=True) == [stubs, detected]
 
     # A relative source file.
     assert get_include_dirs("src/foo.c", [], auto_include=True) == [detected]
 
     # The auto-detected directory is not duplicated.
     assert get_include_dirs(source, [detected], auto_include=True) == [detected]
+    assert get_include_dirs(source, [detected, stubs], auto_include=True) == [detected, stubs]
 
 
 def test_get_include_dirs_returns_new_list(tmp_path: Path) -> None:

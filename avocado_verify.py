@@ -35,7 +35,7 @@ from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
 from tools.run_cbmc import RunCbmcResult, run_cbmc
 from tools.run_cbmc_and_mutation_testing import VERIFICATION_ATTEMPTS_LOG_SUFFIX
-from tools.util import get_include_dirs
+from tools.util import AUTO_INCLUDE_HELP, get_include_dirs
 from tools.util.callgraph import CallGraph
 
 # Per-function wall-clock budget for a single `claude -p` session. A session may run CBMC
@@ -223,6 +223,16 @@ def main() -> None:
             "limit (exit code 2)."
         ),
     )
+    parser.add_argument(
+        "--auto-include",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            AUTO_INCLUDE_HELP
+            + " The directory is also made accessible to the agent via `claude --add-dir`."
+            + " Use --no-auto-include if that directory is unrelated to the C file."
+        ),
+    )
     args = parser.parse_args()
 
     file_path = Path(args.file).resolve()
@@ -231,7 +241,7 @@ def main() -> None:
         sys.exit(1)
 
     # Pass `args.file`, not `file_path`, so that auto-detection does not follow symlinks.
-    if include_dirs := get_include_dirs(args.file, [], auto_include=True):
+    if include_dirs := get_include_dirs(args.file, [], auto_include=args.auto_include):
         logger.info(f"[auto-include] using {include_dirs}")
 
     path_to_call_graph = construct_call_graph(str(file_path))
