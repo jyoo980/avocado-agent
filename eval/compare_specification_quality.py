@@ -84,17 +84,23 @@ def _get_specification_quality_comparison(
         yield_records(path_to_experimental_records)
     )
 
+    # A function that was not mutation tested (it did not verify, or it has no mutants) has no
+    # kill score, so it is compared as if it were absent.
     baseline_mutation_testing_summaries = _get_function_key_dict_from_list(
-        baseline_spec_quality_type_to_records.get(
-            SpecificationQualitySummary.SUMMARY_FOR_MUTATION_TESTING
+        _get_mutation_tested_records(
+            baseline_spec_quality_type_to_records.get(
+                SpecificationQualitySummary.SUMMARY_FOR_MUTATION_TESTING
+            )
+            or []
         )
-        or []
     )
     experimental_mutation_testing_summaries = _get_function_key_dict_from_list(
-        experimental_spec_quality_type_to_records.get(
-            SpecificationQualitySummary.SUMMARY_FOR_MUTATION_TESTING
+        _get_mutation_tested_records(
+            experimental_spec_quality_type_to_records.get(
+                SpecificationQualitySummary.SUMMARY_FOR_MUTATION_TESTING
+            )
+            or []
         )
-        or []
     )
     baseline_redundancy_summaries = _get_function_key_dict_from_list(
         baseline_spec_quality_type_to_records.get(
@@ -200,7 +206,7 @@ def _get_kill_score_comparison(
                 "baseline": baseline_record,
                 "experimental": experimental_record,
                 "kill_score_delta": round(
-                    experimental_record["kill_score"] - baseline_record["kill_score"],
+                    _get_kill_score(experimental_record) - _get_kill_score(baseline_record),
                     _DEFAULT_NUM_DECIMAL_PLACES,
                 ),
                 "killed_delta": experimental_record["killed"] - baseline_record["killed"],
@@ -279,6 +285,18 @@ def _get_redundancy_score_comparison(
         reverse=True,
     )
     return rows
+
+
+def _get_mutation_tested_records(records: list[dict]) -> list[dict]:
+    """Return the mutation summary records of the functions that were mutation tested.
+
+    Args:
+        records (list[dict]): Mutation summary records.
+
+    Returns:
+        list[dict]: The records whose `was_mutation_tested` field is true.
+    """
+    return [record for record in records if record.get("was_mutation_tested")]
 
 
 def _get_function_key_dict_from_list(records: list[dict]) -> dict[FunctionKey, dict]:
@@ -397,7 +415,7 @@ def _get_kill_score(record: dict) -> float:
     Returns:
         float: The kill score obtained from a JSONL record.
     """
-    if kill_score := record.get("kill_score"):
+    if (kill_score := record.get("kill_score")) is not None:
         return float(kill_score)
     msg = f"Expected 'kill_score' in {record}"
     raise ValueError(msg)
