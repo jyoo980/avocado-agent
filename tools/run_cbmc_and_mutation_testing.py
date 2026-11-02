@@ -27,6 +27,7 @@ from tools.util import (
     get_unstubbed_external_callees_for,
 )
 from tools.util.callgraph import CallGraph
+from tools.util.include_dirs import autodetect_include_dirs
 from tools.util.mutation import (
     generate_mutants_and_compute_score,
     get_mutation_testing_results_for_client,
@@ -182,9 +183,16 @@ def main() -> None:
         default=[],
         dest="include_dirs",
         metavar="DIR",
-        help="Directory to add to the include search path. May be repeated.",
+        help=(
+            "Directory to add to the include search path. May be repeated. The search path "
+            "always starts with the include/ directory beside the file's directory, if it "
+            "exists (for example, <project>/include for <project>/src/foo.c)."
+        ),
     )
     args = parser.parse_args()
+    # Autodetect include directories here, rather than relying on every caller to pass them, so
+    # that every run uses the same include search path whether or not the caller passes `-I`.
+    include_dirs = list(dict.fromkeys([*autodetect_include_dirs(args.file), *args.include_dirs]))
 
     # Tee mutation-testing compile failures into a file. Leaves loguru's default stderr sink
     # untouched; the filter keys on the warning emitted by `_verify_mutant` in
@@ -198,7 +206,7 @@ def main() -> None:
     result = run_cbmc(
         function_to_verify=args.function,
         file_containing_function_to_verify=args.file,
-        include_dirs=args.include_dirs,
+        include_dirs=include_dirs,
     )
     # Record this top-level verification attempt (pass or fail) so `avocado-verify` can gate its
     # per-function loop on the agent having actually attempted verification often enough.
@@ -209,7 +217,7 @@ def main() -> None:
         score = generate_mutants_and_compute_score(
             file_path=args.file,
             target_function=args.function,
-            include_dirs=args.include_dirs,
+            include_dirs=include_dirs,
             skip_reverification=True,
         )
         if score:

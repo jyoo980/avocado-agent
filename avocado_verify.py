@@ -36,6 +36,7 @@ from tools.get_topological_ordering_of_functions import get_topological_ordering
 from tools.run_cbmc import RunCbmcResult, run_cbmc
 from tools.run_cbmc_and_mutation_testing import VERIFICATION_ATTEMPTS_LOG_SUFFIX
 from tools.util.callgraph import CallGraph
+from tools.util.include_dirs import autodetect_include_dirs
 
 # Per-function wall-clock budget for a single `claude -p` session. A session may run CBMC
 # several times (each with its own multi-minute timeout) across the coverage and quality
@@ -229,7 +230,7 @@ def main() -> None:
         logger.error(f"No such file: {file_path}")
         sys.exit(1)
 
-    if include_dirs := _autodetect_include_dirs(str(file_path)):
+    if include_dirs := autodetect_include_dirs(str(file_path)):
         logger.info(f"[auto-include] using {include_dirs}")
 
     path_to_call_graph = construct_call_graph(str(file_path))
@@ -377,7 +378,7 @@ def _verify_via_agent(
     Returns:
         FunctionVerificationResult: The combined Claude/CBMC outcome for the function.
     """
-    prompt = _build_prompt(function, file_path=file_path, include_dirs=include_dirs)
+    prompt = f"Verify {function} in {file_path}"
     command = _build_claude_command(prompt, file_path=file_path, include_dirs=include_dirs)
     attempts_log_path = Path(file_path).with_name(
         f"{Path(file_path).stem}{VERIFICATION_ATTEMPTS_LOG_SUFFIX}"
@@ -636,30 +637,6 @@ def _run_summary_record(
     }
 
 
-def _build_prompt(function: str, *, file_path: str, include_dirs: list[str]) -> str:
-    """Return the prompt for a `claude -p` session that verifies `function`.
-
-    When `include_dirs` is non-empty, the prompt tells the agent to pass them to
-    `avocado-run-cbmc`, so that the agent's CBMC runs use the same include search path as the
-    harness's final run.
-
-    Args:
-        function (str): The function to specify and verify.
-        file_path (str): Absolute path to the C file defining the function.
-        include_dirs (list[str]): Include directories, in search order.
-
-    Returns:
-        str: The prompt.
-    """
-    prompt = f"Verify {function} in {file_path}"
-    if include_dirs:
-        include_flags = shlex.join(
-            flag for include_dir in include_dirs for flag in ("-I", include_dir)
-        )
-        prompt += f". Whenever you run avocado-run-cbmc, pass `{include_flags}`, in that order."
-    return prompt
-
-
 def _build_claude_command(prompt: str, *, file_path: str, include_dirs: list[str]) -> list[str]:
     """Build the `claude -p` argument vector for one function.
 
@@ -841,23 +818,6 @@ def _log_summary(results: list[FunctionVerificationResult], log_path: Path) -> N
         1 for result in results if result.outcome is GroundTruthVerificationResult.VERIFIED
     )
     logger.info(f"{verified}/{len(results)} function(s) verified; log written to {log_path}")
-
-
-def _autodetect_include_dirs(source_file: str) -> list[str]:
-    """Return `[<source>/../include]` if that directory exists, else an empty list.
-
-    Many CMake projects keep public headers in `<project>/include/` while sources live in
-    `<project>/src/`. When that layout holds, returning the sibling `include/` directory lets
-    CBMC resolve `#include "foo.h"` without the caller having to configure paths by hand.
-
-    Args:
-        source_file (str): Path to a `.c` file.
-
-    Returns:
-        list[str]: `[<resolved include dir>]` when present, else `[]`.
-    """
-    candidate = Path(source_file).resolve().parent.parent / "include"
-    return [str(candidate)] if candidate.is_dir() else []
 
 
 if __name__ == "__main__":
