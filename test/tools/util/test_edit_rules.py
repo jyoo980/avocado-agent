@@ -163,3 +163,58 @@ def test_a_comment_after_an_unmatched_apostrophe_continues_a_directive() -> None
     source = b"#error don't /* x\n } */\nint g(void) { return 1; }\n"
     assert [item.kind for item in _split_items(_tokenize(source))] == ["directive", "function"]
     assert len(function_body_offsets(source, "g")) == 1
+
+
+def test_an_unbalanced_brace_in_an_if_0_branch_does_not_hide_the_functions_after_it() -> None:
+    source = (
+        b"#if 0\n  if (x) {\n#endif\nint f(void) { return 0; }\n"
+        b"int g(int a) {\n#if 0\n  if (a) {\n#else\n  if (!a) {\n#endif\n    a++;\n  }\n"
+        b"  return a;\n}\nint h(void) { return 1; }\n"
+    )
+    for function in ("f", "g", "h"):
+        assert len(function_body_offsets(source, function)) == 1
+    # The dead branch is part of the `#if 0` item, so a change to it changes the code.
+    items = _split_items(_tokenize(source))
+    assert items[0].tokens == ("#if 0 if (x) {",)
+    assert items[0].tokens != _split_items(_tokenize(source.replace(b"(x)", b"(y)")))[0].tokens
+
+
+def test_a_conditional_nested_in_an_if_0_branch_does_not_end_it() -> None:
+    source = b"#if 0\n#ifdef X\n{\n#endif\n{\n#else\nint f(void) { return 0; }\n#endif\n"
+    assert len(function_body_offsets(source, "f")) == 1
+    assert len(function_body_offsets(b"#if (0)\n{\n", "f")) == 0
+
+
+def test_a_line_comment_continued_by_a_backslash_hides_the_next_line() -> None:
+    source = b"// note \\\n{\nint g(void) { return 1; }\n"
+    assert len(function_body_offsets(source, "g")) == 1
+
+
+def test_an_attribute_after_the_parameter_list_is_not_the_function_name() -> None:
+    source = b"int f(int x) __attribute__((nonnull(1))) { return x; }\n"
+    assert len(function_body_offsets(source, "f")) == 1
+
+
+def test_a_function_that_returns_a_function_pointer_is_named() -> None:
+    assert _names(b"int (*get(void))(int) { return 0; }") == ["get"]
+    assert _names(b"void (*signal(int s, void (*h)(int)))(int) { return h; }") == ["signal"]
+    assert _names(b"int (isalpha)(int c) { return c; }") == ["isalpha"]
+
+
+def test_an_attribute_macro_after_an_aggregate_keyword_does_not_make_a_function() -> None:
+    items = _split_items(_tokenize(b"struct ALIGNED(8) S { int a; };\nstruct S f(void) { }\n"))
+    assert [(item.kind, item.name) for item in items] == [
+        ("declaration", "S"),
+        ("function", "f"),
+    ]
+    assert _names(b"struct ALIGNED(8) { int a; } x;") == ["x"]
+
+
+def test_only_define_and_undef_name_a_directive() -> None:
+    assert _names(b"#define M 1\n#undef M\n#if defined(X)\n#endif\n#pragma once\n") == [
+        "M",
+        "M",
+        None,
+        None,
+        None,
+    ]
