@@ -137,6 +137,27 @@ therefore does not stop a batch either. To stop one, kill the process recorded i
 This stops the batch's containers, giving each a minute to end its session; each run then
 saves its transcript and records exit code `143`.
 
+### Resuming a stopped run
+
+An `avocado-verify` run that stopped early can be continued. When a session hits a
+subscription usage limit the driver stops by itself: it writes a `run_summary` record with
+`"status": "usage_limited"` and the functions still to do, and exits `2`. A run cut off by
+`--timeout` (`124`) or `kill` (`143`) can be continued the same way. Once the limit has reset:
+
+```sh
+% eval/experiments/run.sh --resume ~/.local/share/avocado-experiments/<tag>/<batch>/run-1
+```
+
+This starts one new run, in a new batch under the same tag, from the stopped run's `subject/`
+(its specs so far and the driver's `*.jsonl` logs) rather than a pristine copy, and passes the
+driver `--resume-from <file>-avocado-verify.jsonl`. The driver skips the functions already
+processed, retries the one that was cut off, and appends to the same log, so the resumed run's
+`subject/<file>-avocado-verify.jsonl` covers the whole run. The subject, file, harness, runner
+and profile default to those in the stopped batch's `batch-info.txt`, which for the new batch
+also records `resumed_from`. `--profile` may name another account, as long as it sets the same
+`AVOCADO_MODEL`; `--timeout`, `--memory` and `--cpus` are not carried over, so pass them again.
+The `claude` runner (one session) cannot be resumed.
+
 ## Step 4: read the results
 
 Each `run-<i>/exit-code` is the runner's exit code. `124` means `--timeout` was hit; `137`

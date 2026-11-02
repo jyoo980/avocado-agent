@@ -13,6 +13,8 @@
 #   $3                   with `claude`, the prompt to send; with `avocado-verify`, the path
 #                        inside the container of the C file to verify
 #   $SUBJECT_NAME        the subject directory's name (env)
+#   $AVOCADO_RESUME      (optional, env) non-empty when `run.sh --resume` continues a stopped
+#                        avocado-verify run; the driver then gets `--resume-from` its own log
 #   /app/$SUBJECT_NAME   read-write bind mount of a fresh copy of the subject program
 #   /work/out            read-write bind mount, empty until this script exits
 #   /auth                (optional) read-only volume holding a `claude` login
@@ -47,6 +49,10 @@ BOOT_DIR="$1"
 RUNNER="$2"
 TARGET="$3"
 SUBJECT_DIR="/app/$SUBJECT_NAME"
+# Set by `run.sh --resume`: the subject copy is a stopped run's, and the driver continues its log.
+# Unset so the agent's shells do not inherit it.
+RESUME="${AVOCADO_RESUME:-}"
+unset AVOCADO_RESUME
 
 case "$RUNNER" in
   claude|avocado-verify) ;;
@@ -228,6 +234,9 @@ case "$RUNNER" in
     export PATH="$SHIM_DIR:$PATH"
     echo "run-isolated: file: $TARGET"
     COMMAND=(avocado-verify --file "$TARGET")
+    if [ -n "$RESUME" ]; then
+      COMMAND+=(--resume-from "${TARGET%.*}-avocado-verify.jsonl")
+    fi
     ;;
 esac
 printf '%q ' "${COMMAND[@]}" >"$OUT_DIR/command.txt"
