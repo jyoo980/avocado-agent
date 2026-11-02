@@ -16,4 +16,5 @@ scripts.
   benchmark already carries and records wall/user/sys time. Use it for any
   change that cannot alter a score, and to prove that it did not.
 - `summarize_quality.py <jsonl>...` prints per-function kill scores plus the
-  mean and pooled aggregates, and the spread across several files.
+  mean and pooled aggregates, and their mean, spread, and standard deviation
+  across several files.
