@@ -1450,7 +1450,7 @@ def _declared_name(texts: tuple[str, ...]) -> str | None:
     body = _without_attributes([text for text in texts[:-1] if not text.startswith("#")])
     if not body:
         return None
-    top_level = _without_attributes(_top_level(body))
+    top_level = _top_level(body)
     # A tag, possibly after attribute macros, as in `struct ALIGNED(8) S { int a; };`.
     if top_level and top_level[0] in _AGGREGATE_KEYWORDS and _is_aggregate_head(top_level[1:]):
         tag = top_level[-1]
@@ -1483,13 +1483,16 @@ def _declared_name(texts: tuple[str, ...]) -> str | None:
 
 
 def _without_attributes(texts: list[str]) -> list[str]:
-    """Return `texts` without attribute specifiers such as `__attribute__((packed))`.
+    """Return `texts` without attributes, alignment specifiers and asm labels.
+
+    Examples are `__attribute__((packed))`, `_Alignas(8)` and `asm("real_name")`.
 
     Args:
         texts (list[str]): Tokens of a declaration or of a function definition.
 
     Returns:
-        list[str]: The tokens, minus each attribute keyword and the parenthesized group after it.
+        list[str]: The tokens, minus each keyword in `_ATTRIBUTE_KEYWORDS` that is followed by a
+            parenthesized group, and minus that group.
     """
     kept: list[str] = []
     index = 0
