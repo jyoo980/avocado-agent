@@ -102,7 +102,7 @@ a new treatment.
 ## Step 3: launch a batch
 
 ```sh
-% eval/experiments/run.sh --subject path/to/subject \
+% eval/experiments/run.sh ---harness path/to/harness --subject path/to/subject \
       --profile eval/experiments/profiles/subscription.env -n 5 --memory 100g
 ```
 
@@ -118,10 +118,11 @@ With the `avocado-verify` runner `--file` is required and `--prompt` is rejected
 writes its own per-function prompts, and the run is `avocado-verify --file /app/<subject>/<c-file>`
 from inside the subject copy.
 
-`-n` is the number of runs and `-j N` (`--jobs`) how many of them run concurrently, each in its
-own container with its own `--memory`/`--cpus` cap (default 1, i.e. sequential; budget memory
-as `-j` × `--memory`). `--tag` names the batch (default: harness directory name, subject name
-and profile name).
+- `-n`: is the number of runs.
+- `-j N`: (`--jobs`) is the number of concurrent runs that each run in their own container with its
+  own `--memory`/`--cpus` cap.
+- `--tag` (optional): names the batch (default: harness directory name, subject name
+  and profile name).
 
 A batch detaches from the terminal it was launched from (it re-executes itself under
 `setsid`), so closing that terminal or losing an SSH connection does not kill it; `nohup` is
@@ -137,12 +138,14 @@ therefore does not stop a batch either. To stop one, kill the process recorded i
 This stops the batch's containers, giving each a minute to end its session; each run then
 saves its transcript and records exit code `143`.
 
-### Resuming a stopped run
+### Resuming Stopped Runs
 
 An `avocado-verify` run that stopped early can be continued. When a session hits a
-subscription usage limit the driver stops by itself: it writes a `run_summary` record with
-`"status": "usage_limited"` and the functions still to do, and exits `2`. A run cut off by
-`--timeout` (`124`) or `kill` (`143`) can be continued the same way. Once the limit has reset:
+subscription usage limit, the `avocado_verify` script stops by itself: it writes a `run_summary`
+record with `"status": "usage_limited"` and functions that still require processsing, and exits.
+
+Runs that are also cut off due to a timeout or a kill signal can be continued the same way:
+
 
 ```sh
 % eval/experiments/run.sh --resume ~/.local/share/avocado-experiments/<tag>/<batch>/run-1
@@ -170,3 +173,41 @@ With the `claude` runner `claude-output.json` has the session id, cost and final
 With `avocado-verify`, `run.log` is the driver's log (what the manual procedure saved as
 `claude-output.json`) and `subject/<file>-avocado-verify.jsonl` holds one record per function
 plus a final `run_summary` record.
+
+## Worked Example
+
+Assume you want to run the baseline Claude Code system to generate specs for the `kilo` subject
+    program.
+
+1. Set up the harness; clone `avocado-agent` and switch to the
+   `yoo/treatments/pure-agentic-baseline` branch:
+   ```sh
+   % git clone -b yoo/treatments/pure-agentic-baseline git@github.com:jyoo980/avocado-agent.git pure-agentic-baseline
+   ```
+   This clones the `avocado-agent` repository's agentic baseline branch to the working directory.
+2. Set up the subject program:
+   ```sh
+   % mkdir subject-programs
+   % cd subject-programs && git clone git@github.com:antirez/kilo.git
+   ```
+   This creates `subject-programs/kilo`.
+3. Obtain a copy of the experimental scripts (clone the `main` branch of the avocado-agent repo) and
+   build the image:
+   ```sh
+   % git clone git@github.com:jyoo980/avocado-agent.git
+   % cd avocado-agent && make build-image
+   ```
+4. Obtain the long-lived auth token you want to run experiments under (see earlier section titled "Step 2: log in once")
+   and save the key to the profile you create (e.g., under `avocado-profiles/anthropic.env`).
+5. Start the run. The command below will launch 3 runs of the pure agentic approach across
+   3 containers,
+   each with 100g of memory:
+   ```sh
+   % ~/avocado-agent/eval/experiments/run.sh --harness ~/pure-agentic-baseline \
+       --subject ~/subject-programs/kilo \
+       --profile ~/avocado-profiles/anthropic.env \
+       -n 3 -j 3 \
+       --timeout 129600 \
+       --memory 100g > ~/avocado-agent/pure-agentic-baseline-kilo.log 2>&1 &
+   ```
+6. Check the run(s) have launched by running `docker container ls`.
