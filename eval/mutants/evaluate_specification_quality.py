@@ -19,12 +19,12 @@ named per source file, not per function, so it runs sequentially after mutation 
 Usage:
     % ./eval/mutants/evaluate_specification_quality.py <PATH_TO_C_FILE_OR_DIR> \
             [--auto-include] \
-            [--include-dirs] \
+            [--include-dirs <PATH_TO_INCLUDE_DIR>]... \
             [--mutation] \
             [--redundancy] \
-            [--keep-artifacts]
+            [--keep-artifacts] \
             [--jobs N] \
-            [--jsonl PATH] \
+            [--jsonl PATH]
 """
 
 from __future__ import annotations
