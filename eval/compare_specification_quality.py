@@ -383,9 +383,8 @@ def _format_section(title: str, section_data: dict[str, Any], delta_keys: list[s
     lines = [title, "=" * len(title)]
     lines = [
         *lines,
-        f"  baseline scored functions:     {section_data['baseline_count']}",
-        f"  experimental scored functions: {section_data['experimental_count']}",
-        f"  common:                        {section_data['common_count']}",
+        f"  baseline scored functions:       {section_data['baseline_count']}",
+        f"  experimental scored functions:   {section_data['experimental_count']}",
     ]
     if "baseline_unscored_count" in section_data:
         lines.extend(
@@ -394,6 +393,7 @@ def _format_section(title: str, section_data: dict[str, Any], delta_keys: list[s
                 f"  experimental unscored functions: {section_data['experimental_unscored_count']}",
             ]
         )
+    lines.append(f"  common:                          {section_data['common_count']}")
     mean_key = next((k for k in section_data if k.startswith("mean_")), None)
     if not mean_key:
         msg = f"Expected a 'mean_*' key in {section_data} for {title}"
