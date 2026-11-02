@@ -527,8 +527,8 @@ def test_print_mutation_progress_buckets_undecided_mutants(capsys) -> None:
     )
 
 
-def test_run_cbmc_resolves_relative_include_dirs_against_callers_cwd(tmp_path: Path) -> None:
-    # The subprocesses run in `scratch`, but the relative include directory names a directory
+def test_run_cbmc_resolves_relative_paths_against_callers_cwd(tmp_path: Path) -> None:
+    # The subprocesses run in `scratch`, but the relative source file and include directory are
     # relative to the caller's working directory.
     (tmp_path / "include").mkdir()
     (tmp_path / "include" / "seven.h").write_text("#define SEVEN 7\n", encoding="utf-8")
@@ -541,7 +541,7 @@ def test_run_cbmc_resolves_relative_include_dirs_against_callers_cwd(tmp_path: P
         os.chdir(tmp_path)
         result = run_cbmc(
             function_to_verify="seven",
-            file_containing_function_to_verify=str(src),
+            file_containing_function_to_verify=src.name,
             include_dirs=["include"],
             cwd=str(scratch),
         )

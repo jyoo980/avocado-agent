@@ -364,8 +364,7 @@ def run_cbmc(
         function_to_verify (str): Name of the function to verify.
         file_containing_function_to_verify (str): Path to the C file defining the function.
         include_dirs (list[str] | None): Directories to add to the C preprocessor's include
-            search path. Forwarded to `goto-cc` as `-I` flags. A relative directory is relative
-            to the current working directory, even when `cwd` is given.
+            search path. Forwarded to `goto-cc` as `-I` flags.
         call_graph (CallGraph | None): When provided, this pre-built call graph is used instead
             of parsing `file_containing_function_to_verify`. Callers that verify many variants of
             one source (e.g. mutation testing, where every mutant shares the original's call
@@ -414,10 +413,12 @@ def _run_cbmc_in_directory(
         RunCbmcResult: The outcome of the run.
     """
     # The pipeline's commands are executed relative to `cwd`, so relative paths given by the
-    # caller (which are relative to the process's working directory) must be resolved first. The
-    # invocation log still records the path as the caller gave it.
-    resolved_file = str(Path(file_containing_function_to_verify).resolve())
-    include_dirs = [str(Path(d).resolve()) for d in include_dirs or []]
+    # caller (which are relative to the process's working directory) must be made absolute first.
+    # Unlike `Path.resolve`, `Path.absolute` does not follow symlinks, so a symlinked file sees the
+    # same quoted `#include`s as it would if compiled in place. The invocation log still records
+    # the path as the caller gave it.
+    resolved_file = str(Path(file_containing_function_to_verify).absolute())
+    include_dirs = [str(Path(d).absolute()) for d in include_dirs or []]
 
     if call_graph is None:
         path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)
