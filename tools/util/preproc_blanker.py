@@ -18,9 +18,9 @@ AST still indexes the original source verbatim.
   brace depth > 0 are blanked; their branch contents are kept, so the parser sees the union of all
   branches. Top-level conditional directives are left alone since tree-sitter handles them.
 - The contents of an ``#if 0`` branch are blanked up to its matching ``#elif``/``#else``/``#endif``.
-- A directive extends over backslash-newline continuations, so a multi-line ``#define`` (or
-  ``#if``) is treated as a single logical line: braces on its continuation lines don't count, and
-  a blanked directive is blanked in full.
+- A directive extends over backslash-newline continuations and over block comments that span
+  lines, so a multi-line ``#define`` (or ``#if``) is treated as a single logical line: braces on
+  its continuation lines don't count, and a blanked directive is blanked in full.
 
 Which branch of an unknown condition a compiler would take cannot be decided without
 preprocessing, so nothing else is touched.
@@ -70,8 +70,8 @@ def blank_preprocessor_conditionals(source: bytes) -> bytes:
     i = 0
     while i < length:
         at_line_start = i == 0 or source[i - 1] == _NEWLINE
-        if at_line_start:
-            line_end = _logical_line_end(source, i)
+        if at_line_start and _starts_directive(source, i):
+            line_end = logical_line_end(source, i)
             match = _CONDITIONAL_DIRECTIVE.fullmatch(source, i, line_end)
             if match:
                 kind = match.group(1)
@@ -94,12 +94,9 @@ def blank_preprocessor_conditionals(source: bytes) -> bytes:
                         _blank(buffer, i, line_end)
                 elif brace_depth > 0:
                     _blank(buffer, i, line_end)
-                i = line_end + 1
-                continue
-            if source[i:line_end].lstrip().startswith(b"#"):
-                # Any other directive (`#define`, `#include`, ...): braces on it don't count.
-                i = line_end + 1
-                continue
+            # Braces on a directive (`#define`, `#include`, ...) don't count.
+            i = line_end + 1
+            continue
         if dead_branch_start is not None:
             # Dead code: only look for the directive that ends it.
             i += 1
@@ -132,11 +129,30 @@ def blank_preprocessor_conditionals(source: bytes) -> bytes:
     return result
 
 
-def _logical_line_end(source: bytes, start: int) -> int:
+def _starts_directive(source: bytes, start: int) -> bool:
+    """Return True iff the line starting at ``start`` is a preprocessor directive.
+
+    Args:
+        source: The C source as bytes.
+        start: Offset of the first byte of the line.
+
+    Returns:
+        True iff the line's first byte other than horizontal whitespace is ``#``.
+    """
+    i = start
+    length = len(source)
+    while i < length and source[i] in b" \t\f\v\r":
+        i += 1
+    return i < length and source[i] == ord("#")
+
+
+def logical_line_end(source: bytes, start: int) -> int:
     """Return the offset of the newline ending the logical line starting at ``start``.
 
     A physical line whose last byte before the newline is a backslash continues onto the next
-    physical line, as in a multi-line macro definition.
+    physical line, as in a multi-line macro definition. A block comment that spans lines also
+    continues the logical line. Comment delimiters inside a string or character literal do not
+    count.
 
     Args:
         source: The C source as bytes.
@@ -147,14 +163,29 @@ def _logical_line_end(source: bytes, start: int) -> int:
     """
     length = len(source)
     i = start
-    while True:
-        line_end = source.find(b"\n", i)
-        if line_end == -1:
-            return length
-        if line_end > start and source[line_end - 1] == _BACKSLASH:
-            i = line_end + 1
-            continue
-        return line_end
+    while i < length:
+        byte = source[i]
+        if byte == _NEWLINE:
+            return i
+        if byte == _BACKSLASH and i + 1 < length and source[i + 1] == _NEWLINE:
+            i += 2
+        elif byte == _SLASH and i + 1 < length and source[i + 1] == _STAR:
+            closing = source.find(b"*/", i + 2)
+            i = length if closing < 0 else closing + 2
+        elif byte == _SLASH and i + 1 < length and source[i + 1] == _SLASH:
+            # A line comment ends at the first newline that no backslash continues.
+            while True:
+                newline = source.find(b"\n", i + 2)
+                if newline < 0:
+                    return length
+                if source[newline - 1] != _BACKSLASH:
+                    return newline
+                i = newline - 1
+        elif byte == ord('"') or byte == ord("'"):
+            i = _skip_literal(source, i, byte)
+        else:
+            i += 1
+    return length
 
 
 def _blank(buffer: bytearray, start: int, end: int) -> None:

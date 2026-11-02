@@ -45,14 +45,14 @@ from bisect import bisect_left, bisect_right
 from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
-from itertools import islice
 from operator import itemgetter
 from typing import TYPE_CHECKING
 
 from tools.util.cbmc_clause_stripper import CBMC_CLAUSE_NAMES, CbmcClauseSpan, _consume_clause
+from tools.util.preproc_blanker import logical_line_end
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Collection, Sequence
 
     from tools.util.callgraph import CallGraph
 
@@ -79,7 +79,7 @@ _TOKEN = re.compile(
     r"""
       (?P<space>[ \t\r\f\v]+|\\\n)
     | (?P<newline>\n)
-    | (?P<comment>/\*.*?\*/|//[^\n]*)
+    | (?P<comment>/\*.*?\*/|//(?:\\.|[^\\\n])*)
     | (?P<literal>"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')
     | (?P<word>[A-Za-z_0-9]+)
     | (?P<operator>>>=|<<=|\.\.\.|->|\+\+|--|<<|>>|<=|>=|==|!=|&&|\|\||[-+*/%&^|]=|\#\#|.)
@@ -87,24 +87,35 @@ _TOKEN = re.compile(
     re.VERBOSE | re.DOTALL,
 )
 _LITERAL_PATTERN = r""""(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'"""
-_LITERAL = re.compile(_LITERAL_PATTERN)
 # A comment, or a string or character literal, which can contain `//` or `/*`.
 _COMMENT_OR_LITERAL = re.compile(
-    rf"(?P<literal>{_LITERAL_PATTERN})|/\*.*?\*/|//[^\n]*".encode(), re.DOTALL
+    rf"(?P<literal>{_LITERAL_PATTERN})|/\*.*?\*/|//(?:\\.|[^\\\n])*".encode(), re.DOTALL
 )
 _DIRECTIVE_HEAD = re.compile(r"#\s*(\w*)\s*(\w*)")
+# Matches a normalized `#if 0` or `#if (0)`, whose first branch is dead code.
+_DEAD_CONDITIONAL = re.compile(r"#if\s*\(*\s*0\s*\)*")
 _IDENTIFIER = re.compile(r"[A-Za-z_]\w*\Z")
 _ASSUME = re.compile(r"\b__CPROVER_assume\b")
 
 _CONDITIONAL_OPENERS = frozenset({"if", "ifdef", "ifndef"})
-_CONDITIONAL_BRANCHES = frozenset({"elif", "else"})
+_CONDITIONAL_BRANCHES = frozenset({"elif", "elifdef", "elifndef", "else"})
 _CONDITIONAL_CONTINUATIONS = _CONDITIONAL_BRANCHES | {"endif"}
 # The directives whose second word is a name they introduce or remove.
 _NAMING_DIRECTIVES = frozenset({"define", "undef"})
 _AGGREGATE_KEYWORDS = frozenset({"struct", "union", "enum"})
-# Keywords followed by a parenthesized group that is neither a parameter list nor a declarator.
+# Keywords followed by a parenthesized group that is neither a parameter list nor a declarator:
+# attributes, alignment specifiers, and asm labels, which can follow a declarator.
 _ATTRIBUTE_KEYWORDS = frozenset(
-    {"__attribute__", "__attribute", "__declspec", "_Alignas", "alignas"}
+    {
+        "__attribute__",
+        "__attribute",
+        "__declspec",
+        "_Alignas",
+        "alignas",
+        "asm",
+        "__asm",
+        "__asm__",
+    }
 )
 
 # `__CPROVER_requires` arguments that are false whatever the inputs, with whitespace, comments and
@@ -199,7 +210,8 @@ class _Token:
 
     Attributes:
         text (str): The token. A preprocessor directive is a single token holding its whole
-            logical line, whitespace-normalized, starting with `#`.
+            logical line, whitespace-normalized, starting with `#`. The token of an `#if 0` also
+            holds the dead branch after it, up to the directive that ends that branch.
         line (int): The 1-based line the token starts on.
         offset (int): The byte offset the token starts at.
         end (int): The byte offset just past the token.
@@ -229,9 +241,14 @@ class _Item:
         kind (str): `directive`, `function`, `declaration`, `linkage` for the opening or closing
             of an `extern "C" { ... }` block, or `incomplete` for trailing tokens that end the
             file without a terminator.
-        name (str | None): The name the item introduces, when it can be told.
+        name (str | None): The name the item introduces, when it can be told: the function a
+            definition defines, the name a declaration declares, or the macro that a `#define`
+            or `#undef` names. None for every other directive.
         start (int): The byte offset the item starts at in its source.
         end (int): The byte offset just past the item, contract clauses included.
+        body_offsets (tuple[int, ...]): For a function, the offset of each `{` that opens its
+            body: one, or one per preprocessor branch when the header differs between branches.
+            Empty for every other kind.
     """
 
     tokens: tuple[str, ...]
@@ -240,6 +257,7 @@ class _Item:
     name: str | None
     start: int
     end: int
+    body_offsets: tuple[int, ...] = ()
 
     @property
     def line(self) -> int:
@@ -558,41 +576,40 @@ def function_header(source: bytes, function: str) -> bytes | None:
 
 
 def function_body_offsets(source: bytes, function: str) -> list[int]:
-    """Return the offset of the opening brace of the body of each definition of a function.
+    """Return the offset of the opening brace of the body of each definition of the given function.
 
     Args:
         source (bytes): A C source.
-        function (str): The function's name.
+        function (str): A function's name, such as `main`.
 
     Returns:
-        list[int]: One offset per definition (a function may be defined once per preprocessor
-            branch), in source order; empty when the function is not defined.
+        list[int]: The offsets in source order; empty when the function is not defined. There is
+            one offset per definition (a function can be defined once per preprocessor branch)
+            and, within a definition whose header differs between branches, one per header.
     """
     return [brace for _, brace in _definitions(source, function)]
 
 
 def _definitions(source: bytes, function: str) -> list[tuple[int, int]]:
-    """Return where each definition of a function starts and where its body opens.
+    """Return where each definition of the given function starts and where its body opens.
 
     Args:
         source (bytes): A C source.
-        function (str): The function's name.
+        function (str): A function's name, such as `main`.
 
     Returns:
-        list[tuple[int, int]]: For each definition, in source order, the offset of its first
-            token and the offset of the opening brace of its body.
+        list[tuple[int, int]]: One pair per opening brace of the body of a definition, in source
+            order: the offset of the definition's first token and the offset of the brace. A
+            definition has one such brace, or one per header when its header differs between
+            preprocessor branches.
     """
     tokens, _ = _tokenize(source)
-    offsets = [token.offset for token in tokens]
-    definitions = []
-    for item in _split_items(tokens):
-        if item.kind != "function" or item.name != function:
-            continue
-        for token in islice(tokens, bisect_left(offsets, item.start), None):
-            if token.depth == 0 and token.text == "{":
-                definitions.append((item.start, token.offset))
-                break
-    return definitions
+    return [
+        (item.start, offset)
+        for item in _split_items(tokens)
+        if item.kind == "function" and item.name == function
+        for offset in item.body_offsets
+    ]
 
 
 def _reason_not_carried(
@@ -1038,11 +1055,18 @@ def stray_file_violations(stray_files: list[str]) -> list[Violation]:
 
 
 def _tokenize(source: bytes) -> tuple[list[_Token], list[CbmcClauseSpan]]:
-    """Split a source file into tokens, with comments and file-scope contract clauses erased.
+    """Return the tokens of the given source, with comments and file-scope contract clauses erased.
 
     A contract clause inside a brace group, such as a loop contract in a function body, is kept
     as tokens, so changing or removing it changes the code. A directive is kept whole, so a
     contract clause inside a macro body is part of the macro.
+
+    Each branch of a preprocessor conditional starts at the brace depth that the conditional
+    starts at, so a brace that every branch opens (as in a function header that differs between
+    branches) is counted once. After `#endif`, the depth is the one that the first branch ends
+    at, so a brace opened in one conditional and closed in a later one with the same condition
+    is counted even when the first conditional has an empty `#else`. The dead branch of an
+    `#if 0` is part of the token of the `#if 0`, so its braces are not counted.
 
     Args:
         source (bytes): The original C source.
@@ -1057,20 +1081,50 @@ def _tokenize(source: bytes) -> tuple[list[_Token], list[CbmcClauseSpan]]:
     position = 0
     line = 1
     depth = 0
+    # For each enclosing `#if`: the depth it starts at, and the depth its first branch ends at
+    # (None until that branch ends).
+    conditionals: list[tuple[int, int | None]] = []
+    # Inside the dead branch of an `#if 0`, the number of conditionals opened in it; else None.
+    dead_nesting: int | None = None
     at_line_start = True
     length = len(text)
     while position < length:
         if at_line_start and text[position] == "#":
-            end = _logical_line_end(text, position)
+            end = logical_line_end(source, position)
             directive = _normalize_directive(text[position:end])
+            newlines = text.count("\n", position, end)
+            head = _DIRECTIVE_HEAD.match(directive)
+            keyword = head.group(1) if head else ""
+            if dead_nesting is not None:
+                if keyword in _CONDITIONAL_OPENERS:
+                    dead_nesting += 1
+                elif keyword == "endif" and dead_nesting > 0:
+                    dead_nesting -= 1
+                elif dead_nesting == 0 and keyword in _CONDITIONAL_CONTINUATIONS:
+                    _absorb_dead_branch(tokens, text, position)
+                    dead_nesting = None
+                if dead_nesting is not None:
+                    line += newlines
+                    position = end
+                    continue
             tokens.append(_Token(directive, line, position, end, depth))
-            line += text.count("\n", position, end)
+            line += newlines
+            if keyword in _CONDITIONAL_OPENERS:
+                conditionals.append((depth, None))
+                if _DEAD_CONDITIONAL.fullmatch(directive):
+                    dead_nesting = 0
+            elif keyword in _CONDITIONAL_BRANCHES and conditionals:
+                start, first_end = conditionals[-1]
+                conditionals[-1] = (start, depth if first_end is None else first_end)
+                depth = start
+            elif keyword == "endif" and conditionals:
+                _, first_end = conditionals.pop()
+                if first_end is not None:
+                    depth = first_end
             position = end
             continue
         match = _TOKEN.match(text, position)
-        if match is None:  # cannot happen: the last alternative matches any character
-            position += 1
-            continue
+        assert match is not None, "the last alternative matches any character"
         kind = match.lastgroup
         value = match.group()
         if kind == "word" and depth == 0 and value in CBMC_CLAUSE_NAMES:
@@ -1086,56 +1140,42 @@ def _tokenize(source: bytes) -> tuple[list[_Token], list[CbmcClauseSpan]]:
             at_line_start = True
         elif kind not in ("space", "comment"):
             at_line_start = False
-            tokens.append(_Token(value, line, position, match.end(), depth))
-            if value == "{":
-                # The brace of `extern "C" {` groups declarations without nesting them.
-                depth += 0 if _opens_linkage_block(tokens) else 1
-            elif value == "}":
-                depth = max(depth - 1, 0)
+            if dead_nesting is None:
+                tokens.append(_Token(value, line, position, match.end(), depth))
+                if value == "{":
+                    # The brace of `extern "C" {` groups declarations without nesting them.
+                    depth += 0 if _opens_linkage_block(tokens) else 1
+                elif value == "}":
+                    depth = max(depth - 1, 0)
         line += value.count("\n")
         position = match.end()
+    if dead_nesting is not None:
+        _absorb_dead_branch(tokens, text, length)
     return tokens, erased
 
 
-def _logical_line_end(text: str, start: int) -> int:
-    """Return the offset just past the preprocessor directive that starts at `start`.
+def _absorb_dead_branch(tokens: list[_Token], original: str, end: int) -> None:
+    """Extend the last token, an `#if 0`, over its dead branch, which ends at `end`.
 
-    A directive runs to the end of its line, continuing over backslash-newlines and over block
-    comments that span lines. A string or character literal is skipped, so `/*` or `//` inside
-    one does not start a comment; a quote that is not closed on its line, as in `#error don't`,
-    is an ordinary character.
+    The dead branch stays part of a token, so a change to the dead code changes the code, but
+    its braces and semicolons do not delimit items.
 
     Args:
-        text (str): The source text.
-        start (int): The offset of the directive's `#`.
-
-    Returns:
-        int: The offset of the newline that ends the directive, or the end of the text.
+        tokens (list[_Token]): Tokens ending with the token of an `#if 0`; modified in place.
+        original (str): The text that the tokens' offsets index.
+        end (int): The offset of the directive that ends the dead branch, or the end of the text
+            when no directive does.
     """
-    position = start
-    length = len(text)
-    while position < length:
-        character = text[position]
-        if character == "\n":
-            return position
-        literal = _LITERAL.match(text, position) if character in "\"'" else None
-        if literal is not None:
-            position = literal.end()
-        elif character == "\\" and text.startswith("\\\n", position):
-            position += 2
-        elif text.startswith("/*", position):
-            closing = text.find("*/", position + 2)
-            position = length if closing < 0 else closing + 2
-        elif text.startswith("//", position):
-            newline = text.find("\n", position)
-            return length if newline < 0 else newline
-        else:
-            position += 1
-    return length
+    last = tokens[-1]
+    tokens[-1] = _Token(
+        _normalize_directive(original[last.offset : end]), last.line, last.offset, end, last.depth
+    )
 
 
 def _normalize_directive(text: str) -> str:
-    """Return a directive's text with comments removed and whitespace collapsed.
+    """Return a directive's text with each run of whitespace and comments replaced by one space.
+
+    String and character literals are kept verbatim.
 
     Args:
         text (str): The directive's logical line.
@@ -1143,9 +1183,17 @@ def _normalize_directive(text: str) -> str:
     Returns:
         str: The directive, starting with `#` immediately followed by its keyword.
     """
-    uncommented = _without_comments(text.encode("latin-1")).decode("latin-1")
-    normalized = " ".join(uncommented.replace("\\\n", " ").split())
-    return re.sub(r"^#\s+", "#", normalized)
+    parts: list[str] = []
+    separated = False
+    for match in _TOKEN.finditer(text):
+        if match.lastgroup in ("space", "newline", "comment"):
+            separated = True
+            continue
+        if separated and parts:
+            parts.append(" ")
+        parts.append(match.group())
+        separated = False
+    return re.sub(r"^#\s+", "#", "".join(parts))
 
 
 def _opens_linkage_block(tokens: list[_Token]) -> bool:
@@ -1166,7 +1214,7 @@ def _opens_linkage_block(tokens: list[_Token]) -> bool:
 
 
 def _split_items(tokens: list[_Token]) -> list[_Item]:
-    """Group a file's tokens into its top-level items, by brace depth alone.
+    """Return the top-level items of the given file, grouping its tokens by brace depth alone.
 
     A directive at file scope is an item by itself unless it interrupts one (a conditional around
     part of a declaration stays inside that declaration). A function definition ends at the brace
@@ -1182,6 +1230,7 @@ def _split_items(tokens: list[_Token]) -> list[_Item]:
     """
     items: list[_Item] = []
     pending: list[_Token] = []
+    body_offsets: list[int] = []  # The `{` tokens in `pending` that open a function body.
     in_function_body = False
     for token in tokens:
         if token.is_directive and not pending and token.depth == 0:
@@ -1194,16 +1243,20 @@ def _split_items(tokens: list[_Token]) -> list[_Item]:
                 pending = []
             else:
                 in_function_body = _opens_function_body(pending[:-1])
+                if in_function_body:
+                    body_offsets.append(token.offset)
         elif token.depth == 0 and token.text == "}":
             items.append(_make_item(pending, "linkage"))
             pending = []
         elif token.depth == 1 and token.text == "}" and in_function_body:
-            items.append(_make_item(pending, "function"))
+            items.append(_make_item(pending, "function", tuple(body_offsets)))
             pending = []
+            body_offsets = []
             in_function_body = False
         elif token.depth == 0 and token.text == ";":
             items.append(_make_item(pending, "declaration"))
             pending = []
+            body_offsets = []
     if pending:
         items.append(_make_item(pending, "incomplete"))
     return items
@@ -1215,7 +1268,9 @@ def _opens_function_body(prefix: list[_Token]) -> bool:
     It does not when the item has an initializer (`= {`), or names a `struct`, `union` or `enum`
     with no parameter list after the keyword (a type definition). Only keywords outside
     parentheses count: the `struct` in `void f(struct S *s) {` belongs to a parameter, and the
-    brace still opens the body of `f`.
+    brace still opens the body of `f`. Attributes are ignored, so the parentheses of
+    `struct __attribute__((packed)) S {` are not a parameter list, and neither are those of an
+    attribute macro, as in `struct ALIGNED(8) S {`.
 
     Args:
         prefix (list[_Token]): The item's tokens before the `{`.
@@ -1235,15 +1290,87 @@ def _opens_function_body(prefix: list[_Token]) -> bool:
             parentheses = max(parentheses - 1, 0)
         elif parentheses == 0 and text in _AGGREGATE_KEYWORDS:
             last_aggregate = index
-    return "(" in texts[last_aggregate + 1 :]
+    after = texts[last_aggregate + 1 :]
+    return "(" in after and not (last_aggregate >= 0 and _is_aggregate_head(after))
 
 
-def _make_item(tokens: list[_Token], kind: str) -> _Item:
-    """Build an item from its tokens.
+def _is_aggregate_head(texts: list[str]) -> bool:
+    """Return True iff `texts` can be what follows `struct`, `union` or `enum` before its body.
+
+    That is zero or more macro calls, such as `ALIGNED(8)`, then an optional tag. In
+    `struct S f(void)`, by contrast, an identifier is followed by neither `(` nor the end.
 
     Args:
-        tokens (list[_Token]): The item's tokens.
+        texts (list[str]): Tokens that follow an aggregate keyword.
+
+    Returns:
+        bool: True iff `texts` is a sequence of macro calls followed by at most one identifier.
+    """
+    index = 0
+    while index < len(texts):
+        if not _IDENTIFIER.match(texts[index]):
+            return False
+        if index + 1 == len(texts):
+            return True
+        if texts[index + 1] != "(":
+            return False
+        closing = _group_end(texts, index + 1)
+        if closing is None:
+            return False
+        index = closing + 1
+    return True
+
+
+def _group_end(texts: Sequence[str], opening: int) -> int | None:
+    """Return the index of the `)` that closes the `(` at index `opening` of `texts`.
+
+    Args:
+        texts (Sequence[str]): Tokens.
+        opening (int): The index of a `(` in `texts`.
+
+    Returns:
+        int | None: The index of the matching `)`, or None when the group is not closed.
+    """
+    depth = 0
+    for index in range(opening, len(texts)):
+        if texts[index] == "(":
+            depth += 1
+        elif texts[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _group_start(texts: Sequence[str], closing: int) -> int | None:
+    """Return the index of the `(` that the `)` at index `closing` of `texts` closes.
+
+    Args:
+        texts (Sequence[str]): Tokens.
+        closing (int): The index of a `)` in `texts`.
+
+    Returns:
+        int | None: The index of the matching `(`, or None when the group is not opened.
+    """
+    depth = 0
+    for index in range(closing, -1, -1):
+        if texts[index] == ")":
+            depth += 1
+        elif texts[index] == "(":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _make_item(tokens: list[_Token], kind: str, body_offsets: tuple[int, ...] = ()) -> _Item:
+    """Return the item that consists of the given tokens.
+
+    Args:
+        tokens (list[_Token]): An item's tokens.
         kind (str): The item's kind.
+        body_offsets (tuple[int, ...]): For a function, the offsets of the braces that open its
+            body; at least one.
 
     Returns:
         _Item: The item, with the name it introduces when that can be told.
@@ -1254,7 +1381,12 @@ def _make_item(tokens: list[_Token], kind: str) -> _Item:
         # `#ifdef X` tests X and `#if defined(X)` would give `defined`; neither introduces a name.
         name = match.group(2) or None if match and match.group(1) in _NAMING_DIRECTIVES else None
     elif kind == "function":
-        name = _function_name(texts)
+        # The parameter list is the last parenthesized group before the body, once attributes
+        # are removed. A `{` before the body, as in a `struct` defined in the return type, does
+        # not end the search. An unknown macro after the parameter list, as in
+        # `int f(int x) REQUIRES(x > 0) {`, is taken for the parameter list.
+        body = next(index for index, token in enumerate(tokens) if token.offset == body_offsets[0])
+        name = _name_before_last_group(_without_attributes(list(texts[:body])))
     elif kind == "declaration":
         name = _declared_name(texts)
     else:
@@ -1266,58 +1398,41 @@ def _make_item(tokens: list[_Token], kind: str) -> _Item:
         name=name,
         start=tokens[0].offset,
         end=tokens[-1].end,
+        body_offsets=body_offsets,
     )
 
 
-def _function_name(texts: tuple[str, ...]) -> str | None:
-    """Return the name a function definition defines.
+def _name_before_last_group(texts: Sequence[str]) -> str | None:
+    """Return the name of the function whose parameter list is the last parenthesized group.
 
-    The name is the identifier before the parameter list, and the parameter list is the last
-    parenthesized group before the body.
-
-    Args:
-        texts (tuple[str, ...]): The definition's tokens.
-
-    Returns:
-        str | None: The name, or None when the shape is not recognised.
-    """
-    depth = 0
-    body = None
-    for index, text in enumerate(texts):
-        if text == "{":
-            if depth == 0:
-                body = index
-                break
-            depth += 1
-        elif text == "}":
-            depth -= 1
-    if body is None:
-        return None
-    return _name_before_last_group(tuple(_without_attributes(list(texts[:body]))))
-
-
-def _name_before_last_group(texts: tuple[str, ...]) -> str | None:
-    """Return the identifier before the last parenthesized group in `texts`.
+    The name is usually the identifier before that group. When a parenthesized declarator
+    precedes the group instead, the name is inside that declarator: in `int (*get(void))(int)`, a
+    function that returns a function pointer, it is `get`, and in `int (f)(int x)` it is `f`.
 
     Args:
-        texts (tuple[str, ...]): Tokens ending, possibly after directives, with a `)`.
+        texts (Sequence[str]): Tokens ending, possibly after directives, with a `)`.
 
     Returns:
-        str | None: The identifier, or None when there is no such group or name.
+        str | None: The name, or None when there is no such group or name.
     """
     closing = len(texts) - 1
     while closing >= 0 and texts[closing] != ")":
         closing -= 1
-    depth = 0
-    for index in range(closing, -1, -1):
-        if texts[index] == ")":
-            depth += 1
-        elif texts[index] == "(":
-            depth -= 1
-            if depth == 0:
-                candidate = texts[index - 1] if index > 0 else ""
-                return candidate if _IDENTIFIER.match(candidate) else None
-    return None
+    if closing < 0:
+        return None
+    opening = _group_start(texts, closing)
+    if opening is None or opening == 0:
+        return None
+    candidate = texts[opening - 1]
+    if candidate == ")":
+        declarator_start = _group_start(texts, opening - 1)
+        if declarator_start is None:
+            return None
+        declarator = texts[declarator_start + 1 : opening - 1]
+        if len(declarator) == 1:
+            return declarator[0] if _IDENTIFIER.match(declarator[0]) else None
+        return _name_before_last_group(declarator)
+    return candidate if _IDENTIFIER.match(candidate) else None
 
 
 def _declared_name(texts: tuple[str, ...]) -> str | None:
@@ -1336,36 +1451,48 @@ def _declared_name(texts: tuple[str, ...]) -> str | None:
     if not body:
         return None
     top_level = _top_level(body)
-    if (
-        body[0] in _AGGREGATE_KEYWORDS
-        and len(body) > 2
-        and _IDENTIFIER.match(body[1])
-        and body[2] == "{"
-        and body[-1] == "}"
-    ):
-        return body[1]
+    # A tag, possibly after attribute macros, as in `struct ALIGNED(8) S { int a; };`.
+    if top_level and top_level[0] in _AGGREGATE_KEYWORDS and _is_aggregate_head(top_level[1:]):
+        tag = top_level[-1]
+        return tag if len(top_level) > 1 and _IDENTIFIER.match(tag) else None
     if "=" in top_level:
         top_level = top_level[: top_level.index("=")]
-    for index in range(len(top_level) - 3):
-        if top_level[index : index + 2] == ["(", "*"] and top_level[index + 3] == ")":
+    # A pointer declarator `( * name )` outside every parameter list, as in `int (*fp)(int);`.
+    parentheses = 0
+    for index, text in enumerate(top_level):
+        if (
+            parentheses == 0
+            and top_level[index : index + 2] == ["(", "*"]
+            and top_level[index + 3 : index + 4] == [")"]
+        ):
             return top_level[index + 2] if _IDENTIFIER.match(top_level[index + 2]) else None
+        if text == "(":
+            parentheses += 1
+        elif text == ")":
+            parentheses = max(parentheses - 1, 0)
     if body[0] != "typedef" and "(" in top_level:
         candidate = top_level[top_level.index("(") - 1] if top_level.index("(") > 0 else ""
         return candidate if _IDENTIFIER.match(candidate) else None
     if "[" in top_level:
         top_level = top_level[: top_level.index("[")]
     candidate = top_level[-1] if top_level else ""
+    # An anonymous `enum { ... };` has no name.
+    if candidate in _AGGREGATE_KEYWORDS:
+        return None
     return candidate if _IDENTIFIER.match(candidate) else None
 
 
 def _without_attributes(texts: list[str]) -> list[str]:
-    """Return `texts` without attribute specifiers such as `__attribute__((packed))`.
+    """Return `texts` without attributes, alignment specifiers and asm labels.
+
+    Examples are `__attribute__((packed))`, `_Alignas(8)` and `asm("real_name")`.
 
     Args:
         texts (list[str]): Tokens of a declaration or of a function definition.
 
     Returns:
-        list[str]: The tokens, minus each attribute keyword and the parenthesized group after it.
+        list[str]: The tokens, minus each keyword in `_ATTRIBUTE_KEYWORDS` that is followed by a
+            parenthesized group, and minus that group.
     """
     kept: list[str] = []
     index = 0
