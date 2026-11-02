@@ -219,8 +219,7 @@ def run_cbmc(
         function_to_verify (str): Name of the function to verify.
         file_containing_function_to_verify (str): Path to the C file defining the function.
         include_dirs (list[str] | None): Directories to add to the C preprocessor's include
-            search path. Forwarded to `goto-cc` as `-I` flags. A relative directory is relative
-            to the current working directory, even when `cwd` is given.
+            search path. Forwarded to `goto-cc` as `-I` flags.
         call_graph (CallGraph | None): When provided, this pre-built call graph is used instead
             of parsing `file_containing_function_to_verify`. Callers that verify many variants of
             one source (e.g. mutation testing, where every mutant shares the original's call
@@ -231,16 +230,22 @@ def run_cbmc(
             writes its intermediate `<function>.goto` / `checking-<function>-contracts.goto` files
             relative to this directory, so concurrent runs of the same function (again, mutation
             testing) must each pass a distinct `cwd` to avoid clobbering one another. When None,
-            subprocesses inherit the current working directory.
+            subprocesses inherit the current working directory. Even when `cwd` is given, a
+            relative `file_containing_function_to_verify` or element of `include_dirs` is
+            relative to the current working directory.
 
     Returns:
         RunCbmcResult: The outcome of the run, naming the failed step (if any) and carrying
             a printable response and the relevant exit code.
     """
-    if include_dirs:
+    if cwd is not None:
         # Otherwise, a subprocess that runs in `cwd` would interpret a relative path relative to
         # `cwd`.
-        include_dirs = [str(Path(include_dir).absolute()) for include_dir in include_dirs]
+        file_containing_function_to_verify = str(
+            Path(file_containing_function_to_verify).absolute()
+        )
+        if include_dirs:
+            include_dirs = [str(Path(include_dir).absolute()) for include_dir in include_dirs]
     if call_graph is None:
         path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)
         call_graph = CallGraph(json.loads(Path(path_to_raw_call_graph).read_text(encoding="utf-8")))

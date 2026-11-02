@@ -63,6 +63,8 @@ def get_include_dirs(source_file: str, include_dirs: list[str], *, auto_include:
         # Unlike `Path.resolve`, `os.path.abspath` does not follow symlinks.
         detected = Path(os.path.abspath(source_file)).parent.parent / "include"  # ruff: ignore[os-path-abspath] - must not follow symlinks.
         if detected.is_dir():
+            # Resolve `detected` as `resolve_include_dirs` resolves `include_dirs`, so that a
+            # duplicate is recognized.
             result = list(dict.fromkeys([str(detected.resolve()), *result]))
     if result:
         logger.debug(f"[include-dirs] using {result}")
