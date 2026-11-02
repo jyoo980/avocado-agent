@@ -134,3 +134,12 @@ def test_continued_if_zero_is_recognised() -> None:
     _assert_invariants(source, blanked)
     assert b"dead" not in blanked, f"Expected the #if 0 branch to be blanked, got {blanked!r}"
     assert b"live();" in blanked, f"Expected the code after #endif to be kept, got {blanked!r}"
+
+
+def test_a_comment_that_spans_lines_continues_a_directive() -> None:
+    # The `}` inside the comment is not code, so the body of `f` is at depth 1 and its directives
+    # are blanked.
+    source = b"#endif /* x\n } */\nint f(void)\n{\n#if A\n    return 1;\n#endif\n}\n"
+    blanked = blank_preprocessor_conditionals(source)
+    _assert_invariants(source, blanked)
+    assert blanked == b"#endif /* x\n } */\nint f(void)\n{\n     \n    return 1;\n      \n}\n"
