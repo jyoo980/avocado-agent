@@ -17,7 +17,8 @@
 # Benchmarks are processed sequentially so timings are not perturbed by one another.  If the
 # evaluation of a benchmark fails, its status line says `status=failed`, its JSONL file (if any) is
 # renamed to `<label>-<benchmark>.jsonl.failed`, the remaining benchmarks are still measured, and
-# the script exits with a non-zero status.
+# the script exits with a non-zero status.  An interrupt (Ctrl-C) stops the script after it records
+# the status of the current benchmark.
 #
 # Before each benchmark, the script deletes the mutant sources (`*__mutant_*.c`,
 # `*__clause_drop_*.c`) in the benchmark directory that git does not track:  an interrupted run
@@ -54,8 +55,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 unset VIRTUAL_ENV
 out_dir="${repo_root}/avocado-experimental-data"
 mkdir -p "${out_dir}"
-# `--dirty` marks a measurement of uncommitted changes.
-commit="$(git -C "${repo_root}" describe --always --dirty)"
+# `--dirty` marks a measurement of uncommitted changes.  The commit is `unknown` if the checkout has
+# no git metadata, as in a Docker image built without `.git`.
+commit="$(git -C "${repo_root}" describe --always --dirty 2>/dev/null || echo unknown)"
 
 # Prints, NUL-terminated, the files under directory $1 that the evaluation writes beside sources.
 find_evaluation_outputs() {
@@ -105,6 +107,13 @@ cleanup() {
   rm -rf -- "${work_dir}"
 }
 trap cleanup EXIT
+# True if the script received SIGINT, as from Ctrl-C.  On SIGINT, bash exits only if its child dies
+# from SIGINT, but `uv run` instead exits normally with status 130, so without this trap the loop
+# would go on to the next benchmark.  The script does not stop on every status above 128:  137, for
+# example, means that the out-of-memory killer killed the evaluation, which is a failure of one
+# benchmark.
+interrupted=false
+trap 'interrupted=true' INT
 cd "${work_dir}"
 
 failed_benchmarks=()
@@ -136,6 +145,10 @@ for benchmark_dir in "${benchmark_dirs[@]}"; do
   tail -n +2 "${time_log}"
   remove_new_outputs "${benchmark_dir}"
   current_benchmark_dir=""
+  if "${interrupted}"; then
+    echo "$0: interrupted" >&2
+    exit 130
+  fi
 done
 
 if [ "${#failed_benchmarks[@]}" -gt 0 ]; then
