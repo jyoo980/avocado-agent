@@ -71,7 +71,7 @@ def blank_preprocessor_conditionals(source: bytes) -> bytes:
     while i < length:
         at_line_start = i == 0 or source[i - 1] == _NEWLINE
         if at_line_start and _starts_directive(source, i):
-            line_end = _logical_line_end(source, i)
+            line_end = logical_line_end(source, i)
             match = _CONDITIONAL_DIRECTIVE.fullmatch(source, i, line_end)
             if match:
                 kind = match.group(1)
@@ -146,7 +146,7 @@ def _starts_directive(source: bytes, start: int) -> bool:
     return i < length and source[i] == ord("#")
 
 
-def _logical_line_end(source: bytes, start: int) -> int:
+def logical_line_end(source: bytes, start: int) -> int:
     """Return the offset of the newline ending the logical line starting at ``start``.
 
     A physical line whose last byte before the newline is a backslash continues onto the next
