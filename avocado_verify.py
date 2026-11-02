@@ -20,6 +20,7 @@ Usage:
 
 import argparse
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -237,13 +238,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    file_path = Path(args.file).resolve()
+    # Unlike `Path.resolve`, `os.path.abspath` does not follow symlinks. Therefore, a symlinked
+    # file is compiled, and its mutants are written, in the directory that contains the symlink,
+    # which is also where `get_include_dirs` looks for the `include/` directory.
+    file_path = Path(os.path.abspath(args.file))  # ruff: ignore[os-path-abspath] - must not follow symlinks.
     if not file_path.is_file():
         logger.error(f"No such file: {file_path}")
         sys.exit(1)
 
-    # Pass `args.file`, not `file_path`, so that auto-detection does not follow symlinks.
-    if include_dirs := get_include_dirs(args.file, [], auto_include=args.auto_include):
+    if include_dirs := get_include_dirs(str(file_path), [], auto_include=args.auto_include):
         logger.info(f"[auto-include] using {include_dirs}")
 
     path_to_call_graph = construct_call_graph(str(file_path))
