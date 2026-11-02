@@ -102,7 +102,7 @@ a new treatment.
 ## Step 3: launch a batch
 
 ```sh
-% eval/experiments/run.sh ---harness path/to/harness --subject path/to/subject \
+% eval/experiments/run.sh --harness path/to/harness --subject path/to/subject \
       --profile eval/experiments/profiles/subscription.env -n 5 --memory 100g
 ```
 
@@ -201,7 +201,13 @@ Assume you want to run the baseline Claude Code system to generate specs for the
    and save the key to the profile you create (e.g., under `avocado-profiles/anthropic.env`).
 5. Start the run. The command below will launch 3 runs of the pure agentic approach across
    3 containers,
-   each with 100g of memory:
+   each with 100g of memory.
+   From the top-level directory holding both `avocado-agent`,
+       the harness,
+       the subject program directory,
+       and the auth profiles,
+       run:
+
    ```sh
    % ~/avocado-agent/eval/experiments/run.sh --harness ~/pure-agentic-baseline \
        --subject ~/subject-programs/kilo \

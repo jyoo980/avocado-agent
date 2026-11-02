@@ -43,9 +43,9 @@
 # Usage:
 #   eval/experiments/run.sh --subject <dir> --profile <env-file> [--file <c-file>] \
 #       [--runner auto|claude|avocado-verify] [--harness <checkout>] [--prompt <text>] \
-#       [-n 5] [-j 1] [--timeout <sec>] \
+#       [-n 5] [-j 1] [--timeout <duration>] \
 #       [--memory 32g] [--cpus 8] [--results <dir>] [--tag <name>] [--image <image>]
-#   eval/experiments/run.sh --resume <run-dir> [--profile <env-file>] [--timeout <sec>] \
+#   eval/experiments/run.sh --resume <run-dir> [--profile <env-file>] [--timeout <duration>] \
 #       [--memory 32g] [--cpus 8]
 #
 # --resume continues an avocado-verify run that stopped early (on a usage limit, --timeout, or
@@ -156,6 +156,7 @@ fi
 
 [ -n "$ENGINE" ] || { echo "no docker or podman found" >&2; exit 1; }
 [[ "$RUNS" =~ ^[1-9][0-9]*$ ]] || { echo "-n must be a positive integer: '$RUNS'" >&2; exit 1; }
+[[ "$TIMEOUT" =~ ^([0-9]+([.][0-9]+)?[smhd]?)?$ ]] || { echo "--timeout must be a duration such as 3600 or 90m: '$TIMEOUT'" >&2; exit 1; }
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo "-j must be a positive integer: '$JOBS'" >&2; exit 1; }
 [ -d "$SUBJECT" ] || { echo "--subject must be a directory: '$SUBJECT'" >&2; exit 1; }
 [ -z "$FILE" ] || [ -f "$SUBJECT/$FILE" ] || { echo "--file must exist under the subject: '$SUBJECT/$FILE'" >&2; exit 1; }
