@@ -1,6 +1,7 @@
 """Tests for the run_cbmc tool."""
 
 import os
+from collections import Counter
 from pathlib import Path
 from subprocess import CompletedProcess
 
@@ -20,6 +21,7 @@ from tools.run_cbmc import (
 )
 from tools.util.mutation import (
     _MAX_MUTATION_SECTION_CHARS,
+    MutantOutcome,
     MutantVerificationResult,
     MutationScore,
     _aggregate_mutation_score,
@@ -233,11 +235,7 @@ def test_format_mutation_success_section_renders_kill_score_and_survivor_diff() 
         file="quicksort.c",
         target_function="f",
         num_mutants=2,
-        num_killed=1,
-        num_survived=1,
-        num_timed_out=0,
-        num_compile_failed=0,
-        num_instrumentation_failed=0,
+        outcome_counts=Counter({MutantOutcome.KILLED: 1, MutantOutcome.SURVIVED: 1}),
         kill_score=0.5,
         results=[_vresult(killed, killed=True), _vresult(survivor, killed=False)],
     )
@@ -266,11 +264,7 @@ def test_format_mutation_success_section_reports_all_killed() -> None:
         file="quicksort.c",
         target_function="f",
         num_mutants=1,
-        num_killed=1,
-        num_survived=0,
-        num_timed_out=0,
-        num_compile_failed=0,
-        num_instrumentation_failed=0,
+        outcome_counts=Counter({MutantOutcome.KILLED: 1}),
         kill_score=1.0,
         results=[_vresult(killed, killed=True)],
     )
@@ -307,11 +301,13 @@ def test_format_mutation_success_section_excludes_undecided_mutants() -> None:
         file="quicksort.c",
         target_function="f",
         num_mutants=3,
-        num_killed=0,
-        num_survived=0,
-        num_timed_out=1,
-        num_compile_failed=1,
-        num_instrumentation_failed=1,
+        outcome_counts=Counter(
+            {
+                MutantOutcome.TIMED_OUT: 1,
+                MutantOutcome.COMPILE_FAILED: 1,
+                MutantOutcome.INSTRUMENTATION_FAILED: 1,
+            }
+        ),
         kill_score=0.0,
         results=[timed_out, compile_failed, instrumentation_failed],
     )
@@ -341,11 +337,7 @@ def test_format_mutation_success_section_bounds_size_and_marks_omissions() -> No
         file="big.c",
         target_function="f",
         num_mutants=20,
-        num_killed=0,
-        num_survived=20,
-        num_timed_out=0,
-        num_compile_failed=0,
-        num_instrumentation_failed=0,
+        outcome_counts=Counter({MutantOutcome.SURVIVED: 20}),
         kill_score=0.0,
         results=survivors,
     )
