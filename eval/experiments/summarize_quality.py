@@ -4,14 +4,20 @@
 
 For each JSONL file, prints the per-function kill scores and two aggregates:
 
-- `mean_kill_score`: the arithmetic mean of `kill_score` over mutation-tested functions (what
-  `eval/compare_specification_quality.py` reports as `mean_kill_score_delta` when differenced).
+- `mean_kill_score`: the arithmetic mean of `kill_score` over mutation-tested functions that have
+  at least one decided mutant (what `eval/compare_specification_quality.py` reports as
+  `mean_kill_score_delta` when differenced).
 - `pooled_kill_score`: total killed / total decided mutants across all mutation-tested functions.
 
 Functions that were not mutation tested (did not verify, or had no mutants) are listed separately
-so a treatment cannot look better merely by verifying fewer functions. When several JSONL files are
-given (e.g. three independent agent runs), a final block reports the mean and spread (min..max)
-of both aggregates across files, which is the noise floor for agent-time experiments.
+so a treatment cannot look better merely by verifying fewer functions.  So are functions whose
+mutants were all undecided (timed out, failed to compile, or failed instrumentation):  their
+`kill_score` of 0.0 does not mean that a mutant survived, so it is not part of `mean_kill_score`.
+
+When several JSONL files are given (e.g. three independent agent runs), a final block reports the
+mean and spread (min..max) of both aggregates across files, which is the noise floor for
+agent-time experiments.  A file with no mutation summary records, such as the output of a failed
+run, is reported, left out of that block, and makes the script exit with a non-zero status.
 
 Usage:
     % eval/experiments/summarize_quality.py <JSONL> [<JSONL> ...] [--quiet]
@@ -20,9 +26,17 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import statistics
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+from eval.visualization.util import (
+    SpecificationQualitySummary,
+    group_by_summary_type,
+    yield_records,
+)
 
 
 def main() -> None:
@@ -35,9 +49,13 @@ def main() -> None:
     args = parser.parse_args()
 
     aggregates: list[dict[str, float | int]] = []
+    files_without_records: list[str] = []
     for path in args.jsonl:
         aggregate = summarize(Path(path), verbose=not args.quiet)
-        aggregates.append(aggregate)
+        if aggregate is None:
+            files_without_records.append(path)
+        else:
+            aggregates.append(aggregate)
     if len(aggregates) > 1:
         print("\n== across files ==")
         for key in (
@@ -46,17 +64,24 @@ def main() -> None:
             "killed",
             "decided",
             "tested",
+            "undecided",
             "untested",
         ):
             values = [float(a[key]) for a in aggregates]
             spread = f"{min(values):.4f}..{max(values):.4f}"
-            stdev = statistics.stdev(values) if len(values) > 1 else 0.0
+            stdev = statistics.stdev(values)
             print(
                 f"{key:18s} mean={statistics.fmean(values):.4f} spread={spread} stdev={stdev:.4f}"
             )
+    if files_without_records:
+        print(
+            f"error: no mutation summary records in: {', '.join(files_without_records)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
-def summarize(path: Path, *, verbose: bool) -> dict[str, float | int]:
+def summarize(path: Path, *, verbose: bool) -> dict[str, float | int] | None:
     """Print a summary of one JSONL file and return its aggregates.
 
     Args:
@@ -64,31 +89,44 @@ def summarize(path: Path, *, verbose: bool) -> dict[str, float | int]:
         verbose (bool): When True, print one line per function.
 
     Returns:
-        dict[str, float | int]: The aggregate metrics for the file.
+        dict[str, float | int] | None: The aggregate metrics for the file, or None if the file has
+            no mutation summary records.
     """
-    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
-    records = [r for r in records if r.get("kind") == "mutation_summary"]
-    tested = [r for r in records if r.get("was_mutation_tested")]
+    records = group_by_summary_type(yield_records(str(path))).get(
+        SpecificationQualitySummary.SUMMARY_FOR_MUTATION_TESTING, []
+    )
+    print(f"== {path}")
+    if not records:
+        print("  no mutation summary records")
+        return None
+    tested = [r for r in records if r.get("was_mutation_tested") and _num_decided(r) > 0]
+    undecided = [r for r in records if r.get("was_mutation_tested") and _num_decided(r) == 0]
     untested = [r for r in records if not r.get("was_mutation_tested")]
     scores = [float(r["kill_score"]) for r in tested]
     killed = sum(int(r["killed"]) for r in tested)
-    decided = sum(int(r["killed"]) + int(r["survived"]) for r in tested)
+    decided = sum(_num_decided(r) for r in tested)
     aggregate: dict[str, float | int] = {
         "mean_kill_score": round(statistics.fmean(scores), 4) if scores else 0.0,
         "pooled_kill_score": round(killed / decided, 4) if decided else 0.0,
         "killed": killed,
         "decided": decided,
         "tested": len(tested),
+        "undecided": len(undecided),
         "untested": len(untested),
     }
-    print(f"== {path}")
     if verbose:
         for r in tested:
             print(
                 f"  {Path(r['file']).name}#{r['function']:35s} "
-                f"{int(r['killed']):3d}/{int(r['killed']) + int(r['survived']):3d} decided "
+                f"{int(r['killed']):3d}/{_num_decided(r):3d} decided "
                 f"(timed_out={r['timed_out']} compile_failed={r['compile_failed']}) "
                 f"kill_score={float(r['kill_score']):.4f}"
+            )
+        for r in undecided:
+            print(
+                f"  {Path(r['file']).name}#{r['function']:35s} -- no decided mutants "
+                f"(timed_out={r['timed_out']} compile_failed={r['compile_failed']} "
+                f"instrumentation_failed={r['instrumentation_failed']})"
             )
         for r in untested:
             reason = "did not verify" if "did not verify" in r.get("metadata", "") else "no mutants"
@@ -96,9 +134,22 @@ def summarize(path: Path, *, verbose: bool) -> dict[str, float | int]:
     print(
         f"  mean_kill_score={aggregate['mean_kill_score']:.4f} "
         f"pooled_kill_score={aggregate['pooled_kill_score']:.4f} "
-        f"({killed}/{decided} decided mutants; {len(tested)} tested, {len(untested)} untested)"
+        f"({killed}/{decided} decided mutants; {len(tested)} tested, "
+        f"{len(undecided)} with no decided mutants, {len(untested)} untested)"
     )
     return aggregate
+
+
+def _num_decided(record: dict) -> int:
+    """Return the number of decided (killed or survived) mutants of a mutation-tested function.
+
+    Args:
+        record (dict): A `mutation_summary` record of a mutation-tested function.
+
+    Returns:
+        int: The number of decided mutants.
+    """
+    return int(record["killed"]) + int(record["survived"])
 
 
 if __name__ == "__main__":
