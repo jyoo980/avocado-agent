@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from eval.visualization.util import (
     SpecificationQualitySummary,
+    get_kill_scored_records,
     get_label_for_record,
     group_by_summary_type,
     yield_records,
@@ -52,8 +53,8 @@ def main() -> None:
     args = parser.parse_args()
 
     grouped_records = group_by_summary_type(yield_records(args.jsonl))
-    mutation_records = (
-        grouped_records.get(SpecificationQualitySummary.SUMMARY_FOR_MUTATION_TESTING) or []
+    mutation_records = get_kill_scored_records(
+        grouped_records[SpecificationQualitySummary.SUMMARY_FOR_MUTATION_TESTING]
     )
     redundancy_records = (
         grouped_records.get(SpecificationQualitySummary.SUMMARY_FOR_CLAUSE_REDUNDANCY) or []

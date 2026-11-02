@@ -45,9 +45,9 @@ def test_if_zero_at_top_level_keeps_directive_lines() -> None:
     source = b"#if 0\nint dead(void) { return 0; }\n#endif\nint live(void) { return 1; }\n"
     blanked = blank_preprocessor_conditionals(source)
     _assert_invariants(source, blanked)
-    assert blanked == b"#if 0\n                            \n#endif\nint live(void) { return 1; }\n", (
-        f"Expected the #if 0 contents blanked and directives kept, got {blanked!r}"
-    )
+    assert (
+        blanked == b"#if 0\n                            \n#endif\nint live(void) { return 1; }\n"
+    ), f"Expected the #if 0 contents blanked and directives kept, got {blanked!r}"
 
 
 def test_if_zero_handles_nested_conditionals() -> None:
@@ -81,7 +81,7 @@ def test_non_zero_conditions_are_not_treated_as_dead() -> None:
 
 def test_directives_in_comments_and_strings_are_ignored() -> None:
     source = (
-        b"int f(void)\n{\n    /* comment\n#if 0\n    */\n    const char* s = \"#if 0\";\n"
+        b'int f(void)\n{\n    /* comment\n#if 0\n    */\n    const char* s = "#if 0";\n'
         b"    return s[0];\n}\n"
     )
     blanked = blank_preprocessor_conditionals(source)

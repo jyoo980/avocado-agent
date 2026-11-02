@@ -16,13 +16,7 @@ _PARSER = Parser(Language(tsc.language()))
 
 
 def test_strip_preserves_byte_length_and_newlines() -> None:
-    source = (
-        b"void f(int* a)\n"
-        b"__CPROVER_requires(a != 0)\n"
-        b"{\n"
-        b"    *a = 1;\n"
-        b"}\n"
-    )
+    source = b"void f(int* a)\n__CPROVER_requires(a != 0)\n{\n    *a = 1;\n}\n"
     stripped, spans = strip_cbmc_clauses(source)
 
     assert len(stripped) == len(source)
@@ -86,10 +80,7 @@ def test_strip_ignores_clause_lookalikes_in_comments_and_strings() -> None:
 def test_strip_leaves_non_clause_cprover_helpers_alone() -> None:
     # `__CPROVER_old`, `__CPROVER_is_fresh`, `__CPROVER_return_value`, `__CPROVER_forall` only
     # appear *inside* clauses we already strip. They must never be removed in isolation.
-    source = (
-        b"int x = __CPROVER_is_fresh(p, 4);\n"
-        b"int y = __CPROVER_old(z);\n"
-    )
+    source = b"int x = __CPROVER_is_fresh(p, 4);\nint y = __CPROVER_old(z);\n"
     stripped, spans = strip_cbmc_clauses(source)
     assert spans == []
     assert stripped == source
@@ -150,7 +141,12 @@ def test_clause_spans_attributable_to_owning_function_by_byte_range() -> None:
                 decl = decl.child_by_field_name("declarator")
             body = node.child_by_field_name("body")
             full_decl = node.child_by_field_name("declarator")
-            if decl is not None and decl.text is not None and body is not None and full_decl is not None:
+            if (
+                decl is not None
+                and decl.text is not None
+                and body is not None
+                and full_decl is not None
+            ):
                 fn_ranges[decl.text.decode()] = (
                     full_decl.end_byte,
                     body.start_byte,
@@ -205,13 +201,7 @@ def test_find_cbmc_annotation_spans_covers_in_body_assume_with_forall() -> None:
 
 def test_find_cbmc_annotation_spans_skips_identifiers_without_parens() -> None:
     # `__CPROVER_return_value` has no following `(`, so the scanner must not produce a span for it.
-    source = (
-        b"int f(int* a)\n"
-        b"__CPROVER_ensures(__CPROVER_return_value == 1)\n"
-        b"{\n"
-        b"    return 1;\n"
-        b"}\n"
-    )
+    source = b"int f(int* a)\n__CPROVER_ensures(__CPROVER_return_value == 1)\n{\n    return 1;\n}\n"
     spans = find_cbmc_annotation_spans(source)
     kinds = [s.kind for s in spans]
     assert kinds == ["__CPROVER_ensures"]
