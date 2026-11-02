@@ -11,11 +11,11 @@ Each metric is a separate flag so the user can specify the ones they want, namel
 Usage:
     % ./eval/mutants/evaluate_specification_quality.py <PATH_TO_C_FILE_OR_DIR> \
             [--auto-include] \
-            [--include-dirs] \
+            [--include-dirs <PATH_TO_INCLUDE_DIR>]... \
             [--mutation] \
             [--redundancy] \
-            [--keep-artifacts]
-            [--jsonl PATH] \
+            [--keep-artifacts] \
+            [--jsonl PATH]
 """
 
 from __future__ import annotations
@@ -33,7 +33,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from eval.mutants.compute_clause_redundancy import compute_clause_redundancy_score
 from eval.mutants.generate_mutants_and_compute_score import generate_mutants_and_compute_score
 from eval.mutants.util import get_files_with_extension
-from tools.util import get_functions_with_cprover_annotations, get_include_dirs
+from tools.util import (
+    AUTO_INCLUDE_HELP,
+    get_functions_with_cprover_annotations,
+    get_include_dirs,
+    resolve_include_dirs,
+)
 from tools.util.mutation import MutationScore
 
 
@@ -45,11 +50,7 @@ def main() -> None:
     parser.add_argument("path", help="Path to a C file or directory of C files.")
     parser.add_argument(
         "--auto-include",
-        help=(
-            "For each .c file, look for a sibling include/ directory at "
-            "<source>/../include and pass it to CBMC as an include path. "
-            "Fits projects whose headers live next to their src/ tree."
-        ),
+        help=AUTO_INCLUDE_HELP,
         action="store_true",
     )
     parser.add_argument(
@@ -85,12 +86,15 @@ def main() -> None:
         logger.error(f"No .c files found at: {args.path}")
         sys.exit(1)
 
+    try:
+        include_dirs_from_cli = resolve_include_dirs(args.include_dirs or [])
+    except ValueError as e:
+        parser.error(str(e))
     # This stream is closed in a `finally` block.
     output_stream: IO[str] = (
         Path(args.jsonl).open("w", encoding="utf-8") if args.jsonl else sys.stdout  # ruff: ignore[open-file-with-context-handler]
     )
     try:
-        include_dirs_from_cli = args.include_dirs or []
         for source in input_files:
             _process_file(
                 source=source,
@@ -121,10 +125,10 @@ def _process_file(
     Arguments:
         source (Path): The path to the file for evaluation.
         out (IO[str]): The output.
-        auto_include (bool): True iff an `include` dir (i.e., a dir containing headers) should be
-            automatically detected.
+        auto_include (bool): True iff the auto-detected include directory (see
+            `get_include_dirs()`) should be added to CBMC's include search path.
         include_dirs (list[str]): List of directories containing files (e.g., headers) that should
-            be included in verification.
+            be included in verification, as returned by `resolve_include_dirs()`.
         run_mutation (bool): True iff mutation testing should be reported.
         run_redundancy (bool): True iff redundancy scoring should be reported.
         keep_artifacts (bool): True iff the mutant files should be retained after evaluation.
@@ -137,8 +141,6 @@ def _process_file(
         return
 
     include_dirs = get_include_dirs(str(source), include_dirs, auto_include=auto_include)
-    if include_dirs:
-        logger.debug(f"[auto-include] using {include_dirs}")
 
     for function in functions_with_cprover_annotations:
         if run_mutation:
