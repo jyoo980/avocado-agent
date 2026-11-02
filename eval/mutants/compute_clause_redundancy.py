@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
@@ -306,8 +307,9 @@ def compute_clause_redundancy_score(
 ) -> ClauseRedundancyScore | None:
     """Score clause redundancy for `function_name` in `file_path`.
 
-    Mutant `.c` files are written next to the original source, so that every `#include` resolves
-    as it does for the original source. Mutants are removed unless keep_artifacts is set to `True`.
+    Mutant `.c` files are written next to the original source, so that a quoted `#include` finds
+    the same header for a mutant as for the original source. Mutants are removed unless
+    keep_artifacts is set to `True`.
 
     If the unmutated function does not verify, return None.
 
@@ -321,18 +323,19 @@ def compute_clause_redundancy_score(
     Returns:
         ClauseRedundancyScore: Aggregated counts plus the per-clause results.
     """
-    source_path = Path(file_path).resolve()
+    # Unlike `Path.resolve`, `os.path.abspath` does not follow symlinks, so the mutants of a
+    # symlinked file see the same quoted `#include`s as the file itself.
+    source_path = Path(os.path.abspath(file_path))  # ruff: ignore[os-path-abspath] - must not follow symlinks.
 
-    # Check that the original function verifies in the first place. Verify the resolved path,
-    # which is next to the mutants, so that every `#include` resolves alike for both.
-    result = run_cbmc(function_name, str(source_path), include_dirs=include_dirs)
+    # Check that the original function verifies in the first place.
+    result = run_cbmc(function_name, file_path, include_dirs=include_dirs)
     if not is_valid_mutation_candidate(result):
         # No usable baseline; scoring would be meaningless without verifying the unmutated source.
         return None
 
     mutants = get_clause_mutants(str(source_path), function_name)
     paths_to_removed_clauses = {
-        _get_path_to_source_with_removed_clause(source_path.parent, source_path, i): mutant
+        _get_path_to_source_with_removed_clause(source_path, i): mutant
         for i, mutant in enumerate(mutants)
     }
 
@@ -462,24 +465,22 @@ def _get_in_file_callers(source_path: Path, function_name: str) -> list[str]:
     return get_in_file_callers_of(function_name, call_graph)
 
 
-def _get_path_to_source_with_removed_clause(
-    workspace_path: Path, path_to_original_source: Path, index: int
-) -> Path:
+def _get_path_to_source_with_removed_clause(path_to_original_source: Path, index: int) -> Path:
     """Return the path to which to write a source file with a removed clause.
 
-    For example, given the path `/app/test/data/foo.c`, return `/app/test/data/foo__clause_drop_1.c`
+    The source file with a removed clause is in the same directory as the original source file.
+    For example, given the path `/app/test/data/foo.c` and the index 1, return
+    `/app/test/data/foo__clause_drop_1.c`.
 
     Args:
-        workspace_path (Path): The directory under redundancy score computation occurs.
-        path_to_original_source (Path): The path to the original source file.
+        path_to_original_source (Path): A path to an original source file.
         index (int): The index of the mutant, used as a identifier for the mutant source path.
 
     Returns:
         Path: The path to which to write a mutated source file.
     """
-    return (
-        workspace_path
-        / f"{path_to_original_source.stem}__clause_drop_{index}{path_to_original_source.suffix}"
+    return path_to_original_source.with_name(
+        f"{path_to_original_source.stem}__clause_drop_{index}{path_to_original_source.suffix}"
     )
 
 

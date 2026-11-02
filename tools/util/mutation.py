@@ -263,8 +263,9 @@ def generate_mutants_and_compute_score(
 ) -> MutationTestingResult:
     """Return the mutation testing result for `target_function` in `file_path`.
 
-    Mutant `.c` files are written next to the original source, so that every `#include` resolves
-    as it does for the original source. Mutants are removed unless keep_artifacts is set to `True`.
+    Mutant `.c` files are written next to the original source, so that a quoted `#include` finds
+    the same header for a mutant as for the original source. Mutants are removed unless
+    keep_artifacts is set to `True`.
 
     Args:
         file_path (str): Path to the C source defining the function.
@@ -286,9 +287,7 @@ def generate_mutants_and_compute_score(
         return NoMutantsGenerated(file_path, target_function)
 
     if not skip_reverification:
-        # Verify the resolved path, which is next to the mutants, so that every `#include`
-        # resolves alike for both.
-        cbmc_result = run_cbmc(target_function, str(source_path), include_dirs=include_dirs)
+        cbmc_result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
         if not is_valid_mutation_candidate(cbmc_result):
             # No usable baseline if CBMC can't verify the unmutated function.
             return BaselineFailsVerification(file_path, target_function)
@@ -299,12 +298,11 @@ def generate_mutants_and_compute_score(
     # avoiding redundant parsing, this keeps the non-thread-safe tree-sitter parser out of the
     # concurrent section: no call graph is constructed inside the worker threads.
     call_graph = CallGraph(
-        json.loads(Path(construct_call_graph(str(source_path))).read_text(encoding="utf-8"))
+        json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
     )
 
     paths_to_mutants = {
-        _get_path_for_mutated_source(source_path.parent, source_path, i): mutant
-        for i, mutant in enumerate(mutants)
+        _get_path_for_mutated_source(source_path, i): mutant for i, mutant in enumerate(mutants)
     }
     # Heads-up to stderr so an agent polling the run can see the slow phase has begun and is
     # making progress. Written to stderr (not stdout) so it never contaminates the kill-score
@@ -526,22 +524,20 @@ def _verify_mutant(
     )
 
 
-def _get_path_for_mutated_source(
-    workspace_path: Path, path_to_original_source: Path, index: int
-) -> Path:
+def _get_path_for_mutated_source(path_to_original_source: Path, index: int) -> Path:
     """Return the path to which to write a mutated source file.
 
-    For example, given the path `/app/test/data/foo.c`, return `/app/test/data/foo__mutant_1.c`
+    The mutated source file is in the same directory as the original source file. For example,
+    given the path `/app/test/data/foo.c` and the index 1, return
+    `/app/test/data/foo__mutant_1.c`.
 
     Args:
-        workspace_path (Path): The directory under which mutation testing occurs.
-        path_to_original_source (Path): The path to the original source file.
+        path_to_original_source (Path): A path to an original source file.
         index (int): The index of the mutant, used as a identifier for the mutant source path.
 
     Returns:
         Path: The path to which to write a mutated source file.
     """
-    return (
-        workspace_path
-        / f"{path_to_original_source.stem}__mutant_{index}{path_to_original_source.suffix}"
+    return path_to_original_source.with_name(
+        f"{path_to_original_source.stem}__mutant_{index}{path_to_original_source.suffix}"
     )
