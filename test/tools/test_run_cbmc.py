@@ -388,3 +388,20 @@ def test_print_mutation_progress_buckets_undecided_mutants(capsys) -> None:
         "(killed=0 survived=0 timed_out=1 compile_failed=1 instrumentation_failed=0)"
         in capsys.readouterr().err
     )
+
+
+def test_mutation_score_summary_has_null_kill_score_without_decided_mutants() -> None:
+    """A summary has no kill score when every mutant timed out."""
+    score = MutationScore(
+        file="quicksort.c",
+        target_function="f",
+        num_mutants=2,
+        num_killed=0,
+        num_survived=0,
+        num_timed_out=2,
+        num_compile_failed=0,
+        num_instrumentation_failed=0,
+        kill_score=0.0,
+    )
+
+    assert score.summary()["kill_score"] is None

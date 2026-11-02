@@ -43,9 +43,10 @@ def main() -> None:
     args = parser.parse_args()
 
     grouped_records = group_by_summary_type(yield_records(args.jsonl))
-    mutation_records = get_kill_scored_records(
-        grouped_records[SpecificationQualitySummary.SUMMARY_FOR_MUTATION_TESTING]
-    )
+    all_mutation_records = grouped_records[SpecificationQualitySummary.SUMMARY_FOR_MUTATION_TESTING]
+    mutation_records = get_kill_scored_records(all_mutation_records)
+    if num_unscored := len(all_mutation_records) - len(mutation_records):
+        print(f"Not plotting {num_unscored} functions without a kill score.", file=sys.stderr)
     records = _sort_records_by_kill_score(mutation_records)
 
     if not records:

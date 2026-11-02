@@ -20,15 +20,18 @@ def _tested(function: str, killed: int, survived: int, timed_out: int = 0) -> di
         "timed_out": timed_out,
         "compile_failed": 0,
         "instrumentation_failed": 0,
-        "kill_score": round(killed / decided, 4) if decided else 0.0,
+        "kill_score": round(killed / decided, 4) if decided else None,
     }
 
 
-def _legacy_tested(function: str, killed: int, survived: int) -> dict:
-    """Return a mutation summary record, as written before `was_mutation_tested` existed."""
+def _tested_with_string_kill_score(function: str, killed: int, survived: int) -> dict:
+    """Return a mutation summary record without `was_mutation_tested`, and with a string `kill_score`.
+
+    The `kill_score` is a string such as "0.2500".
+    """
     record = _tested(function, killed, survived)
     del record["was_mutation_tested"]
-    record["kill_score"] = f"{record['kill_score']:.4f}"
+    record["kill_score"] = f"{record['kill_score'] or 0.0:.4f}"
     return record
 
 
@@ -95,20 +98,46 @@ def test_unscored_functions_are_distinguished_from_absent_ones(tmp_path: Path) -
     assert summary["unscored_in_experimental"] == ["/benchmarks/q.c#g"]
 
 
-def test_functions_without_decided_mutants_are_not_compared(tmp_path: Path) -> None:
-    baseline = _write_jsonl(tmp_path / "baseline.jsonl", [_tested("f", 4, 1), _tested("g", 1, 1)])
+def test_unscored_functions_are_counted(tmp_path: Path) -> None:
+    baseline = _write_jsonl(
+        tmp_path / "baseline.jsonl", [_tested("f", 1, 1), _untested("g"), _untested("h")]
+    )
     experimental = _write_jsonl(
-        tmp_path / "experimental.jsonl", [_tested("f", 0, 0, timed_out=5), _tested("g", 2, 0)]
+        tmp_path / "experimental.jsonl", [_tested("f", 1, 1), _untested("g"), _untested("i")]
+    )
+
+    summary = _get_specification_quality_comparison(baseline, experimental)["mutation_summary"]
+
+    assert summary["baseline_count"] == 1
+    assert summary["baseline_unscored_count"] == 2
+    assert summary["experimental_unscored_count"] == 2
+    assert summary["only_in_baseline"] == []
+    assert summary["only_in_experimental"] == []
+
+
+def test_functions_without_decided_mutants_are_not_compared(tmp_path: Path) -> None:
+    undecided = _tested_with_string_kill_score("h", 0, 0)
+    undecided["timed_out"] = 3
+    baseline = _write_jsonl(
+        tmp_path / "baseline.jsonl", [_tested("f", 4, 1), _tested("g", 1, 1), _tested("h", 1, 1)]
+    )
+    experimental = _write_jsonl(
+        tmp_path / "experimental.jsonl",
+        [_tested("f", 0, 0, timed_out=5), _tested("g", 2, 0), undecided],
     )
 
     summary = _get_specification_quality_comparison(baseline, experimental)["mutation_summary"]
 
     assert [row["function"] for row in summary["per_function"]] == ["g"]
-    assert summary["unscored_in_experimental"] == ["/benchmarks/q.c#f"]
+    assert summary["unscored_in_experimental"] == ["/benchmarks/q.c#f", "/benchmarks/q.c#h"]
 
 
-def test_records_written_before_was_mutation_tested_are_compared(tmp_path: Path) -> None:
-    baseline = _write_jsonl(tmp_path / "baseline.jsonl", [_legacy_tested("f", 1, 3)])
+def test_records_with_string_kill_score_and_without_was_mutation_tested_are_compared(
+    tmp_path: Path,
+) -> None:
+    baseline = _write_jsonl(
+        tmp_path / "baseline.jsonl", [_tested_with_string_kill_score("f", 1, 3)]
+    )
     experimental = _write_jsonl(tmp_path / "experimental.jsonl", [_tested("f", 3, 1)])
 
     summary = _get_specification_quality_comparison(baseline, experimental)["mutation_summary"]

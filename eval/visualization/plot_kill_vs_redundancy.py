@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from eval.visualization.util import (
     SpecificationQualitySummary,
+    get_function_key,
     get_kill_scored_records,
     get_label_for_record,
     group_by_summary_type,
@@ -53,12 +54,11 @@ def main() -> None:
     args = parser.parse_args()
 
     grouped_records = group_by_summary_type(yield_records(args.jsonl))
-    mutation_records = get_kill_scored_records(
-        grouped_records[SpecificationQualitySummary.SUMMARY_FOR_MUTATION_TESTING]
-    )
-    redundancy_records = (
-        grouped_records.get(SpecificationQualitySummary.SUMMARY_FOR_CLAUSE_REDUNDANCY) or []
-    )
+    all_mutation_records = grouped_records[SpecificationQualitySummary.SUMMARY_FOR_MUTATION_TESTING]
+    mutation_records = get_kill_scored_records(all_mutation_records)
+    if num_unscored := len(all_mutation_records) - len(mutation_records):
+        print(f"Not plotting {num_unscored} functions without a kill score.", file=sys.stderr)
+    redundancy_records = grouped_records[SpecificationQualitySummary.SUMMARY_FOR_CLAUSE_REDUNDANCY]
     y_key = Y_FIELDS[args.y]
     y_label = f"{args.y}_redundancy_rate"
 
@@ -76,11 +76,11 @@ def main() -> None:
 def _join(
     mutation: list[dict], redundancy: list[dict], y_key: str
 ) -> list[tuple[str, float, float]]:
-    by_key = {(r["file"], r["function"]): r for r in redundancy}
+    by_key = {get_function_key(r): r for r in redundancy}
     return [
         (get_label_for_record(record), record["kill_score"], match[y_key])
         for record in mutation
-        if (match := by_key.get((record["file"], record["function"])))
+        if (match := by_key.get(get_function_key(record)))
     ]
 
 

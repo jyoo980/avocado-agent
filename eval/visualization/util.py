@@ -14,6 +14,9 @@ from pathlib import Path
 
 from loguru import logger
 
+# A function's (file, function) pair, such as ("/benchmarks/q.c", "f").
+FunctionKey = tuple[str, str]
+
 
 class SpecificationQualitySummary(StrEnum):
     """Represent JSON records that are parsed by visualization scripts."""
@@ -74,7 +77,8 @@ def get_kill_scored_records(records: Iterable[dict]) -> list[dict]:
 
     A record has no kill score if its function was not mutation tested (for example, because the
     function did not verify or had no mutants), or if none of its mutants was decided (each one
-    timed out or failed to compile), because then its `kill_score` does not measure the spec.
+    timed out or failed to compile).  The `kill_score` of a record with no decided mutants is null
+    or a string such as "0.0000", and it does not measure the spec.
 
     Args:
         records (Iterable[dict]): mutation summary records, each a dict parsed from a JSONL line
@@ -87,8 +91,21 @@ def get_kill_scored_records(records: Iterable[dict]) -> list[dict]:
     return [
         {**record, "kill_score": float(record["kill_score"])}
         for record in records
-        if "kill_score" in record and record["killed"] + record["survived"] > 0
+        if record.get("kill_score") is not None and record["killed"] + record["survived"] > 0
     ]
+
+
+def get_function_key(record: dict) -> FunctionKey:
+    """Return the `FunctionKey` of the given record.
+
+    Args:
+        record (dict): a record, as a dict parsed from a JSONL line with keys such as "file" and
+            "function".
+
+    Returns:
+        FunctionKey: The record's (file, function) pair, such as ("/benchmarks/q.c", "f").
+    """
+    return (record["file"], record["function"])
 
 
 def ascii_hbar(value: float, width: int, fill: str = "█") -> str:

@@ -18,18 +18,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from eval.visualization.util import (
     SpecificationQualitySummary,
+    get_function_key,
     get_kill_scored_records,
     group_by_summary_type,
     yield_records,
 )
 
 
-def _mut_stats(records: list[dict]) -> dict:
+def _mut_stats(records: list[dict], unscored_count: int) -> dict:
     if not records:
-        return {"count": 0}
+        return {"count": 0, "unscored_count": unscored_count}
     scores = [r["kill_score"] for r in records]
     return {
         "count": len(records),
+        "unscored_count": unscored_count,
         "mean_kill_score": round(statistics.fmean(scores), 4),
         "median_kill_score": round(statistics.median(scores), 4),
         "min_kill_score": round(min(scores), 4),
@@ -54,8 +56,8 @@ def _red_stats(records: list[dict]) -> dict:
 
 
 def _joinable(mutation: list[dict], redundancy: list[dict]) -> int:
-    keys_m = {(r["file"], r["function"]) for r in mutation}
-    keys_r = {(r["file"], r["function"]) for r in redundancy}
+    keys_m = {get_function_key(r) for r in mutation}
+    keys_r = {get_function_key(r) for r in redundancy}
     return len(keys_m & keys_r)
 
 
@@ -64,7 +66,7 @@ def _format_table(mut: dict, red: dict, joinable: int) -> str:
 
     def push_section(title: str, stats: dict) -> None:
         rows.append((title, ""))
-        if stats["count"] == 0:
+        if stats == {"count": 0}:
             rows.append(("  (no records)", ""))
             return
         for key, value in stats.items():
@@ -100,14 +102,13 @@ def main() -> None:
     args = parser.parse_args()
 
     grouped_records = group_by_summary_type(yield_records(args.jsonl))
-    mutation_records = get_kill_scored_records(
-        grouped_records[SpecificationQualitySummary.SUMMARY_FOR_MUTATION_TESTING]
-    )
-    redundancy_records = (
-        grouped_records.get(SpecificationQualitySummary.SUMMARY_FOR_CLAUSE_REDUNDANCY) or []
-    )
+    all_mutation_records = grouped_records[SpecificationQualitySummary.SUMMARY_FOR_MUTATION_TESTING]
+    mutation_records = get_kill_scored_records(all_mutation_records)
+    redundancy_records = grouped_records[SpecificationQualitySummary.SUMMARY_FOR_CLAUSE_REDUNDANCY]
     aggregate = {
-        "mutation_summary": _mut_stats(mutation_records),
+        "mutation_summary": _mut_stats(
+            mutation_records, len(all_mutation_records) - len(mutation_records)
+        ),
         "clause_redundancy_summary": _red_stats(redundancy_records),
         "functions_in_both_streams": _joinable(mutation_records, redundancy_records),
     }

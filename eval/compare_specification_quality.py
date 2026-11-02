@@ -20,19 +20,18 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
-    from collections.abc import Set as AbstractSet
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from eval.visualization.util import (
+    FunctionKey,
     SpecificationQualitySummary,
+    get_function_key,
     get_kill_scored_records,
     group_by_summary_type,
     yield_records,
 )
 
-# Unique key comprising a (file, function) tuple.
-FunctionKey = tuple[str, str]
 _DEFAULT_NUM_DECIMAL_PLACES = 4
 _FIELDS_FOR_KILL_SCORE_COMPARISON = {"kill_score", "killed", "total"}
 _FIELDS_FOR_REDUNDANCY_RATE_COMPARISON = {
@@ -109,12 +108,13 @@ def _get_specification_quality_comparison(
 def _get_mutation_comparison(
     baseline_records: list[dict], experimental_records: list[dict]
 ) -> dict[str, Any]:
-    """Return the kill score comparison for a baseline and experimental treatment.
+    """Return the kill score comparison for the given baseline and experimental treatment.
 
     Only functions that have a kill score in both treatments are compared.  A function that has a
     kill score in one treatment and has a record without a kill score in the other (for example,
     because it did not verify) is listed separately from a function that has no record at all in
-    the other treatment, so that a treatment that breaks verification does not look better.
+    the other treatment, and the functions without a kill score are counted, so that a treatment
+    that breaks verification does not look better.
 
     Args:
         baseline_records (list[dict]): mutation summary records of the baseline, each a dict parsed
@@ -124,19 +124,40 @@ def _get_mutation_comparison(
 
     Returns:
         dict[str, Any]: The kill score comparison between the baseline and experimental treatment.
+            Its `only_in_baseline` lists the functions that have a kill score in the baseline and
+            no record in the experimental treatment.  Its `unscored_in_experimental` lists the
+            functions that have a kill score in the baseline and a record without a kill score in
+            the experimental treatment.  `only_in_experimental` and `unscored_in_baseline` are
+            symmetric.
     """
+    baseline_recorded = _get_function_key_dict_from_list(baseline_records).keys()
+    experimental_recorded = _get_function_key_dict_from_list(experimental_records).keys()
     baseline_scored = _get_function_key_dict_from_list(get_kill_scored_records(baseline_records))
     experimental_scored = _get_function_key_dict_from_list(
         get_kill_scored_records(experimental_records)
     )
-    return _get_baseline_experimental_function_diffs(
-        baseline_scored,
-        experimental_scored,
-        _get_kill_score_comparison(baseline_scored, experimental_scored),
-        "kill_score_delta",
-        baseline_unscored=_get_function_keys(baseline_records) - baseline_scored.keys(),
-        experimental_unscored=_get_function_keys(experimental_records) - experimental_scored.keys(),
-    )
+    baseline_unscored = baseline_recorded - baseline_scored.keys()
+    experimental_unscored = experimental_recorded - experimental_scored.keys()
+    return {
+        **_get_baseline_experimental_function_diffs(
+            baseline_scored,
+            experimental_scored,
+            _get_kill_score_comparison(baseline_scored, experimental_scored),
+            "kill_score_delta",
+        ),
+        "baseline_unscored_count": len(baseline_unscored),
+        "experimental_unscored_count": len(experimental_unscored),
+        "only_in_baseline": _format_function_keys(baseline_scored.keys() - experimental_recorded),
+        "only_in_experimental": _format_function_keys(
+            experimental_scored.keys() - baseline_recorded
+        ),
+        "unscored_in_baseline": _format_function_keys(
+            experimental_scored.keys() & baseline_unscored
+        ),
+        "unscored_in_experimental": _format_function_keys(
+            baseline_scored.keys() & experimental_unscored
+        ),
+    }
 
 
 def _get_baseline_experimental_function_diffs(
@@ -144,10 +165,8 @@ def _get_baseline_experimental_function_diffs(
     experimental_records: dict[FunctionKey, dict],
     per_function: list[dict],
     headline_delta_key: str,
-    baseline_unscored: AbstractSet[FunctionKey] = frozenset(),
-    experimental_unscored: AbstractSet[FunctionKey] = frozenset(),
 ) -> dict[str, Any]:
-    """Return the comparison of a baseline and experimental treatment, with per-function deltas.
+    """Return the comparison of the given baseline and experimental treatment.
 
     A function might be scored in only one treatment.  For example, it might time out in one
     treatment and verify in the other.
@@ -160,16 +179,10 @@ def _get_baseline_experimental_function_diffs(
             function that is scored in both treatments.
         headline_delta_key (str): The key in `per_function` whose mean is reported, such as
             "kill_score_delta".
-        baseline_unscored (AbstractSet[FunctionKey]): The functions that have a
-            record in the baseline but are not scored in it.
-        experimental_unscored (AbstractSet[FunctionKey]): The functions that have a
-            record in the experimental treatment but are not scored in it.
 
     Returns:
-        dict[str, Any]: The comparison, whose keys include `only_in_baseline` (functions that are
-            scored in the baseline and have no record in the experimental treatment) and
-            `unscored_in_experimental` (functions that are scored in the baseline and have a record
-            in the experimental treatment without a score), and the symmetric keys.
+        dict[str, Any]: The comparison, with counts, the functions scored in only one treatment,
+            the mean of `headline_delta_key`, and `per_function`.
     """
     baseline_keys, experimental_keys = baseline_records.keys(), experimental_records.keys()
     deltas = [row[headline_delta_key] for row in per_function]
@@ -177,14 +190,8 @@ def _get_baseline_experimental_function_diffs(
         "baseline_count": len(baseline_records),
         "experimental_count": len(experimental_records),
         "common_count": len(per_function),
-        "only_in_baseline": _format_function_keys(
-            baseline_keys - experimental_keys - experimental_unscored
-        ),
-        "only_in_experimental": _format_function_keys(
-            experimental_keys - baseline_keys - baseline_unscored
-        ),
-        "unscored_in_baseline": _format_function_keys(experimental_keys & baseline_unscored),
-        "unscored_in_experimental": _format_function_keys(baseline_keys & experimental_unscored),
+        "only_in_baseline": _format_function_keys(baseline_keys - experimental_keys),
+        "only_in_experimental": _format_function_keys(experimental_keys - baseline_keys),
         f"mean_{headline_delta_key}": round(statistics.fmean(deltas), 4) if deltas else 0.0,
         "per_function": per_function,
     }
@@ -314,20 +321,7 @@ def _get_function_key_dict_from_list(records: list[dict]) -> dict[FunctionKey, d
     Returns:
         dict[FunctionKey, dict]: A dictionary where records are indexed by `FunctionKey`.
     """
-    return {(record["file"], record["function"]): record for record in records}
-
-
-def _get_function_keys(records: list[dict]) -> set[FunctionKey]:
-    """Return the `FunctionKey` of each of the given records.
-
-    Args:
-        records (list[dict]): records, each a dict parsed from a JSONL line with keys such as
-            "file" and "function".
-
-    Returns:
-        set[FunctionKey]: The `FunctionKey` of each of the records.
-    """
-    return {(record["file"], record["function"]) for record in records}
+    return {get_function_key(record): record for record in records}
 
 
 def _format_function_keys(keys: Iterable[FunctionKey]) -> list[str]:
@@ -389,10 +383,17 @@ def _format_section(title: str, section_data: dict[str, Any], delta_keys: list[s
     lines = [title, "=" * len(title)]
     lines = [
         *lines,
-        f"  baseline functions:  {section_data['baseline_count']}",
-        f"  experimental functions: {section_data['experimental_count']}",
-        f"  common:              {section_data['common_count']}",
+        f"  baseline scored functions:     {section_data['baseline_count']}",
+        f"  experimental scored functions: {section_data['experimental_count']}",
+        f"  common:                        {section_data['common_count']}",
     ]
+    if "baseline_unscored_count" in section_data:
+        lines.extend(
+            [
+                f"  baseline unscored functions:     {section_data['baseline_unscored_count']}",
+                f"  experimental unscored functions: {section_data['experimental_unscored_count']}",
+            ]
+        )
     mean_key = next((k for k in section_data if k.startswith("mean_")), None)
     if not mean_key:
         msg = f"Expected a 'mean_*' key in {section_data} for {title}"
@@ -403,12 +404,12 @@ def _format_section(title: str, section_data: dict[str, Any], delta_keys: list[s
         lines.append(f"  only in baseline:  {', '.join(section_data['only_in_baseline'])}")
     if section_data["only_in_experimental"]:
         lines.append(f"  only in experimental: {', '.join(section_data['only_in_experimental'])}")
-    if section_data["unscored_in_baseline"]:
+    if section_data.get("unscored_in_baseline"):
         lines.append(
             f"  scored only in experimental (unscored in baseline): "
             f"{', '.join(section_data['unscored_in_baseline'])}"
         )
-    if section_data["unscored_in_experimental"]:
+    if section_data.get("unscored_in_experimental"):
         lines.append(
             f"  scored only in baseline (unscored in experimental): "
             f"{', '.join(section_data['unscored_in_experimental'])}"
