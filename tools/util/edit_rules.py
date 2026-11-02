@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass
 
 from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
+from tools.util.preproc_blanker import _logical_line_end
 
 _TOKEN = re.compile(
     r"""
@@ -23,10 +24,13 @@ _TOKEN = re.compile(
     """,
     re.VERBOSE | re.DOTALL,
 )
-_COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.DOTALL)
 _DIRECTIVE_HEAD = re.compile(r"#\s*(\w*)\s*(\w*)")
 _IDENTIFIER = re.compile(r"[A-Za-z_]\w*\Z")
 _AGGREGATE_KEYWORDS = frozenset({"struct", "union", "enum"})
+# Keywords that take a parenthesized argument and can follow a declarator.
+_ATTRIBUTE_KEYWORDS = frozenset(
+    {"__attribute__", "__attribute", "__declspec", "asm", "__asm", "__asm__"}
+)
 
 
 @dataclass(frozen=True)
@@ -65,6 +69,9 @@ class _Item:
         name (str | None): The name the item introduces, when it can be told.
         start (int): The byte offset the item starts at in its source.
         end (int): The byte offset just past the item, contract clauses included.
+        body_offsets (tuple[int, ...]): For a function, the offset of each `{` that opens its
+            body: one, or one per preprocessor branch when the header differs between branches.
+            Empty for every other kind.
     """
 
     tokens: tuple[str, ...]
@@ -72,6 +79,7 @@ class _Item:
     name: str | None
     start: int
     end: int
+    body_offsets: tuple[int, ...] = ()
 
 
 def function_body_offsets(source: bytes, function: str) -> list[int]:
@@ -82,23 +90,26 @@ def function_body_offsets(source: bytes, function: str) -> list[int]:
         function (str): The function's name.
 
     Returns:
-        list[int]: One offset per definition (a function may be defined once per preprocessor
-            branch), in source order; empty when the function is not defined.
+        list[int]: The offsets in source order; empty when the function is not defined. There is
+            one offset per definition (a function can be defined once per preprocessor branch)
+            and, within a definition whose header differs between branches, one per header.
     """
-    tokens = _tokenize(source)
-    offsets = []
-    for item in _split_items(tokens):
-        if item.kind != "function" or item.name != function:
-            continue
-        for token in tokens:
-            if token.offset >= item.start and token.depth == 0 and token.text == "{":
-                offsets.append(token.offset)
-                break
-    return offsets
+    return [
+        offset
+        for item in _split_items(_tokenize(source))
+        if item.kind == "function" and item.name == function
+        for offset in item.body_offsets
+    ]
 
 
 def _tokenize(source: bytes) -> list[_Token]:
     """Split a source file into tokens, with contract clauses and comments erased.
+
+    Each branch of a preprocessor conditional starts at the brace depth that the conditional
+    starts at, so a brace that every branch opens (as in a function header that differs between
+    branches) is counted once. After `#endif`, the depth is the one that the first branch ends
+    at, so a brace opened in one conditional and closed in a later one with the same condition
+    is counted even when the first conditional has an empty `#else`.
 
     Args:
         source (bytes): The original C source.
@@ -113,19 +124,33 @@ def _tokenize(source: bytes) -> list[_Token]:
     tokens: list[_Token] = []
     position = 0
     depth = 0
+    # For each enclosing `#if`: the depth it starts at, and the depth its first branch ends at
+    # (None until that branch ends).
+    conditionals: list[tuple[int, int | None]] = []
     at_line_start = True
     length = len(text)
     while position < length:
         if at_line_start and text[position] == "#":
-            end = _logical_line_end(text, position)
+            # The original keeps the backslash of a line continuation inside a contract clause.
+            end = _logical_line_end(source, position)
             directive = _normalize_directive(original[position:end])
             tokens.append(_Token(directive, position, end, depth))
+            head = _DIRECTIVE_HEAD.match(directive)
+            keyword = head.group(1) if head else ""
+            if keyword in ("if", "ifdef", "ifndef"):
+                conditionals.append((depth, None))
+            elif keyword in ("elif", "elifdef", "elifndef", "else") and conditionals:
+                start, first_end = conditionals[-1]
+                conditionals[-1] = (start, depth if first_end is None else first_end)
+                depth = start
+            elif keyword == "endif" and conditionals:
+                _, first_end = conditionals.pop()
+                if first_end is not None:
+                    depth = first_end
             position = end
             continue
         match = _TOKEN.match(text, position)
-        if match is None:  # cannot happen: the last alternative matches any character
-            position += 1
-            continue
+        assert match is not None, "the last alternative matches any character"
         kind = match.lastgroup
         value = match.group()
         if kind == "newline":
@@ -142,40 +167,10 @@ def _tokenize(source: bytes) -> list[_Token]:
     return tokens
 
 
-def _logical_line_end(text: str, start: int) -> int:
-    """Return the offset just past the preprocessor directive that starts at `start`.
-
-    A directive runs to the end of its line, continuing over backslash-newlines and over block
-    comments that span lines.
-
-    Args:
-        text (str): The source text.
-        start (int): The offset of the directive's `#`.
-
-    Returns:
-        int: The offset of the newline that ends the directive, or the end of the text.
-    """
-    position = start
-    length = len(text)
-    while position < length:
-        character = text[position]
-        if character == "\n":
-            return position
-        if character == "\\" and text.startswith("\\\n", position):
-            position += 2
-        elif text.startswith("/*", position):
-            closing = text.find("*/", position + 2)
-            position = length if closing < 0 else closing + 2
-        elif text.startswith("//", position):
-            newline = text.find("\n", position)
-            return length if newline < 0 else newline
-        else:
-            position += 1
-    return length
-
-
 def _normalize_directive(text: str) -> str:
-    """Return a directive's text with comments removed and whitespace collapsed.
+    """Return a directive's text with each run of whitespace and comments replaced by one space.
+
+    String and character literals are kept verbatim.
 
     Args:
         text (str): The directive's logical line.
@@ -183,9 +178,17 @@ def _normalize_directive(text: str) -> str:
     Returns:
         str: The directive, starting with `#` immediately followed by its keyword.
     """
-    words = _COMMENT.sub(" ", text).replace("\\\n", " ").split()
-    normalized = " ".join(words)
-    return re.sub(r"^#\s+", "#", normalized)
+    parts: list[str] = []
+    separated = False
+    for match in _TOKEN.finditer(text):
+        if match.lastgroup in ("space", "newline", "comment"):
+            separated = True
+            continue
+        if separated and parts:
+            parts.append(" ")
+        parts.append(match.group())
+        separated = False
+    return re.sub(r"^#\s+", "#", "".join(parts))
 
 
 def _opens_linkage_block(tokens: list[_Token]) -> bool:
@@ -222,6 +225,7 @@ def _split_items(tokens: list[_Token]) -> list[_Item]:
     """
     items: list[_Item] = []
     pending: list[_Token] = []
+    body_offsets: list[int] = []  # The `{` tokens in `pending` that open a function body.
     in_function_body = False
     for token in tokens:
         if token.is_directive and not pending and token.depth == 0:
@@ -234,16 +238,20 @@ def _split_items(tokens: list[_Token]) -> list[_Item]:
                 pending = []
             else:
                 in_function_body = _opens_function_body(pending[:-1])
+                if in_function_body:
+                    body_offsets.append(token.offset)
         elif token.depth == 0 and token.text == "}":
             items.append(_make_item(pending, "linkage"))
             pending = []
         elif token.depth == 1 and token.text == "}" and in_function_body:
-            items.append(_make_item(pending, "function"))
+            items.append(_make_item(pending, "function", tuple(body_offsets)))
             pending = []
+            body_offsets = []
             in_function_body = False
         elif token.depth == 0 and token.text == ";":
             items.append(_make_item(pending, "declaration"))
             pending = []
+            body_offsets = []
     if pending:
         items.append(_make_item(pending, "incomplete"))
     return items
@@ -255,7 +263,8 @@ def _opens_function_body(prefix: list[_Token]) -> bool:
     It does not when the item has an initializer (`= {`), or names a `struct`, `union` or `enum`
     with no parameter list after the keyword (a type definition). Only keywords outside
     parentheses count: the `struct` in `void f(struct S *s) {` belongs to a parameter, and the
-    brace still opens the body of `f`.
+    brace still opens the body of `f`. Attributes are ignored, so the parentheses of
+    `struct __attribute__((packed)) S {` are not a parameter list.
 
     Args:
         prefix (list[_Token]): The item's tokens before the `{`.
@@ -263,7 +272,7 @@ def _opens_function_body(prefix: list[_Token]) -> bool:
     Returns:
         bool: True iff the brace opens a function body.
     """
-    texts = [token.text for token in prefix if not token.is_directive]
+    texts = _without_attributes([token.text for token in prefix if not token.is_directive])
     if "=" in texts:
         return False
     last_aggregate = -1
@@ -278,12 +287,14 @@ def _opens_function_body(prefix: list[_Token]) -> bool:
     return "(" in texts[last_aggregate + 1 :]
 
 
-def _make_item(tokens: list[_Token], kind: str) -> _Item:
+def _make_item(tokens: list[_Token], kind: str, body_offsets: tuple[int, ...] = ()) -> _Item:
     """Build an item from its tokens.
 
     Args:
         tokens (list[_Token]): The item's tokens.
         kind (str): The item's kind.
+        body_offsets (tuple[int, ...]): For a function, the offsets of the braces that open its
+            body; at least one.
 
     Returns:
         _Item: The item, with the name it introduces when that can be told.
@@ -293,7 +304,10 @@ def _make_item(tokens: list[_Token], kind: str) -> _Item:
         match = _DIRECTIVE_HEAD.match(texts[0])
         name = match.group(2) or None if match else None
     elif kind == "function":
-        name = _function_name(texts)
+        # The parameter list is the last parenthesized group before the body. A `{` before the
+        # body, as in a `struct` defined in the return type, does not end the search.
+        body = next(index for index, token in enumerate(tokens) if token.offset == body_offsets[0])
+        name = _name_before_last_group(texts[:body])
     elif kind == "declaration":
         name = _declared_name(texts)
     else:
@@ -304,34 +318,8 @@ def _make_item(tokens: list[_Token], kind: str) -> _Item:
         name=name,
         start=tokens[0].offset,
         end=tokens[-1].end,
+        body_offsets=body_offsets,
     )
-
-
-def _function_name(texts: tuple[str, ...]) -> str | None:
-    """Return the name a function definition defines.
-
-    The name is the identifier before the parameter list, and the parameter list is the last
-    parenthesized group before the body.
-
-    Args:
-        texts (tuple[str, ...]): The definition's tokens.
-
-    Returns:
-        str | None: The name, or None when the shape is not recognised.
-    """
-    depth = 0
-    body = None
-    for index, text in enumerate(texts):
-        if text == "{":
-            if depth == 0:
-                body = index
-                break
-            depth += 1
-        elif text == "}":
-            depth -= 1
-    if body is None:
-        return None
-    return _name_before_last_group(texts[:body])
 
 
 def _name_before_last_group(texts: tuple[str, ...]) -> str | None:
@@ -373,26 +361,31 @@ def _declared_name(texts: tuple[str, ...]) -> str | None:
     body = [text for text in texts[:-1] if not text.startswith("#")]
     if not body:
         return None
-    top_level = _top_level(body)
-    if (
-        body[0] in _AGGREGATE_KEYWORDS
-        and len(body) > 2
-        and _IDENTIFIER.match(body[1])
-        and body[2] == "{"
-        and body[-1] == "}"
-    ):
-        return body[1]
+    top_level = _without_attributes(_top_level(body))
     if "=" in top_level:
         top_level = top_level[: top_level.index("=")]
-    for index in range(len(top_level) - 3):
-        if top_level[index : index + 2] == ["(", "*"] and top_level[index + 3] == ")":
+    # A pointer declarator `( * name )` outside every parameter list, as in `int (*fp)(int);`.
+    parentheses = 0
+    for index, text in enumerate(top_level):
+        if (
+            parentheses == 0
+            and top_level[index : index + 2] == ["(", "*"]
+            and top_level[index + 3 : index + 4] == [")"]
+        ):
             return top_level[index + 2] if _IDENTIFIER.match(top_level[index + 2]) else None
+        if text == "(":
+            parentheses += 1
+        elif text == ")":
+            parentheses = max(parentheses - 1, 0)
     if body[0] != "typedef" and "(" in top_level:
         candidate = top_level[top_level.index("(") - 1] if top_level.index("(") > 0 else ""
         return candidate if _IDENTIFIER.match(candidate) else None
     if "[" in top_level:
         top_level = top_level[: top_level.index("[")]
     candidate = top_level[-1] if top_level else ""
+    # An anonymous `enum { ... };` has no name.
+    if candidate in _AGGREGATE_KEYWORDS:
+        return None
     return candidate if _IDENTIFIER.match(candidate) else None
 
 
@@ -417,4 +410,34 @@ def _top_level(texts: list[str]) -> list[str]:
             depth -= 1
         elif depth == 0:
             kept.append(text)
+    return kept
+
+
+def _without_attributes(texts: list[str]) -> list[str]:
+    """Return the tokens of a declaration without its attributes and asm labels.
+
+    Args:
+        texts (list[str]): The declaration's tokens.
+
+    Returns:
+        list[str]: The tokens, without each keyword in `_ATTRIBUTE_KEYWORDS` that is followed by a
+            parenthesized group, and without that group.
+    """
+    kept: list[str] = []
+    index = 0
+    while index < len(texts):
+        if texts[index] in _ATTRIBUTE_KEYWORDS and texts[index + 1 : index + 2] == ["("]:
+            parentheses = 0
+            index += 1
+            while index < len(texts):
+                if texts[index] == "(":
+                    parentheses += 1
+                elif texts[index] == ")":
+                    parentheses -= 1
+                index += 1
+                if parentheses == 0:
+                    break
+            continue
+        kept.append(texts[index])
+        index += 1
     return kept
