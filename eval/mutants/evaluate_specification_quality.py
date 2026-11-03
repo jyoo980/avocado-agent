@@ -164,7 +164,7 @@ def _process_file(
                 out.write(json.dumps(result) + "\n")
         if run_redundancy:
             if clause_redundancy_score := compute_clause_redundancy_score(
-                str(source), function, keep_artifacts=keep_artifacts
+                str(source), function, keep_artifacts=keep_artifacts, include_dirs=include_dirs
             ):
                 out.write(json.dumps(clause_redundancy_score.summary()) + "\n")
             else:

@@ -1,9 +1,10 @@
 """Choose the include directories to pass to CBMC."""
 
-import os
 from pathlib import Path
 
 from loguru import logger
+
+from .paths import resolve_parent
 
 AUTO_INCLUDE_HELP = (
     "For a C file <project>/src/<name>.c, pass <project>/include to CBMC as an include path "
@@ -54,8 +55,10 @@ def get_include_dirs(source_file: str, include_dirs: list[str], *, auto_include:
     first searches the directory of the file that contains the directive. For example, if
     `<project>/include/a.h` includes `"b.h"`, it gets `<project>/include/b.h` even when an
     explicitly given directory also contains a `b.h`.
-    `<project>` is determined from `source_file` as written, without following symlinks, so a
-    symlinked source file uses the `include/` directory of the project that contains the symlink.
+    `<project>` is determined from the directory that contains `source_file`, without following
+    `source_file` itself if it is a symlink, so a symlinked source file uses the `include/`
+    directory of the project that contains the symlink. Symlinks and `..` in the directory are
+    resolved as the filesystem resolves them.
 
     Args:
         source_file (str): Path to a `.c` file.
@@ -71,8 +74,7 @@ def get_include_dirs(source_file: str, include_dirs: list[str], *, auto_include:
     """
     result = list(include_dirs)
     if auto_include:
-        # Unlike `Path.resolve`, `os.path.abspath` does not follow symlinks.
-        source_dir = Path(os.path.abspath(source_file)).parent  # ruff: ignore[os-path-abspath] - must not follow symlinks.
+        source_dir = resolve_parent(source_file).parent
         detected = source_dir.parent / "include"
         if source_dir.name == "src" and detected.is_dir():
             # Resolve `detected` as `resolve_include_dirs` resolves `include_dirs`, so that a

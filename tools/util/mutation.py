@@ -27,6 +27,7 @@ from eval.mutants.util import (
 from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import CbmcStep, run_cbmc
 from tools.util.callgraph import CallGraph
+from tools.util.paths import resolve_parent
 
 # Matches the GNU `timeout(1)` convention used elsewhere in the codebase; surfaces in
 # MutantVerificationResult.returncode so consumers can distinguish a timed-out run from a
@@ -281,9 +282,9 @@ def generate_mutants_and_compute_score(
     Returns:
         MutationTestingResult: The result of running mutation testing on the target function.
     """
-    # Unlike `Path.resolve`, `os.path.abspath` does not follow symlinks, so the mutants of a
-    # symlinked file see the same quoted `#include`s as the file itself.
-    source_path = Path(os.path.abspath(file_path))  # ruff: ignore[os-path-abspath] - must not follow symlinks.
+    # A symlinked file is not followed, so its mutants are written next to the symlink and see the
+    # same quoted `#include`s as the file itself.
+    source_path = resolve_parent(file_path)
     mutants = get_mutants(str(source_path), target_function)
     if not mutants:
         return NoMutantsGenerated(file_path, target_function)

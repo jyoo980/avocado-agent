@@ -20,7 +20,6 @@ Usage:
 
 import argparse
 import json
-import os
 import shlex
 import subprocess
 import sys
@@ -37,7 +36,7 @@ from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
 from tools.run_cbmc import RunCbmcResult, run_cbmc
 from tools.run_cbmc_and_mutation_testing import VERIFICATION_ATTEMPTS_LOG_SUFFIX
-from tools.util import AUTO_INCLUDE_HELP, get_include_dirs
+from tools.util import AUTO_INCLUDE_HELP, get_include_dirs, resolve_parent
 from tools.util.callgraph import CallGraph
 
 # Per-function wall-clock budget for a single `claude -p` session. A session may run CBMC
@@ -238,10 +237,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Unlike `Path.resolve`, `os.path.abspath` does not follow symlinks. Therefore, a symlinked
-    # file is compiled, and its mutants are written, in the directory that contains the symlink,
-    # which is also where `get_include_dirs` looks for the `include/` directory.
-    file_path = Path(os.path.abspath(args.file))  # ruff: ignore[os-path-abspath] - must not follow symlinks.
+    # A symlinked file is not followed. Therefore, it is compiled, and its mutants are written, in
+    # the directory that contains the symlink, which is also where `get_include_dirs` looks for
+    # the `include/` directory.
+    file_path = resolve_parent(args.file)
     if not file_path.is_file():
         logger.error(f"No such file: {file_path}")
         sys.exit(1)

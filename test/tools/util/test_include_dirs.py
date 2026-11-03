@@ -97,3 +97,16 @@ def test_get_include_dirs_symlinked_source(tmp_path: Path) -> None:
     include = tmp_path / "proj" / "include"
     include.mkdir()
     assert get_include_dirs(str(source), [], auto_include=True) == [str(include.resolve())]
+
+
+def test_get_include_dirs_dotdot_after_symlinked_dir(tmp_path: Path) -> None:
+    # `work/link/../src/foo.c` names `project/src/foo.c`, not `work/src/foo.c`.
+    (tmp_path / "project" / "subdir").mkdir(parents=True)
+    (tmp_path / "project" / "src").mkdir()
+    include = tmp_path / "project" / "include"
+    include.mkdir()
+    (tmp_path / "work" / "src").mkdir(parents=True)
+    (tmp_path / "work" / "include").mkdir()
+    _symlink_or_skip(tmp_path / "work" / "link", tmp_path / "project" / "subdir")
+    source = str(tmp_path / "work" / "link" / ".." / "src" / "foo.c")
+    assert get_include_dirs(source, [], auto_include=True) == [str(include.resolve())]
