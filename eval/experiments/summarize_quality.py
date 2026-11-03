@@ -21,6 +21,8 @@ mean, spread (min..max), and standard deviation of both aggregates and of the co
 which is the noise floor for agent-time experiments.  A file without the aggregates is left out of
 their statistics in that block.  A file with no mutation summary records, such as the output of a
 failed run, is reported, left out of that block, and makes the script exit with a non-zero status.
+The script rejects a file whose name ends in `.failed`, which `measure_quality.sh` gives to the
+JSONL file of a failed or interrupted run.
 
 Usage:
     % eval/experiments/summarize_quality.py <JSONL> [<JSONL> ...] [--quiet]
@@ -50,6 +52,12 @@ def main() -> None:
     )
     parser.add_argument("--quiet", action="store_true", help="Only print the aggregates.")
     args = parser.parse_args()
+    # `measure_quality.sh` renames the JSONL file of a failed or interrupted run to end in
+    # `.failed`.  Such a file can hold valid records for the functions that finished, which would
+    # skew the aggregates.
+    failed_runs = [path for path in args.jsonl if path.endswith(".failed")]
+    if failed_runs:
+        parser.error(f"output of a failed run: {', '.join(failed_runs)}")
 
     aggregates: list[dict[str, float | int | None]] = []
     files_without_records: list[str] = []
