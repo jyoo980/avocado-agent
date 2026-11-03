@@ -52,16 +52,24 @@ def construct_call_graph(
     # scoring several functions of one file at once), in one process or several. Write to a
     # uniquely named sibling and rename it into place, so that a concurrent reader sees either the
     # previous file or a complete new one, never a partially written one.
-    with tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        dir=path_to_call_graph.parent,
-        prefix=f".{path_to_call_graph.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as tmp:
-        tmp.write(json.dumps(call_graph, indent=4))
-    Path(tmp.name).replace(path_to_call_graph)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path_to_call_graph.parent,
+            prefix=f".{path_to_call_graph.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            tmp.write(json.dumps(call_graph, indent=4))
+        tmp_path.replace(path_to_call_graph)
+    finally:
+        # After a successful replace the temporary path no longer exists; after a failure, this
+        # removes the abandoned temporary file.
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
     return str(path_to_call_graph)
 
 

@@ -338,6 +338,8 @@ def compute_clause_redundancy_score(
         if not keep_artifacts:
             for path in paths_to_removed_clauses:
                 path.unlink(missing_ok=True)
+                # `run_cbmc` writes a call-graph sidecar next to each mutant it verifies.
+                path.with_name(f"{path.stem}-callgraph.json").unlink(missing_ok=True)
 
     return _aggregate_clause_redundancy_score(
         in_isolation_results,
