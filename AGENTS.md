@@ -69,7 +69,10 @@ nothing, every mutant survives it, and it does not count as verified.
 
 `avocado-run-cbmc` checks each passing run with one more CBMC run, on a copy of your file to which
 it adds a false postcondition and a false assertion at the top of the body, so do not probe by hand
-whether a proof is vacuous. It reports `VACUOUS` with one of two causes:
+whether a proof is vacuous. If no execution enters the body, it makes a further run without CBMC's
+`--depth` bound; if an execution then enters the body, the depth bound (not your preconditions) is
+what kept executions out, and the original pass stands as verified. Otherwise it reports `VACUOUS`
+with one of two causes:
 
 - **The preconditions cannot all hold** (no execution enters the body). Remove the
   `__CPROVER_requires` clauses one at a time and re-run to find the one responsible, then restate
