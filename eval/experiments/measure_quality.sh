@@ -13,6 +13,9 @@
 # Example (baseline over the iteration tier):
 #   eval/experiments/measure_quality.sh baseline eval/benchmarks/quicksort eval/benchmarks/csv_parser
 #
+# Setting `AVOCADO_DATA_DIR` writes the `.jsonl` and `.time` files there instead of to this
+# checkout's `avocado-experimental-data/`.
+#
 # The benchmark name used in output file names is the directory's basename (e.g. `quicksort`).
 # Benchmarks are processed sequentially so timings are not perturbed by one another.  If the
 # evaluation of a benchmark fails, its status line says `status=failed`, its JSONL file (if any) is
@@ -53,8 +56,10 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # `uv run --project` uses this checkout's virtual environment, not that of `VIRTUAL_ENV` or of the
 # current directory.
 unset VIRTUAL_ENV
-out_dir="${repo_root}/avocado-experimental-data"
+out_dir="${AVOCADO_DATA_DIR:-${repo_root}/avocado-experimental-data}"
 mkdir -p "${out_dir}"
+# Absolute, because the script changes directory before writing there.
+out_dir="$(realpath -- "${out_dir}")"
 # `--dirty` marks a measurement of uncommitted changes.  The commit is `unknown` if the checkout has
 # no git metadata, as in a Docker image built without `.git`.
 commit="$(git -C "${repo_root}" describe --always --dirty 2>/dev/null || echo unknown)"
