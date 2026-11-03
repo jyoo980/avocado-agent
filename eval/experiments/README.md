@@ -140,12 +140,16 @@ saves its transcript and records exit code `143`.
 
 ### Resuming Stopped Runs
 
-An `avocado-verify` run that stopped early can be continued. When a session hits a
-subscription usage limit, the `avocado_verify` script stops by itself: it writes a `run_summary`
-record with `"status": "usage_limited"` and functions that still require processsing, and exits.
+An `avocado-verify` run that stopped early can be continued. A run stops early, and records a
+non-zero `exit-code`, in one of these ways:
 
-Runs that are also cut off due to a timeout or a kill signal can be continued the same way:
+- `2`: a session hit a subscription usage limit. The driver stops by itself: it writes a
+  `run_summary` record with `"status": "usage_limited"` and the functions still to process,
+  and exits.
+- `124`: the run hit `--timeout`.
+- `137` or `143`: the container was killed, `143` when its batch was stopped with `kill`.
 
+`--resume` continues **one** run, given its run directory:
 
 ```sh
 % eval/experiments/run.sh --resume ~/.local/share/avocado-experiments/<tag>/<batch>/run-1
@@ -160,6 +164,25 @@ and profile default to those in the stopped batch's `batch-info.txt`, which for 
 also records `resumed_from`. `--profile` may name another account, as long as it sets the same
 `AVOCADO_MODEL`; `--timeout`, `--memory` and `--cpus` are not carried over, so pass them again.
 The `claude` runner (one session) cannot be resumed.
+
+#### Resuming a stopped batch
+
+There is no batch-level resume. To continue a batch, resume each of its stopped runs on its own;
+each becomes a new single-run batch under the same tag. Runs with exit code `0` are complete and
+need nothing. Each `--resume` blocks until its run ends, so put it in the background (`&`) to
+resume several runs at once:
+
+```sh
+% BATCH=~/.local/share/avocado-experiments/<tag>/<batch>
+% for run in "$BATCH"/run-*/; do
+    case "$(cat "$run/exit-code")" in
+      2|124|137|143) eval/experiments/run.sh --resume "$run" --memory 100g & ;;
+    esac
+  done
+```
+
+A batch that hits a usage limit still starts every run, and each of those runs stops on the
+limit with exit code `2`. All of them can therefore be resumed this way.
 
 ## Step 4: read the results
 

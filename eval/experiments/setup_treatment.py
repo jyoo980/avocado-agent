@@ -1,4 +1,37 @@
 #!/usr/bin/env python
+"""Executable script to set up per-treatment clones of the `avocado-agent` repository.
+
+A treatment corresponds to a configuration of the `avocado-agent` system with or without components
+enabled (e.g., tools, curated documentation, mutation testing). Treatments exist as branches on
+the `avocado-agent` repository. For example, `avocado-agent` with mutation testing removed (i.e.,
+ablated) lives at `yoo/treatments/avocado-minus-mutation-testing`.
+
+This script must be run with a `BACKEND_MODEL` argument which specifies what LLM drives the harness.
+An optional `--treatment` argument may also be supplied.
+
+To set up the full set of treatments using `opus-4-8` as the backend model, a user can run:
+
+    % uv run python3 eval/experiments/setup_treatment.py opus-4-8
+
+This will clone all treatments into a subdirectory named `opus-4-8` where the script is executed,
+e.g.,
+    opus-4-8/
+        pure-agentic-baseline/
+        full-avocado/
+        avocado-minus-docs/
+        avocado-minus-tools/
+        avocado-minus-mutation-testing/
+        avocado-minus-harness/
+        avocado-minus-tools-minus-docs/
+
+To clone a single treatment for a model (e.g., the -docs treatment for opus-5-5), you can run:
+
+    % uv run python3 eval/experiments/setup_treatment.py opus-5-5 --treatment avocado-minus-docs
+
+Usage:
+    % uv run python3 eval/experiments/setup_treatment.py BACKEND_MODEL [--treatment]
+
+"""
 
 import argparse
 import subprocess
@@ -96,6 +129,8 @@ def _create_treatment_dir(backend_model: str, clone_cmds: list[str]) -> None:
 
     for cmd in clone_cmds:
         clone_result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+        if clone_result.returncode != 0:
+            print(f"Error while running: {cmd}\n{clone_result.stderr}")
     
 if __name__ == "__main__":
     main()
