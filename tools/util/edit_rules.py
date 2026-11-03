@@ -513,8 +513,8 @@ def _declared_name(texts: tuple[str, ...]) -> str | None:
         elif text == ")":
             parentheses = max(parentheses - 1, 0)
     if body[0] != "typedef" and "(" in top_level:
-        candidate = top_level[top_level.index("(") - 1] if top_level.index("(") > 0 else ""
-        return candidate if _IDENTIFIER.match(candidate) else None
+        # A prototype is named like a definition, so `int (*get(void))(int);` declares `get`.
+        return _name_before_last_group(top_level)
     if "[" in top_level:
         top_level = top_level[: top_level.index("[")]
     candidate = top_level[-1] if top_level else ""

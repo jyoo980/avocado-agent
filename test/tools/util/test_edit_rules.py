@@ -201,6 +201,13 @@ def test_a_function_that_returns_a_function_pointer_is_named() -> None:
     assert _names(b"int (isalpha)(int c) { return c; }") == ["isalpha"]
 
 
+def test_a_prototype_is_named_like_its_definition() -> None:
+    assert _names(b"int (*get(void))(int);") == ["get"]
+    assert _names(b"void (*signal(int s, void (*h)(int)))(int);") == ["signal"]
+    assert _names(b"int (isalpha)(int c);") == ["isalpha"]
+    assert _names(b"int f(int x);") == ["f"]
+
+
 def test_an_attribute_macro_after_an_aggregate_keyword_does_not_make_a_function() -> None:
     items = _split_items(_tokenize(b"struct ALIGNED(8) S { int a; };\nstruct S f(void) { }\n"))
     assert [(item.kind, item.name) for item in items] == [
