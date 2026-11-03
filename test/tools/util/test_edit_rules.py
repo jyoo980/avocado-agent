@@ -86,6 +86,28 @@ def test_each_branch_header_gives_its_own_body_brace_its_own_name() -> None:
     assert function_body_offsets(source, "g") == [source.index(b"{", source.index(b"int g"))]
 
 
+def test_a_function_followed_by_macros_is_found_under_its_own_name() -> None:
+    source = (
+        b"int f(int x) REQUIRES(x > 0) {\n  return x;\n}\n"
+        b"int g(int x) REQUIRES(x > 0) ENSURES(1) {\n  return x;\n}\n"
+    )
+    assert function_body_offsets(source, "f") == [source.index(b"{")]
+    assert function_body_offsets(source, "g") == [source.index(b"{", source.index(b"int g"))]
+
+
+def test_a_function_after_a_macro_return_type_is_found_under_its_own_name() -> None:
+    source = b"LIST(int) f(void) {\n  return 0;\n}\n"
+    assert function_body_offsets(source, "f") == [source.index(b"{")]
+    assert _names(source) == ["f"]
+
+
+def test_a_parenthesized_declarator_is_not_taken_for_a_macro() -> None:
+    source = b"int (*get(void))(int) {\n  return 0;\n}\nint (h)(int x) {\n  return x;\n}\n"
+    assert _names(source) == ["get", "h"]
+    assert len(function_body_offsets(source, "get")) == 1
+    assert len(function_body_offsets(source, "h")) == 1
+
+
 def test_braces_opened_in_each_branch_of_a_conditional_inside_a_body_count_once() -> None:
     source = (
         b"int f(int a) {\n#ifdef X\n  if (a) {\n#else\n  if (!a) {\n#endif\n"
