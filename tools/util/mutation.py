@@ -21,8 +21,10 @@ from loguru import logger
 
 from eval.mutants.mutate_function import Mutant, get_mutants
 from eval.mutants.util import (
+    MUTANT_INFIX,
     check_expected_cbmc_return_code,
     is_valid_mutation_candidate,
+    write_mutant_sources,
 )
 from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import CbmcStep, run_cbmc
@@ -264,7 +266,8 @@ def generate_mutants_and_compute_score(
     """Return the mutation testing result for `target_function` in `file_path`.
 
     Mutant `.c` files are written next to the original source, so that a quoted `#include` finds
-    the same header for a mutant as for the original source. Mutants are removed unless
+    the same header for a mutant as for the original source. Their names are unique to this run
+    (see `write_mutant_sources()`), and no existing file is overwritten. Mutants are removed unless
     keep_artifacts is set to `True`.
 
     Args:
@@ -301,9 +304,14 @@ def generate_mutants_and_compute_score(
         json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
     )
 
-    paths_to_mutants = {
-        _get_path_for_mutated_source(source_path, i): mutant for i, mutant in enumerate(mutants)
-    }
+    # Only the files created here are removed in the `finally` block below.
+    paths_to_mutants = dict(
+        zip(
+            write_mutant_sources(source_path, MUTANT_INFIX, [m.mutant_source for m in mutants]),
+            mutants,
+            strict=True,
+        )
+    )
     # Heads-up to stderr so an agent polling the run can see the slow phase has begun and is
     # making progress. Written to stderr (not stdout) so it never contaminates the kill-score
     # result, and flushed so it is not buffered until the long run completes.
@@ -453,7 +461,7 @@ def _verify_mutant(
     and the shared `call_graph` is read-only.
 
     Args:
-        path_to_write_mutant (Path): The path to which the mutated source is written.
+        path_to_write_mutant (Path): The path to which the mutated source has been written.
         mutant (Mutant): The mutant.
         include_dirs (list[str] | None): Include directories, which are forwarded to `run_cbmc()`.
         call_graph (CallGraph): The original function's call graph, reused verbatim for this
@@ -465,7 +473,6 @@ def _verify_mutant(
             `compile_failed` is True iff goto-cc rejected the source, in which case CBMC was
             not run.
     """
-    path_to_write_mutant.write_text(mutant.mutant_source, encoding="utf-8")
     # The CBMC pipeline writes intermediate `<function>.goto` / `checking-<function>-contracts.goto`
     # files named only by the function name -- identical across all mutants of one function -- into
     # its working directory. Give each run a private scratch dir so concurrent mutants don't clobber
@@ -521,23 +528,4 @@ def _verify_mutant(
         path_to_mutant=str(path_to_write_mutant),
         killed=cbmc_result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
         returncode=cbmc_result.returncode,
-    )
-
-
-def _get_path_for_mutated_source(path_to_original_source: Path, index: int) -> Path:
-    """Return the path to which to write a mutated source file.
-
-    The mutated source file is in the same directory as the original source file. For example,
-    given the path `/app/test/data/foo.c` and the index 1, return
-    `/app/test/data/foo__mutant_1.c`.
-
-    Args:
-        path_to_original_source (Path): A path to an original source file.
-        index (int): The index of the mutant, used as a identifier for the mutant source path.
-
-    Returns:
-        Path: The path to which to write a mutated source file.
-    """
-    return path_to_original_source.with_name(
-        f"{path_to_original_source.stem}__mutant_{index}{path_to_original_source.suffix}"
     )
