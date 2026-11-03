@@ -80,6 +80,12 @@ def test_a_header_that_differs_between_branches_has_one_body_offset_per_header()
     assert len(function_body_offsets(source, "g")) == 1
 
 
+def test_each_branch_header_gives_its_own_body_brace_its_own_name() -> None:
+    source = b"#ifdef X\nint f(int a) {\n#else\nint g(int a) {\n#endif\n  return a;\n}\n"
+    assert function_body_offsets(source, "f") == [source.index(b"{")]
+    assert function_body_offsets(source, "g") == [source.index(b"{", source.index(b"int g"))]
+
+
 def test_braces_opened_in_each_branch_of_a_conditional_inside_a_body_count_once() -> None:
     source = (
         b"int f(int a) {\n#ifdef X\n  if (a) {\n#else\n  if (!a) {\n#endif\n"
