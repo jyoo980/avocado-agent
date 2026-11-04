@@ -39,7 +39,7 @@ from tools.util.callgraph import CallGraph
 # Per-function wall-clock budget for a single `claude -p` session. A session may run CBMC
 # several times (each with its own multi-minute timeout) across the coverage and quality
 # passes, so this default is deliberately generous. The budget is wall-clock time, so it also
-# counts the time those CBMC runs spend waiting for a machine-wide subprocess slot (see
+# counts the time those CBMC runs spend waiting for a shared subprocess slot (see
 # `tools.run_cbmc.run_shell_command`) while other processes use the slots.
 _DEFAULT_CLAUDE_TIMEOUT_SEC = 1800
 

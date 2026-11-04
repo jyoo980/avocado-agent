@@ -78,12 +78,15 @@ _CALLEE_NOT_COMPILED = re.compile(r"Function '([^']+)' was not found in the GOTO
 # available] */`. A contract is listed under the function's name with a `contract::` identifier.
 _LISTED_FUNCTION = re.compile(r"^(\S+) /\* (\S+?)(, body not available)? \*/$")
 
-# Machine-wide cap on how many pipeline subprocesses (`goto-cc`, `goto-instrument`, `cbmc`) may run
-# at once. Pipelines are spawned concurrently both within a process (mutants of one function run
-# in a thread pool) and across processes (for example, several `avocado-run-cbmc` invocations at
-# once), and without a shared bound the product of those fan-outs could oversubscribe the machine,
-# turning slow-but-decidable CBMC runs into timeouts. See `max_concurrent_subprocesses` for how the
-# cap is chosen and `run_shell_command` for how it is enforced.
+# Cap on how many pipeline subprocesses (`goto-cc`, `goto-instrument`, `cbmc`) may run at once,
+# shared by all processes of one user that have the same temporary directory (see `_SLOT_DIR`).
+# It is not host-wide: separate containers, or process trees with different `TMPDIR` values, each
+# get their own cap. Pipelines are spawned concurrently both within a process (mutants of one
+# function run in a thread pool) and across processes (for example, several `avocado-run-cbmc`
+# invocations at once), and without a shared bound the product of those fan-outs could
+# oversubscribe the machine, turning slow-but-decidable CBMC runs into timeouts. See
+# `max_concurrent_subprocesses` for how the cap is chosen and `run_shell_command` for how it is
+# enforced.
 _MAX_CONCURRENT_SUBPROCESSES_ENV_VAR = "AVOCADO_MAX_CONCURRENT_CBMC"
 _DEFAULT_MAX_CONCURRENT_SUBPROCESSES = 32
 
