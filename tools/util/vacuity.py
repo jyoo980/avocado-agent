@@ -21,8 +21,8 @@ whose body starts with the false assertion followed by `__CPROVER_assume(0)`, CB
 the depth bound. Every path ends at the top of the body, so the run stays short. If the assertion
 fails, the preconditions can hold and the depth bound was what kept executions out of the body
 (`DEPTH_LIMIT_REACHED`). That is not counted as vacuous: like an `UNKNOWN` result, the pass stands.
-Only when that run passes cleanly are the preconditions reported unsatisfiable; if it gives no
-answer (for example, it times out), the result is `UNKNOWN`.
+Only a pass of this second run shows that the preconditions cannot all hold; when it gives no
+answer (it times out, say), the result is `UNKNOWN`.
 
 The copies live in a temporary directory and are never seen by a session or by a merge.
 """
@@ -234,7 +234,8 @@ def classify_entry_probe_run(result: RunCbmcResult) -> VacuityCheckResult:
         VacuityCheckResult: `DEPTH_LIMIT_REACHED` when the entry probe fails, so that an
             execution enters the body once the bound is lifted; `UNSATISFIABLE_PRECONDITIONS`
             when the run passes, so that no execution enters the body even without the bound;
-            `UNKNOWN`, with a message, when the run gave no answer (such as a timeout).
+            `UNKNOWN`, with a message, when the run gives no answer (a timeout or any other
+            failure), so that the pass stands.
     """
     if result.failed_step is CbmcStep.CBMC and not result.timed_out:
         failures = [

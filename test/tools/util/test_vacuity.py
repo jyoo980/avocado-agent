@@ -228,7 +228,7 @@ def test_the_run_without_the_depth_bound_tells_the_depth_limit_from_a_contradict
     not_entered = _probe_run(returncode=0, failed_step=None, response="f verified successfully")
     result = classify_entry_probe_run(not_entered)
     assert result.vacuity is Vacuity.UNSATISFIABLE_PRECONDITIONS and result.message == ""
-    # A run that gives no answer is inconclusive, so the pass stands, and the message says why.
+    # A run that gives no answer is inconclusive, so the pass stands, and the result says why.
     timed_out = RunCbmcResult(
         function="f", failed_step=CbmcStep.CBMC, timed_out=True, returncode=124, response=""
     )

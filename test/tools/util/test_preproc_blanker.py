@@ -143,3 +143,26 @@ def test_a_comment_that_spans_lines_continues_a_directive() -> None:
     blanked = blank_preprocessor_conditionals(source)
     _assert_invariants(source, blanked)
     assert blanked == b"#endif /* x\n } */\nint f(void)\n{\n     \n    return 1;\n      \n}\n"
+
+
+def test_a_block_comment_before_the_hash_does_not_hide_a_directive() -> None:
+    source = (
+        b"/* note */ #if 0\nint dead(void) { return 0; }\n#endif\nint live(void) { return 1; }\n"
+    )
+    blanked = blank_preprocessor_conditionals(source)
+    _assert_invariants(source, blanked)
+    assert b"dead" not in blanked, f"Expected the #if 0 branch to be blanked, got {blanked!r}"
+    assert b"live" in blanked, f"Expected the code after #endif to be kept, got {blanked!r}"
+
+
+def test_a_crlf_line_continuation_continues_a_directive() -> None:
+    # The `{` on the continuation line is part of the `#define`, so `f` is at depth 1 and its
+    # directives are blanked; and the backslash-CRLF inside `#if` still yields `#if 0`.
+    source = (
+        b"#define OPEN \\\r\n  {\r\nint f(void)\r\n{\r\n#if A\r\n    return 1;\r\n#endif\r\n"
+        b"#if \\\r\n 0\r\n    dead();\r\n#endif\r\n}\r\n"
+    )
+    blanked = blank_preprocessor_conditionals(source)
+    _assert_invariants(source, blanked)
+    assert b"#if A" not in blanked, f"Expected the in-body directive to be blanked, got {blanked!r}"
+    assert b"dead" not in blanked, f"Expected the #if 0 branch to be blanked, got {blanked!r}"
