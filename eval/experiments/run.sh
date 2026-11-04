@@ -185,7 +185,7 @@ HARNESS_FILES=(AGENTS.md CLAUDE.md docs)
 # is for developers working on the harness and must never reach the agent; the agent's settings
 # are docker/claude.settings.json. A treatment checkout from before that split has only
 # .claude/settings.json, which there is the agent's, so it is used when
-# docker/claude.settings.json is absent.
+# docker/claude.settings.json is absent and has never been committed in the checkout's history.
 AGENT_SETTINGS=""
 if tracked docker/claude.settings.json; then
   AGENT_SETTINGS=docker/claude.settings.json
@@ -193,9 +193,18 @@ elif [ -e "$HARNESS_ROOT/docker/claude.settings.json" ]; then
   # Falling back here would hand the agent the developers' settings.
   echo "$HARNESS_ROOT/docker/claude.settings.json is not tracked; \`git add\` it so the agent gets its settings" >&2
   exit 1
+elif [ -n "$(git -C "$HARNESS_ROOT" log -1 --format=%h -- docker/claude.settings.json 2>/dev/null)" ]; then
+  # The checkout has the split layout, so its .claude/settings.json is the developers'.
+  echo "$HARNESS_ROOT has deleted docker/claude.settings.json; restore it so the agent gets its settings" >&2
+  exit 1
 elif tracked .claude/settings.json; then
   AGENT_SETTINGS=.claude/settings.json
   echo "note: $HARNESS_ROOT has no docker/claude.settings.json; giving the agent its .claude/settings.json (pre-split layout)" >&2
+fi
+# cp follows a symlink, which could copy a file from outside the checkout into the snapshot.
+if [ -n "$AGENT_SETTINGS" ] && [ -L "$HARNESS_ROOT/$AGENT_SETTINGS" ]; then
+  echo "$HARNESS_ROOT/$AGENT_SETTINGS must not be a symlink" >&2
+  exit 1
 fi
 # A treatment that defines command-line tools for the agent ([project.scripts] in
 # pyproject.toml) also needs its Python package, which run-isolated.sh installs with
