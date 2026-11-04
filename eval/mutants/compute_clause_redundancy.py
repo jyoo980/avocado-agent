@@ -27,8 +27,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
+import tempfile
 from collections import Counter
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -44,13 +46,16 @@ from eval.mutants.util import (
     is_valid_mutation_candidate,
 )
 from tools.construct_call_graph import construct_call_graph
-from tools.run_cbmc import run_cbmc
+from tools.run_cbmc import RunCbmcResult, run_cbmc
 from tools.util import get_in_file_callers_of
 from tools.util.callgraph import CallGraph
 
 # Matches the GNU `timeout(1)` convention used elsewhere; surfaces in `returncode` for
 # timed-out CBMC runs so the value is distinguishable from CBMC's real 0/10 exit codes.
 _TIMEOUT_RETURNCODE = 124
+
+# The per-component file name limit (in bytes) on common filesystems (ext4, APFS, NTFS, ...).
+_MAX_FILE_NAME_BYTES = 255
 
 
 class CallerSideVerdict(StrEnum):
@@ -305,7 +310,7 @@ def compute_clause_redundancy_score(
     workspace.mkdir(parents=True, exist_ok=True)
 
     # Check that the original function verifies in the first place.
-    result = run_cbmc(function_name, file_path)
+    result = _run_cbmc_in_scratch_dir(function_name, source_path)
     if not is_valid_mutation_candidate(result):
         # No usable baseline; scoring would be meaningless without verifying the unmutated source.
         return None
@@ -422,6 +427,30 @@ def _aggregate_clause_redundancy_score(
     )
 
 
+def _run_cbmc_in_scratch_dir(function_to_verify: str, file_path: Path | str) -> RunCbmcResult:
+    """Run CBMC on a function in a private scratch working directory.
+
+    The CBMC pipeline writes intermediate `<function>.goto` / `checking-<function>-contracts.goto`
+    files, named only by the function, into its working directory. Several scoring runs (e.g. of
+    two functions that share a caller) may verify the same function concurrently, so each run gets
+    its own scratch directory to keep them from clobbering one another's goto-binaries.
+
+    Args:
+        function_to_verify (str): The function to verify.
+        file_path (Path | str): The C source file containing the function. It is resolved to an
+            absolute path, since CBMC runs in a different working directory.
+
+    Returns:
+        RunCbmcResult: The result of running CBMC.
+    """
+    with tempfile.TemporaryDirectory(prefix="avocado-clause-") as scratch_dir:
+        return run_cbmc(
+            function_to_verify=function_to_verify,
+            file_containing_function_to_verify=str(Path(file_path).resolve()),
+            cwd=scratch_dir,
+        )
+
+
 def _get_in_file_callers(source_path: Path, function_name: str) -> list[str]:
     """Return functions in a file that directly call the function with the given name.
 
@@ -451,6 +480,10 @@ def _get_path_to_source_with_removed_clause(
     concurrently -- never overwrite one another; the files still match the `*__clause_drop_*.c`
     pattern that `make clean-mutants` removes.
 
+    If the readable file name would exceed the filesystem's per-component length limit, the
+    function name is replaced by a short hash of it (and the source stem is truncated if needed),
+    so the name stays bounded while remaining distinct per function and index.
+
     Args:
         workspace_path (Path): The directory under which redundancy score computation occurs.
         path_to_original_source (Path): The path to the original source file.
@@ -460,10 +493,19 @@ def _get_path_to_source_with_removed_clause(
     Returns:
         Path: The path to which to write a mutated source file.
     """
-    return workspace_path / (
-        f"{path_to_original_source.stem}__clause_drop_{function}_{index}"
-        f"{path_to_original_source.suffix}"
-    )
+    stem = path_to_original_source.stem
+    suffix = path_to_original_source.suffix
+    name = f"{stem}__clause_drop_{function}_{index}{suffix}"
+    if len(name.encode("utf-8")) <= _MAX_FILE_NAME_BYTES:
+        return workspace_path / name
+
+    # Too long: replace the function name with a bounded digest of the full (stem, function)
+    # pair, so that truncating the stem cannot make two distinct inputs collide.
+    digest = hashlib.sha256(f"{stem}\0{function}".encode()).hexdigest()[:16]
+    tail = f"__clause_drop_{digest}_{index}{suffix}"
+    stem_budget = max(0, _MAX_FILE_NAME_BYTES - len(tail.encode("utf-8")))
+    truncated_stem = stem.encode("utf-8")[:stem_budget].decode("utf-8", errors="ignore")
+    return workspace_path / f"{truncated_stem}{tail}"
 
 
 def _verify_removed_clause_source(
@@ -481,10 +523,7 @@ def _verify_removed_clause_source(
     """
     path_to_write_removed_clause_mutant.write_text(clause_mutant.mutant_source, encoding="utf-8")
 
-    result = run_cbmc(
-        function_to_verify=clause_mutant.function,
-        file_containing_function_to_verify=str(path_to_write_removed_clause_mutant),
-    )
+    result = _run_cbmc_in_scratch_dir(clause_mutant.function, path_to_write_removed_clause_mutant)
     if result.timed_out:
         return ClauseRemovalVerificationResult(
             clause_mutant,
@@ -517,10 +556,7 @@ def _get_baseline_verification_results_for_callers(
     """
     baselines: dict[str, bool] = {}
     for caller in in_file_callers:
-        result = run_cbmc(
-            function_to_verify=caller,
-            file_containing_function_to_verify=str(source_path),
-        )
+        result = _run_cbmc_in_scratch_dir(caller, source_path)
         # Callers that don't verify on the unmutated source are excluded from caller-side
         # judgement via unverifiable_baseline_callers.
         baselines[caller] = is_valid_mutation_candidate(result)
@@ -566,10 +602,7 @@ def _verify_callers(
 
     caller_vresults: list[CallerVerificationResult] = []
     for caller in verifying_callers:
-        result = run_cbmc(
-            function_to_verify=caller,
-            file_containing_function_to_verify=str(mutant_path),
-        )
+        result = _run_cbmc_in_scratch_dir(caller, mutant_path)
         if result.timed_out:
             caller_vresults.append(
                 CallerVerificationResult(
