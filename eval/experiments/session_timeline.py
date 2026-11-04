@@ -6,11 +6,14 @@ Reads the Claude Code transcripts (`~/.claude/projects/<cwd>/<session>.jsonl`) o
 named in one or more `<stem>-avocado-verify.jsonl` run logs and, for each session, walks the
 timeline: a model turn runs from the previous event (the prompt, or the last tool result) to the
 turn's final assistant entry; a tool call runs from its `tool_use` to the matching `tool_result`.
-Sessions the harness killed on timeout have no terminal event, so their tail is charged to
-whatever was in flight when the transcript stops, up to the harness timeout.
+Each second is counted once: time inside a model turn is model time, and time that overlapping
+(parallel) tool calls share is split among them. Sessions the harness killed on timeout have no
+terminal event, so their tail is charged to whatever was in flight when the transcript stops, up
+to the harness timeout. Pass `--timeout` the run's `CLAUDE_TIMEOUT` when it was not the default.
 
-Prints, per arm, the split between model time and tool time (by tool kind), and the sessions that
-cost the most, so the question "what is the wall-clock actually spent on" has a measured answer.
+Prints, for all the given run logs together, the split between model time and tool time (by tool
+kind), and the sessions that cost the most, so the question "what is the wall-clock actually spent
+on" has a measured answer. To compare arms, run it once per arm, on that arm's run logs.
 
 Usage:
     % eval/experiments/session_timeline.py --projects-dir <DIR> <RUN_LOG>... \
@@ -23,7 +26,7 @@ import argparse
 import json
 import re
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 _VERIFY = re.compile(r"avocado-run-cbmc")
@@ -75,6 +78,40 @@ def _tool_kind(name: str, inp: dict) -> str:
     return "other-bash"
 
 
+def _attribute(
+    model_iv: list[tuple[datetime, datetime]], tool_iv: list[tuple[datetime, datetime, str]]
+) -> tuple[float, Counter[str]]:
+    """Attribute each second of the given intervals once, so the totals never exceed the span.
+
+    A second inside a model turn is model time. A second outside every model turn but inside one or
+    more tool calls (which overlap when the model issues parallel tool calls) is tool time, split
+    equally among those calls' kinds.
+
+    Args:
+        model_iv (list[tuple[datetime, datetime]]): The model turns, as (start, end).
+        tool_iv (list[tuple[datetime, datetime, str]]): The tool calls, as (start, end, kind).
+
+    Returns:
+        tuple[float, Counter[str]]: The model seconds and the tool seconds per kind.
+    """
+    model_iv = [(s, e) for s, e in model_iv if e > s]
+    tool_iv = [(s, e, k) for s, e, k in tool_iv if e > s]
+    points = sorted(
+        {p for s, e in model_iv for p in (s, e)} | {p for s, e, _ in tool_iv for p in (s, e)}
+    )
+    model = 0.0
+    tools: Counter[str] = Counter()
+    for a, b in zip(points, points[1:]):
+        secs = (b - a).total_seconds()
+        if any(s <= a and b <= e for s, e in model_iv):
+            model += secs
+            continue
+        active = [k for s, e, k in tool_iv if s <= a and b <= e]
+        for kind in active:
+            tools[kind] += secs / len(active)
+    return model, tools
+
+
 def analyse(path: Path, timeout: float, killed: bool) -> dict | None:
     """Return the time attribution for one session transcript.
 
@@ -104,13 +141,14 @@ def analyse(path: Path, timeout: float, killed: bool) -> dict | None:
     events = [r for r in lines if r.get("type") in ("user", "assistant") and r.get("timestamp")]
     if not events:
         return None
-    model = 0.0
-    tools: Counter[str] = Counter()
+    model_iv: list[tuple[datetime, datetime]] = []  # model turns
+    tool_iv: list[tuple[datetime, datetime, str]] = []  # tool calls: (start, end, kind)
     turns = 0
     pending: dict[str, tuple[datetime, str, str]] = {}  # tool_use_id -> (start, kind, summary)
     last_event_ts = _ts(events[0]["timestamp"])
     turn_open = False
     turn_start = last_event_ts
+    last_assistant_ts = last_event_ts
     longest: list[tuple[float, str, str]] = []
     for r in events:
         ts = _ts(r["timestamp"])
@@ -129,35 +167,40 @@ def analyse(path: Path, timeout: float, killed: bool) -> dict | None:
             last_assistant_ts = ts
         else:
             if turn_open:
-                model += (last_assistant_ts - turn_start).total_seconds()
+                model_iv.append((turn_start, last_assistant_ts))
                 turns += 1
                 turn_open = False
             if isinstance(content, list):
                 for x in content:
                     if x.get("type") == "tool_result" and x.get("tool_use_id") in pending:
                         start, kind, summary = pending.pop(x["tool_use_id"])
-                        secs = (ts - start).total_seconds()
-                        tools[kind] += secs
-                        longest.append((secs, kind, summary))
+                        tool_iv.append((start, ts, kind))
+                        longest.append(((ts - start).total_seconds(), kind, summary))
             last_event_ts = ts
     start_ts = _ts(events[0]["timestamp"])
     end = _ts(events[-1]["timestamp"])
-    span = (end - start_ts).total_seconds()
-    if killed and pending:
-        # Killed while a tool was running: the harness waited up to `timeout` in total.
-        for start, kind, summary in pending.values():
-            secs = max(0.0, timeout - (start - start_ts).total_seconds())
-            tools[kind + " (killed)"] += secs
-            longest.append((secs, kind + " (killed)", summary))
-        span = timeout
-    elif killed:
-        # Killed while the model was generating.
-        model += max(0.0, timeout - (turn_start - start_ts).total_seconds())
-        span = timeout
+    if killed:
+        # The harness killed the session `timeout` seconds after it started.
+        kill_ts = max(end, start_ts + timedelta(seconds=timeout))
+        if pending:
+            # Killed while a tool was running. An open turn generated until its last entry.
+            if turn_open:
+                model_iv.append((turn_start, last_assistant_ts))
+                turns += 1
+            for start, kind, summary in pending.values():
+                tool_iv.append((start, kill_ts, kind + " (killed)"))
+                longest.append(((kill_ts - start).total_seconds(), kind + " (killed)", summary))
+        else:
+            # Killed while the model was generating: since the open turn's start, or, if the
+            # transcript ends on a user event, since that event (earlier turns are charged already).
+            model_iv.append((turn_start if turn_open else last_event_ts, kill_ts))
+        end = kill_ts
     elif turn_open:
         # Ended normally on a final assistant message (usually the summary).
-        model += (last_assistant_ts - turn_start).total_seconds()
+        model_iv.append((turn_start, last_assistant_ts))
         turns += 1
+    model, tools = _attribute(model_iv, tool_iv)
+    span = (end - start_ts).total_seconds()
     longest.sort(reverse=True)
     return {
         "span": span,
@@ -178,7 +221,13 @@ def main() -> None:
     )
     parser.add_argument("--top", type=int, default=6, help="How many costliest sessions to list.")
     parser.add_argument(
-        "--timeout", type=float, default=1800.0, help="Harness per-session timeout."
+        "--timeout",
+        type=float,
+        default=1800.0,
+        help=(
+            "Harness per-session timeout in seconds, charged to each killed session. Pass the "
+            "run's CLAUDE_TIMEOUT when it differs from the default of 1800."
+        ),
     )
     args = parser.parse_args()
 
@@ -189,7 +238,10 @@ def main() -> None:
         for line in Path(log).read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
-            record = json.loads(line)
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # a partial line left by an interrupted write
             if "type" in record:
                 continue
             for s in record["claude"]:

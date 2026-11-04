@@ -43,8 +43,18 @@
 # Usage:
 #   eval/experiments/run.sh --subject <dir> --profile <env-file> [--file <c-file>] \
 #       [--runner auto|claude|avocado-verify] [--harness <checkout>] [--prompt <text>] \
-#       [-n 5] [-j 1] [--timeout <sec>] \
+#       [-n 5] [-j 1] [--timeout <duration>] \
 #       [--memory 32g] [--cpus 8] [--results <dir>] [--tag <name>] [--image <image>]
+#   eval/experiments/run.sh --resume <run-dir> [--profile <env-file>] [--timeout <duration>] \
+#       [--memory 32g] [--cpus 8]
+#
+# --resume continues an avocado-verify run that stopped early (on a usage limit, --timeout, or
+# `kill`), as one new run in a new batch under the same tag. The run starts from <run-dir>'s
+# subject/ (the specs written so far and the driver's logs) rather than a pristine copy, and the
+# driver is given `--resume-from <file>-avocado-verify.jsonl`, so it skips the functions already
+# processed and retries the one that was cut off. The subject, file, harness, runner and profile
+# default to those in <run-dir>'s batch-info.txt; --profile may name another account, as long as
+# it selects the same model. The resumed batch's batch-info.txt records resumed_from.
 #
 # --harness names the treatment checkout to snapshot (default: the checkout this script is in),
 # so one copy of these scripts can drive every treatment.
@@ -96,6 +106,7 @@ SUBJECT=""
 FILE=""
 PROFILE=""
 PROMPT=""
+RESUME=""
 DEFAULT_PROMPT_AGENTS="Carefully read @../AGENTS.md. Then, verify the C source files in this directory"
 DEFAULT_PROMPT_AGENTS_FILE="Carefully read @../AGENTS.md. Then, verify {file}"
 DEFAULT_PROMPT_FILE="Verify {file}"
@@ -118,13 +129,34 @@ while [ $# -gt 0 ]; do
     --results) RESULTS="$2"; shift 2 ;;
     --tag) TAG="$2"; shift 2 ;;
     --image) IMAGE="$2"; shift 2 ;;
+    --resume) RESUME="$2"; shift 2 ;;
     -h|--help) usage 0 ;;
     *) echo "unknown argument: $1" >&2; usage 1 ;;
   esac
 done
 
+# A resumed run takes whatever was not given on the command line from the stopped run's batch.
+if [ -n "$RESUME" ]; then
+  [ -d "$RESUME/subject" ] || { echo "--resume must be a run directory with a subject/: '$RESUME'" >&2; exit 1; }
+  RESUME="$(cd "$RESUME" && pwd)"
+  RESUME_INFO="$(dirname "$RESUME")/batch-info.txt"
+  [ -f "$RESUME_INFO" ] || { echo "no batch-info.txt next to '$RESUME'" >&2; exit 1; }
+  prior() { sed -n "s/^$1=//p" "$RESUME_INFO" | head -n 1; }
+  SUBJECT="${SUBJECT:-$(prior subject)}"
+  [ -n "$FILE" ] || [ "$(prior file)" = "<none>" ] || FILE="$(prior file)"
+  PROFILE="${PROFILE:-$(prior profile)}"
+  HARNESS_ROOT="${HARNESS_ROOT:-$(prior harness_dir)}"
+  [ "$RUNNER" != auto ] || RUNNER="$(prior runner)"
+  RUNNER="${RUNNER:-auto}"
+  # Keep the resumed run next to the one it continues.
+  TAG="${TAG:-$(basename "$(dirname "$(dirname "$RESUME")")")}"
+  RUNS=1
+  JOBS=1
+fi
+
 [ -n "$ENGINE" ] || { echo "no docker or podman found" >&2; exit 1; }
 [[ "$RUNS" =~ ^[1-9][0-9]*$ ]] || { echo "-n must be a positive integer: '$RUNS'" >&2; exit 1; }
+[[ "$TIMEOUT" =~ ^([0-9]+([.][0-9]+)?[smhd]?)?$ ]] || { echo "--timeout must be a duration such as 3600 or 90m: '$TIMEOUT'" >&2; exit 1; }
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo "-j must be a positive integer: '$JOBS'" >&2; exit 1; }
 [ -d "$SUBJECT" ] || { echo "--subject must be a directory: '$SUBJECT'" >&2; exit 1; }
 [ -z "$FILE" ] || [ -f "$SUBJECT/$FILE" ] || { echo "--file must exist under the subject: '$SUBJECT/$FILE'" >&2; exit 1; }
@@ -177,6 +209,9 @@ if [ "$RUNNER" = avocado-verify ]; then
   [ -n "$FILE" ] || { echo "--file is required with the avocado-verify runner" >&2; exit 1; }
   [ -z "$PROMPT" ] || { echo "--prompt is not used by the avocado-verify runner; it writes its own prompts" >&2; exit 1; }
   tracked avocado_verify.py || { echo "--runner avocado-verify needs a tracked avocado_verify.py in $HARNESS_ROOT" >&2; exit 1; }
+elif [ -n "$RESUME" ]; then
+  echo "--resume needs the avocado-verify runner; a single claude session cannot be resumed" >&2
+  exit 1
 elif [ -z "$PROMPT" ]; then
   if tracked AGENTS.md && [ -n "$FILE" ]; then
     PROMPT="$DEFAULT_PROMPT_AGENTS_FILE"
@@ -192,6 +227,11 @@ fi
 if [[ "$PROMPT" == *"{file}"* ]] && [ -z "$FILE" ]; then
   echo "the prompt uses {file}, so --file is required: '$PROMPT'" >&2
   exit 1
+fi
+if [ -n "$RESUME" ]; then
+  RESUME_LOG="$RESUME/subject/${FILE%.*}-avocado-verify.jsonl"
+  [ -f "$RESUME_LOG" ] || { echo "--resume: no driver log to resume from at '$RESUME_LOG'" >&2; exit 1; }
+  echo "resuming $RESUME ($(grep -c '"function"' "$RESUME_LOG") function record(s) so far)"
 fi
 
 # The default tag includes the harness directory name, so several checkouts (e.g. one per
@@ -300,11 +340,19 @@ with_timeout() {
 }
 
 # Make a pristine copy of the subject and remove anything a previous Avocado run may have left.
+# A resumed run instead copies the stopped run's subject and keeps its *.jsonl logs: the driver
+# resumes from its per-function log and counts verification attempts from the others.
 copy_subject() {
   local dest="$1"
+  local src="$SUBJECT"
+  local keep_logs=()
+  if [ -n "$RESUME" ]; then
+    src="$RESUME/subject"
+    keep_logs=(-not -name '*.jsonl')
+  fi
   mkdir -p "$dest"
-  tar -C "$SUBJECT" --exclude=.git -cf - . | tar -C "$dest" -xf -
-  find "$dest" \( -name '*.goto' -o -name '*-callgraph.json' -o -name '*.jsonl' \
+  tar -C "$src" --exclude=.git -cf - . | tar -C "$dest" -xf -
+  find "$dest" \( -name '*.goto' -o -name '*-callgraph.json' -o \( -name '*.jsonl' "${keep_logs[@]}" \) \
     -o -name '*__mutant_*.c' -o -name '*__clause_drop_*.c' \
     -o -name '*mutation_compile_failures.log' -o -name '__pycache__' \) -prune -exec rm -rf {} +
 }
@@ -325,6 +373,7 @@ run_one() {
     -e DISABLE_AUTOUPDATER=1 \
     -e IS_SANDBOX=1 \
     -e SUBJECT_NAME="$SUBJECT_NAME" \
+    -e AVOCADO_RESUME="${RESUME:+1}" \
     "${LIMITS[@]}" \
     "${AUTH_MOUNT[@]}" \
     -v "$run_dir/subject:/app/$SUBJECT_NAME" \
@@ -368,6 +417,7 @@ run_one() {
   echo "harness_branch=$(git -C "$HARNESS_ROOT" branch --show-current 2>/dev/null || echo unknown)"
   echo "harness_commit=$(git -C "$HARNESS_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "scripts_dir=$SCRIPT_ROOT"
+  [ -z "$RESUME" ] || echo "resumed_from=$RESUME"
 } >"$BATCH_DIR/batch-info.txt"
 
 for i in $(seq 1 "$RUNS"); do

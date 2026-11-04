@@ -32,7 +32,10 @@ for benchmark in "$@"; do
   jsonl="${data_dir}/${label}-${run_id}-${benchmark}.jsonl"
   find "${work_dir}" \( -name '*.goto' -o -name '*-callgraph.json' -o -name '*__mutant_*' \) -delete
   echo "== rescoring ${label}/${run_id}/${benchmark}"
+  # Publish the result only once the scorer succeeds, so a failed or interrupted pass keeps the
+  # previous complete file.
   ./eval/mutants/evaluate_specification_quality.py "${work_dir}" --auto-include --mutation \
-    --jsonl "${jsonl}"
+    --jsonl "${jsonl}.tmp"
+  mv -f -- "${jsonl}.tmp" "${jsonl}"
   find "${work_dir}" \( -name '*.goto' -o -name '*__mutant_*' \) -delete
 done

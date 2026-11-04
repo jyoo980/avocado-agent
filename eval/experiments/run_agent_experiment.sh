@@ -44,6 +44,13 @@
 #                       every arm of an experiment so both arms are scored by the same code: the
 #                       metric is identical either way, but a checkout with the parallel scorer
 #                       finishes in a fraction of the time.
+#   AVOCADO_DISCARD_HARNESS_CHANGES
+#                       Set to 1 to let the run discard uncommitted changes in the harness
+#                       checkout's `stubs/` and `scripts/` (see `reset_harness` below). Otherwise the
+#                       script refuses to start when there are any.
+#
+# The script stops, without scoring the benchmark, if `avocado-verify` fails to complete its pass
+# over a file (see `verify_completed` below).
 set -euo pipefail
 
 if [ "$#" -lt 3 ]; then
@@ -72,16 +79,42 @@ cd "${repo_root}"
 export IS_SANDBOX=1
 
 # CLAUDE.md lets the inner agent add CBMC stub files to the harness checkout, and `build_stub_index`
-# picks up every `stubs/*.c` for *all* later verifications. Left in place, one run's stubs would
-# change what the next run of the same arm verifies, so runs would not be independent. Restore the
-# harness's tracked state and drop the files an earlier run's agent added before starting this one.
-# Only `stubs/` and `scripts/` are cleaned -- never the whole checkout, whose untracked `.venv/`
-# the run needs.
-git -C "${repo_root}" checkout -- stubs scripts 2>/dev/null || true
-git -C "${repo_root}" clean -qfd stubs scripts 2>/dev/null || true
+# picks up every `stubs/*.c` for *all* later verifications. Left in place, the stubs the agent
+# added for one benchmark would change what a later benchmark, or a later run, verifies, so
+# results would depend on what ran before. The script therefore restores the harness's tracked
+# `stubs/` and `scripts/` before each benchmark and after the last one. It cleans only those two
+# directories -- never the whole checkout, whose untracked `.venv/` the run needs.
+reset_harness() {
+  git -C "${repo_root}" checkout -- stubs scripts
+  git -C "${repo_root}" clean -qfd stubs scripts
+}
+
+# The reset discards every uncommitted change in `stubs/` and `scripts/`, so refuse to start if
+# there are any, unless the caller opts in (e.g. to clean up after an interrupted run).
+if [ -n "$(git -C "${repo_root}" status --porcelain -- stubs scripts)" ] \
+  && [ "${AVOCADO_DISCARD_HARNESS_CHANGES:-}" != 1 ]; then
+  echo "$0: ${repo_root} has uncommitted changes in stubs/ or scripts/:" >&2
+  git -C "${repo_root}" status --short -- stubs scripts >&2
+  echo "$0: the run would discard them. Commit or remove them, or set" \
+    "AVOCADO_DISCARD_HARNESS_CHANGES=1 to discard them." >&2
+  exit 1
+fi
+
+# Succeeds if `avocado-verify` exited with status $1 after finishing its run over file $2: either
+# every function verified (0), or it wrote its terminal "completed" run summary and some function
+# is left unverified (1). Any other outcome -- a missing executable, a usage error, a crash, or a
+# stop on a usage limit -- means the pass did not run to completion.
+verify_completed() {
+  local status="$1" log="${2%.c}-avocado-verify.jsonl"
+  [ "${status}" -eq 0 ] && return 0
+  [ "${status}" -eq 1 ] && [ -f "${log}" ] \
+    && tail -n 1 "${log}" | grep -q '"type": *"run_summary"' \
+    && tail -n 1 "${log}" | grep -q '"status": *"completed"'
+}
 
 for benchmark_dir in "$@"; do
   benchmark="$(basename "${benchmark_dir}")"
+  reset_harness
   work_dir="${run_root}/${benchmark}"
   time_log="${data_dir}/${label}-${run_id}-${benchmark}.time"
   "${script_dir}/strip_specs.py" "${benchmark_dir}" "${work_dir}"
@@ -101,8 +134,20 @@ for benchmark_dir in "$@"; do
           avocado_args+=(--jobs "${AVOCADO_JOBS}")
         fi
         # avocado-verify exits 1 when some function is left unverified; that is a result, not an
-        # error, so keep going.
-        avocado-verify "${avocado_args[@]}" || echo "-- avocado-verify exited $? for ${source_file}"
+        # error, so keep going. Any failure to complete the pass stops the run before scoring, so
+        # the arm is not scored as if it had verified nothing.
+        status=0
+        avocado-verify "${avocado_args[@]}" || status=$?
+        if ! verify_completed "${status}" "${source_file}"; then
+          message="$0: avocado-verify failed (exit ${status}) for ${source_file}; not scoring"
+          message+=" ${label}/${run_id}/${benchmark}"
+          echo "${message}"       # to the terminal
+          echo "${message}" >&2   # to the time log
+          exit 1
+        fi
+        if [ "${status}" -ne 0 ]; then
+          echo "-- avocado-verify exited ${status} for ${source_file}"
+        fi
       done < <(find "${work_dir}" -name '*.c' -not -name '*__mutant_*' | sort)
     )
   } 2>>"${time_log}"
@@ -110,10 +155,15 @@ for benchmark_dir in "$@"; do
 
   echo "== ${label}/${run_id}/${benchmark}: scoring $(date -u +%FT%TZ)" | tee -a "${time_log}"
   find "${work_dir}" \( -name '*.goto' -o -name '*-callgraph.json' -o -name '*__mutant_*.c' \) -delete
+  # Write to a temporary file and publish it only once the scorer succeeds, so a failed or
+  # interrupted scoring pass never leaves a partial result under the final name.
+  jsonl="${data_dir}/${label}-${run_id}-${benchmark}.jsonl"
   {
     time -p "${scorer_root}/eval/mutants/evaluate_specification_quality.py" "${work_dir}" \
-      --auto-include --mutation --jsonl "${data_dir}/${label}-${run_id}-${benchmark}.jsonl"
+      --auto-include --mutation --jsonl "${jsonl}.tmp"
   } 2>>"${time_log}"
+  mv -f -- "${jsonl}.tmp" "${jsonl}"
   tail -n 3 "${time_log}"
   find "${work_dir}" \( -name '*.goto' -o -name '*__mutant_*.c' \) -delete
 done
+reset_harness
