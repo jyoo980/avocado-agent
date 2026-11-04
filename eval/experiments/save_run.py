@@ -102,6 +102,7 @@ def subject_name(run_dirs: list[Path], override: str | None) -> str:
         subject = read_batch_info(run_dir).get("subject")
         if not subject:
             die(f"no subject= in {run_dir.parent / 'batch-info.txt'}; pass --subject-name")
+        assert subject
         names.add(Path(subject).name)
     if len(names) > 1:
         die(f"the given runs are of different subjects: {', '.join(sorted(names))}")
@@ -122,25 +123,16 @@ def subject_ignore(root: Path):
     return ignore
 
 
-def tree_size(path: Path, ignore=None) -> tuple[int, int]:
-    """Return (file count, total bytes) under `path`, skipping what a copytree `ignore` skips."""
-    count = size = 0
+def count_files(path: Path, ignore=None) -> int:
+    """Return the number of files under `path`, skipping what a copytree `ignore` skips."""
+    count = 0
     for directory, dirs, files in os.walk(path):
         skipped = ignore(directory, dirs + files) if ignore else set()
         dirs[:] = [d for d in dirs if d not in skipped]
         for name in files:
             if name not in skipped:
                 count += 1
-                size += (Path(directory) / name).stat().st_size
-    return count, size
-
-
-def human(size: int) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024 or unit == "GB":
-            return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
-        size /= 1024
-    return f"{size}B"
+    return count
 
 
 def log_name(index: int) -> str:
@@ -235,17 +227,14 @@ def main() -> None:
     run_warnings(run_dirs, data_dir, args.model, args.treatment)
 
     subject_dir = run_dirs[-1] / "subject"
-    count, size = tree_size(subject_dir, subject_ignore(subject_dir))
-    t_count, t_size = 0, 0
-    for run_dir in run_dirs:
-        c, s = tree_size(run_dir / "transcripts")
-        t_count, t_size = t_count + c, t_size + s
+    count = count_files(subject_dir, subject_ignore(subject_dir))
+    t_count = sum(count_files(run_dir / "transcripts") for run_dir in run_dirs)
     excluded = ", ".join(IGNORE_ANYWHERE + tuple(f"./{p}" for p in IGNORE_AT_ROOT))
     print(f"subject:     {subject_dir}")
-    print(f"             {count} files, {human(size)} (excluding {excluded})")
+    print(f"             {count} files (excluding {excluded})")
     for index, run_dir in enumerate(run_dirs):
         print(f"run {index + 1}:       {run_dir} -> {CLAUDE_FILES}/{log_name(index)}")
-    print(f"transcripts: {t_count} files, {human(t_size)}")
+    print(f"transcripts: {t_count} files")
     print(f"destination: {dest}{' (replacing)' if dest.exists() else ''}")
 
     if args.dry_run:
@@ -261,8 +250,7 @@ def main() -> None:
         shutil.rmtree(dest, ignore_errors=True)
         raise
 
-    _, saved = tree_size(dest)
-    print(f"saved {human(saved)} to {dest}")
+    print(f"saved to {dest}")
     print("review and commit it with:")
     print(f"    cd {data_dir} && git add {dest.relative_to(data_dir)} && git status")
 
