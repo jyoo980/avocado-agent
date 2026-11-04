@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import json
+import os
 import tempfile
 import threading
 from pathlib import Path
@@ -26,6 +27,24 @@ from tools.util import get_call_graph
 # thread-safe); the atomic rename in `construct_call_graph` keeps other processes from reading a
 # partially written file.
 _CALL_GRAPH_LOCK = threading.Lock()
+
+
+def _read_umask() -> int:
+    """Return the process's umask.
+
+    `os.umask` can only be read by setting it, so this briefly changes it; it is called once, at
+    import time, before any threads that might create files concurrently.
+
+    Returns:
+        int: The process's umask.
+    """
+    umask = os.umask(0o077)
+    os.umask(umask)
+    return umask
+
+
+# The mode that `open` gives a newly created file: 0666 filtered by the umask.
+_DEFAULT_FILE_MODE = 0o666 & ~_read_umask()
 
 
 def main() -> None:
@@ -61,16 +80,27 @@ def construct_call_graph(
         # Write to a uniquely named sibling and rename it into place, so that a concurrent process
         # sees either no file or a complete one. Two processes that race both write identical
         # content, so whichever rename lands last is harmless.
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=path_to_call_graph.parent,
-            prefix=f".{path_to_call_graph.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as tmp:
-            tmp.write(json.dumps(call_graph, indent=4))
-        Path(tmp.name).replace(path_to_call_graph)
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=path_to_call_graph.parent,
+                prefix=f".{path_to_call_graph.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as tmp:
+                tmp_path = Path(tmp.name)
+                tmp.write(json.dumps(call_graph, indent=4))
+            # `NamedTemporaryFile` creates the file with mode 0600; give the cache the permissions
+            # an ordinarily created file would have, so other users of a shared checkout can read
+            # it.
+            tmp_path.chmod(_DEFAULT_FILE_MODE)
+            tmp_path.replace(path_to_call_graph)
+        except BaseException:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
+            raise
     return str(path_to_call_graph)
 
 

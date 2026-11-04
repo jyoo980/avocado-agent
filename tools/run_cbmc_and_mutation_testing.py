@@ -23,13 +23,16 @@ from tools.util.mutation import (
     get_mutation_testing_results_for_client,
 )
 
-# Per-subprocess CBMC timeout for each *mutant* when this tool reports mutation feedback to the
-# agent. The function itself is still verified under the full `tools.run_cbmc` timeout, and the
-# evaluation metric (`eval/mutants/evaluate_specification_quality.py`) always scores mutants under
-# that full timeout; this smaller budget only bounds how long the agent waits for feedback. In
-# practice almost every mutant is decided within a few seconds, while the rare hard mutant would
-# otherwise stall the session for the full timeout only to be reported as undecided anyway. A
-# mutant that exceeds this budget is reported as timed out -- never as killed.
+# Per-subprocess CBMC timeout for each CBMC step of a *mutant* when this tool reports mutation
+# feedback to the agent. A mutant runs several steps, and each step, including each retry, gets a
+# fresh budget of this length; time spent waiting for a subprocess slot is not counted. So this
+# does not bound the total time for a mutant or for the mutation run. The function itself is still
+# verified under the full `tools.run_cbmc` timeout, and the evaluation metric
+# (`eval/mutants/evaluate_specification_quality.py`) always scores mutants under that full
+# timeout; this smaller budget only shortens the agent's wait for feedback. In practice almost
+# every mutant is decided within a few seconds, while the rare hard mutant would otherwise stall
+# the session for the full timeout only to be reported as undecided anyway. A mutant that exceeds
+# this budget is reported as timed out -- never as killed.
 _AGENT_MUTANT_TIMEOUT_SEC = 120
 
 # Suffix of the sibling JSONL log in which `main` records one entry per top-level verification
