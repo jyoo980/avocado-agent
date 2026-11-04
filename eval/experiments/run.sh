@@ -43,7 +43,7 @@
 # Usage:
 #   eval/experiments/run.sh --subject <dir> --profile <env-file> [--file <c-file>] \
 #       [--runner auto|claude|avocado-verify] [--harness <checkout>] [--prompt <text>] \
-#       [-n 5] [-j 1] [--timeout <duration>] \
+#       [-n 5] [-j 1] [--timeout <duration>] [--isolate-agent] \
 #       [--memory 32g] [--cpus 8] [--results <dir>] [--tag <name>] [--image <image>]
 #   eval/experiments/run.sh --resume <run-dir> [--profile <env-file>] [--timeout <duration>] \
 #       [--memory 32g] [--cpus 8]
@@ -55,6 +55,13 @@
 # processed and retries the one that was cut off. The subject, file, harness, runner and profile
 # default to those in <run-dir>'s batch-info.txt; --profile may name another account, as long as
 # it selects the same model. The resumed batch's batch-info.txt records resumed_from.
+#
+# --isolate-agent (avocado-verify only) keeps the agent away from the driver's code. Normally
+# the agent runs as root next to the whole package the driver needs, so it can read and run the
+# tools a treatment removes (deny rules only match command text). Isolated, each `claude`
+# session runs as an unprivileged user, and the package's modules that the agent's own commands
+# (e.g. avocado-get-mutants) do not import are readable by root only, so only the driver can
+# use them. batch-info.txt records isolate_agent=yes; a resumed run keeps the setting.
 #
 # --harness names the treatment checkout to snapshot (default: the checkout this script is in),
 # so one copy of these scripts can drive every treatment.
@@ -107,6 +114,7 @@ FILE=""
 PROFILE=""
 PROMPT=""
 RESUME=""
+ISOLATE=""
 DEFAULT_PROMPT_AGENTS="Carefully read @../AGENTS.md. Then, verify the C source files in this directory"
 DEFAULT_PROMPT_AGENTS_FILE="Carefully read @../AGENTS.md. Then, verify {file}"
 DEFAULT_PROMPT_FILE="Verify {file}"
@@ -130,6 +138,7 @@ while [ $# -gt 0 ]; do
     --tag) TAG="$2"; shift 2 ;;
     --image) IMAGE="$2"; shift 2 ;;
     --resume) RESUME="$2"; shift 2 ;;
+    --isolate-agent) ISOLATE=1; shift ;;
     -h|--help) usage 0 ;;
     *) echo "unknown argument: $1" >&2; usage 1 ;;
   esac
@@ -148,6 +157,8 @@ if [ -n "$RESUME" ]; then
   HARNESS_ROOT="${HARNESS_ROOT:-$(prior harness_dir)}"
   [ "$RUNNER" != auto ] || RUNNER="$(prior runner)"
   RUNNER="${RUNNER:-auto}"
+  # A resumed run is isolated if the run it continues was.
+  [ "$(prior isolate_agent)" != yes ] || ISOLATE=1
   # Keep the resumed run next to the one it continues.
   TAG="${TAG:-$(basename "$(dirname "$(dirname "$RESUME")")")}"
   RUNS=1
@@ -209,6 +220,9 @@ if [ "$RUNNER" = avocado-verify ]; then
   [ -n "$FILE" ] || { echo "--file is required with the avocado-verify runner" >&2; exit 1; }
   [ -z "$PROMPT" ] || { echo "--prompt is not used by the avocado-verify runner; it writes its own prompts" >&2; exit 1; }
   tracked avocado_verify.py || { echo "--runner avocado-verify needs a tracked avocado_verify.py in $HARNESS_ROOT" >&2; exit 1; }
+elif [ -n "$ISOLATE" ]; then
+  echo "--isolate-agent needs the avocado-verify runner" >&2
+  exit 1
 elif [ -n "$RESUME" ]; then
   echo "--resume needs the avocado-verify runner; a single claude session cannot be resumed" >&2
   exit 1
@@ -374,6 +388,7 @@ run_one() {
     -e IS_SANDBOX=1 \
     -e SUBJECT_NAME="$SUBJECT_NAME" \
     -e AVOCADO_RESUME="${RESUME:+1}" \
+    -e AVOCADO_ISOLATE="$ISOLATE" \
     "${LIMITS[@]}" \
     "${AUTH_MOUNT[@]}" \
     -v "$run_dir/subject:/app/$SUBJECT_NAME" \
@@ -418,6 +433,7 @@ run_one() {
   echo "harness_commit=$(git -C "$HARNESS_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "scripts_dir=$SCRIPT_ROOT"
   [ -z "$RESUME" ] || echo "resumed_from=$RESUME"
+  echo "isolate_agent=${ISOLATE:+yes}"
 } >"$BATCH_DIR/batch-info.txt"
 
 for i in $(seq 1 "$RUNS"); do

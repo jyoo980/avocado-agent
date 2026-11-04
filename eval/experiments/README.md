@@ -138,6 +138,20 @@ therefore does not stop a batch either. To stop one, kill the process recorded i
 This stops the batch's containers, giving each a minute to end its session; each run then
 saves its transcript and records exit code `143`.
 
+### Keeping the agent away from the driver's code
+
+With the `avocado-verify` runner the agent normally runs as root next to the whole package the
+driver needs, so it can read and run tools its treatment removes: in the minus-tools ablations it
+found `tools/run_cbmc.py` and ran it with `python -m tools.run_cbmc` or from its own scripts. Deny
+rules in `.claude/settings.json` only match command text, so they cannot stop this.
+`--isolate-agent` runs each `claude` session as the unprivileged user `agent`, and makes the
+package's Python modules that the agent's own commands (e.g. `avocado-get-mutants`) do not import
+readable by root only. The driver still runs as root and uses them; the agent can see their file
+names but cannot read, import or run them. `run.log` lists the hidden files.
+
+`batch-info.txt` records `isolate_agent=yes`, and `--resume` keeps the setting. Runs with and
+without it are not directly comparable for treatments whose agents used the hidden tools.
+
 ### Resuming Stopped Runs
 
 An `avocado-verify` run that stopped early can be continued. A run stops early, and records a

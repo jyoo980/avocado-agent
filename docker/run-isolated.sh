@@ -15,6 +15,8 @@
 #   $SUBJECT_NAME        the subject directory's name (env)
 #   $AVOCADO_RESUME      (optional, env) non-empty when `run.sh --resume` continues a stopped
 #                        avocado-verify run; the driver then gets `--resume-from` its own log
+#   $AVOCADO_ISOLATE     (optional, env) non-empty when `run.sh --isolate-agent` asks for the
+#                        agent to be kept away from the driver's code (see below)
 #   /app/$SUBJECT_NAME   read-write bind mount of a fresh copy of the subject program
 #   /work/out            read-write bind mount, empty until this script exits
 #   /auth                (optional) read-only volume holding a `claude` login
@@ -39,6 +41,12 @@
 # (e.g. by a LiteLLM profile), it is forwarded as `--model`. `avocado-verify` builds its own
 # `claude` command, so with that runner `--settings` and `--model` reach every session through a
 # `claude` wrapper placed first on PATH.
+#
+# With $AVOCADO_ISOLATE (avocado-verify only), each `claude` session runs as the unprivileged
+# user `agent`, and the package's Python modules that the agent's own commands do not import
+# (the driver, and tools a treatment removes, such as tools/run_cbmc.py) are made readable by
+# root only. The driver still runs as root and can use them; the agent cannot read or import
+# them. Files are created world-writable (umask 0) so both can edit the subject directory.
 set -euo pipefail
 
 if [ $# -ne 3 ] || [ -z "${SUBJECT_NAME:-}" ]; then
@@ -53,6 +61,12 @@ SUBJECT_DIR="/app/$SUBJECT_NAME"
 # Unset so the agent's shells do not inherit it.
 RESUME="${AVOCADO_RESUME:-}"
 unset AVOCADO_RESUME
+ISOLATE="${AVOCADO_ISOLATE:-}"
+unset AVOCADO_ISOLATE
+if [ -n "$ISOLATE" ] && [ "$RUNNER" != avocado-verify ]; then
+  echo "run-isolated: agent isolation needs the avocado-verify runner" >&2
+  exit 2
+fi
 
 case "$RUNNER" in
   claude|avocado-verify) ;;
@@ -83,6 +97,10 @@ publish() {
   if compgen -G "${CLAUDE_CONFIG_DIR:-/nonexistent}/projects/*/*.jsonl" >/dev/null; then
     mkdir -p "$OUT_DIR/transcripts"
     cp -a "$CLAUDE_CONFIG_DIR"/projects/*/. "$OUT_DIR/transcripts/" 2>/dev/null || true
+  fi
+  # Hand what the agent user wrote back to root (the host user under rootless podman).
+  if [ -n "$ISOLATE" ]; then
+    chown -R 0:0 "$SUBJECT_DIR" "$OUT_DIR" 2>/dev/null || true
   fi
   if [ "$RUNNER" = claude ]; then
     printf '%s\n' "$TARGET" >"$OUT_DIR/prompt.txt"
@@ -125,6 +143,10 @@ rm -rf "$BOOT_DIR"
 if [ -f /app/pyproject.toml ] && [ -f /app/uv.lock ]; then
   # --no-dev: the agent needs none of the development dependencies.
   echo "run-isolated: installing the harness package (uv sync --frozen --no-dev)"
+  if [ -n "$ISOLATE" ]; then
+    # uv's default Python location is under /root, which the agent user cannot enter.
+    export UV_PYTHON_INSTALL_DIR=/opt/uv-python
+  fi
   run_child uv --directory /app sync --frozen --no-dev
   export VIRTUAL_ENV=/app/.venv
   export PATH=/app/.venv/bin:$PATH
@@ -154,6 +176,42 @@ if [ "$RUNNER" = avocado-verify ] && ! command -v avocado-verify >/dev/null 2>&1
   exit 2
 fi
 
+if [ -n "$ISOLATE" ]; then
+  useradd --create-home --uid 2000 agent
+  # Import every command the agent is given (all but avocado-verify), then make the package's
+  # modules they did not load, and the commands that need them, readable by root only.
+  python - "$SUBJECT_DIR" <<'PY'
+import importlib
+import importlib.metadata
+import os
+import pathlib
+import sys
+
+app, subject = pathlib.Path("/app"), pathlib.Path(sys.argv[1])
+hidden_commands = []
+for ep in importlib.metadata.entry_points(group="console_scripts"):
+    top = ep.module.split(".")[0]
+    # Only the package's own commands, not those of its dependencies.
+    if (app / top).is_dir() or (app / f"{top}.py").is_file():
+        if ep.name == "avocado-verify":
+            hidden_commands.append(ep)
+        else:
+            importlib.import_module(ep.module)
+loaded = {pathlib.Path(m.__file__) for m in list(sys.modules.values()) if getattr(m, "__file__", None)}
+modules = [p for p in app.rglob("*.py") if not p.is_relative_to(app / ".venv") and not p.is_relative_to(subject)]
+for path in modules:
+    if path not in loaded:
+        os.chown(path, 0, 0)
+        os.chmod(path, 0o600)
+        print(f"run-isolated: hidden from the agent: {path}")
+for ep in hidden_commands:
+    os.chmod(f"/app/.venv/bin/{ep.name}", 0o700)
+PY
+  chmod -R a+rX /opt/uv-python
+  chmod -R a+rwX "$SUBJECT_DIR"
+  umask 0000
+fi
+
 # Fresh Claude Code state for every run. `.claude.json` carries onboarding state and
 # `.credentials.json` the OAuth login; nothing else (projects/, memory, todos) is copied.
 CLAUDE_CONFIG_DIR="$(mktemp -d /tmp/claude-config.XXXXXX)"
@@ -175,6 +233,7 @@ jq -n --slurpfile prior <(cat "$CLAUDE_CONFIG_DIR/.claude.json" 2>/dev/null || e
                            ($subject): {hasTrustDialogAccepted: true}}}' \
   >"$CLAUDE_CONFIG_DIR/.claude.json.tmp"
 mv "$CLAUDE_CONFIG_DIR/.claude.json.tmp" "$CLAUDE_CONFIG_DIR/.claude.json"
+[ -z "$ISOLATE" ] || chown -R agent:agent "$CLAUDE_CONFIG_DIR"
 
 SETTINGS_ARGS=()
 if [ -f /app/.claude/settings.json ]; then
@@ -199,7 +258,7 @@ if [ -n "$MODEL" ]; then
 fi
 REAL_CLAUDE="$(command -v claude)"
 
-echo "run-isolated: $(claude --version) | runner=$RUNNER | cwd=$SUBJECT_DIR | model=${MODEL:-<account default>}"
+echo "run-isolated: $(claude --version) | runner=$RUNNER | cwd=$SUBJECT_DIR | model=${MODEL:-<account default>}${ISOLATE:+ | agent isolated}"
 
 # Launch from inside the subject copy, as in the manual workflow. Keep going on a non-zero
 # exit so the transcripts are still saved.
@@ -222,9 +281,14 @@ case "$RUNNER" in
     # stdout/stderr (run.log on the host) so progress can be followed while it runs; the
     # per-function results land next to the C file as <file>-avocado-verify.jsonl.
     SHIM_DIR="$(mktemp -d /tmp/avocado-bin.XXXXXX)"
+    # Isolated, each session drops to the agent user (with the PATH it had, minus this shim).
+    LAUNCH=""
+    if [ -n "$ISOLATE" ]; then
+      LAUNCH="setpriv --reuid=agent --regid=agent --init-groups env HOME=/home/agent PATH=$(printf %q "$PATH")"
+    fi
     {
       echo '#!/usr/bin/env bash'
-      printf 'exec %q "$@"' "$REAL_CLAUDE"
+      printf 'exec %s %q "$@"' "$LAUNCH" "$REAL_CLAUDE"
       for arg in "${SETTINGS_ARGS[@]}" "${MODEL_ARGS[@]}"; do
         printf ' %q' "$arg"
       done
