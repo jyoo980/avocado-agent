@@ -1,7 +1,46 @@
 # Measuring Avocado Agent
 
 Scripts for measuring Avocado Agent while changing it: scoring specifications,
-running agent experiments on the host, and summarizing and comparing runs.
+running agent experiments, and summarizing and comparing runs.
+
+## Which launcher to use
+
+Two kinds of script in this directory start agent runs:
+
+- `run.sh` runs each run in a fresh container, so no run can see another's
+  specifications, session transcripts or memory. Use it when runs must not
+  influence one another, as for numbers to report. Its [README](README.md)
+  documents it. It runs one treatment per batch and does not score the
+  specifications; see [Scoring `run.sh` output](#scoring-runsh-output).
+- `run_agent_experiment.sh` and `run_paired_batches.sh` run `avocado-verify`
+  on the host, from a local checkout, and score the result. They are quicker to
+  set up and suit iterating on a change. Only their output has the layout that
+  `compare_arms.py` and `rescore_run.sh` read, so only they support the paired
+  comparison that decides a treatment. Their runs are not isolated: runs from
+  one checkout, or from worktrees of one repository, share Claude Code's
+  auto-memory (see the last item under [Traps](#traps)).
+
+### Scoring `run.sh` output
+
+A `run.sh` batch leaves each run in a directory
+`<results>/<tag>/<timestamp>/run-<i>/`, whose `subject/` holds the specified
+program (see [Step 4 of the README](README.md#step-4-read-the-results)).
+
+- To score a run, pass its `subject/` directory to `measure_quality.sh`, with a
+  label that names the run, such as `<tag>-run-1`. The scores land in
+  `avocado-experimental-data/<label>-subject.jsonl`, which
+  `summarize_quality.py` and `compare_on_intersection.py` read.
+  `measure_quality.sh` deletes CBMC build artifacts and mutants from the
+  directory that it scores, so score a copy to keep them.
+- With the `avocado-verify` runner, `progress.sh` and `summarize_agent_runs.py`
+  read agent time and cost from `run-<i>/` directories. The `claude` runner
+  writes no per-function logs; a run's cost is in its `claude-output.json`.
+- `compare_arms.py` and `rescore_run.sh` do not read `run.sh` output.
+- `run.sh` does not pair two treatments as `run_paired_batches.sh` does, and a
+  run's wall-clock time depends heavily on how much CBMC work competes with it.
+  To compare the times of two treatments, launch their batches at the same time
+  with the same `-n` and `-j`, and expect a noisier comparison than a paired
+  one.
 
 ## Where the data goes
 

@@ -64,6 +64,9 @@ give a treatment extra docs or tools, track them and add them to `HARNESS_FILES`
   directory, and `/auth`; if it prints one, the token lands in the transcripts or `subject/`.
   Use a token you can revoke, and review results before sharing them.
 
+[measuring.md](measuring.md) says when to use `run.sh` and when to use the host-side launchers
+in this directory, and how to score and summarize `run.sh` output.
+
 ## Step 1: build the image
 
 ```sh
@@ -120,7 +123,7 @@ from inside the subject copy.
 
 - `-n`: is the number of runs.
 - `-j N`: (`--jobs`) is the number of concurrent runs that each run in their own container with its
-  own `--memory`/`--cpus` cap.
+  own `--memory`/`--cpus` cap (default 1, i.e. sequential; budget memory as `-j` × `--memory`).
 - `--tag` (optional): names the batch (default: harness directory name, subject name
   and profile name).
 
