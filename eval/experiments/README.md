@@ -197,6 +197,32 @@ With `avocado-verify`, `run.log` is the driver's log (what the manual procedure 
 `claude-output.json`) and `subject/<file>-avocado-verify.jsonl` holds one record per function
 plus a final `run_summary` record.
 
+## Step 5: save a run
+
+`eval/experiments/save_run.py` copies a finished run into the
+[`avocado-experimental-data`](https://github.com/jyoo980/avocado-experimental-data) repository
+(default: `$AVOCADO_DATA_DIR`, else a checkout next to this one; override with `--data-dir`):
+
+```sh
+% eval/experiments/save_run.py --model opus-5-5 --treatment avocado-minus-tools \
+      ~/.local/share/avocado-experiments/<tag>/<batch>/run-1
+```
+
+For a run continued with `--resume`, pass the original run directory and then each resumed run
+directory, in order. The run is saved as:
+
+```
+<data-dir>/<treatment>/<model>/<subject>/
+    ...                  the last run's subject/, minus *.goto and the top-level *.log files
+    claude-files/        every run's transcripts/, plus run.log, run-pt2.log, ... and
+                         (claude runner) claude-output.json
+```
+
+The script warns if the run did not exit `0` or if the batch's harness is not
+`.../<model>/<treatment>`, refuses to overwrite an existing destination without `--force`, and
+`--dry-run` shows what would be copied. It does not commit: review the files and commit them in the
+data repository yourself.
+
 ## Worked Example
 
 Assume you want to run the baseline Claude Code system to generate specs for the `kilo` subject
