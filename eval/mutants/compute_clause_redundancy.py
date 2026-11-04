@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
@@ -41,8 +40,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from eval.mutants.mutate_specification import ClauseMutant, get_clause_mutants
 from eval.mutants.util import (
+    absolute_path_without_resolving,
     check_expected_cbmc_return_code,
     is_valid_mutation_candidate,
+    write_new_file,
 )
 from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import run_cbmc
@@ -287,7 +288,9 @@ def compute_clause_redundancy_score(
 
     Mutant `.c` files are written next to the original source, so that a quoted `#include` finds
     the same header for a mutant as for the original source. Mutants are removed unless
-    keep_artifacts is set to `True`.
+    keep_artifacts is set to `True`. An existing file is never overwritten or removed; if a mutant
+    path already exists (e.g., kept by an earlier run; `make clean-mutants` removes such files),
+    `FileExistsError` is raised.
 
     If the unmutated function does not verify, return None.
 
@@ -299,9 +302,9 @@ def compute_clause_redundancy_score(
     Returns:
         ClauseRedundancyScore: Aggregated counts plus the per-clause results.
     """
-    # Unlike `Path.resolve`, `os.path.abspath` does not follow symlinks, so the mutants of a
-    # symlinked file see the same quoted `#include`s as the file itself.
-    source_path = Path(os.path.abspath(file_path))  # ruff: ignore[os-path-abspath] - must not follow symlinks.
+    # Neither follows symlinks nor collapses `..`, so `source_path` names the same file as
+    # `file_path` and the mutants of a symlinked file see the same quoted `#include`s.
+    source_path = absolute_path_without_resolving(file_path)
 
     # Check that the original function verifies in the first place.
     result = run_cbmc(function_name, file_path)
@@ -320,7 +323,13 @@ def compute_clause_redundancy_score(
         _get_baseline_verification_results_for_callers(in_file_callers, source_path)
     )
 
+    # Only files created by this call are deleted, so a pre-existing sibling file is never
+    # clobbered: `write_new_file` raises rather than overwrite it.
+    created_paths: list[Path] = []
     try:
+        for mutant_path, mutant in paths_to_removed_clauses.items():
+            write_new_file(mutant_path, mutant.mutant_source)
+            created_paths.append(mutant_path)
         in_isolation_results = list(
             starmap(_verify_removed_clause_source, paths_to_removed_clauses.items())
         )
@@ -335,7 +344,7 @@ def compute_clause_redundancy_score(
         ]
     finally:
         if not keep_artifacts:
-            for path in paths_to_removed_clauses:
+            for path in created_paths:
                 path.unlink(missing_ok=True)
 
     return _aggregate_clause_redundancy_score(
@@ -459,23 +468,21 @@ def _get_path_to_source_with_removed_clause(path_to_original_source: Path, index
 
 
 def _verify_removed_clause_source(
-    path_to_write_removed_clause_mutant: Path, clause_mutant: ClauseMutant
+    path_to_removed_clause_mutant: Path, clause_mutant: ClauseMutant
 ) -> ClauseRemovalVerificationResult:
     """Return the result of verifying a removed-clause mutant in isolation.
 
     Args:
-        path_to_write_removed_clause_mutant (Path): The path to which to write the source with the
+        path_to_removed_clause_mutant (Path): The path to the already-written source with the
             mutated specification.
         clause_mutant (ClauseMutant): The clause mutant.
 
     Returns:
         ClauseRemovalVerificationResult: The result of verifying a removed-clause mutant.
     """
-    path_to_write_removed_clause_mutant.write_text(clause_mutant.mutant_source, encoding="utf-8")
-
     result = run_cbmc(
         function_to_verify=clause_mutant.function,
-        file_containing_function_to_verify=str(path_to_write_removed_clause_mutant),
+        file_containing_function_to_verify=str(path_to_removed_clause_mutant),
     )
     if result.timed_out:
         return ClauseRemovalVerificationResult(

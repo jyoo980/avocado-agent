@@ -25,6 +25,39 @@ def is_valid_mutation_candidate(run_cbmc_result: RunCbmcResult) -> bool:
     return run_cbmc_result.is_function_verified
 
 
+def absolute_path_without_resolving(file_path: str) -> Path:
+    """Return an absolute version of `file_path` that neither follows symlinks nor collapses `..`.
+
+    Unlike `Path.resolve`, symlinks are not followed, so a mutant written next to a symlinked file
+    sees the same quoted `#include`s as the file itself. Unlike `os.path.abspath`, `..` segments are
+    kept: collapsing them lexically could name a different file than the kernel resolves (e.g.,
+    `link/../f.c` where `link` is a symlinked directory).
+
+    Args:
+        file_path (str): A relative or absolute path.
+
+    Returns:
+        Path: An absolute path that the kernel resolves to the same file as `file_path`.
+    """
+    # Joining with `/` yields `file_path` unchanged when it is already absolute, and (unlike
+    # `os.path.abspath`) pathlib never collapses `..` segments.
+    return Path.cwd() / file_path
+
+
+def write_new_file(path: Path, text: str) -> None:
+    """Write `text` to `path`, which must not already exist.
+
+    Args:
+        path (Path): The file to create.
+        text (str): The contents of the file.
+
+    Raises:
+        FileExistsError: If `path` already exists; the existing file is left untouched.
+    """
+    with path.open("x", encoding="utf-8") as f:
+        f.write(text)
+
+
 def check_expected_cbmc_return_code(return_code: int):
     """Check whether the return code is indicates a verification success, failure, or timeout.
 
