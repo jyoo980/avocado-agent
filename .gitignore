@@ -18,7 +18,8 @@
 
 # JSON files.
 *.json
-# The agent's Claude Code settings (the Dockerfile and eval/experiments/run.sh need it tracked).
+
+# The agent's Claude Code settings.
 !docker/claude.settings.json
 
 # Other
