@@ -29,9 +29,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
+import tempfile
 from collections import Counter
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -48,13 +50,16 @@ from eval.mutants.util import (
     write_mutant_sources,
 )
 from tools.construct_call_graph import construct_call_graph
-from tools.run_cbmc import run_cbmc
+from tools.run_cbmc import RunCbmcResult, run_cbmc
 from tools.util import get_in_file_callers_of, get_include_dirs
 from tools.util.callgraph import CallGraph
 
 # Matches the GNU `timeout(1)` convention used elsewhere; surfaces in `returncode` for
 # timed-out CBMC runs so the value is distinguishable from CBMC's real 0/10 exit codes.
 _TIMEOUT_RETURNCODE = 124
+
+# The per-component file name limit (in bytes) on common filesystems (ext4, APFS, NTFS, ...).
+_MAX_FILE_NAME_BYTES = 255
 
 
 class CallerSideVerdict(StrEnum):
@@ -454,6 +459,30 @@ def _aggregate_clause_redundancy_score(
     )
 
 
+def _run_cbmc_in_scratch_dir(function_to_verify: str, file_path: Path | str) -> RunCbmcResult:
+    """Run CBMC on a function in a private scratch working directory.
+
+    The CBMC pipeline writes intermediate `<function>.goto` / `checking-<function>-contracts.goto`
+    files, named only by the function, into its working directory. Several scoring runs (e.g. of
+    two functions that share a caller) may verify the same function concurrently, so each run gets
+    its own scratch directory to keep them from clobbering one another's goto-binaries.
+
+    Args:
+        function_to_verify (str): The function to verify.
+        file_path (Path | str): The C source file containing the function. It is resolved to an
+            absolute path, since CBMC runs in a different working directory.
+
+    Returns:
+        RunCbmcResult: The result of running CBMC.
+    """
+    with tempfile.TemporaryDirectory(prefix="avocado-clause-") as scratch_dir:
+        return run_cbmc(
+            function_to_verify=function_to_verify,
+            file_containing_function_to_verify=str(Path(file_path).resolve()),
+            cwd=scratch_dir,
+        )
+
+
 def _get_in_file_callers(source_path: Path, function_name: str) -> list[str]:
     """Return functions in a file that directly call the function with the given name.
 
@@ -470,6 +499,45 @@ def _get_in_file_callers(source_path: Path, function_name: str) -> list[str]:
         msg = f"'{function_name}' was missing from the call graph"
         raise ValueError(msg)
     return get_in_file_callers_of(function_name, call_graph)
+
+
+def _get_path_to_source_with_removed_clause(
+    workspace_path: Path, path_to_original_source: Path, function: str, index: int
+) -> Path:
+    """Return the path to which to write a source file with a removed clause.
+
+    For example, given the path `/app/test/data/foo.c` and function `bar`, return
+    `/app/test/data/foo__clause_drop_bar_1.c`. The function name is part of the file name so that
+    removed-clause sources of different functions in the same file -- which may be scored
+    concurrently -- never overwrite one another; the files still match the `*__clause_drop_*.c`
+    pattern that `make clean-mutants` removes.
+
+    If the readable file name would exceed the filesystem's per-component length limit, the
+    function name is replaced by a short hash of it (and the source stem is truncated if needed),
+    so the name stays bounded while remaining distinct per function and index.
+
+    Args:
+        workspace_path (Path): The directory under which redundancy score computation occurs.
+        path_to_original_source (Path): The path to the original source file.
+        function (str): The function whose clause was removed.
+        index (int): The index of the mutant, used as a identifier for the mutant source path.
+
+    Returns:
+        Path: The path to which to write a mutated source file.
+    """
+    stem = path_to_original_source.stem
+    suffix = path_to_original_source.suffix
+    name = f"{stem}__clause_drop_{function}_{index}{suffix}"
+    if len(name.encode("utf-8")) <= _MAX_FILE_NAME_BYTES:
+        return workspace_path / name
+
+    # Too long: replace the function name with a bounded digest of the full (stem, function)
+    # pair, so that truncating the stem cannot make two distinct inputs collide.
+    digest = hashlib.sha256(f"{stem}\0{function}".encode()).hexdigest()[:16]
+    tail = f"__clause_drop_{digest}_{index}{suffix}"
+    stem_budget = max(0, _MAX_FILE_NAME_BYTES - len(tail.encode("utf-8")))
+    truncated_stem = stem.encode("utf-8")[:stem_budget].decode("utf-8", errors="ignore")
+    return workspace_path / f"{truncated_stem}{tail}"
 
 
 def _verify_removed_clause_source(
