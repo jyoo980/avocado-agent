@@ -85,6 +85,11 @@ class _Item:
         body_offsets (tuple[int, ...]): For a function, the offset of each `{` that opens its
             body: one, or one per preprocessor branch when the header differs between branches.
             Empty for every other kind.
+        body_names (tuple[tuple[str, ...], ...]): For a function, the names that the header
+            before each of `body_offsets` may define, in the same order: usually one, more when
+            the header is ambiguous (see `_names_before_last_group`), none when no name can be
+            told. Branches of a conditional can give one body different names. Empty for every
+            other kind.
     """
 
     tokens: tuple[str, ...]
@@ -93,6 +98,7 @@ class _Item:
     start: int
     end: int
     body_offsets: tuple[int, ...] = ()
+    body_names: tuple[tuple[str, ...], ...] = ()
 
 
 def function_body_offsets(source: bytes, function: str) -> list[int]:
@@ -105,13 +111,15 @@ def function_body_offsets(source: bytes, function: str) -> list[int]:
     Returns:
         list[int]: The offsets in source order; empty when the function is not defined. There is
             one offset per definition (a function can be defined once per preprocessor branch)
-            and, within a definition whose header differs between branches, one per header.
+            and, within a definition whose header differs between branches, one per header that
+            names the function.
     """
     return [
         offset
         for item in _split_items(_tokenize(source))
-        if item.kind == "function" and item.name == function
-        for offset in item.body_offsets
+        if item.kind == "function"
+        for offset, names in zip(item.body_offsets, item.body_names, strict=True)
+        if function in names
     ]
 
 
@@ -419,6 +427,7 @@ def _make_item(tokens: list[_Token], kind: str, body_offsets: tuple[int, ...] = 
         _Item: The item, with the name it introduces when that can be told.
     """
     texts = tuple(token.text for token in tokens)
+    body_names: tuple[tuple[str, ...], ...] = ()
     if kind == "directive":
         match = _DIRECTIVE_HEAD.match(texts[0])
         # `#ifdef X` tests X and `#if defined(X)` would give `defined`; neither introduces a name.
@@ -427,9 +436,18 @@ def _make_item(tokens: list[_Token], kind: str, body_offsets: tuple[int, ...] = 
         # The parameter list is the last parenthesized group before the body, once attributes
         # are removed. A `{` before the body, as in a `struct` defined in the return type, does
         # not end the search. An unknown macro after the parameter list, as in
-        # `int f(int x) REQUIRES(x > 0) {`, is taken for the parameter list.
-        body = next(index for index, token in enumerate(tokens) if token.offset == body_offsets[0])
-        name = _name_before_last_group(_without_attributes(list(texts[:body])))
+        # `int f(int x) REQUIRES(x > 0) {`, cannot be told from a macro return type, so both
+        # names are kept as candidates; the item's name is the first. Each body brace gets the
+        # names from its own header, which ends just before it: with `#ifdef X` / `int f(...) {`
+        # / `#else` / `int g(...) {` / `#endif`, the first brace opens `f` and the second `g`.
+        body_indexes = [
+            index for index, token in enumerate(tokens) if token.offset in body_offsets
+        ]
+        body_names = tuple(
+            _names_before_last_group(_without_attributes(list(texts[:index])))
+            for index in body_indexes
+        )
+        name = body_names[0][0] if body_names[0] else None
     elif kind == "declaration":
         name = _declared_name(texts)
     else:
@@ -441,7 +459,35 @@ def _make_item(tokens: list[_Token], kind: str, body_offsets: tuple[int, ...] = 
         start=tokens[0].offset,
         end=tokens[-1].end,
         body_offsets=body_offsets,
+        body_names=body_names,
     )
+
+
+def _names_before_last_group(texts: Sequence[str]) -> tuple[str, ...]:
+    """Return the names that a function header ending with a parenthesized group may define.
+
+    The first is `_name_before_last_group`. When that name directly follows a `)`, as in
+    `int f(int x) REQUIRES(x > 0)`, it may be a macro after the real parameter list or the
+    function's name after a macro return type, as in `LIST(int) f(void)`; without preprocessing
+    the two cannot be told apart, so the name before the earlier group is a candidate as well,
+    and so on for each further macro.
+
+    Args:
+        texts (Sequence[str]): Tokens ending, possibly after directives, with a `)`.
+
+    Returns:
+        tuple[str, ...]: The candidate names, the likeliest first; empty when there is none.
+    """
+    names: list[str] = []
+    while (name := _name_before_last_group(texts)) is not None:
+        names.append(name)
+        closing = max(index for index, text in enumerate(texts) if text == ")")
+        opening = _group_start(texts, closing)
+        assert opening is not None  # _name_before_last_group found the group.
+        if opening < 2 or texts[opening - 1] != name or texts[opening - 2] != ")":
+            break
+        texts = texts[: opening - 1]
+    return tuple(names)
 
 
 def _name_before_last_group(texts: Sequence[str]) -> str | None:
