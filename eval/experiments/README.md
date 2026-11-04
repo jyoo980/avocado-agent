@@ -21,12 +21,20 @@ so one copy of these scripts can drive every treatment:
 ```
 
 The agent sees nothing of the harness checkout but the files `run.sh` names in
-`HARNESS_FILES`, taken from tracked files only: `AGENTS.md` or `CLAUDE.md`, `docs/` and
-`.claude/settings.json`, plus, for a treatment whose `pyproject.toml` defines `avocado-*`
+`HARNESS_FILES`, taken from tracked files only: `AGENTS.md` or `CLAUDE.md` and `docs/`, plus
+the agent's Claude Code settings, plus, for a treatment whose `pyproject.toml` defines `avocado-*`
 tools, the Python package those tools come from (`pyproject.toml`, `uv.lock`,
 `.python-version`, `README.md`, `avocado_verify.py`, `tools/`, the `stubs/` that
 `avocado-run-cbmc` gives CBMC, `eval/__init__.py`, `eval/mutants/`). Driver scripts, logs, notes, tests and build or CI files never reach it. To
 give a treatment extra docs or tools, track them and add them to `HARNESS_FILES` deliberately.
+
+The agent's settings are `docker/claude.settings.json`, installed in the container as
+`/app/.claude/settings.json`. The checkout's own `.claude/settings.json` holds the settings for
+developers working on the harness and is never given to the agent. A treatment checkout from
+before that split has no `docker/claude.settings.json`; its `.claude/settings.json` is then the
+agent's and is used instead (`run.sh` prints a note). `run.sh` refuses to start if
+`docker/claude.settings.json` exists but is untracked, and `batch-info.txt` records which file
+the agent got as `agent_settings`. Below, "the agent's settings" means that file.
 
 - Each run starts a new `--rm` container; `~/.claude` (via a throwaway `CLAUDE_CONFIG_DIR`),
   `/app`, and any stray `cbmc` processes die with it.
@@ -85,14 +93,14 @@ Pick one auth profile under `eval/experiments/profiles/` (the `*.env` files are 
   that sets none of `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN` and
   `ANTHROPIC_API_KEY`, such as an empty file, so a run never has two sets of credentials.)
 - **LiteLLM-hosted model**: copy `litellm.env.example` to `litellm.env` and set the proxy URL,
-  key, and the model name (forwarded to `claude --model`, overriding `.claude/settings.json`).
+  key, and the model name (forwarded to `claude --model`, overriding the agent's settings).
 
 Which model a run uses: `AVOCADO_MODEL` from the profile if set, otherwise the `"model"` key in
-`.claude/settings.json`, passed explicitly as `claude --model`. (Claude Code ignores the
+the agent's settings, passed explicitly as `claude --model`. (Claude Code ignores the
 `model` key of a file given with `--settings`, so without this the account default, currently
 Sonnet, would be used.) `avocado-verify` builds its own `claude` command line, so with that
 runner `--settings` and `--model` reach every session through a `claude` wrapper placed first
-on `PATH`. A treatment without `.claude/settings.json` (e.g. `avocado-minus-mutation-testing`)
+on `PATH`. A treatment without agent settings (e.g. `avocado-minus-mutation-testing`)
 and without `AVOCADO_MODEL` runs on the account default. `run.log` prints the runner and the
 model on its first line and, with the `claude` runner, `claude-output.json`'s `modelUsage`
 records what was actually billed (with `avocado-verify`, the per-function records in

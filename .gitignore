@@ -18,6 +18,8 @@
 
 # JSON files.
 *.json
+# The agent's Claude Code settings (the Dockerfile and eval/experiments/run.sh need it tracked).
+!docker/claude.settings.json
 
 # Other
 avocado-experimental-data

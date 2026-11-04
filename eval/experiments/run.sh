@@ -19,7 +19,10 @@
 #     scrubbed of CBMC artifacts, mounted at /app/<subject-name>; the runner is launched from
 #     inside it, as in the manual workflow, so a prompt may refer to ../AGENTS.md;
 #   - a snapshot of the harness checkout, installed at /app inside the container, so AGENTS.md
-#     or CLAUDE.md, .claude/settings.json and docs/ apply. A treatment that defines `avocado-*`
+#     or CLAUDE.md and docs/ apply, along with the agent's Claude Code settings
+#     (docker/claude.settings.json, installed as .claude/settings.json; never the developers'
+#     .claude/settings.json, except in a pre-split checkout that has no
+#     docker/claude.settings.json). A treatment that defines `avocado-*`
 #     tools also gets its Python package, installed in the container with `uv sync` as `make run`
 #     does. The snapshot holds only tracked files named in HARNESS_FILES (with their working-tree
 #     contents), so stray logs, notes and these driver scripts never reach the agent. It is
@@ -172,10 +175,28 @@ fi
 tracked() { git -C "$HARNESS_ROOT" ls-files --error-unmatch -- "$1" >/dev/null 2>&1; }
 
 # The only harness files the agent may see, as git pathspecs: the instructions its prompt refers
-# to (AGENTS.md, or CLAUDE.md and the docs/ it points at) and the Claude Code settings.
-# Everything else in the checkout (driver scripts, logs, notes, build and CI files, tests) stays
-# out. Extend this list deliberately if a treatment adds docs or tools.
-HARNESS_FILES=(AGENTS.md CLAUDE.md docs .claude/settings.json)
+# to (AGENTS.md, or CLAUDE.md and the docs/ it points at). Everything else in the checkout
+# (driver scripts, logs, notes, build and CI files, tests) stays out. Extend this list
+# deliberately if a treatment adds docs or tools. The Claude Code settings are chosen below.
+HARNESS_FILES=(AGENTS.md CLAUDE.md docs)
+
+# The agent's Claude Code settings, installed as /app/.claude/settings.json in the container
+# (where run-isolated.sh passes them with --settings). The checkout's own .claude/settings.json
+# is for developers working on the harness and must never reach the agent; the agent's settings
+# are docker/claude.settings.json. A treatment checkout from before that split has only
+# .claude/settings.json, which there is the agent's, so it is used when
+# docker/claude.settings.json is absent.
+AGENT_SETTINGS=""
+if tracked docker/claude.settings.json; then
+  AGENT_SETTINGS=docker/claude.settings.json
+elif [ -e "$HARNESS_ROOT/docker/claude.settings.json" ]; then
+  # Falling back here would hand the agent the developers' settings.
+  echo "$HARNESS_ROOT/docker/claude.settings.json is not tracked; \`git add\` it so the agent gets its settings" >&2
+  exit 1
+elif tracked .claude/settings.json; then
+  AGENT_SETTINGS=.claude/settings.json
+  echo "note: $HARNESS_ROOT has no docker/claude.settings.json; giving the agent its .claude/settings.json (pre-split layout)" >&2
+fi
 # A treatment that defines command-line tools for the agent ([project.scripts] in
 # pyproject.toml) also needs its Python package, which run-isolated.sh installs with
 # `uv sync --frozen`: the project files (the build backend insists on README.md), the
@@ -190,7 +211,7 @@ SUBJECT="$(cd "$SUBJECT" && pwd)"
 SUBJECT_NAME="$(basename "$SUBJECT")"
 # The subject is mounted at /app/<name>, next to the harness snapshot and the .venv that
 # run-isolated.sh creates, so its name must differ from each of their top-level names.
-if [ "$SUBJECT_NAME" = / ] || [ "$SUBJECT_NAME" = .venv ] \
+if [ "$SUBJECT_NAME" = / ] || [ "$SUBJECT_NAME" = .venv ] || [ "$SUBJECT_NAME" = .claude ] \
   || git -C "$HARNESS_ROOT" ls-files -z -- "${HARNESS_FILES[@]}" | tr '\0' '\n' | cut -d/ -f1 \
     | grep -xF -- "$SUBJECT_NAME" >/dev/null; then
   echo "--subject directory name '$SUBJECT_NAME' would shadow a harness path under /app; rename it" >&2
@@ -284,14 +305,19 @@ fi
 
 
 # Snapshot the harness the agent will see, with working-tree contents (so uncommitted edits to
-# AGENTS.md or .claude/settings.json are included). Only tracked files matching HARNESS_FILES
-# are taken, so an untracked file can never leak in even if it matches.
+# AGENTS.md or the agent's settings are included). Only tracked files matching HARNESS_FILES
+# are taken, so an untracked file can never leak in even if it matches. The agent's settings
+# (AGENT_SETTINGS) are added as .claude/settings.json.
 snapshot_harness() {
   local dest="$1"
   mkdir -p "$dest"
   git -C "$HARNESS_ROOT" ls-files -z --cached -- "${HARNESS_FILES[@]}" \
     | (cd "$HARNESS_ROOT" && tar --null --ignore-failed-read -T - -cf -) \
     | tar -C "$dest" -xf -
+  if [ -n "$AGENT_SETTINGS" ]; then
+    mkdir -p "$dest/.claude"
+    cp "$HARNESS_ROOT/$AGENT_SETTINGS" "$dest/.claude/settings.json"
+  fi
   (cd "$dest" && find . -type f | sort) >"$BATCH_DIR/harness-files.txt"
   if ! grep -qx -e './AGENTS.md' -e './CLAUDE.md' "$BATCH_DIR/harness-files.txt"; then
     echo "neither AGENTS.md nor CLAUDE.md is a tracked file in $HARNESS_ROOT; the agent depends on one" >&2
@@ -414,6 +440,7 @@ run_one() {
   echo "prompt=${PROMPT:-<none>}"
   echo "runs=$RUNS jobs=$JOBS timeout=${TIMEOUT:-none} memory=${MEMORY:-unlimited} cpus=${CPUS:-unlimited}"
   echo "harness_dir=$HARNESS_ROOT"
+  echo "agent_settings=${AGENT_SETTINGS:-<none>}"
   echo "harness_branch=$(git -C "$HARNESS_ROOT" branch --show-current 2>/dev/null || echo unknown)"
   echo "harness_commit=$(git -C "$HARNESS_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "scripts_dir=$SCRIPT_ROOT"
