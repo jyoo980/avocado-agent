@@ -14,7 +14,7 @@ Usage:
 
 import argparse
 import json
-import tempfile
+import uuid
 from pathlib import Path
 
 from tools.util import get_call_graph
@@ -52,24 +52,21 @@ def construct_call_graph(
     # scoring several functions of one file at once), in one process or several. Write to a
     # uniquely named sibling and rename it into place, so that a concurrent reader sees either the
     # previous file or a complete new one, never a partially written one.
-    tmp_path: Path | None = None
+    #
+    # The temporary file is created with `open(..., "x")` rather than `tempfile`, because
+    # `tempfile` creates owner-only (0600) files and the rename would preserve that mode,
+    # making the file unreadable to other users (e.g. a host user after a root Docker run).
+    # `open` creates the file with the usual 0666 & ~umask permissions. The name uses a short
+    # fixed prefix, not the call graph's name, so it stays within filesystem filename-length limits.
+    tmp_path = path_to_call_graph.with_name(f".callgraph-{uuid.uuid4().hex}.tmp")
     try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=path_to_call_graph.parent,
-            prefix=f".{path_to_call_graph.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as tmp:
-            tmp_path = Path(tmp.name)
+        with tmp_path.open("x", encoding="utf-8") as tmp:
             tmp.write(json.dumps(call_graph, indent=4))
         tmp_path.replace(path_to_call_graph)
     finally:
         # After a successful replace the temporary path no longer exists; after a failure, this
         # removes the abandoned temporary file.
-        if tmp_path is not None:
-            tmp_path.unlink(missing_ok=True)
+        tmp_path.unlink(missing_ok=True)
     return str(path_to_call_graph)
 
 
