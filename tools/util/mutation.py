@@ -21,6 +21,7 @@ from loguru import logger
 from eval.mutants.mutate_function import Mutant, get_mutants
 from eval.mutants.util import (
     check_expected_cbmc_return_code,
+    get_bounded_mutant_file_name,
     is_valid_mutation_candidate,
 )
 from tools.construct_call_graph import construct_call_graph
@@ -562,6 +563,9 @@ def _get_path_for_mutated_source(
     overwrite one another; mutant files still match the `*__mutant_*.c` pattern that
     `make clean-mutants` removes.
 
+    If the readable file name would exceed the filesystem's per-component length limit, the name
+    is shortened; see `get_bounded_mutant_file_name`.
+
     Args:
         workspace_path (Path): The directory under which mutation testing occurs.
         path_to_original_source (Path): The path to the original source file.
@@ -571,6 +575,10 @@ def _get_path_for_mutated_source(
     Returns:
         Path: The path to which to write a mutated source file.
     """
-    return workspace_path / (
-        f"{path_to_original_source.stem}__mutant_{function}_{index}{path_to_original_source.suffix}"
+    return workspace_path / get_bounded_mutant_file_name(
+        path_to_original_source.stem,
+        "mutant",
+        function,
+        index,
+        path_to_original_source.suffix,
     )
