@@ -92,7 +92,7 @@ def test_meeting_the_floor_is_explained() -> None:
 def test_the_rationale_reports_the_attempts_over_the_turn() -> None:
     decision = _decide([_session(), _session()], [1, 1], file_attempts=[1, 2])
     assert decision.rerun
-    assert "recording 0 verification attempt(s)" in decision.rationale
+    assert "recorded 0 verification attempt(s)" in decision.rationale
     assert "for 1 in 2 session(s)" in decision.rationale
 
 
@@ -120,3 +120,21 @@ def test_a_verifying_specification_is_explained() -> None:
     decision = _decide([_session()], [0], verified=True)
     assert not decision.rerun
     assert "verifies" in decision.rationale
+
+
+def test_sessions_that_failed_with_an_error_do_not_count_toward_the_no_attempt_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("avocado_verify._MAX_AGENT_SESSIONS_PER_FUNCTION", 4)
+    errored = _session(is_error=True, text="API Error: 529 overloaded")
+    assert _decide([errored, errored], [0, 0]).rerun
+    # An error between two timeouts neither counts nor interrupts the row.
+    sessions = [_session(timed_out=True), errored, _session(timed_out=True)]
+    stopped = _decide(sessions, [0, 0, 0])
+    assert not stopped.rerun
+    assert "2 sessions in a row" in stopped.rationale
+
+
+def test_the_rationale_claims_no_verdict_before_any_attempt() -> None:
+    assert "does not verify yet" not in _decide([_session()], [0]).rationale
+    assert "does not verify yet" in _decide([_session()], [1]).rationale
