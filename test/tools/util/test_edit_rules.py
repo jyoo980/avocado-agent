@@ -225,3 +225,28 @@ def test_only_define_and_undef_name_a_directive() -> None:
         None,
         None,
     ]
+
+
+def test_a_macro_call_after_the_parameter_list_is_not_the_function_name() -> None:
+    assert _names(b"int f(int x) REQUIRES(x > 0) { return x; }") == ["f"]
+    assert _names(b"int f(int x) A(1) B(2) { return x; }") == ["f"]
+    assert _names(b"int (*get(void))(int) M(1) { return 0; }") == ["get"]
+    assert _names(b"int f(int x) NONNULL(1);") == ["f"]
+    # With an implicit `int`, a macro call before the name is not taken for the parameter list.
+    assert _names(b"ATTR(x) f(void) { return 0; }") == ["f"]
+
+
+def test_a_k_and_r_definition_is_one_function() -> None:
+    source = b"int f(a, b) int a; char *b; { return a; }\nint g(void) { return 1; }\n"
+    items = _split_items(_tokenize(source))
+    assert [(item.kind, item.name) for item in items] == [("function", "f"), ("function", "g")]
+    assert len(function_body_offsets(source, "f")) == 1
+    # A parameter declaration that names an aggregate or a function pointer.
+    assert _names(b"int f(p) struct S *p; { return 0; }") == ["f"]
+    assert _names(b"int f(fp) int (*fp)(void); { return fp(); }") == ["f"]
+
+
+def test_a_prototype_with_a_typedef_parameter_is_not_a_k_and_r_definition() -> None:
+    assert _names(b"int f(size_t);\nint g(void) { return 0; }") == ["f", "g"]
+    assert _names(b"int f(T) NORETURN;\nint g(void) { return 0; }") == ["f", "g"]
+    assert _names(b"VEC(v) v;\nstruct S { int a; };")[1] == "S"
