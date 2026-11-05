@@ -43,6 +43,7 @@ import shutil
 import sys
 
 from pathlib import Path
+from typing import NoReturn
 
 AGENT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_DIR = AGENT_ROOT.parent / "avocado-experimental-data"
@@ -80,14 +81,12 @@ def main() -> None:
 
     run_dirs = [run_dir.expanduser().resolve() for run_dir in args.run_dirs]
     data_dir = args.data_dir.expanduser().resolve()
-    for name, value in (("--model", args.model), ("--treatment", args.treatment)):
-        if not value or "/" in value or value.startswith("."):
-            _exit_with_message(f"{name} must be a plain directory name, got {value!r}")
     if not data_dir.is_dir():
         _exit_with_message(f"data directory {data_dir} does not exist; pass --data-dir")
     for run_dir in run_dirs:
         _check_run_dir(run_dir)
 
+    _check_run_resumed_from(run_dirs)
     subject = _get_subject_name(run_dirs, args.subject_name)
     dest = data_dir / args.treatment / args.model / subject
     if dest.exists() and not args.force:
@@ -131,7 +130,8 @@ def _parse_args() -> argparse.Namespace:
         "--model",
         required=True,
         choices=AVOCADO_BACKEND_MODELS,
-        help="model directory name, e.g., opus-5-5")
+        help="model directory name, e.g., opus-5-5"
+    )
     parser.add_argument(
         "--treatment", required=True, choices=TREATMENT_NAMES, help="treatment directory name, e.g., avocado-minus-tools"
     )
@@ -160,12 +160,12 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _exit_with_message(message: str) -> None:
+def _exit_with_message(message: str) -> NoReturn:
     print(f"error: {message}", file=sys.stderr)
     sys.exit(1)
 
 def _warn(message: str) -> None:
-    print(f"_warning: {message}", file=sys.stderr)
+    print(f"warning: {message}", file=sys.stderr)
 
 
 def _read_batch_info(run_dir: Path) -> dict[str, str]:
@@ -190,6 +190,16 @@ def _check_run_dir(run_dir: Path) -> None:
             _exit_with_message(f"{run_dir} has no {required}/; is it a run-<i> directory written by run.sh?")
 
 
+def _check_run_resumed_from(run_dirs: list[Path]) -> None:
+    first_resumed_from = _read_batch_info(run_dirs[0]).get("resumed_from")
+    if first_resumed_from:
+        _exit_with_message(f"{run_dirs[0]} was resumed from {first_resumed_from}; pass that run first")
+    for prev_run, curr_run in zip(run_dirs, run_dirs[1:]):
+        resumed_from = _read_batch_info(curr_run).get("resumed_from")
+        if not resumed_from or Path(resumed_from).resolve() != prev_run:
+            _exit_with_message(f"{curr_run} was not resumed from {prev_run} (resumed_from={resumed_from})")
+
+
 def _get_subject_name(run_dirs: list[Path], override: str | None) -> str:
     if override:
         return override
@@ -198,7 +208,6 @@ def _get_subject_name(run_dirs: list[Path], override: str | None) -> str:
         subject = _read_batch_info(run_dir).get("subject")
         if not subject:
             _exit_with_message(f"no subject= in {run_dir.parent / 'batch-info.txt'}; pass --subject-name")
-        assert subject
         names.add(Path(subject).name)
     if len(names) > 1:
         _exit_with_message(f"the given runs are of different subjects: {', '.join(sorted(names))}")
