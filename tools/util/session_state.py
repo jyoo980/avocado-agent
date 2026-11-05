@@ -1,21 +1,42 @@
-"""What `avocado-verify` and its tests share about sessions, their copies and their verdicts.
+"""Files through which `avocado-verify` tells agent-side tools about a session and its run.
 
-`avocado-verify` gives each session a private copy of the source directory. This module says what
-such a copy leaves out and what counts as an edit outside the source file, and it is the one place
-that builds and reads the status of a vacuous proof and that says which functions a merge
-rechecks.
+`avocado-verify` keeps what a merge needs in memory: the canonical file a session's private copy
+was taken from, that file's bytes at the time (the fork base), and which functions are verified or
+have a live session. A tool the agent runs inside its copy (`avocado-validate`) is a separate
+process and can only learn those things from disk, so the harness writes them down:
+
+- a *session file* in the root of each session's temporary directory, beside (not inside) the
+  copied source directory, naming the canonical file and holding the fork base; and
+- a *run-state file* beside the canonical file, rewritten whenever the set of verified functions
+  or of functions with a live session changes, or a function's ground truth is taken. It also
+  holds the `--depth` each function was last verified at, so a tool that re-verifies a function
+  does so at that function's own depth.
+
+Both are advisory copies. The harness never reads them back: its own merge works from memory, so
+nothing an agent does to these files can change what is merged.
 """
 
 from __future__ import annotations
 
+import filecmp
+import json
 import shutil
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from tools.run_cbmc import VACUOUS_VERDICT
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
-    from pathlib import Path
+
+# Name of the session file, and of the fork base saved next to it (the source file's suffix is
+# appended to the latter).
+SESSION_FILE_NAME = ".avocado-session.json"
+_FORK_BASE_STEM = ".avocado-fork-base"
+
+# Suffix of the run-state file that sits beside the canonical file.
+RUN_STATE_SUFFIX = "-avocado-run-state.json"
 
 # Suffix of the directory beside the canonical file in which the harness keeps the transcripts of
 # the sessions it had to stop at the session timeout.
@@ -33,6 +54,7 @@ SNAPSHOT_IGNORE = shutil.ignore_patterns(
     "*.goto",
     "*-callgraph.json",
     "*.jsonl",
+    f"*{RUN_STATE_SUFFIX}",
     f"*{TRANSCRIPTS_DIR_SUFFIX}",
     "*__mutant_*.c",
     "*__clause_drop_*.c",
@@ -40,11 +62,47 @@ SNAPSHOT_IGNORE = shutil.ignore_patterns(
 )
 
 
+@dataclass(frozen=True)
+class SessionInfo:
+    """What a tool running inside a session's private copy needs to know about that session.
+
+    Attributes:
+        function (str): The function the session works on.
+        canonical_file (Path): Absolute path to the canonical source file the copy was taken from.
+        fork_base (bytes): The canonical file's bytes when the copy was taken.
+    """
+
+    function: str
+    canonical_file: Path
+    fork_base: bytes
+
+
+@dataclass(frozen=True)
+class RunState:
+    """The harness's merge state, as last published.
+
+    Attributes:
+        verified (frozenset[str]): Functions whose latest ground truth on the canonical file
+            passed.
+        active (frozenset[str]): Functions with a live session.
+        unverified (dict[str, str]): Functions whose latest ground truth did not pass, each with
+            why (for example `VACUOUS (unsatisfiable_preconditions)`).
+        depths (dict[str, int]): The CBMC `--depth` each function's latest ground truth was taken
+            at. A function with no entry has had none, and is verified at the default depth.
+    """
+
+    verified: frozenset[str]
+    active: frozenset[str]
+    unverified: dict[str, str] = field(default_factory=dict)
+    depths: dict[str, int] = field(default_factory=dict)
+
+
 def vacuous_status(vacuity: str | None) -> str:
     """Return the status of a function whose proof is vacuous.
 
     This is the one place that builds the status, and `is_vacuous_status` the one place that
-    reads it, so the two cannot drift apart.
+    reads it, so the harness, which writes it, and the agent-side tools, which read it back from
+    the run-state file, cannot drift apart.
 
     Args:
         vacuity (str | None): The kind of vacuity, if known.
@@ -59,7 +117,7 @@ def is_vacuous_status(why: str) -> bool:
     """Return whether a function's status says its proof is vacuous.
 
     Args:
-        why (str): A status as the harness's merge state holds it, or a verdict from the run log.
+        why (str): A status as `RunState.unverified` holds it, or a verdict from the run log.
 
     Returns:
         bool: True iff it is one `vacuous_status` builds.
@@ -72,19 +130,180 @@ def rechecked_on_change(verified: Iterable[str], unverified: Mapping[str, str]) 
 
     Those are the verified functions and the ones whose proof is vacuous. A vacuous proof counts
     as verified in the final tally, so it must not keep a verdict that the new contract has made
-    stale; but only the verified ones are protected by rule 9 (the harness's merge reports only
-    the verified ones as broken).
+    stale; but only the verified ones are protected by rule 9 (`avocado-validate reverify` and
+    the harness's merge both use this set, and both report only the verified ones as broken).
 
     Args:
         verified (Iterable[str]): Functions whose latest ground truth on the canonical file
-            passed.
+            passed (`RunState.verified`, or the harness's own copy of it).
         unverified (Mapping[str, str]): Functions whose latest ground truth did not pass, each
-            with why.
+            with why (`RunState.unverified`, or the harness's own copy of it).
 
     Returns:
         set[str]: The functions.
     """
     return set(verified) | {name for name, why in unverified.items() if is_vacuous_status(why)}
+
+
+def write_session_info(
+    session_root: Path, *, function: str, canonical_file: Path, fork_base: bytes
+) -> None:
+    """Write the session file and the fork base into a session's temporary root directory.
+
+    Args:
+        session_root (Path): The session's temporary root (the parent of the copied source
+            directory).
+        function (str): The function the session works on.
+        canonical_file (Path): Absolute path to the canonical source file.
+        fork_base (bytes): The canonical file's bytes when the copy was taken.
+    """
+    fork_base_name = f"{_FORK_BASE_STEM}{canonical_file.suffix}"
+    (session_root / fork_base_name).write_bytes(fork_base)
+    record = {
+        "function": function,
+        "canonical_file": str(canonical_file),
+        "fork_base": fork_base_name,
+    }
+    (session_root / SESSION_FILE_NAME).write_text(json.dumps(record), encoding="utf-8")
+
+
+class SessionFileError(Exception):
+    """The session file, or the fork base it names, cannot be read or is malformed."""
+
+
+def session_root_of(session_file: Path) -> Path:
+    """Return the temporary root of the session whose copy of the source file is `session_file`.
+
+    The harness copies the source directory into the root, so the source file is two levels below
+    it. This does not check that `session_file` is in a session copy.
+
+    Args:
+        session_file (Path): The session's private copy of the source file.
+
+    Returns:
+        Path: The directory that holds the session file, if `session_file` is in a session copy.
+    """
+    return session_file.resolve().parent.parent
+
+
+def read_session_info(session_file: Path) -> SessionInfo | None:
+    """Return the session whose copy of the source file is `session_file`, if there is one.
+
+    The session file is looked for only in `session_root_of(session_file)`. This does not check
+    that `session_file` is the session's copy of the source file rather than another file beside
+    it.
+
+    Args:
+        session_file (Path): The session's private copy of the source file.
+
+    Returns:
+        SessionInfo | None: The session, or None when `session_root_of(session_file)` holds no
+            session file.
+
+    Raises:
+        SessionFileError: The session file, or the fork base it names, cannot be read or is
+            malformed.
+    """
+    root = session_root_of(session_file)
+    candidate = root / SESSION_FILE_NAME
+    if not candidate.is_file():
+        return None
+    try:
+        record = json.loads(candidate.read_text(encoding="utf-8"))
+        fields = [record["function"], record["canonical_file"], record["fork_base"]]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise SessionFileError(_damaged(candidate, repr(error))) from error
+    if not all(isinstance(value, str) for value in fields):
+        raise SessionFileError(_damaged(candidate, f"a field is not a string: {fields!r}"))
+    function, canonical_file, fork_base_name = fields
+    try:
+        fork_base = (root / fork_base_name).read_bytes()
+    except OSError as error:
+        raise SessionFileError(_damaged(candidate, repr(error))) from error
+    return SessionInfo(function=function, canonical_file=Path(canonical_file), fork_base=fork_base)
+
+
+def _damaged(session_file: Path, problem: str) -> str:
+    """Return the message for a session file that cannot be used.
+
+    Args:
+        session_file (Path): The session file.
+        problem (str): What is wrong with it.
+
+    Returns:
+        str: The message.
+    """
+    return f"session file {session_file} is damaged: {problem}"
+
+
+def run_state_path(canonical_file: Path) -> Path:
+    """Return the path of the run-state file for a canonical source file.
+
+    Args:
+        canonical_file (Path): The canonical source file.
+
+    Returns:
+        Path: `<stem>-avocado-run-state.json` beside it.
+    """
+    return canonical_file.with_name(f"{canonical_file.stem}{RUN_STATE_SUFFIX}")
+
+
+def write_run_state(
+    canonical_file: Path,
+    *,
+    verified: Iterable[str],
+    active: Iterable[str],
+    unverified: Mapping[str, str] | None = None,
+    depths: Mapping[str, int] | None = None,
+) -> None:
+    """Publish the run's merge state beside the canonical file, atomically.
+
+    The file is replaced in one step so a reader in another process never sees it half written.
+    Failures to write are swallowed: the file is advisory and must never stop a run.
+
+    Args:
+        canonical_file (Path): The canonical source file.
+        verified (Iterable[str]): Functions currently verified on the canonical file.
+        active (Iterable[str]): Functions with a live session.
+        unverified (Mapping[str, str] | None): Functions whose latest ground truth did not pass,
+            each with why.
+        depths (Mapping[str, int] | None): The `--depth` each function's latest ground truth was
+            taken at.
+    """
+    target = run_state_path(canonical_file)
+    staged = target.with_name(f"{target.name}.tmp")
+    record = {
+        "verified": sorted(verified),
+        "active": sorted(active),
+        "unverified": dict(sorted((unverified or {}).items())),
+        "depths": dict(sorted((depths or {}).items())),
+    }
+    try:
+        staged.write_text(json.dumps(record), encoding="utf-8")
+        staged.replace(target)
+    except OSError:
+        pass
+
+
+def read_run_state(canonical_file: Path) -> RunState | None:
+    """Return the run's last published merge state, or None when there is none to read.
+
+    Args:
+        canonical_file (Path): The canonical source file.
+
+    Returns:
+        RunState | None: The state, or None when the file is missing or malformed.
+    """
+    try:
+        record = json.loads(run_state_path(canonical_file).read_text(encoding="utf-8"))
+        return RunState(
+            verified=frozenset(record["verified"]),
+            active=frozenset(record["active"]),
+            unverified=dict(record.get("unverified") or {}),
+            depths={name: int(depth) for name, depth in (record.get("depths") or {}).items()},
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def find_stray_files(session_file: Path, canonical_dir: Path) -> list[str]:
@@ -112,6 +331,6 @@ def find_stray_files(session_file: Path, canonical_dir: Path) -> list[str]:
         original = canonical_dir / relative
         if not original.is_file():
             stray.append(f"added:{relative}")
-        elif original.read_bytes() != path.read_bytes():
+        elif not filecmp.cmp(original, path, shallow=False):
             stray.append(f"modified:{relative}")
     return stray
