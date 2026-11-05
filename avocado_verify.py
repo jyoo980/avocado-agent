@@ -389,33 +389,31 @@ def _verify_via_agent(
         f"{Path(file_path).stem}{VERIFICATION_ATTEMPTS_LOG_SUFFIX}"
     )
 
-    # Attempts already logged for this function before this turn (e.g. by an earlier function's
-    # session that also exercised this one); gate only on attempts made from here forward.
-    previous_verification_attempts = _count_verification_attempts(attempts_log_path, function)
-    previous_file_verification_attempts = _count_verification_attempts(attempts_log_path)
-
-    def attempts_so_far() -> int:
-        return (
-            _count_verification_attempts(attempts_log_path, function)
-            - previous_verification_attempts
-        )
-
-    def file_attempts_so_far() -> int:
-        return _count_verification_attempts(attempts_log_path) - previous_file_verification_attempts
+    # Attempts already logged before this turn (e.g. by an earlier function's session that also
+    # exercised this one); gate only on attempts made from here forward.
+    records = _read_attempt_records(attempts_log_path)
+    previous_verification_attempts = _count_verification_attempts(records, function)
+    previous_file_verification_attempts = _count_verification_attempts(records)
 
     # Do not advance to the next function until the agent has attempted verification at least
     # `_MIN_VERIFICATION_ATTEMPTS_PER_SESSION` times, re-running the session up to a capped number
     # of times -- but only while a re-run can plausibly do better than the session before it (see
     # `_should_rerun_session`).
-    claude_sessions_for_function = [_run_claude(command, timeout)]
-    attempts_after_each_session = [attempts_so_far()]
-    file_attempts_after_each_session = [file_attempts_so_far()]
+    claude_sessions_for_function: list[ClaudeRun] = []
+    attempts_after_each_session: list[int] = []
+    file_attempts_after_each_session: list[int] = []
     while True:
+        claude_sessions_for_function.append(_run_claude(command, timeout))
+        records = _read_attempt_records(attempts_log_path)
+        attempts_after_each_session.append(
+            _count_verification_attempts(records, function) - previous_verification_attempts
+        )
+        file_attempts_after_each_session.append(
+            _count_verification_attempts(records) - previous_file_verification_attempts
+        )
         # The log can hold a verified attempt from before this turn, which a session in this turn
         # might since have invalidated, so trust only a log whose latest attempt is from this turn.
-        verified = attempts_after_each_session[-1] > 0 and _last_attempt_verified(
-            attempts_log_path, function
-        )
+        verified = attempts_after_each_session[-1] > 0 and _last_attempt_verified(records, function)
         decision = _should_rerun_session(
             claude_sessions_for_function,
             attempts_after_each_session,
@@ -430,9 +428,6 @@ def _verify_via_agent(
             f"({len(claude_sessions_for_function) + 1}/{_MAX_AGENT_SESSIONS_PER_FUNCTION}): "
             f"{decision.rationale}"
         )
-        claude_sessions_for_function.append(_run_claude(command, timeout))
-        attempts_after_each_session.append(attempts_so_far())
-        file_attempts_after_each_session.append(file_attempts_so_far())
     sessions = len(claude_sessions_for_function)
     current_verification_attempts = attempts_after_each_session[-1]
     logger.info(f"{function}: not re-running: {decision.rationale}")
@@ -569,29 +564,24 @@ def _differences(cumulative: list[int]) -> list[int]:
     ]
 
 
-def _count_verification_attempts(log_path: Path, function: str | None = None) -> int:
-    """Return the number of logged `avocado-run-cbmc` verification attempts for the given function.
+def _read_attempt_records(log_path: Path) -> list[dict[str, object]]:
+    """Return the records in the given verification-attempts log, oldest first.
 
-    If `function` is None, return the number for every function.
-
-    Reads the verification-attempts JSONL that `avocado-run-cbmc` appends to (one record per
-    top-level verification attempt). A missing log, blank lines, and malformed records are treated
-    as zero/skipped so counting never raises.
+    The log is the JSONL file that `avocado-run-cbmc` appends to, with one record per top-level
+    verification attempt, such as `{"function": "foo", "verified": true, ...}`. A missing log yields
+    no records, and blank lines and malformed records are skipped, so reading never raises.
 
     Args:
         log_path (Path): a path to a verification-attempts JSONL log.
-        function (str | None): the function whose attempts to count, or None to count the attempts
-            for every function.
 
     Returns:
-        int: The number of attempts recorded for `function`, or for every function if `function`
-            is None.
+        list[dict[str, object]]: The records, each parsed from one line of the log.
     """
     try:
         lines = log_path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return 0
-    count = 0
+        return []
+    records = []
     for line in lines:
         stripped = line.strip()
         if not stripped:
@@ -600,44 +590,51 @@ def _count_verification_attempts(log_path: Path, function: str | None = None) ->
             record = json.loads(stripped)
         except json.JSONDecodeError:
             continue
-        if function is None or record.get("function") == function:
-            count += 1
-    return count
+        if isinstance(record, dict):
+            records.append(record)
+    return records
 
 
-def _last_attempt_verified(log_path: Path, function: str) -> bool:
-    """Return whether the most recent logged verification attempt for `function` succeeded.
+def _count_verification_attempts(
+    records: list[dict[str, object]], function: str | None = None
+) -> int:
+    """Return the number of verification attempts on the given function among the given records.
 
-    Reads the verification-attempts JSONL that `avocado-run-cbmc` appends to and returns the
-    `verified` field of the last record naming `function`. That field is the *tool's* own CBMC
-    verdict (`run_cbmc_and_mutation_testing._log_verification_attempt` records
-    `result.is_function_verified`), not Claude's self-report, so it is safe to trust here. A missing
-    log, blank lines, and malformed records are skipped; the function returns False when there is no
-    decided record, so callers never skip work on the basis of a verification that did not happen.
+    If `function` is None, return the number of attempts on every function.
 
     Args:
-        log_path (Path): Path to the verification-attempts JSONL log.
-        function (str): The function whose latest attempt should be inspected.
+        records (list[dict[str, object]]): a list of records from a verification-attempts log, as
+            returned by `_read_attempt_records`.
+        function (str | None): the function whose attempts to count, or None to count the attempts
+            on every function.
 
     Returns:
-        bool: True iff the most recent attempt record for `function` reports verification success.
+        int: The number of the records for `function`, or of all the records if `function` is None.
     """
-    try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-    verified = False
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            record = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
+    return sum(1 for record in records if function is None or record.get("function") == function)
+
+
+def _last_attempt_verified(records: list[dict[str, object]], function: str) -> bool:
+    """Return True if the most recent verification attempt on the given function succeeded.
+
+    Returns the `verified` field of the last record naming `function`. That field is the *tool's*
+    own CBMC verdict (`run_cbmc_and_mutation_testing._log_verification_attempt` records
+    `result.is_function_verified`), not Claude's self-report, so it is safe to trust here. Returns
+    False when no record names `function`, so callers never skip work on the basis of a
+    verification that did not happen.
+
+    Args:
+        records (list[dict[str, object]]): a list of records from a verification-attempts log, as
+            returned by `_read_attempt_records`.
+        function (str): the function whose latest attempt to inspect.
+
+    Returns:
+        bool: True if the most recent record for `function` reports verification success.
+    """
+    for record in reversed(records):
         if record.get("function") == function:
-            verified = bool(record.get("verified", False))
-    return verified
+            return bool(record.get("verified", False))
+    return False
 
 
 def _read_function_outcomes(log_path: Path) -> dict[str, str]:
