@@ -30,7 +30,6 @@ from subprocess import TimeoutExpired
 
 from loguru import logger
 
-from eval.mutants.mutate_function import get_mutants
 from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
 from tools.run_cbmc import RunCbmcResult, run_cbmc
@@ -410,14 +409,12 @@ def _verify_via_agent(
     attempts_after_each_session = [attempts_so_far()]
     file_attempts_after_each_session = [file_attempts_so_far()]
     while True:
-        improvable = is_spec_improvable_with_mutation_testing(
-            function, file_path, attempts_log_path
-        )
+        verified = _last_attempt_verified(attempts_log_path, function)
         decision = _should_rerun_session(
             claude_sessions_for_function,
             attempts_after_each_session,
             file_attempts_after_each_session=file_attempts_after_each_session,
-            improvable=improvable,
+            verified=verified,
             timeout=timeout,
         )
         if not decision.rerun:
@@ -433,8 +430,8 @@ def _verify_via_agent(
     sessions = len(claude_sessions_for_function)
     current_verification_attempts = attempts_after_each_session[-1]
     logger.info(f"{function}: not re-running: {decision.rationale}")
-    # A specification that cannot be improved stopped the loop deliberately, not short of the floor.
-    if improvable and current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION:
+    # A specification that verifies stopped the loop deliberately, not short of the floor.
+    if not verified and current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION:
         logger.warning(
             f"{function}: proceeding after {sessions} session(s) with only "
             f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} "
@@ -472,7 +469,7 @@ def _should_rerun_session(
     attempts_after_each_session: list[int],
     *,
     file_attempts_after_each_session: list[int],
-    improvable: bool,
+    verified: bool,
     timeout: int,
 ) -> _RerunDecision:
     """Return the decision whether to start another session for the current function.
@@ -486,8 +483,8 @@ def _should_rerun_session(
     - one that made no verification attempt on the file at all, when the session before it did the
       same: the prompt, file and model are unchanged, so a third identical session is expected to
       end the same way (the measured case cost 2 x 1800 s);
-    - a session after which the specification verifies, or after which there are no mutants to
-      kill: there is no score left for a re-run to raise (`improvable` is False).
+    - a session after which the specification verifies: there is nothing left for a re-run to
+      achieve (`verified` is True).
 
     Args:
         sessions (list[ClaudeRun]): The sessions run so far this turn, oldest first.
@@ -496,8 +493,8 @@ def _should_rerun_session(
         file_attempts_after_each_session (list[int]): Verification attempts logged for any
             function in the file (the function or its callees) after each of those sessions,
             cumulative over the turn.
-        improvable (bool): True if the specification can still be improved, per
-            `is_spec_improvable_with_mutation_testing`.
+        verified (bool): True if the most recent verification attempt for the function
+            succeeded, per `_last_attempt_verified`.
         timeout (int): The per-session timeout, in seconds; used for diagnostics.
 
     Returns:
@@ -511,10 +508,8 @@ def _should_rerun_session(
             f"the function has {attempts} verification attempt(s), meeting the "
             f"{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} required",
         )
-    if not improvable:
-        return _RerunDecision(
-            False, "the specification verifies or has no mutants to kill, so it cannot improve"
-        )
+    if verified:
+        return _RerunDecision(False, "the specification verifies")
     if _is_usage_limit_hit(last):
         return _RerunDecision(False, "the last session was stopped by a usage limit")
     if len(sessions) >= _MAX_AGENT_SESSIONS_PER_FUNCTION:
@@ -559,35 +554,6 @@ def _differences(cumulative: list[int]) -> list[int]:
     return [
         after - (cumulative[index - 1] if index else 0) for index, after in enumerate(cumulative)
     ]
-
-
-def is_spec_improvable_with_mutation_testing(
-    function: str, source_path: str, attempts_log_path: Path
-) -> bool:
-    """Return True iff a function's specification can be improved.
-
-    Whether a specification can be improved (via Avocado) depends on the availability of mutants to
-    kill; the kill score is the only metric that is provided to the agent. If no mutants are
-    generated, and the function already verifies, there is no point going further.
-
-    Args:
-        function (str): The function under specification generation.
-        source_path (str): The path to the source file where the function is declared.
-        attempts_log_path (Path): The path to the log of verification attempts.
-
-    Returns:
-        bool: True iff a function's specification can be improved, i.e., it has mutants to kill
-            and it is not successfully verified, yet.
-    """
-    function_has_mutants = False
-    try:
-        function_has_mutants = bool(get_mutants(source_path, function))
-    except Exception:  # ruff: ignore[blind-except] - any generation failure should fall back to default behavior.
-        logger.error(f"Failure in mutant generation for '{function}' in {source_path}")
-        # Assume mutants exist in the worst-case scenario.
-        function_has_mutants = True
-    is_function_successfully_verified = _last_attempt_verified(attempts_log_path, function)
-    return function_has_mutants and not is_function_successfully_verified
 
 
 def _count_verification_attempts(log_path: Path, function: str | None = None) -> int:

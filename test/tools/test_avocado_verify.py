@@ -24,14 +24,14 @@ def _decide(
     attempts: list[int],
     *,
     file_attempts: list[int] | None = None,
-    improvable: bool = True,
+    verified: bool = False,
     timeout: int = 1800,
 ) -> _RerunDecision:
     return _should_rerun_session(
         sessions,
         attempts,
         file_attempts_after_each_session=attempts if file_attempts is None else file_attempts,
-        improvable=improvable,
+        verified=verified,
         timeout=timeout,
     )
 
@@ -64,9 +64,9 @@ def test_no_rerun_after_a_usage_limit() -> None:
     assert "usage limit" in decision.rationale
 
 
-def test_no_rerun_when_floor_met_or_not_improvable_or_capped() -> None:
+def test_no_rerun_when_floor_met_or_verified_or_capped() -> None:
     assert not _decide([_session()], [2]).rerun
-    assert not _decide([_session()], [0], improvable=False).rerun
+    assert not _decide([_session()], [0], verified=True).rerun
     capped = _decide([_session()] * 3, [0, 0, 0])
     assert not capped.rerun
     assert "cap" in capped.rationale
@@ -116,7 +116,7 @@ def test_a_usage_limit_on_the_last_allowed_session_is_reported() -> None:
     assert "usage limit" in decision.rationale
 
 
-def test_a_specification_that_cannot_improve_is_explained() -> None:
-    decision = _decide([_session()], [0], improvable=False)
+def test_a_verifying_specification_is_explained() -> None:
+    decision = _decide([_session()], [0], verified=True)
     assert not decision.rerun
-    assert "cannot improve" in decision.rationale
+    assert "verifies" in decision.rationale
