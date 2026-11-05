@@ -42,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from eval.mutants.mutate_specification import ClauseMutant, get_clause_mutants
 from eval.mutants.util import (
     check_expected_cbmc_return_code,
+    get_bounded_mutant_file_name,
     is_valid_mutation_candidate,
 )
 from tools.construct_call_graph import construct_call_graph
@@ -478,6 +479,9 @@ def _get_path_to_source_with_removed_clause(
     concurrently -- never overwrite one another; the files still match the `*__clause_drop_*.c`
     pattern that `make clean-mutants` removes.
 
+    If the readable file name would exceed the filesystem's per-component length limit, the name
+    is shortened; see `get_bounded_mutant_file_name`.
+
     Args:
         workspace_path (Path): The directory under which redundancy score computation occurs.
         path_to_original_source (Path): The path to the original source file.
@@ -487,9 +491,12 @@ def _get_path_to_source_with_removed_clause(
     Returns:
         Path: The path to which to write a mutated source file.
     """
-    return workspace_path / (
-        f"{path_to_original_source.stem}__clause_drop_{function}_{index}"
-        f"{path_to_original_source.suffix}"
+    return workspace_path / get_bounded_mutant_file_name(
+        path_to_original_source.stem,
+        "clause_drop",
+        function,
+        index,
+        path_to_original_source.suffix,
     )
 
 
