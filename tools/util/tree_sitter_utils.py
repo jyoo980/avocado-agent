@@ -307,6 +307,7 @@ def _parse_to_ast(
         _log_parse_errors(tree.root_node, label)
         return tree
 
+
 def _log_parse_errors(root: Node, label: str) -> None:
     """Log tree-sitter parse errors so that misparses do not go unnoticed.
 
