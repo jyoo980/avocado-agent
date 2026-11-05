@@ -1,21 +1,36 @@
-"""What `avocado-verify` and its tests share about sessions, their copies and their verdicts.
+"""What `avocado-verify`, its tests and agent-side tools share about sessions and their copies.
 
 `avocado-verify` gives each session a private copy of the source directory. This module says what
 such a copy leaves out and what counts as an edit outside the source file, and it is the one place
 that builds and reads the status of a vacuous proof and that says which functions a merge
 rechecks.
+
+A tool the agent runs inside its copy (`avocado-validate`) is a separate process and can learn the
+canonical file the copy was taken from, and that file's bytes at the time (the fork base), only
+from disk. So the harness writes a *session file* in the root of each session's temporary
+directory, beside (not inside) the copied source directory. The session file is an advisory copy.
+The harness never reads it back: its own merge works from memory, so nothing an agent does to the
+file can change what is merged.
 """
 
 from __future__ import annotations
 
+import filecmp
+import json
 import shutil
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from tools.run_cbmc import VACUOUS_VERDICT
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
-    from pathlib import Path
+
+# Name of the session file, and of the fork base saved next to it (the source file's suffix is
+# appended to the latter).
+SESSION_FILE_NAME = ".avocado-session.json"
+_FORK_BASE_STEM = ".avocado-fork-base"
 
 # Suffix of the directory beside the canonical file in which the harness keeps the transcripts of
 # the sessions it had to stop at the session timeout.
@@ -38,6 +53,21 @@ SNAPSHOT_IGNORE = shutil.ignore_patterns(
     "*__clause_drop_*.c",
     "mutation_compile_failures.log",
 )
+
+
+@dataclass(frozen=True)
+class SessionInfo:
+    """What a tool running inside a session's private copy needs to know about that session.
+
+    Attributes:
+        function (str): The function the session works on.
+        canonical_file (Path): Absolute path to the canonical source file the copy was taken from.
+        fork_base (bytes): The canonical file's bytes when the copy was taken.
+    """
+
+    function: str
+    canonical_file: Path
+    fork_base: bytes
 
 
 def vacuous_status(vacuity: str | None) -> str:
@@ -87,6 +117,97 @@ def rechecked_on_change(verified: Iterable[str], unverified: Mapping[str, str]) 
     return set(verified) | {name for name, why in unverified.items() if is_vacuous_status(why)}
 
 
+def write_session_info(
+    session_root: Path, *, function: str, canonical_file: Path, fork_base: bytes
+) -> None:
+    """Write the session file and the fork base into a session's temporary root directory.
+
+    Args:
+        session_root (Path): The session's temporary root (the parent of the copied source
+            directory).
+        function (str): The function the session works on.
+        canonical_file (Path): Absolute path to the canonical source file.
+        fork_base (bytes): The canonical file's bytes when the copy was taken.
+    """
+    fork_base_name = f"{_FORK_BASE_STEM}{canonical_file.suffix}"
+    (session_root / fork_base_name).write_bytes(fork_base)
+    record = {
+        "function": function,
+        "canonical_file": str(canonical_file),
+        "fork_base": fork_base_name,
+    }
+    (session_root / SESSION_FILE_NAME).write_text(json.dumps(record), encoding="utf-8")
+
+
+class SessionFileError(Exception):
+    """The session file, or the fork base it names, cannot be read or is malformed."""
+
+
+def session_root_of(session_file: Path) -> Path:
+    """Return the temporary root of the session whose copy of the source file is `session_file`.
+
+    The harness copies the source directory into the root, so the source file is two levels below
+    it. This does not check that `session_file` is in a session copy.
+
+    Args:
+        session_file (Path): The session's private copy of the source file.
+
+    Returns:
+        Path: The directory that holds the session file, if `session_file` is in a session copy.
+    """
+    return session_file.resolve().parent.parent
+
+
+def read_session_info(session_file: Path) -> SessionInfo | None:
+    """Return the session whose copy of the source file is `session_file`, if there is one.
+
+    The session file is looked for only in `session_root_of(session_file)`. This does not check
+    that `session_file` is the session's copy of the source file rather than another file beside
+    it.
+
+    Args:
+        session_file (Path): The session's private copy of the source file.
+
+    Returns:
+        SessionInfo | None: The session, or None when `session_root_of(session_file)` holds no
+            session file.
+
+    Raises:
+        SessionFileError: The session file, or the fork base it names, cannot be read or is
+            malformed.
+    """
+    root = session_root_of(session_file)
+    candidate = root / SESSION_FILE_NAME
+    if not candidate.is_file():
+        return None
+    try:
+        record = json.loads(candidate.read_text(encoding="utf-8"))
+        fields = [record["function"], record["canonical_file"], record["fork_base"]]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise SessionFileError(_damaged(candidate, repr(error))) from error
+    if not all(isinstance(value, str) for value in fields):
+        raise SessionFileError(_damaged(candidate, f"a field is not a string: {fields!r}"))
+    function, canonical_file, fork_base_name = fields
+    try:
+        fork_base = (root / fork_base_name).read_bytes()
+    except OSError as error:
+        raise SessionFileError(_damaged(candidate, repr(error))) from error
+    return SessionInfo(function=function, canonical_file=Path(canonical_file), fork_base=fork_base)
+
+
+def _damaged(session_file: Path, problem: str) -> str:
+    """Return the message for a session file that cannot be used.
+
+    Args:
+        session_file (Path): The session file.
+        problem (str): What is wrong with it.
+
+    Returns:
+        str: The message.
+    """
+    return f"session file {session_file} is damaged: {problem}"
+
+
 def find_stray_files(session_file: Path, canonical_dir: Path) -> list[str]:
     """Return the files other than the source file that were added or changed in a session copy.
 
@@ -112,6 +233,6 @@ def find_stray_files(session_file: Path, canonical_dir: Path) -> list[str]:
         original = canonical_dir / relative
         if not original.is_file():
             stray.append(f"added:{relative}")
-        elif original.read_bytes() != path.read_bytes():
+        elif not filecmp.cmp(original, path, shallow=False):
             stray.append(f"modified:{relative}")
     return stray
