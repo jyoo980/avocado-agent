@@ -86,23 +86,23 @@ def main() -> None:
     if not data_dir.is_dir():
         _exit_with_message(f"data directory {data_dir} does not exist; pass --data-dir")
     for run_dir in run_dirs:
-        check_run_dir(run_dir)
+        _check_run_dir(run_dir)
 
-    subject = subject_name(run_dirs, args.subject_name)
+    subject = _get_subject_name(run_dirs, args.subject_name)
     dest = data_dir / args.treatment / args.model / subject
     if dest.exists() and not args.force:
         _exit_with_message(f"{dest} already exists; pass --force to replace it")
 
-    run_warnings(run_dirs, data_dir, args.model, args.treatment)
+    _print_run_warnings(run_dirs, data_dir, args.model, args.treatment)
 
     subject_dir = run_dirs[-1] / "subject"
-    count = count_files(subject_dir, subject_ignore(subject_dir))
-    t_count = sum(count_files(run_dir / "transcripts") for run_dir in run_dirs)
+    count = _get_file_count_under_path(subject_dir, _ignore_subject(subject_dir))
+    t_count = sum(_get_file_count_under_path(run_dir / "transcripts") for run_dir in run_dirs)
     excluded = ", ".join(IGNORE_ANYWHERE + tuple(f"./{p}" for p in IGNORE_AT_ROOT))
     print(f"subject:     {subject_dir}")
     print(f"             {count} files (excluding {excluded})")
     for index, run_dir in enumerate(run_dirs):
-        print(f"run {index + 1}:       {run_dir} -> {CLAUDE_FILES}/{log_name(index)}")
+        print(f"run {index + 1}:       {run_dir} -> {CLAUDE_FILES}/{_get_log_name(index)}")
     print(f"transcripts: {t_count} files")
     print(f"destination: {dest}{' (replacing)' if dest.exists() else ''}")
 
@@ -114,7 +114,7 @@ def main() -> None:
         shutil.rmtree(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
-        save(run_dirs, dest)
+        _save_runs(run_dirs, dest)
     except BaseException:
         shutil.rmtree(dest, ignore_errors=True)
         raise
@@ -182,7 +182,7 @@ def _read_batch_info(run_dir: Path) -> dict[str, str]:
     return info
 
 
-def check_run_dir(run_dir: Path) -> None:
+def _check_run_dir(run_dir: Path) -> None:
     if not run_dir.is_dir():
         _exit_with_message(f"{run_dir} is not a directory")
     for required in ("subject", "transcripts"):
@@ -190,7 +190,7 @@ def check_run_dir(run_dir: Path) -> None:
             _exit_with_message(f"{run_dir} has no {required}/; is it a run-<i> directory written by run.sh?")
 
 
-def subject_name(run_dirs: list[Path], override: str | None) -> str:
+def _get_subject_name(run_dirs: list[Path], override: str | None) -> str:
     if override:
         return override
     names = set()
@@ -205,7 +205,7 @@ def subject_name(run_dirs: list[Path], override: str | None) -> str:
     return names.pop()
 
 
-def subject_ignore(root: Path):
+def _ignore_subject(root: Path):
     """Return a copytree `ignore` callable implementing IGNORE_ANYWHERE and IGNORE_AT_ROOT."""
     anywhere = shutil.ignore_patterns(*IGNORE_ANYWHERE)
     at_root = shutil.ignore_patterns(*IGNORE_AT_ROOT)
@@ -219,7 +219,7 @@ def subject_ignore(root: Path):
     return ignore
 
 
-def count_files(path: Path, ignore=None) -> int:
+def _get_file_count_under_path(path: Path, ignore=None) -> int:
     """Return the number of files under `path`, skipping what a copytree `ignore` skips."""
     count = 0
     for directory, dirs, files in os.walk(path):
@@ -231,11 +231,11 @@ def count_files(path: Path, ignore=None) -> int:
     return count
 
 
-def log_name(index: int) -> str:
+def _get_log_name(index: int) -> str:
     return "run.log" if index == 0 else f"run-pt{index + 1}.log"
 
 
-def run_warnings(run_dirs: list[Path], data_dir: Path, model: str, treatment: str) -> None:
+def _print_run_warnings(run_dirs: list[Path], data_dir: Path, model: str, treatment: str) -> None:
     exit_file = run_dirs[-1] / "exit-code"
     if exit_file.is_file():
         code = exit_file.read_text().strip()
@@ -257,116 +257,20 @@ def run_warnings(run_dirs: list[Path], data_dir: Path, model: str, treatment: st
             _warn(f"{run_dir} was run with harness {harness_dir}, not .../{model}/{treatment}")
 
 
-def save(run_dirs: list[Path], dest: Path) -> None:
+def _save_runs(run_dirs: list[Path], dest: Path) -> None:
     claude_files = dest / CLAUDE_FILES
     subject = run_dirs[-1] / "subject"
-    shutil.copytree(subject, dest, ignore=subject_ignore(subject))
+    shutil.copytree(subject, dest, ignore=_ignore_subject(subject))
     if claude_files.exists():
         _exit_with_message(f"the run's subject/ already has a {CLAUDE_FILES}/; refusing to merge into it")
     claude_files.mkdir()
     for index, run_dir in enumerate(run_dirs):
         shutil.copytree(run_dir / "transcripts", claude_files, dirs_exist_ok=True)
         if (run_dir / "run.log").is_file():
-            shutil.copy2(run_dir / "run.log", claude_files / log_name(index))
+            shutil.copy2(run_dir / "run.log", claude_files / _get_log_name(index))
         if (run_dir / "claude-output.json").is_file():
             name = "claude-output.json" if index == 0 else f"claude-output-pt{index + 1}.json"
             shutil.copy2(run_dir / "claude-output.json", claude_files / name)
-
-
-<<<<<<< Updated upstream
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    parser.add_argument("--model", required=True, help="model directory name, e.g. opus-5-5")
-    parser.add_argument(
-        "--treatment", required=True, help="treatment directory name, e.g. avocado-minus-tools"
-    )
-    parser.add_argument(
-        "run_dirs",
-        nargs="+",
-        type=Path,
-        metavar="RUN_DIR",
-        help="a run-<i> directory, optionally followed by the runs resumed from it, in order",
-    )
-    parser.add_argument(
-        "--data-dir",
-        type=Path,
-        default=Path(os.environ.get("AVOCADO_DATA_DIR", DEFAULT_DATA_DIR)),
-        help=f"the avocado-experimental-data checkout (default: $AVOCADO_DATA_DIR or {DEFAULT_DATA_DIR})",
-    )
-    parser.add_argument(
-        "--subject-name", help="subject directory name (default: from batch-info.txt)"
-    )
-    parser.add_argument(
-        "--force", action="store_true", help="replace the destination if it already exists"
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true", help="show what would be saved without copying"
-    )
-    args = parser.parse_args()
-
-    run_dirs = [run_dir.expanduser().resolve() for run_dir in args.run_dirs]
-    data_dir = args.data_dir.expanduser().resolve()
-    for name, value in (("--model", args.model), ("--treatment", args.treatment)):
-        if not value or "/" in value or value.startswith("."):
-            exit_with_message(f"{name} must be a plain directory name, got {value!r}")
-    if not data_dir.is_dir():
-        exit_with_message(f"data directory {data_dir} does not exist; pass --data-dir")
-    for run_dir in run_dirs:
-        check_run_dir(run_dir)
-    for previous, run_dir in zip(run_dirs, run_dirs[1:]):
-        resumed_from = read_batch_info(run_dir).get("resumed_from")
-        if not resumed_from:
-            exit_with_message(
-                f"{run_dir} is not a resumed run (no resumed_from= in its batch-info.txt)"
-            )
-        assert resumed_from
-        if Path(resumed_from).resolve() != previous:
-            exit_with_message(
-                f"{run_dir} was resumed from {resumed_from}, not {previous};"
-                " pass the runs in resume order"
-            )
-
-    subject = subject_name(run_dirs, args.subject_name)
-    if not subject or "/" in subject or subject.startswith("."):
-        exit_with_message(f"subject name must be a plain directory name, got {subject!r}")
-    dest = data_dir / args.treatment / args.model / subject
-    if dest.exists() and not args.force:
-        exit_with_message(f"{dest} already exists; pass --force to replace it")
-
-    run_warnings(run_dirs, data_dir, args.model, args.treatment)
-
-    subject_dir = run_dirs[-1] / "subject"
-    count = count_files(subject_dir, subject_ignore(subject_dir))
-    t_count = sum(count_files(run_dir / "transcripts") for run_dir in run_dirs)
-    excluded = ", ".join(IGNORE_ANYWHERE + tuple(f"./{p}" for p in IGNORE_AT_ROOT))
-    print(f"subject:     {subject_dir}")
-    print(f"             {count} files (excluding {excluded})")
-    for index, run_dir in enumerate(run_dirs):
-        print(f"run {index + 1}:       {run_dir} -> {CLAUDE_FILES}/{log_name(index)}")
-    print(f"transcripts: {t_count} files")
-    print(f"destination: {dest}{' (replacing)' if dest.exists() else ''}")
-
-    if args.dry_run:
-        print("dry run: nothing copied")
-        return
-
-    if dest.exists():
-        shutil.rmtree(dest)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        save(run_dirs, dest)
-    except BaseException:
-        shutil.rmtree(dest, ignore_errors=True)
-        raise
-
-    print(f"saved to {dest}")
-    print("review and commit it with:")
-    print(f"    cd {data_dir} && git add {dest.relative_to(data_dir)} && git status")
-=======
->>>>>>> Stashed changes
-
 
 if __name__ == "__main__":
     main()
