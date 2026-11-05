@@ -29,7 +29,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 import tempfile
@@ -46,6 +45,7 @@ from eval.mutants.util import (
     CLAUSE_DROP_INFIX,
     absolute_path_without_resolving,
     check_expected_cbmc_return_code,
+    get_bounded_mutant_file_name,
     is_valid_mutation_candidate,
     write_mutant_sources,
 )
@@ -57,9 +57,6 @@ from tools.util.callgraph import CallGraph
 # Matches the GNU `timeout(1)` convention used elsewhere; surfaces in `returncode` for
 # timed-out CBMC runs so the value is distinguishable from CBMC's real 0/10 exit codes.
 _TIMEOUT_RETURNCODE = 124
-
-# The per-component file name limit (in bytes) on common filesystems (ext4, APFS, NTFS, ...).
-_MAX_FILE_NAME_BYTES = 255
 
 
 class CallerSideVerdict(StrEnum):
@@ -517,9 +514,8 @@ def _get_path_to_source_with_removed_clause(
     concurrently -- never overwrite one another; the files still match the `*__clause_drop_*.c`
     pattern that `make clean-mutants` removes.
 
-    If the readable file name would exceed the filesystem's per-component length limit, the
-    function name is replaced by a short hash of it (and the source stem is truncated if needed),
-    so the name stays bounded while remaining distinct per function and index.
+    If the readable file name would exceed the filesystem's per-component length limit, the name
+    is shortened; see `get_bounded_mutant_file_name`.
 
     Args:
         workspace_path (Path): The directory under which redundancy score computation occurs.
@@ -530,19 +526,13 @@ def _get_path_to_source_with_removed_clause(
     Returns:
         Path: The path to which to write a mutated source file.
     """
-    stem = path_to_original_source.stem
-    suffix = path_to_original_source.suffix
-    name = f"{stem}__clause_drop_{function}_{index}{suffix}"
-    if len(name.encode("utf-8")) <= _MAX_FILE_NAME_BYTES:
-        return workspace_path / name
-
-    # Too long: replace the function name with a bounded digest of the full (stem, function)
-    # pair, so that truncating the stem cannot make two distinct inputs collide.
-    digest = hashlib.sha256(f"{stem}\0{function}".encode()).hexdigest()[:16]
-    tail = f"__clause_drop_{digest}_{index}{suffix}"
-    stem_budget = max(0, _MAX_FILE_NAME_BYTES - len(tail.encode("utf-8")))
-    truncated_stem = stem.encode("utf-8")[:stem_budget].decode("utf-8", errors="ignore")
-    return workspace_path / f"{truncated_stem}{tail}"
+    return workspace_path / get_bounded_mutant_file_name(
+        path_to_original_source.stem,
+        "clause_drop",
+        function,
+        index,
+        path_to_original_source.suffix,
+    )
 
 
 def _verify_removed_clause_source(

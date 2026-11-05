@@ -22,6 +22,7 @@ from eval.mutants.util import (
     MUTANT_INFIX,
     absolute_path_without_resolving,
     check_expected_cbmc_return_code,
+    get_bounded_mutant_file_name,
     is_valid_mutation_candidate,
     write_mutant_sources,
     write_new_file,
@@ -552,4 +553,36 @@ def _verify_mutant(
         path_to_mutant=str(path_to_mutant),
         killed=cbmc_result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
         returncode=cbmc_result.returncode,
+    )
+
+
+def _get_path_for_mutated_source(
+    workspace_path: Path, path_to_original_source: Path, function: str, index: int
+) -> Path:
+    """Return the path to which to write a mutated source file.
+
+    For example, given the path `/app/test/data/foo.c` and function `bar`, return
+    `/app/test/data/foo__mutant_bar_1.c`. The function name is part of the file name so that
+    mutants of different functions in the same file -- which may be scored concurrently -- never
+    overwrite one another; mutant files still match the `*__mutant_*.c` pattern that
+    `make clean-mutants` removes.
+
+    If the readable file name would exceed the filesystem's per-component length limit, the name
+    is shortened; see `get_bounded_mutant_file_name`.
+
+    Args:
+        workspace_path (Path): The directory under which mutation testing occurs.
+        path_to_original_source (Path): The path to the original source file.
+        function (str): The function the mutant belongs to.
+        index (int): The index of the mutant, used as a identifier for the mutant source path.
+
+    Returns:
+        Path: The path to which to write a mutated source file.
+    """
+    return workspace_path / get_bounded_mutant_file_name(
+        path_to_original_source.stem,
+        "mutant",
+        function,
+        index,
+        path_to_original_source.suffix,
     )
