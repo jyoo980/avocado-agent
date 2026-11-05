@@ -31,7 +31,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import sys
 import tempfile
 from collections import Counter
@@ -45,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from eval.mutants.mutate_specification import ClauseMutant, get_clause_mutants
 from eval.mutants.util import (
     CLAUSE_DROP_INFIX,
+    absolute_path_without_resolving,
     check_expected_cbmc_return_code,
     is_valid_mutation_candidate,
     write_mutant_sources,
@@ -316,8 +316,9 @@ def compute_clause_redundancy_score(
 
     Mutant `.c` files are written next to the original source, so that a quoted `#include` finds
     the same header for a mutant as for the original source. Their names are unique to this run
-    (see `write_mutant_sources()`), and no existing file is overwritten. Mutants are removed unless
-    keep_artifacts is set to `True`.
+    (see `write_mutant_sources()`). An existing file is never overwritten or removed; if a mutant
+    path already exists, `FileExistsError` is raised. Mutants are removed unless keep_artifacts is
+    set to `True`.
 
     If the unmutated function does not verify, return None.
 
@@ -331,9 +332,9 @@ def compute_clause_redundancy_score(
     Returns:
         ClauseRedundancyScore: Aggregated counts plus the per-clause results.
     """
-    # Unlike `Path.resolve`, `os.path.abspath` does not follow symlinks, so the mutants of a
-    # symlinked file see the same quoted `#include`s as the file itself.
-    source_path = Path(os.path.abspath(file_path))  # ruff: ignore[os-path-abspath] - must not follow symlinks.
+    # Neither follows symlinks nor collapses `..`, so `source_path` names the same file as
+    # `file_path` and the mutants of a symlinked file see the same quoted `#include`s.
+    source_path = absolute_path_without_resolving(file_path)
 
     # Check that the original function verifies in the first place.
     result = run_cbmc(function_name, file_path, include_dirs=include_dirs)
@@ -348,10 +349,14 @@ def compute_clause_redundancy_score(
         _get_baseline_verification_results_for_callers(in_file_callers, source_path, include_dirs)
     )
 
-    # Only the files created here are removed in the `finally` block below.
+    # Only files created by this call are deleted, so a pre-existing sibling file is never
+    # clobbered: `write_mutant_sources` raises rather than overwrite it.
+    created_paths: list[Path] = write_mutant_sources(
+        source_path, CLAUSE_DROP_INFIX, [m.mutant_source for m in mutants]
+    )
     paths_to_removed_clauses = dict(
         zip(
-            write_mutant_sources(source_path, CLAUSE_DROP_INFIX, [m.mutant_source for m in mutants]),
+            created_paths,
             mutants,
             strict=True,
         )
@@ -373,7 +378,7 @@ def compute_clause_redundancy_score(
         ]
     finally:
         if not keep_artifacts:
-            for path in paths_to_removed_clauses:
+            for path in created_paths:
                 path.unlink(missing_ok=True)
 
     return _aggregate_clause_redundancy_score(
@@ -541,15 +546,15 @@ def _get_path_to_source_with_removed_clause(
 
 
 def _verify_removed_clause_source(
-    path_to_write_removed_clause_mutant: Path,
+    path_to_removed_clause_mutant: Path,
     clause_mutant: ClauseMutant,
     include_dirs: list[str] | None,
 ) -> ClauseRemovalVerificationResult:
     """Return the result of verifying a removed-clause mutant in isolation.
 
     Args:
-        path_to_write_removed_clause_mutant (Path): The path to which the source with the
-            mutated specification has been written.
+        path_to_removed_clause_mutant (Path): The path to the already-written source with the
+            mutated specification.
         clause_mutant (ClauseMutant): The clause mutant.
         include_dirs (list[str] | None): Include directories, which are forwarded to `run_cbmc()`.
 
@@ -558,7 +563,7 @@ def _verify_removed_clause_source(
     """
     result = run_cbmc(
         function_to_verify=clause_mutant.function,
-        file_containing_function_to_verify=str(path_to_write_removed_clause_mutant),
+        file_containing_function_to_verify=str(path_to_removed_clause_mutant),
         include_dirs=include_dirs,
     )
     if result.timed_out:
