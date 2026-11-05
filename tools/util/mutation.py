@@ -21,6 +21,7 @@ from loguru import logger
 from eval.mutants.mutate_function import Mutant, get_mutants
 from eval.mutants.util import (
     check_expected_cbmc_return_code,
+    get_bounded_mutant_file_name,
     is_valid_mutation_candidate,
 )
 from tools.construct_call_graph import construct_call_graph
@@ -38,7 +39,7 @@ _VERIFICATION_FAILURE_RETURNCODE = 10
 _MAX_MUTATION_SECTION_CHARS = 50_000
 
 # Mutants are verified concurrently by worker threads (see `_mutation_worker_count`). Each worker
-# drives a full CBMC pipeline; the machine-wide subprocess cap in `tools.run_cbmc`
+# drives a full CBMC pipeline; the shared subprocess cap in `tools.run_cbmc`
 # (`AVOCADO_MAX_CONCURRENT_CBMC`) bounds how many of those pipelines can actually be running at
 # once, so lower that if mutation runs exhaust RAM.
 
@@ -309,7 +310,7 @@ def generate_mutants_and_compute_score(
     )
 
     paths_to_mutants = {
-        _get_path_for_mutated_source(workspace, source_path, i): mutant
+        _get_path_for_mutated_source(workspace, source_path, target_function, i): mutant
         for i, mutant in enumerate(mutants)
     }
     # Heads-up to stderr so an agent polling the run can see the slow phase has begun and is
@@ -363,7 +364,7 @@ def generate_mutants_and_compute_score(
 def _mutation_worker_count(num_mutants: int) -> int:
     """Return how many mutants to verify concurrently.
 
-    Bounded by the machine-wide subprocess cap in `tools.run_cbmc` (more workers than that could
+    Bounded by the shared subprocess cap in `tools.run_cbmc` (more workers than that could
     only wait for a subprocess slot, while each holds its own mutant file) and by the number of
     mutants, and never below 1 (a `ThreadPoolExecutor` requires a positive worker count, even when
     there are no mutants to run).
@@ -542,21 +543,32 @@ def _verify_mutant(
 
 
 def _get_path_for_mutated_source(
-    workspace_path: Path, path_to_original_source: Path, index: int
+    workspace_path: Path, path_to_original_source: Path, function: str, index: int
 ) -> Path:
     """Return the path to which to write a mutated source file.
 
-    For example, given the path `/app/test/data/foo.c`, return `/app/test/data/foo__mutant_1.c`
+    For example, given the path `/app/test/data/foo.c` and function `bar`, return
+    `/app/test/data/foo__mutant_bar_1.c`. The function name is part of the file name so that
+    mutants of different functions in the same file -- which may be scored concurrently -- never
+    overwrite one another; mutant files still match the `*__mutant_*.c` pattern that
+    `make clean-mutants` removes.
+
+    If the readable file name would exceed the filesystem's per-component length limit, the name
+    is shortened; see `get_bounded_mutant_file_name`.
 
     Args:
         workspace_path (Path): The directory under which mutation testing occurs.
         path_to_original_source (Path): The path to the original source file.
+        function (str): The function the mutant belongs to.
         index (int): The index of the mutant, used as a identifier for the mutant source path.
 
     Returns:
         Path: The path to which to write a mutated source file.
     """
-    return (
-        workspace_path
-        / f"{path_to_original_source.stem}__mutant_{index}{path_to_original_source.suffix}"
+    return workspace_path / get_bounded_mutant_file_name(
+        path_to_original_source.stem,
+        "mutant",
+        function,
+        index,
+        path_to_original_source.suffix,
     )
