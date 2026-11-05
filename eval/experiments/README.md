@@ -209,7 +209,8 @@ plus a final `run_summary` record.
 ```
 
 For a run continued with `--resume`, pass the original run directory and then each resumed run
-directory, in order. The run is saved as:
+directory, in order; the script checks that each one's `resumed_from` names the one before it.
+The run is saved as:
 
 ```
 <data-dir>/<treatment>/<model>/<subject>/

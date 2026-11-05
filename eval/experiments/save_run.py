@@ -18,7 +18,8 @@ the experimental-data repository under `<treatment>/<model>/<subject>/`, laid ou
 `<subject>` is the basename of the `subject=` line in the run's `batch-info.txt`.
 
 A run that was continued with `run.sh --resume` is saved by passing the original run directory
-followed by each resumed run directory, in order. The subject/ of the last one is saved (a resumed
+followed by each resumed run directory, in order (each one's `resumed_from=` in batch-info.txt must
+name the one before it). The subject/ of the last one is saved (a resumed
 run starts from the stopped run's subject/, so it covers the whole run), and the transcripts of all
 of them are merged.
 
@@ -218,8 +219,22 @@ def main() -> None:
         exit_with_message(f"data directory {data_dir} does not exist; pass --data-dir")
     for run_dir in run_dirs:
         check_run_dir(run_dir)
+    for previous, run_dir in zip(run_dirs, run_dirs[1:]):
+        resumed_from = read_batch_info(run_dir).get("resumed_from")
+        if not resumed_from:
+            exit_with_message(
+                f"{run_dir} is not a resumed run (no resumed_from= in its batch-info.txt)"
+            )
+        assert resumed_from
+        if Path(resumed_from).resolve() != previous:
+            exit_with_message(
+                f"{run_dir} was resumed from {resumed_from}, not {previous};"
+                " pass the runs in resume order"
+            )
 
     subject = subject_name(run_dirs, args.subject_name)
+    if not subject or "/" in subject or subject.startswith("."):
+        exit_with_message(f"subject name must be a plain directory name, got {subject!r}")
     dest = data_dir / args.treatment / args.model / subject
     if dest.exists() and not args.force:
         exit_with_message(f"{dest} already exists; pass --force to replace it")
