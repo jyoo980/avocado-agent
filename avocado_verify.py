@@ -410,20 +410,21 @@ def _verify_via_agent(
     attempts_after_each_session = [attempts_so_far()]
     file_attempts_after_each_session = [file_attempts_so_far()]
     while True:
+        improvable = is_spec_improvable_with_mutation_testing(
+            function, file_path, attempts_log_path
+        )
         decision = _should_rerun_session(
             claude_sessions_for_function,
             attempts_after_each_session,
             file_attempts_after_each_session=file_attempts_after_each_session,
-            improvable=is_spec_improvable_with_mutation_testing(
-                function, file_path, attempts_log_path
-            ),
+            improvable=improvable,
             timeout=timeout,
         )
         if not decision.rerun:
             break
-        sessions = len(claude_sessions_for_function)
         logger.warning(
-            f"{function}: re-running session ({sessions + 1}/{_MAX_AGENT_SESSIONS_PER_FUNCTION}): "
+            f"{function}: re-running session "
+            f"({len(claude_sessions_for_function) + 1}/{_MAX_AGENT_SESSIONS_PER_FUNCTION}): "
             f"{decision.rationale}"
         )
         claude_sessions_for_function.append(_run_claude(command, timeout))
@@ -431,16 +432,9 @@ def _verify_via_agent(
         file_attempts_after_each_session.append(file_attempts_so_far())
     sessions = len(claude_sessions_for_function)
     current_verification_attempts = attempts_after_each_session[-1]
-    if not decision.rerun and decision.rationale:
-        logger.info(f"{function}: not re-running: {decision.rationale}")
-    if not is_spec_improvable_with_mutation_testing(function, file_path, attempts_log_path):
-        # Stopped deliberately, not short of the floor: there are no mutants to kill, so further
-        # sessions cannot strengthen the (already verifying) spec.
-        logger.info(
-            f"{function}: verified with no mutants after {sessions} session(s); skipping the "
-            f"attempt-count floor (no kill score to raise)"
-        )
-    elif current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION:
+    logger.info(f"{function}: not re-running: {decision.rationale}")
+    # A specification that cannot be improved stopped the loop deliberately, not short of the floor.
+    if improvable and current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION:
         logger.warning(
             f"{function}: proceeding after {sessions} session(s) with only "
             f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} "
@@ -462,7 +456,7 @@ def _verify_via_agent(
 
 @dataclass(frozen=True)
 class _RerunDecision:
-    """Whether a function has earned another `claude -p` session, and why.
+    """The decision whether a function gets another `claude -p` session, and the reason for it.
 
     Attributes:
         rerun (bool): True iff another session should be started.
@@ -481,7 +475,7 @@ def _should_rerun_session(
     improvable: bool,
     timeout: int,
 ) -> _RerunDecision:
-    """Decide whether to start another session for the current function.
+    """Return the decision whether to start another session for the current function.
 
     The attempt floor (`_MIN_VERIFICATION_ATTEMPTS_PER_SESSION`) exists so the loop does not
     advance on a session that barely tried. Re-running is only worth its cost, though, when the
@@ -489,9 +483,9 @@ def _should_rerun_session(
 
     - one stopped by a usage limit: the account is throttled, and every further session would
       fail the same way (52 such re-runs were logged across the measured runs);
-    - one that made no verification attempt on the file at all, when a previous session in this
-      turn already did the same: the prompt, file and model are unchanged, so a third identical
-      session is expected to end the same way (the measured case cost 2 x 1800 s);
+    - one that made no verification attempt on the file at all, when the session before it did the
+      same: the prompt, file and model are unchanged, so a third identical session is expected to
+      end the same way (the measured case cost 2 x 1800 s);
     - a session after which the specification verifies, or after which there are no mutants to
       kill: there is no score left for a re-run to raise (`improvable` is False).
 
@@ -502,7 +496,7 @@ def _should_rerun_session(
         file_attempts_after_each_session (list[int]): Verification attempts logged for any
             function in the file (the function or its callees) after each of those sessions,
             cumulative over the turn.
-        improvable (bool): Whether the specification can still be improved, per
+        improvable (bool): True if the specification can still be improved, per
             `is_spec_improvable_with_mutation_testing`.
         timeout (int): The per-session timeout, in seconds; used for diagnostics.
 
@@ -518,15 +512,20 @@ def _should_rerun_session(
             f"{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} required",
         )
     if not improvable:
-        return _RerunDecision(False, "")
-    if len(sessions) >= _MAX_AGENT_SESSIONS_PER_FUNCTION:
-        return _RerunDecision(False, f"session cap of {_MAX_AGENT_SESSIONS_PER_FUNCTION} reached")
+        return _RerunDecision(
+            False, "the specification verifies or has no mutants to kill, so it cannot improve"
+        )
     if _is_usage_limit_hit(last):
         return _RerunDecision(False, "the last session was stopped by a usage limit")
-    # Sessions this turn that added no verification attempt on the file at all.
-    new_file_attempts = _differences(file_attempts_after_each_session)
-    sessions_without_attempt = sum(1 for count in new_file_attempts if count == 0)
-    if new_file_attempts[-1] == 0 and sessions_without_attempt > _MAX_SESSIONS_WITHOUT_ATTEMPT:
+    if len(sessions) >= _MAX_AGENT_SESSIONS_PER_FUNCTION:
+        return _RerunDecision(False, f"session cap of {_MAX_AGENT_SESSIONS_PER_FUNCTION} reached")
+    # The most recent sessions, in a row, that added no verification attempt on the file at all.
+    sessions_without_attempt = 0
+    for count in reversed(_differences(file_attempts_after_each_session)):
+        if count:
+            break
+        sessions_without_attempt += 1
+    if sessions_without_attempt > _MAX_SESSIONS_WITHOUT_ATTEMPT:
         return _RerunDecision(
             False,
             f"{sessions_without_attempt} sessions in a row ended without running the verifier "
@@ -541,8 +540,8 @@ def _should_rerun_session(
         True,
         f"the previous session {how_it_ended} after recording "
         f"{_differences(attempts_after_each_session)[-1]} verification attempt(s) on this "
-        f"function, short of the {_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} required; the function "
-        "does not verify yet",
+        f"function, for {attempts} in {len(sessions)} session(s), short of the "
+        f"{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} required; the function does not verify yet",
     )
 
 

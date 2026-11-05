@@ -1,5 +1,7 @@
 """Tests for `avocado_verify`'s decision whether to re-run a session."""
 
+import pytest
+
 from avocado_verify import ClaudeRun, _RerunDecision, _should_rerun_session
 
 
@@ -85,3 +87,36 @@ def test_meeting_the_floor_is_explained() -> None:
     decision = _decide([_session()], [2])
     assert not decision.rerun
     assert "2 verification attempt(s)" in decision.rationale
+
+
+def test_the_rationale_reports_the_attempts_over_the_turn() -> None:
+    decision = _decide([_session(), _session()], [1, 1], file_attempts=[1, 2])
+    assert decision.rerun
+    assert "recording 0 verification attempt(s)" in decision.rationale
+    assert "for 1 in 2 session(s)" in decision.rationale
+
+
+def test_the_no_attempt_stop_counts_only_consecutive_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("avocado_verify._MAX_AGENT_SESSIONS_PER_FUNCTION", 4)
+    # Sessions 1 and 3 made no attempt, but session 2 did, so they are not in a row.
+    assert _decide([_session()] * 3, [0, 1, 1]).rerun
+    stopped = _decide([_session()] * 3, [1, 1, 1])
+    assert not stopped.rerun
+    assert "2 sessions in a row" in stopped.rationale
+
+
+def test_a_usage_limit_on_the_last_allowed_session_is_reported() -> None:
+    sessions = [_session(timed_out=True)] * 2 + [
+        _session(is_error=True, text="Usage limit reached")
+    ]
+    decision = _decide(sessions, [0, 0, 0], file_attempts=[0, 1, 1])
+    assert not decision.rerun
+    assert "usage limit" in decision.rationale
+
+
+def test_a_specification_that_cannot_improve_is_explained() -> None:
+    decision = _decide([_session()], [0], improvable=False)
+    assert not decision.rerun
+    assert "cannot improve" in decision.rationale
