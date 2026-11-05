@@ -50,7 +50,7 @@ _VERIFICATION_FAILURE_RETURNCODE = 10
 _MAX_MUTATION_SECTION_CHARS = 50_000
 
 # Mutants are verified concurrently by worker threads (see `_mutation_worker_count`). Each worker
-# drives a full CBMC pipeline; the machine-wide subprocess cap in `tools.run_cbmc`
+# drives a full CBMC pipeline; the shared subprocess cap in `tools.run_cbmc`
 # (`AVOCADO_MAX_CONCURRENT_CBMC`) bounds how many of those pipelines can actually be running at
 # once, so lower that if mutation runs exhaust RAM.
 
@@ -378,7 +378,7 @@ def generate_mutants_and_compute_score(
 def _mutation_worker_count(num_mutants: int) -> int:
     """Return how many mutants to verify concurrently.
 
-    Bounded by the machine-wide subprocess cap in `tools.run_cbmc` (more workers than that could
+    Bounded by the shared subprocess cap in `tools.run_cbmc` (more workers than that could
     only wait for a subprocess slot, while each holds its own mutant file) and by the number of
     mutants, and never below 1 (a `ThreadPoolExecutor` requires a positive worker count, even when
     there are no mutants to run).
