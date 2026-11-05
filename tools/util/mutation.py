@@ -24,6 +24,7 @@ from eval.mutants.util import (
     MUTANT_INFIX,
     absolute_path_without_resolving,
     check_expected_cbmc_return_code,
+    get_bounded_mutant_file_name,
     is_valid_mutation_candidate,
     write_mutant_sources,
     write_new_file,
@@ -307,14 +308,12 @@ def generate_mutants_and_compute_score(
         json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
     )
 
-    # Only the files created here are removed in the `finally` block below.
-    paths_to_mutants = dict(
-        zip(
-            write_mutant_sources(source_path, MUTANT_INFIX, [m.mutant_source for m in mutants]),
-            mutants,
-            strict=True,
-        )
-    )
+    # Mutants are written next to the source; the files are created (exclusively) below, and only
+    # the files created here are removed in the `finally` block below.
+    paths_to_mutants = {
+        _get_path_for_mutated_source(source_path.parent, source_path, target_function, i): mutant
+        for i, mutant in enumerate(mutants)
+    }
     # Heads-up to stderr so an agent polling the run can see the slow phase has begun and is
     # making progress. Written to stderr (not stdout) so it never contaminates the kill-score
     # result, and flushed so it is not buffered until the long run completes.
@@ -537,4 +536,37 @@ def _verify_mutant(
         path_to_mutant=str(path_to_mutant),
         killed=cbmc_result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
         returncode=cbmc_result.returncode,
+    )
+
+
+def _get_path_for_mutated_source(
+    directory: Path, path_to_original_source: Path, function: str, index: int
+) -> Path:
+    """Return the path to which to write a mutated source file.
+
+    For example, given the directory `/app/test/data`, the path `/app/test/data/foo.c`, and
+    function `bar`, return `/app/test/data/foo__mutant_bar_1.c`. The function name is part of the
+    file name so that mutants of different functions in the same file -- which may be scored
+    concurrently -- never overwrite one another; mutant files still match the `*__mutant_*.c`
+    pattern that `make clean-mutants` removes, and `is_mutant_artifact()` recognizes them.
+
+    If the readable file name would exceed the filesystem's per-component length limit, the name
+    is shortened; see `get_bounded_mutant_file_name`.
+
+    Args:
+        directory (Path): The directory in which to write the mutant; normally the directory of
+            the original source, so that a quoted `#include` finds the same header.
+        path_to_original_source (Path): The path to the original source file.
+        function (str): The function the mutant belongs to.
+        index (int): The index of the mutant, used as a identifier for the mutant source path.
+
+    Returns:
+        Path: The path to which to write a mutated source file.
+    """
+    return directory / get_bounded_mutant_file_name(
+        path_to_original_source.stem,
+        MUTANT_INFIX,
+        function,
+        index,
+        path_to_original_source.suffix,
     )

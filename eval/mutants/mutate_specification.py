@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -35,6 +36,9 @@ if TYPE_CHECKING:
 
 _TREE_SITTER_LANG = Language(tsc.language())
 _PARSER = Parser(_TREE_SITTER_LANG)
+# A tree-sitter `Parser` is not thread-safe, and the evaluation driver can score several functions'
+# clause redundancy at once; `get_clause_mutants` takes this lock around every parse.
+_PARSER_LOCK = threading.Lock()
 
 
 class CbmcClause(StrEnum):
@@ -110,7 +114,8 @@ def get_clause_mutants(file_path: str, function_name: str) -> list[ClauseMutant]
     """
     source_code = Path(file_path).read_bytes()
     stripped, spans = strip_cbmc_clauses(source_code)
-    tree = _PARSER.parse(stripped)
+    with _PARSER_LOCK:
+        tree = _PARSER.parse(stripped)
     fn_def = get_function_definition(tree.root_node, function_name)
     if not fn_def:
         msg = f"Function '{function_name}' missing from file '{file_path}'"

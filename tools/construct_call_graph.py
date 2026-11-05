@@ -14,9 +14,18 @@ Usage:
 
 import argparse
 import json
+import threading
+import uuid
 from pathlib import Path
 
 from tools.util import get_call_graph
+
+# `construct_call_graph` caches its JSON next to the source and is called from concurrent code
+# paths (e.g. the evaluation driver scoring several functions of one file at once). The lock keeps
+# threads of one process from parsing the same file redundantly (tree-sitter parsing is not
+# thread-safe); the atomic rename in `construct_call_graph` keeps other processes from reading a
+# partially written file.
+_CALL_GRAPH_LOCK = threading.Lock()
 
 
 def main() -> None:
@@ -37,6 +46,11 @@ def construct_call_graph(
 ) -> str:
     """Construct a call graph for the given C file.
 
+    The call graph is cached beside `path_to_file_to_verify` (without following symlinks). A cached
+    graph is reused only if it is at least as new as the source file and, when
+    `path_to_file_to_verify` is a symlink, the link itself; so editing the source or repointing the
+    link causes the graph to be regenerated.
+
     Args:
         path_to_file_to_verify (str): The path to the file from which to construct a call graph.
 
@@ -45,11 +59,47 @@ def construct_call_graph(
     """
     source_path = Path(path_to_file_to_verify)
     path_to_call_graph = source_path.with_name(f"{source_path.stem}-callgraph.json")
-    if path_to_call_graph.exists():
-        return str(path_to_call_graph)
-    call_graph = get_call_graph(path_to_file_to_verify)
-    path_to_call_graph.write_text(json.dumps(call_graph, indent=4))
+    with _CALL_GRAPH_LOCK:
+        if path_to_call_graph.exists() and _is_cache_fresh(path_to_call_graph, source_path):
+            return str(path_to_call_graph)
+        call_graph = get_call_graph(path_to_file_to_verify)
+        # Write to a uniquely named sibling and rename it into place, so that a concurrent process
+        # sees either no file or a complete one. Two processes that race both write identical
+        # content, so whichever rename lands last is harmless.
+        #
+        # The temporary file is created with `open(..., "x")` rather than `tempfile`, because
+        # `tempfile` creates owner-only (0600) files and the rename would preserve that mode,
+        # making the cache unreadable to other users (e.g. a host user after a root Docker run).
+        # `open` creates the file with the usual 0666 & ~umask permissions. The name uses a short
+        # fixed prefix, not the cache name, so it stays within filesystem filename-length limits.
+        tmp_path = path_to_call_graph.with_name(f".callgraph-{uuid.uuid4().hex}.tmp")
+        try:
+            with tmp_path.open("x", encoding="utf-8") as tmp:
+                tmp.write(json.dumps(call_graph, indent=4))
+            tmp_path.replace(path_to_call_graph)
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
     return str(path_to_call_graph)
+
+
+def _is_cache_fresh(path_to_call_graph: Path, source_path: Path) -> bool:
+    """Return True iff the cached call graph is at least as new as the source it was built from.
+
+    Args:
+        path_to_call_graph (Path): The cached call-graph file.
+        source_path (Path): The C file, possibly a symlink.
+
+    Returns:
+        bool: True iff the cache is no older than the source file's contents (`stat`, which follows
+            symlinks) and than the path itself (`lstat`, which changes when a symlink is repointed).
+    """
+    try:
+        cache_mtime = path_to_call_graph.stat().st_mtime_ns
+        source_mtime = max(source_path.stat().st_mtime_ns, source_path.lstat().st_mtime_ns)
+    except OSError:
+        return False
+    return cache_mtime >= source_mtime
 
 
 if __name__ == "__main__":
