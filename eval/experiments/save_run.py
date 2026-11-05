@@ -24,10 +24,10 @@ of them are merged.
 
 Usage:
 
-    % eval/experiments/save_run.py --model opus-5-5 --treatment avocado-minus-tools \\
+    % eval/experiments/save_run.py --model opus-5-5 --treatment avocado-minus-tools \
           ~/.local/share/avocado-experiments/<tag>/<batch>/run-1
 
-    % eval/experiments/save_run.py --model opus-5-5 --treatment full-avocado \\
+    % eval/experiments/save_run.py --model opus-5-5 --treatment full-avocado \
           <tag>/<batch>/run-1 <tag>/<resumed-batch>/run-1      # a run and its resumption
 
 The data repository defaults to `$AVOCADO_DATA_DIR`, else `avocado-experimental-data` next to this
@@ -63,7 +63,7 @@ EXIT_CODE_MEANINGS = {
 }
 
 
-def die(message: str) -> None:
+def exit_with_message(message: str) -> None:
     print(f"error: {message}", file=sys.stderr)
     sys.exit(1)
 
@@ -88,10 +88,10 @@ def read_batch_info(run_dir: Path) -> dict[str, str]:
 
 def check_run_dir(run_dir: Path) -> None:
     if not run_dir.is_dir():
-        die(f"{run_dir} is not a directory")
+        exit_with_message(f"{run_dir} is not a directory")
     for required in ("subject", "transcripts"):
         if not (run_dir / required).is_dir():
-            die(f"{run_dir} has no {required}/; is it a run-<i> directory written by run.sh?")
+            exit_with_message(f"{run_dir} has no {required}/; is it a run-<i> directory written by run.sh?")
 
 
 def subject_name(run_dirs: list[Path], override: str | None) -> str:
@@ -101,11 +101,11 @@ def subject_name(run_dirs: list[Path], override: str | None) -> str:
     for run_dir in run_dirs:
         subject = read_batch_info(run_dir).get("subject")
         if not subject:
-            die(f"no subject= in {run_dir.parent / 'batch-info.txt'}; pass --subject-name")
+            exit_with_message(f"no subject= in {run_dir.parent / 'batch-info.txt'}; pass --subject-name")
         assert subject
         names.add(Path(subject).name)
     if len(names) > 1:
-        die(f"the given runs are of different subjects: {', '.join(sorted(names))}")
+        exit_with_message(f"the given runs are of different subjects: {', '.join(sorted(names))}")
     return names.pop()
 
 
@@ -166,7 +166,7 @@ def save(run_dirs: list[Path], dest: Path) -> None:
     subject = run_dirs[-1] / "subject"
     shutil.copytree(subject, dest, ignore=subject_ignore(subject))
     if claude_files.exists():
-        die(f"the run's subject/ already has a {CLAUDE_FILES}/; refusing to merge into it")
+        exit_with_message(f"the run's subject/ already has a {CLAUDE_FILES}/; refusing to merge into it")
     claude_files.mkdir()
     for index, run_dir in enumerate(run_dirs):
         shutil.copytree(run_dir / "transcripts", claude_files, dirs_exist_ok=True)
@@ -213,16 +213,16 @@ def main() -> None:
     data_dir = args.data_dir.expanduser().resolve()
     for name, value in (("--model", args.model), ("--treatment", args.treatment)):
         if not value or "/" in value or value.startswith("."):
-            die(f"{name} must be a plain directory name, got {value!r}")
+            exit_with_message(f"{name} must be a plain directory name, got {value!r}")
     if not data_dir.is_dir():
-        die(f"data directory {data_dir} does not exist; pass --data-dir")
+        exit_with_message(f"data directory {data_dir} does not exist; pass --data-dir")
     for run_dir in run_dirs:
         check_run_dir(run_dir)
 
     subject = subject_name(run_dirs, args.subject_name)
     dest = data_dir / args.treatment / args.model / subject
     if dest.exists() and not args.force:
-        die(f"{dest} already exists; pass --force to replace it")
+        exit_with_message(f"{dest} already exists; pass --force to replace it")
 
     run_warnings(run_dirs, data_dir, args.model, args.treatment)
 
