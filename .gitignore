@@ -22,3 +22,6 @@
 # Other
 avocado-experimental-data
 *.egg-info/
+
+# Experiment auth profiles (contain tokens).
+eval/experiments/profiles/*.env
