@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 """Save the result of an experimental run into the `avocado-experimental-data` repository.
 
 `eval/experiments/run.sh` writes each run to
@@ -48,7 +49,7 @@ DEFAULT_DATA_DIR = AGENT_ROOT.parent / "avocado-experimental-data"
 
 # Files in a run's subject/ that are not saved: CBMC goto binaries anywhere (hundreds of MB per
 # run), and the scratch logs the agent leaves at the top level of the subject. Logs in
-# subdirectories the agent made (e.g. exp/) are kept, as in the data saved by hand.
+# subdirectories the agent made (e.g. exp/) are copied over.
 IGNORE_ANYWHERE = ("*.goto",)
 IGNORE_AT_ROOT = ("*.log",)
 
@@ -63,17 +64,111 @@ EXIT_CODE_MEANINGS = {
     "143": "the batch was stopped with kill",
 }
 
+AVOCADO_BACKEND_MODELS = ["opus-4-8", "opus-5-5", "qwen-3-8"]
+TREATMENT_NAMES = [
+    "pure-agentic-baseline",
+    "full-avocado",
+    "avocado-minus-docs",
+    "avocado-minus-tools",
+    "avocado-minus-mutation-testing",
+    "avocado-minus-harness",
+    "avocado-minus-tools-minus-docs",
+]
 
-def exit_with_message(message: str) -> None:
+def main() -> None:
+    args = _parse_args()
+
+    run_dirs = [run_dir.expanduser().resolve() for run_dir in args.run_dirs]
+    data_dir = args.data_dir.expanduser().resolve()
+    for name, value in (("--model", args.model), ("--treatment", args.treatment)):
+        if not value or "/" in value or value.startswith("."):
+            _exit_with_message(f"{name} must be a plain directory name, got {value!r}")
+    if not data_dir.is_dir():
+        _exit_with_message(f"data directory {data_dir} does not exist; pass --data-dir")
+    for run_dir in run_dirs:
+        check_run_dir(run_dir)
+
+    subject = subject_name(run_dirs, args.subject_name)
+    dest = data_dir / args.treatment / args.model / subject
+    if dest.exists() and not args.force:
+        _exit_with_message(f"{dest} already exists; pass --force to replace it")
+
+    run_warnings(run_dirs, data_dir, args.model, args.treatment)
+
+    subject_dir = run_dirs[-1] / "subject"
+    count = count_files(subject_dir, subject_ignore(subject_dir))
+    t_count = sum(count_files(run_dir / "transcripts") for run_dir in run_dirs)
+    excluded = ", ".join(IGNORE_ANYWHERE + tuple(f"./{p}" for p in IGNORE_AT_ROOT))
+    print(f"subject:     {subject_dir}")
+    print(f"             {count} files (excluding {excluded})")
+    for index, run_dir in enumerate(run_dirs):
+        print(f"run {index + 1}:       {run_dir} -> {CLAUDE_FILES}/{log_name(index)}")
+    print(f"transcripts: {t_count} files")
+    print(f"destination: {dest}{' (replacing)' if dest.exists() else ''}")
+
+    if args.dry_run:
+        print("dry run: nothing copied")
+        return
+
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        save(run_dirs, dest)
+    except BaseException:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
+
+    print(f"saved to {dest}")
+    print("review and commit it with:")
+    print(f"    cd {data_dir} && git add {dest.relative_to(data_dir)} && git status")
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--model",
+        required=True,
+        choices=AVOCADO_BACKEND_MODELS,
+        help="model directory name, e.g., opus-5-5")
+    parser.add_argument(
+        "--treatment", required=True, choices=TREATMENT_NAMES, help="treatment directory name, e.g., avocado-minus-tools"
+    )
+    parser.add_argument(
+        "run_dirs",
+        nargs="+",
+        type=Path,
+        metavar="RUN_DIR",
+        help="a run-<i> directory, optionally followed by the runs resumed from it, in order",
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=Path(os.environ.get("AVOCADO_DATA_DIR", DEFAULT_DATA_DIR)),
+        help=f"the avocado-experimental-data checkout (default: $AVOCADO_DATA_DIR or {DEFAULT_DATA_DIR})",
+    )
+    parser.add_argument(
+        "--subject-name", help="subject directory name (default: from batch-info.txt)"
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="replace the destination if it already exists"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="show what would be saved without copying"
+    )
+    return parser.parse_args()
+
+
+def _exit_with_message(message: str) -> None:
     print(f"error: {message}", file=sys.stderr)
     sys.exit(1)
 
+def _warn(message: str) -> None:
+    print(f"_warning: {message}", file=sys.stderr)
 
-def warn(message: str) -> None:
-    print(f"warning: {message}", file=sys.stderr)
 
-
-def read_batch_info(run_dir: Path) -> dict[str, str]:
+def _read_batch_info(run_dir: Path) -> dict[str, str]:
     """Return the key=value pairs of the batch-info.txt next to `run_dir` (empty if absent)."""
     info_file = run_dir.parent / "batch-info.txt"
     info: dict[str, str] = {}
@@ -89,10 +184,10 @@ def read_batch_info(run_dir: Path) -> dict[str, str]:
 
 def check_run_dir(run_dir: Path) -> None:
     if not run_dir.is_dir():
-        exit_with_message(f"{run_dir} is not a directory")
+        _exit_with_message(f"{run_dir} is not a directory")
     for required in ("subject", "transcripts"):
         if not (run_dir / required).is_dir():
-            exit_with_message(f"{run_dir} has no {required}/; is it a run-<i> directory written by run.sh?")
+            _exit_with_message(f"{run_dir} has no {required}/; is it a run-<i> directory written by run.sh?")
 
 
 def subject_name(run_dirs: list[Path], override: str | None) -> str:
@@ -100,13 +195,13 @@ def subject_name(run_dirs: list[Path], override: str | None) -> str:
         return override
     names = set()
     for run_dir in run_dirs:
-        subject = read_batch_info(run_dir).get("subject")
+        subject = _read_batch_info(run_dir).get("subject")
         if not subject:
-            exit_with_message(f"no subject= in {run_dir.parent / 'batch-info.txt'}; pass --subject-name")
+            _exit_with_message(f"no subject= in {run_dir.parent / 'batch-info.txt'}; pass --subject-name")
         assert subject
         names.add(Path(subject).name)
     if len(names) > 1:
-        exit_with_message(f"the given runs are of different subjects: {', '.join(sorted(names))}")
+        _exit_with_message(f"the given runs are of different subjects: {', '.join(sorted(names))}")
     return names.pop()
 
 
@@ -146,20 +241,20 @@ def run_warnings(run_dirs: list[Path], data_dir: Path, model: str, treatment: st
         code = exit_file.read_text().strip()
         if code != "0":
             meaning = EXIT_CODE_MEANINGS.get(code, "unknown")
-            warn(f"{run_dirs[-1]} exited with code {code} ({meaning}); the run may be incomplete")
+            _warn(f"{run_dirs[-1]} exited with code {code} ({meaning}); the run may be incomplete")
     else:
-        warn(f"{run_dirs[-1]} has no exit-code; the run may still be going")
+        _warn(f"{run_dirs[-1]} has no exit-code; the run may still be going")
 
     if not (data_dir / treatment).is_dir():
         known = sorted(
             p.name for p in data_dir.iterdir() if p.is_dir() and not p.name.startswith(".")
         )
-        warn(f"{treatment}/ does not exist yet in {data_dir} (existing: {', '.join(known)})")
+        _warn(f"{treatment}/ does not exist yet in {data_dir} (existing: {', '.join(known)})")
 
     for run_dir in run_dirs:
-        harness_dir = read_batch_info(run_dir).get("harness_dir")
+        harness_dir = _read_batch_info(run_dir).get("harness_dir")
         if harness_dir and Path(harness_dir).parts[-2:] != (model, treatment):
-            warn(f"{run_dir} was run with harness {harness_dir}, not .../{model}/{treatment}")
+            _warn(f"{run_dir} was run with harness {harness_dir}, not .../{model}/{treatment}")
 
 
 def save(run_dirs: list[Path], dest: Path) -> None:
@@ -167,7 +262,7 @@ def save(run_dirs: list[Path], dest: Path) -> None:
     subject = run_dirs[-1] / "subject"
     shutil.copytree(subject, dest, ignore=subject_ignore(subject))
     if claude_files.exists():
-        exit_with_message(f"the run's subject/ already has a {CLAUDE_FILES}/; refusing to merge into it")
+        _exit_with_message(f"the run's subject/ already has a {CLAUDE_FILES}/; refusing to merge into it")
     claude_files.mkdir()
     for index, run_dir in enumerate(run_dirs):
         shutil.copytree(run_dir / "transcripts", claude_files, dirs_exist_ok=True)
@@ -178,6 +273,7 @@ def save(run_dirs: list[Path], dest: Path) -> None:
             shutil.copy2(run_dir / "claude-output.json", claude_files / name)
 
 
+<<<<<<< Updated upstream
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -268,6 +364,8 @@ def main() -> None:
     print(f"saved to {dest}")
     print("review and commit it with:")
     print(f"    cd {data_dir} && git add {dest.relative_to(data_dir)} && git status")
+=======
+>>>>>>> Stashed changes
 
 
 if __name__ == "__main__":
