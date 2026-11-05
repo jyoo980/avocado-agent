@@ -23,6 +23,7 @@ from eval.mutants.mutate_function import Mutant, get_mutants
 from eval.mutants.util import (
     absolute_path_without_resolving,
     check_expected_cbmc_return_code,
+    get_bounded_mutant_file_name,
     is_valid_mutation_candidate,
     write_new_file,
 )
@@ -306,7 +307,8 @@ def generate_mutants_and_compute_score(
     )
 
     paths_to_mutants = {
-        _get_path_for_mutated_source(source_path, i): mutant for i, mutant in enumerate(mutants)
+        _get_path_for_mutated_source(source_path, target_function, i): mutant
+        for i, mutant in enumerate(mutants)
     }
     # Heads-up to stderr so an agent polling the run can see the slow phase has begun and is
     # making progress. Written to stderr (not stdout) so it never contaminates the kill-score
@@ -533,20 +535,33 @@ def _verify_mutant(
     )
 
 
-def _get_path_for_mutated_source(path_to_original_source: Path, index: int) -> Path:
+def _get_path_for_mutated_source(path_to_original_source: Path, function: str, index: int) -> Path:
     """Return the path to which to write a mutated source file.
 
     The mutated source file is in the same directory as the original source file. For example,
-    given the path `/app/test/data/foo.c` and the index 1, return
-    `/app/test/data/foo__mutant_1.c`.
+    given the path `/app/test/data/foo.c`, function `bar`, and the index 1, return
+    `/app/test/data/foo__mutant_bar_1.c`. The function name is part of the file name so that
+    mutants of different functions in the same file -- which may be scored concurrently -- never
+    overwrite one another; mutant files still match the `*__mutant_*.c` pattern that
+    `make clean-mutants` removes.
+
+    If the readable file name would exceed the filesystem's per-component length limit, the name
+    is shortened; see `get_bounded_mutant_file_name`.
 
     Args:
         path_to_original_source (Path): A path to an original source file.
+        function (str): The function the mutant belongs to.
         index (int): The index of the mutant, used as a identifier for the mutant source path.
 
     Returns:
         Path: The path to which to write a mutated source file.
     """
     return path_to_original_source.with_name(
-        f"{path_to_original_source.stem}__mutant_{index}{path_to_original_source.suffix}"
+        get_bounded_mutant_file_name(
+            path_to_original_source.stem,
+            "mutant",
+            function,
+            index,
+            path_to_original_source.suffix,
+        )
     )
