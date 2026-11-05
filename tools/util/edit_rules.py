@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
-from tools.util.preproc_blanker import logical_line_end
+from tools.util.preproc_blanker import get_logical_line_end
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -148,7 +148,7 @@ def _tokenize(source: bytes) -> list[_Token]:
     while position < length:
         if at_line_start and text[position] == "#":
             # The original keeps the backslash of a line continuation inside a contract clause.
-            end = logical_line_end(source, position)
+            end = get_logical_line_end(source, position)
             directive = _normalize_directive(original[position:end])
             head = _DIRECTIVE_HEAD.match(directive)
             keyword = head.group(1) if head else ""
