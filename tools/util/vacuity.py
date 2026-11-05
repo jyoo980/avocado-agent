@@ -21,6 +21,8 @@ whose body starts with the false assertion followed by `__CPROVER_assume(0)`, CB
 the depth bound. Every path ends at the top of the body, so the run stays short. If the assertion
 fails, the preconditions can hold and the depth bound was what kept executions out of the body
 (`DEPTH_LIMIT_REACHED`). That is not counted as vacuous: like an `UNKNOWN` result, the pass stands.
+Only a pass of this second run shows that the preconditions cannot all hold; when it gives no
+answer (it times out, say), the result is `UNKNOWN`.
 
 The copies live in a temporary directory and are never seen by a session or by a merge.
 """
@@ -231,7 +233,9 @@ def classify_entry_probe_run(result: RunCbmcResult) -> VacuityCheckResult:
     Returns:
         VacuityCheckResult: `DEPTH_LIMIT_REACHED` when the entry probe fails, so that an
             execution enters the body once the bound is lifted; `UNSATISFIABLE_PRECONDITIONS`
-            otherwise, with a message when the run gave no answer.
+            when the run passes, so that no execution enters the body even without the bound;
+            `UNKNOWN`, with a message, when the run gives no answer (a timeout or any other
+            failure), so that the pass stands.
     """
     if result.failed_step is CbmcStep.CBMC and not result.timed_out:
         failures = [
@@ -244,8 +248,10 @@ def classify_entry_probe_run(result: RunCbmcResult) -> VacuityCheckResult:
             )
     if result.cbmc_ran_successfully and result.returncode == 0:
         return VacuityCheckResult(Vacuity.UNSATISFIABLE_PRECONDITIONS, "")
+    # Only a clean pass shows that the preconditions cannot hold. A timeout is most likely in
+    # exactly the depth-limit case, so a run that gives no answer leaves the question open.
     return VacuityCheckResult(
-        Vacuity.UNSATISFIABLE_PRECONDITIONS,
+        Vacuity.UNKNOWN,
         f"the check without the depth bound gave no answer ({result!s})",
     )
 
