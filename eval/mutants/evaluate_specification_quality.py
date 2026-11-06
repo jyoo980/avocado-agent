@@ -11,11 +11,11 @@ Each metric is a separate flag so the user can specify the ones they want, namel
 Usage:
     % ./eval/mutants/evaluate_specification_quality.py <PATH_TO_C_FILE_OR_DIR> \
             [--auto-include] \
-            [--include-dirs] \
+            [--include-dirs <PATH_TO_INCLUDE_DIR>]... \
             [--mutation] \
             [--redundancy] \
-            [--keep-artifacts]
-            [--jsonl PATH] \
+            [--keep-artifacts] \
+            [--jsonl PATH]
 """
 
 from __future__ import annotations
