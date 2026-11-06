@@ -19,7 +19,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from tools.run_cbmc import RunCbmcResult, has_contract, run_cbmc
+from tools.run_cbmc import RunCbmcResult, verify_function
 from tools.util.mutation import (
     generate_mutants_and_compute_score,
     get_mutation_testing_results_for_client,
@@ -56,7 +56,7 @@ def main() -> None:
             "On success, additionally runs mutation testing, which re-runs the full CBMC "
             "pipeline once per mutant (several mutants in parallel; each CBMC step has a timeout "
             f"of {_AGENT_MUTANT_TIMEOUT_SEC} s, and retries can lengthen a mutant's run); this "
-            "can take several minutes, during which the tool is mostly silent. This is expected, "
+            "can take a few minutes, during which the tool is mostly silent. This is expected, "
             "not a hang -- do not interrupt the process. Consider running it in the background "
             "and polling for completion."
         )
@@ -104,44 +104,6 @@ def main() -> None:
         print(result.response)
         # A contract-less pass carries the pipeline's own exit code, which is 0.
         sys.exit(result.returncode or _EXIT_NOT_VERIFIED)
-
-
-def verify_function(
-    function: str, file_path: str, include_dirs: list[str] | None = None
-) -> RunCbmcResult:
-    """Run the CBMC pipeline on `function`, then check that a passing function has a contract.
-
-    A function without a contract is checked against an empty contract, which nothing can
-    violate, so a passing run of one is returned with `RunCbmcResult.no_contract` set (printing as
-    `NO_CONTRACT`) and does not count as verified.
-
-    Args:
-        function (str): Name of the function to verify.
-        file_path (str): Path to the C file defining the function.
-        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
-
-    Returns:
-        RunCbmcResult: The outcome of the run.
-    """
-    result = run_cbmc(
-        function_to_verify=function,
-        file_containing_function_to_verify=file_path,
-        include_dirs=include_dirs,
-    )
-    if not result.is_function_verified:
-        return result
-    if has_contract(function, file_path, include_dirs) is False:
-        return replace(
-            result,
-            no_contract=True,
-            response=(
-                f"{function} has no contract, which does not count as verified: with no "
-                "__CPROVER_requires, __CPROVER_ensures or __CPROVER_assigns clause on the "
-                "definition that is compiled, CBMC checks an empty contract that nothing can "
-                "violate. Write the function's contract between its signature and its body."
-            ),
-        )
-    return result
 
 
 def _log_verification_attempt(
