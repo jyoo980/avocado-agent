@@ -13,6 +13,7 @@ import shlex
 import signal
 import subprocess
 import sys
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -529,10 +530,8 @@ def _kill_process_group(pgid: int) -> None:
     Args:
         pgid (int): The process group to kill (the session leader's pid).
     """
-    try:
+    with suppress(ProcessLookupError):
         os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
 
 
 def _result_from_failure(
