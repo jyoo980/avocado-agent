@@ -65,11 +65,13 @@ _USAGE_LIMIT_RESULT_PATTERNS = ("usage limit reached", "rate limit", "resets ")
 
 # The loop will not advance to the next function until the agent has *attempted* verification
 # (run `avocado-run-cbmc`) at least this many times for the current function, as counted from the
-# verification-attempts log. This guards against advancing on a session that barely tried.
-_MIN_VERIFICATION_ATTEMPTS_PER_SESSION = 2
+# verification-attempts log. The count covers all of the function's sessions together, and it
+# excludes attempts on the function that an earlier function's session made. This guards against
+# advancing on a session that barely tried.
+_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION = 2
 
 # Upper bound on how many `claude -p` sessions a single function may receive while trying to reach
-# `_MIN_VERIFICATION_ATTEMPTS_PER_SESSION`. Prevents an unproductive session from looping forever;
+# `_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION`. Prevents an unproductive session from looping forever;
 # once hit, the harness proceeds anyway and records the shortfall.
 _MAX_AGENT_SESSIONS_PER_FUNCTION = 3
 
@@ -396,7 +398,7 @@ def _verify_via_agent(
     previous_file_verification_attempts = _count_verification_attempts(records)
 
     # Do not advance to the next function until the agent has attempted verification at least
-    # `_MIN_VERIFICATION_ATTEMPTS_PER_SESSION` times, re-running the session up to a capped number
+    # `_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION` times, re-running the session up to a capped number
     # of times -- but only while a re-run can plausibly do better than the session before it (see
     # `_should_rerun_session`).
     claude_sessions_for_function: list[ClaudeRun] = []
@@ -432,10 +434,10 @@ def _verify_via_agent(
     current_verification_attempts = attempts_after_each_session[-1]
     logger.info(f"{function}: not re-running: {decision.rationale}")
     # A specification that verifies stopped the loop deliberately, not short of the floor.
-    if not verified and current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION:
+    if not verified and current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION:
         logger.warning(
             f"{function}: proceeding after {sessions} session(s) with only "
-            f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} "
+            f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION} "
             f"verification attempt(s)"
         )
 
@@ -475,7 +477,7 @@ def _should_rerun_session(
 ) -> _RerunDecision:
     """Return the decision whether to start another session for the current function.
 
-    The attempt floor (`_MIN_VERIFICATION_ATTEMPTS_PER_SESSION`) exists so the loop does not
+    The attempt floor (`_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION`) exists so the loop does not
     advance on a session that barely tried. Re-running is only worth its cost, though, when the
     next session can plausibly do better than the last, and three kinds of session say it cannot:
 
@@ -505,11 +507,11 @@ def _should_rerun_session(
     """
     last = sessions[-1]
     attempts = attempts_after_each_session[-1]
-    if attempts >= _MIN_VERIFICATION_ATTEMPTS_PER_SESSION:
+    if attempts >= _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION:
         return _RerunDecision(
             False,
             f"the function has {attempts} verification attempt(s), meeting the "
-            f"{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} required",
+            f"{_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION} required",
         )
     if verified:
         return _RerunDecision(False, "the specification verifies")
@@ -544,7 +546,7 @@ def _should_rerun_session(
         f"the previous session {how_it_ended}; it recorded "
         f"{_differences(attempts_after_each_session)[-1]} verification attempt(s) on this "
         f"function, for {attempts} in {len(sessions)} session(s), short of the "
-        f"{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} required{not_verified}",
+        f"{_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION} required{not_verified}",
     )
 
 
