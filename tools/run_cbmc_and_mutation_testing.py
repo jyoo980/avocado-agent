@@ -20,7 +20,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from tools.run_cbmc import RunCbmcResult, has_contract, run_cbmc
+from tools.run_cbmc import RunCbmcResult, verify_function
 from tools.util.mutation import (
     generate_mutants_and_compute_score,
     get_mutation_testing_results_for_client,
@@ -60,7 +60,7 @@ def main() -> None:
             "On success, additionally runs mutation testing, which re-runs the full CBMC "
             "pipeline once per mutant (several mutants in parallel; each CBMC step has a timeout "
             f"of {_AGENT_MUTANT_TIMEOUT_SEC} s, and retries can lengthen a mutant's run); this "
-            "can take several minutes, during which the tool is mostly silent. This is expected, "
+            "can take a few minutes, during which the tool is mostly silent. This is expected, "
             "not a hang -- do not interrupt the process. Consider running it in the background "
             "and polling for completion."
         )
@@ -110,6 +110,12 @@ def main() -> None:
         sys.exit(result.returncode or _EXIT_NOT_VERIFIED)
 
 
+# `tools.run_cbmc.verify_function` runs the pipeline and checks for a contract. This module's
+# `verify_function`, which shadows it, adds the vacuity check; `tools.util.vacuity` imports
+# `tools.run_cbmc`, so that check cannot live there.
+_verify_function_and_contract = verify_function
+
+
 def verify_function(
     function: str,
     file_path: str,
@@ -140,25 +146,9 @@ def verify_function(
     Returns:
         RunCbmcResult: The outcome of the run.
     """
-    result = run_cbmc(
-        function_to_verify=function,
-        file_containing_function_to_verify=file_path,
-        include_dirs=include_dirs,
-    )
-    if not result.is_function_verified:
-        return result
-    if has_contract(function, file_path, include_dirs) is False:
-        return replace(
-            result,
-            no_contract=True,
-            response=(
-                f"{function} has no contract, which does not count as verified: with no "
-                "__CPROVER_requires, __CPROVER_ensures or __CPROVER_assigns clause on the "
-                "definition that is compiled, CBMC checks an empty contract that nothing can "
-                "violate. Write the function's contract between its signature and its body."
-            ),
-        )
-    if not vacuity_check:
+    result = _verify_function_and_contract(function, file_path, include_dirs=include_dirs)
+    # A failing or contract-less run is not verified, so it needs no vacuity check.
+    if not result.is_function_verified or not vacuity_check:
         return result
     vacuity_check_result = check_vacuity(function, file_path, include_dirs, variant=result.variant)
     vacuity_status = vacuity_check_result.vacuity

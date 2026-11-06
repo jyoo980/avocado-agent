@@ -2,8 +2,9 @@
 
 from pathlib import Path
 
-from tools.run_cbmc import RunCbmcResult, has_contract
-from tools.run_cbmc_and_mutation_testing import verify_function
+from avocado_verify import ClaudeRun, GroundTruthVerificationResult, _outcome_for
+from eval.verify_program import _verify_function
+from tools.run_cbmc import RunCbmcResult, has_contract, verify_function
 
 SOURCE = b"""int answer(void) { return 42; }
 
@@ -37,7 +38,6 @@ def test_the_compiled_program_says_which_functions_have_a_contract(tmp_path: Pat
     assert has_contract("pick", source) is False
 
 
-
 def test_a_file_that_does_not_compile_tells_nothing(tmp_path: Path) -> None:
     broken = tmp_path / "broken.c"
     broken.write_text("int f(void) { return }\n")
@@ -58,3 +58,18 @@ def test_a_function_without_a_contract_is_not_verified(tmp_path: Path) -> None:
 def test_no_contract_outranks_the_other_verdicts_of_a_pass() -> None:
     result = RunCbmcResult("f", None, False, 0, "ok", no_contract=True)
     assert str(result) == "NO_CONTRACT" and not result.is_function_verified
+
+
+def test_the_ground_truth_verdict_of_a_function_without_a_contract_is_not_verified() -> None:
+    claude = ClaudeRun(0, False, False, None, "done", None, None, None, "success")
+    no_contract = RunCbmcResult("f", None, False, 0, "ok", no_contract=True)
+    assert _outcome_for(claude, no_contract) == GroundTruthVerificationResult.UNVERIFIED
+    verified = RunCbmcResult("f", None, False, 0, "ok")
+    assert _outcome_for(claude, verified) == GroundTruthVerificationResult.VERIFIED
+
+
+def test_the_evaluation_does_not_count_a_function_without_a_contract(tmp_path: Path) -> None:
+    source = str(_source(tmp_path))
+    assert str(_verify_function("answer", source).run_cbmc_result) == "NO_CONTRACT"
+    assert not _verify_function("answer", source).is_function_verified
+    assert _verify_function("clear", source).is_function_verified
