@@ -346,6 +346,7 @@ def generate_mutants_and_compute_score(
         file=sys.stderr,
         flush=True,
     )
+
     # Verify mutants concurrently: each mutant is an independent CBMC run, so a bounded thread
     # pool overlaps their (subprocess-bound, GIL-releasing) work. Results are collected as each
     # future completes -- emitting a flushed running tally to stderr so a consumer (a polling
