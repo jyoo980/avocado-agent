@@ -23,6 +23,15 @@ from tools.util.mutation import (
     get_mutation_testing_results_for_client,
 )
 
+# Per-subprocess CBMC timeout for each *mutant* when this tool reports mutation feedback to the
+# agent. The function itself is still verified under the full `tools.run_cbmc` timeout, and the
+# evaluation metric (`eval/mutants/evaluate_specification_quality.py`) always scores mutants under
+# that full timeout; this smaller budget only bounds how long the agent waits for feedback. In
+# practice almost every mutant is decided within a few seconds, while the rare hard mutant would
+# otherwise stall the session for the full timeout only to be reported as undecided anyway. A
+# mutant that exceeds this budget is reported as timed out -- never as killed.
+_AGENT_MUTANT_TIMEOUT_SEC = 120
+
 # Suffix of the sibling JSONL log in which `main` records one entry per top-level verification
 # attempt (i.e., per `avocado-run-cbmc` invocation). Public because `avocado-verify` reads this
 # log to count how many times the agent attempted to verify a function. Keep the two in sync.
@@ -39,11 +48,11 @@ def main() -> None:
             "Run CBMC on a function, with bounded loop unwinding and bounded depth. "
             "Exits with status 0 on verification success. "
             "On success, additionally runs mutation testing, which re-runs the full CBMC "
-            "pipeline once per mutant (several mutants in parallel; each pipeline step has a "
-            "10-minute timeout, and retries can lengthen a mutant's run); this can take several "
-            "minutes, during which the tool is mostly silent. This "
-            "is expected, not a hang -- do not interrupt the process. Consider running it in the "
-            "background and polling for completion."
+            "pipeline once per mutant (several mutants in parallel; each CBMC step has a timeout "
+            f"of {_AGENT_MUTANT_TIMEOUT_SEC} s, and retries can lengthen a mutant's run); this "
+            "can take a few minutes, during which the tool is mostly silent. This is expected, "
+            "not a hang -- do not interrupt the process. Consider running it in the background "
+            "and polling for completion."
         )
     )
     parser.add_argument("--function", required=True, help="Name of the function to verify.")
@@ -84,6 +93,7 @@ def main() -> None:
             target_function=args.function,
             include_dirs=args.include_dirs,
             is_function_already_verified=result.is_function_verified,
+            mutant_timeout_sec=_AGENT_MUTANT_TIMEOUT_SEC,
         )
         print(result.response)
         print(get_mutation_testing_results_for_client(score))
