@@ -390,7 +390,8 @@ def _verify_via_agent(
 
     # Attempts already logged for this function before this turn (e.g. by an earlier function's
     # session that also exercised this one); gate only on attempts made from here forward.
-    previous_verification_attempts = _count_verification_attempts(attempts_log_path, function)
+    records = _read_jsonl_records(attempts_log_path)
+    previous_verification_attempts = _count_verification_attempts(records, function)
 
     # The harness decides whether the function verifies by running CBMC itself after each session,
     # not from the `verified` field of the attempts log. A verified record in the log is stale if
@@ -402,9 +403,9 @@ def _verify_via_agent(
         claude = _run_claude(command, timeout)
         claude_sessions_for_function.append(claude)
         sessions = len(claude_sessions_for_function)
+        records = _read_jsonl_records(attempts_log_path)
         current_verification_attempts = (
-            _count_verification_attempts(attempts_log_path, function)
-            - previous_verification_attempts
+            _count_verification_attempts(records, function) - previous_verification_attempts
         )
         attempts_summary = (
             f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION} "
@@ -449,36 +450,51 @@ def _verify_via_agent(
     )
 
 
-def _count_verification_attempts(log_path: Path, function: str) -> int:
-    """Return the number of logged `avocado-run-cbmc` verification attempts for `function`.
+def _read_jsonl_records(log_path: Path) -> list[dict[str, object]]:
+    """Return the JSON objects in the given JSONL log, oldest first.
 
-    Reads the verification-attempts JSONL that `avocado-run-cbmc` appends to (one record per
-    top-level verification attempt). A missing log, blank lines, and malformed records are treated
-    as zero/skipped so counting never raises.
+    A missing or unreadable log yields no records. A line that is blank, is not UTF-8, is not JSON,
+    or is JSON but not an object (such as `[]`) is skipped, so one corrupt line does not discard
+    the rest of the log.
 
     Args:
-        log_path (Path): Path to the verification-attempts JSONL log.
-        function (str): The function whose attempts should be counted.
+        log_path (Path): a path to a JSONL log, such as a verification-attempts log or a run log.
 
     Returns:
-        int: The number of attempts recorded for `function`.
+        list[dict[str, object]]: The records, each parsed from one line of the log.
+
     """
     try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
+        lines = log_path.read_bytes().splitlines()
     except OSError:
-        return 0
-    count = 0
+        return []
+    records = []
     for line in lines:
-        stripped = line.strip()
-        if not stripped:
+        if not line.strip():
             continue
         try:
-            record = json.loads(stripped)
-        except json.JSONDecodeError:
+            record = json.loads(line)
+        except ValueError:  # `UnicodeDecodeError` or `json.JSONDecodeError`
             continue
-        if record.get("function") == function:
-            count += 1
-    return count
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+def _count_verification_attempts(records: list[dict[str, object]], function: str) -> int:
+    """Return the number of verification attempts on the given function among the given records.
+
+    Args:
+        records (list[dict[str, object]]): a list of records from a verification-attempts log, as
+            returned by `_read_jsonl_records`. The log is the JSONL file that `avocado-run-cbmc`
+            appends to, with one record per top-level verification attempt, such as
+            `{"function": "foo", "verified": true, ...}`.
+        function (str): the function whose attempts to count.
+
+    Returns:
+        int: The number of the records for `function`.
+    """
+    return sum(1 for record in records if record.get("function") == function)
 
 
 def _read_function_outcomes(log_path: Path) -> dict[str, str]:
@@ -495,23 +511,12 @@ def _read_function_outcomes(log_path: Path) -> dict[str, str]:
         dict[str, str]: Map of function name to its last recorded outcome string.
     """
     outcomes: dict[str, str] = {}
-    try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return outcomes
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            record = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
+    for record in _read_jsonl_records(log_path):
         if "type" in record:  # terminal run-summary record, not a per-function result
             continue
         function = record.get("function")
         outcome = record.get("outcome")
-        if function is not None and outcome is not None:
+        if isinstance(function, str) and isinstance(outcome, str):
             outcomes[function] = outcome
     return outcomes
 
