@@ -17,7 +17,7 @@ from tree_sitter import Language, Node, Parser, Tree
 
 from .callgraph import CallGraph
 from .cbmc_clause_stripper import strip_cbmc_clauses
-from .preproc_blanker import blank_preprocessor_conditionals
+from .preproc_blanker import insert_whitespace_for_preprocessor_conditionals
 
 _TREE_SITTER_LANG = Language(tsc.language())
 _PARSER = Parser(_TREE_SITTER_LANG)
@@ -303,7 +303,7 @@ def _parse_to_ast(
         content = content.encode("utf-8")
     stripped, _ = strip_cbmc_clauses(content)
     with _PARSER_LOCK:
-        tree = _PARSER.parse(blank_preprocessor_conditionals(stripped))
+        tree = _PARSER.parse(insert_whitespace_for_preprocessor_conditionals(stripped))
         _log_parse_errors(tree.root_node, label)
         return tree
 
