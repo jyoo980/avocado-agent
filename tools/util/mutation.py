@@ -292,7 +292,9 @@ def generate_mutants_and_compute_score(
     Returns:
         MutationTestingResult: The result of running mutation testing on the target function.
     """
-    source_path = Path(file_path).resolve()
+    # Unlike `Path.resolve`, `os.path.abspath` does not follow symlinks, so the mutants of a
+    # symlinked file see the same quoted `#include`s as the file itself.
+    source_path = Path(os.path.abspath(file_path))  # ruff: ignore[os-path-abspath] - must not follow symlinks.
     mutants = get_mutants(str(source_path), target_function)
     if not mutants:
         return NoMutantsGenerated(file_path, target_function)
