@@ -30,7 +30,6 @@ from subprocess import TimeoutExpired
 
 from loguru import logger
 
-from eval.mutants.mutate_function import get_mutants
 from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
 from tools.run_cbmc import RunCbmcResult, run_cbmc
@@ -363,8 +362,8 @@ def _verify_via_agent(
     """Run one or more `claude -p` sessions for `function`, then re-verify it with CBMC.
 
     Re-runs the session until the agent has attempted verification at least
-    `_MIN_VERIFICATION_ATTEMPTS` times (capped at `_MAX_AGENT_SESSIONS_PER_FUNCTION`) before the
-    caller advances to the next function.
+    `_MIN_VERIFICATION_ATTEMPTS_PER_SESSION` times or the function verifies (capped at
+    `_MAX_AGENT_SESSIONS_PER_FUNCTION`) before the caller advances to the next function.
 
     Args:
         function (str): The function to specify and verify.
@@ -387,8 +386,16 @@ def _verify_via_agent(
     # session that also exercised this one); gate only on attempts made from here forward.
     previous_verification_attempts = _count_verification_attempts(attempts_log_path, function)
 
+    def verified_in_turn() -> bool:
+        # The log can hold a verified attempt from before this turn, which a session in this turn
+        # might since have invalidated, so trust only a log whose latest attempt is from this turn.
+        return current_verification_attempts > 0 and _last_attempt_verified(
+            attempts_log_path, function
+        )
+
     # Do not advance to the next function until the agent has attempted verification at least
-    # `_MIN_VERIFICATION_ATTEMPTS` times, re-running the session up to a capped number of times.
+    # `_MIN_VERIFICATION_ATTEMPTS_PER_SESSION` times, re-running the session up to a capped number
+    # of times, but only while the function does not verify.
     claude_sessions_for_function = [_run_claude(command, timeout)]
     sessions = len(claude_sessions_for_function)
     current_verification_attempts = (
@@ -397,7 +404,7 @@ def _verify_via_agent(
     while (
         current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION
         and sessions < _MAX_AGENT_SESSIONS_PER_FUNCTION
-        and is_spec_improvable_with_mutation_testing(function, file_path, attempts_log_path)
+        and not verified_in_turn()
     ):
         logger.warning(
             f"{function}: agent attempted verification "
@@ -410,12 +417,10 @@ def _verify_via_agent(
             _count_verification_attempts(attempts_log_path, function)
             - previous_verification_attempts
         )
-    if not is_spec_improvable_with_mutation_testing(function, file_path, attempts_log_path):
-        # Stopped deliberately, not short of the floor: there are no mutants to kill, so further
-        # sessions cannot strengthen the (already verifying) spec.
+    if verified_in_turn():
+        # Stopped deliberately, not short of the floor: the specification verifies.
         logger.info(
-            f"{function}: verified with no mutants after {sessions} session(s); skipping the "
-            f"attempt-count floor (no kill score to raise)"
+            f"{function}: verified after {sessions} session(s); skipping the attempt-count floor"
         )
     elif current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION:
         logger.warning(
@@ -435,35 +440,6 @@ def _verify_via_agent(
         verification_attempts=current_verification_attempts,
         agent_sessions=sessions,
     )
-
-
-def is_spec_improvable_with_mutation_testing(
-    function: str, source_path: str, attempts_log_path: Path
-) -> bool:
-    """Return True iff a function's specification can be improved.
-
-    Whether a specification can be improved (via Avocado) depends on the availability of mutants to
-    kill; the kill score is the only metric that is provided to the agent. If no mutants are
-    generated, and the function already verifies, there is no point going further.
-
-    Args:
-        function (str): The function under specification generation.
-        source_path (str): The path to the source file where the function is declared.
-        attempts_log_path (Path): The path to the log of verification attempts.
-
-    Returns:
-        bool: True iff a function's specification can be improved, i.e., it has mutants to kill
-            and it is not successfully verified, yet.
-    """
-    function_has_mutants = False
-    try:
-        function_has_mutants = bool(get_mutants(source_path, function))
-    except Exception:  # ruff: ignore[blind-except] - any generation failure should fall back to default behavior.
-        logger.error(f"Failure in mutant generation for '{function}' in {source_path}")
-        # Assume mutants exist in the worst-case scenario.
-        function_has_mutants = True
-    is_function_successfully_verified = _last_attempt_verified(attempts_log_path, function)
-    return function_has_mutants and not is_function_successfully_verified
 
 
 def _count_verification_attempts(log_path: Path, function: str) -> int:
