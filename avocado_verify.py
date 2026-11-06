@@ -613,8 +613,7 @@ def _should_rerun_session(
     - one stopped by the harness's timeout: another session would likely time out again;
     - one that made no verification attempt on the file at all, when the session before it did the
       same: the prompt, file and model are unchanged, so a third identical session is expected to
-      end the same way. A session that failed with an error is ignored, because it typically
-      failed within seconds;
+      end the same way. A session that failed with an error is ignored.
     - a session after which the specification verifies: there is nothing left for a re-run to
       achieve (`verified` is True).
 
