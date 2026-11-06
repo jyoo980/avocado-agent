@@ -42,19 +42,24 @@ def test_rerun_when_one_session_ended_short_of_the_floor() -> None:
     assert "1 verification attempt(s)" in decision.rationale
 
 
-def test_rerun_once_after_a_timeout_with_no_attempt_but_not_twice() -> None:
-    first = _decide([_session(timed_out=True)], [0])
+def test_rerun_once_after_a_session_with_no_attempt_but_not_twice() -> None:
+    first = _decide([_session()], [0])
     assert first.rerun
-    assert "stopped by the harness" in first.rationale
-    second = _decide([_session(timed_out=True), _session(timed_out=True)], [0, 0])
+    second = _decide([_session(), _session()], [0, 0])
     assert not second.rerun
     assert "2 sessions in a row" in second.rationale
+
+
+def test_no_rerun_after_a_timeout() -> None:
+    decision = _decide([_session(timed_out=True)], [0])
+    assert not decision.rerun
+    assert "stopped by the harness" in decision.rationale
 
 
 def test_a_session_that_finally_attempts_resets_the_no_attempt_stop() -> None:
     # Session 1 made no attempt, session 2 made one: the last session did try, so the
     # no-attempt rule does not apply and the ordinary floor decides.
-    decision = _decide([_session(timed_out=True), _session()], [0, 1])
+    decision = _decide([_session(), _session()], [0, 1])
     assert decision.rerun
 
 
@@ -108,7 +113,7 @@ def test_the_no_attempt_stop_counts_only_consecutive_sessions(
 
 
 def test_a_usage_limit_on_the_last_allowed_session_is_reported() -> None:
-    sessions = [_session(timed_out=True)] * 2 + [
+    sessions = [_session()] * 2 + [
         _session(is_error=True, text="Usage limit reached")
     ]
     decision = _decide(sessions, [0, 0, 0], file_attempts=[0, 1, 1])
@@ -128,8 +133,8 @@ def test_sessions_that_failed_with_an_error_do_not_count_toward_the_no_attempt_s
     monkeypatch.setattr("avocado_verify._MAX_AGENT_SESSIONS_PER_FUNCTION", 4)
     errored = _session(is_error=True, text="API Error: 529 overloaded")
     assert _decide([errored, errored], [0, 0]).rerun
-    # An error between two timeouts neither counts nor interrupts the row.
-    sessions = [_session(timed_out=True), errored, _session(timed_out=True)]
+    # An error between two sessions without an attempt neither counts nor interrupts the row.
+    sessions = [_session(), errored, _session()]
     stopped = _decide(sessions, [0, 0, 0])
     assert not stopped.rerun
     assert "2 sessions in a row" in stopped.rationale

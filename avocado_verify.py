@@ -63,14 +63,15 @@ _MAX_PARSE_SNIPPET_CHARS = 500
 # one place; adjust these as the CLI's wording evolves.
 _USAGE_LIMIT_RESULT_PATTERNS = ("usage limit reached", "rate limit", "resets ")
 
-# The loop will not advance to the next function until the agent has *attempted* verification
-# (run `avocado-run-cbmc`) at least this many times for the current function, as counted from the
-# verification-attempts log. The count covers all of the function's sessions together, and it
-# excludes attempts on the function that an earlier function's session made. This guards against
-# advancing on a session that barely tried.
+# The loop re-runs a function's `claude -p` session until the agent has *attempted* verification
+# (run `avocado-run-cbmc`) at least this many times for the function, summed over the function's
+# sessions and counted from the verification-attempts log. This guards against advancing on a
+# session that barely tried. The loop advances without reaching this floor if the function
+# verifies, if a session times out or hits a usage limit, or after
+# `_MAX_AGENT_SESSIONS_PER_FUNCTION` sessions.
 _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION = 2
 
-# Upper bound on how many `claude -p` sessions a single function may receive while trying to reach
+# Upper bound on how many `claude -p` sessions a single function receives while trying to reach
 # `_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION`. Prevents an unproductive session from looping forever;
 # once hit, the harness proceeds anyway and records the shortfall.
 _MAX_AGENT_SESSIONS_PER_FUNCTION = 3
@@ -155,12 +156,13 @@ class FunctionVerificationResult:
         function (str): The function under verification.
         outcome (GroundTruthVerificationResult): The harness's overall verdict for the function.
         claude_sessions (list[ClaudeRun]): The `claude -p` sessions that resulted in the spec.
-        cbmc (RunCbmcResult): The independent CBMC verification the harness ran afterward.
+        cbmc (RunCbmcResult): The independent CBMC verification the harness ran after the last
+            session.
         internal_callees (list[str]): The function's in-file callees, for the run log.
         verification_attempts (int): How many times the agent attempted verification (ran
             `avocado-run-cbmc`) for this function across all its sessions.
         agent_sessions (int): How many `claude -p` sessions this function received before the
-            harness moved on (>= 1; > 1 when re-runs were needed to reach the attempt floor).
+            harness moved on (>= 1; > 1 when the harness re-ran the session).
     """
 
     function: str
@@ -370,7 +372,7 @@ def _verify_via_agent(
     timeout: int,
     include_dirs: list[str],
 ) -> FunctionVerificationResult:
-    """Run one or more `claude -p` sessions for `function`, then re-verify it with CBMC.
+    """Run one or more `claude -p` sessions for `function`, re-verifying it with CBMC after each.
 
     Re-runs the session while `_should_rerun_session` says another one can do better.
 
@@ -393,7 +395,7 @@ def _verify_via_agent(
 
     # Attempts already logged before this turn (e.g. by an earlier function's session that also
     # exercised this one); gate only on attempts made from here forward.
-    records = _read_attempt_records(attempts_log_path)
+    records = _read_jsonl_records(attempts_log_path)
     previous_verification_attempts = _count_verification_attempts(records, function)
     previous_file_verification_attempts = _count_verification_attempts(records)
 
@@ -401,21 +403,26 @@ def _verify_via_agent(
     # `_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION` times, re-running the session up to a capped number
     # of times -- but only while a re-run can plausibly do better than the session before it (see
     # `_should_rerun_session`).
+    # The harness decides whether the function verifies by running CBMC itself after each session,
+    # not from the `verified` field of the attempts log. A verified record in the log is stale if
+    # the agent edited a specification after that attempt, and a function that an earlier
+    # function's session verified might get no attempt at all in its own sessions, because
+    # AGENTS.md tells the agent not to re-verify a function whose specification has not changed.
     claude_sessions_for_function: list[ClaudeRun] = []
     attempts_after_each_session: list[int] = []
     file_attempts_after_each_session: list[int] = []
     while True:
         claude_sessions_for_function.append(_run_claude(command, timeout))
-        records = _read_attempt_records(attempts_log_path)
+        records = _read_jsonl_records(attempts_log_path)
         attempts_after_each_session.append(
             _count_verification_attempts(records, function) - previous_verification_attempts
         )
         file_attempts_after_each_session.append(
             _count_verification_attempts(records) - previous_file_verification_attempts
         )
-        # The log can hold a verified attempt from before this turn, which a session in this turn
-        # might since have invalidated, so trust only a log whose latest attempt is from this turn.
-        verified = attempts_after_each_session[-1] > 0 and _last_attempt_verified(records, function)
+        # Objective verdict: re-run CBMC rather than trust Claude's self-report.
+        cbmc = run_cbmc(function, file_path, include_dirs=include_dirs)
+        verified = cbmc.is_function_verified
         decision = _should_rerun_session(
             claude_sessions_for_function,
             attempts_after_each_session,
@@ -441,8 +448,6 @@ def _verify_via_agent(
             f"verification attempt(s)"
         )
 
-    # Objective verdict: re-run CBMC rather than trust Claude's self-report.
-    cbmc = run_cbmc(function, file_path, include_dirs=include_dirs)
     return FunctionVerificationResult(
         function=function,
         outcome=_outcome_for(claude_sessions_for_function[-1], cbmc),
@@ -479,14 +484,15 @@ def _should_rerun_session(
 
     The attempt floor (`_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION`) exists so the loop does not
     advance on a session that barely tried. Re-running is only worth its cost, though, when the
-    next session can plausibly do better than the last, and three kinds of session say it cannot:
+    next session can plausibly do better than the last, and four kinds of session say it cannot:
 
     - one stopped by a usage limit: the account is throttled, and every further session would
       fail the same way (52 such re-runs were logged across the measured runs);
+    - one stopped by the harness's timeout: another session would likely time out again;
     - one that made no verification attempt on the file at all, when the session before it did the
       same: the prompt, file and model are unchanged, so a third identical session is expected to
-      end the same way (the measured case cost 2 x 1800 s). A session that failed with an error
-      other than a timeout is ignored, because it typically failed within seconds;
+      end the same way. A session that failed with an error is ignored, because it typically
+      failed within seconds;
     - a session after which the specification verifies: there is nothing left for a re-run to
       achieve (`verified` is True).
 
@@ -498,8 +504,7 @@ def _should_rerun_session(
         file_attempts_after_each_session (list[int]): the number of verification attempts on any
             function in the file (the function or its callees) logged after each of the sessions,
             cumulative over the turn.
-        verified (bool): True if the function's most recent verification attempt was made in the
-            turn and succeeded.
+        verified (bool): True if CBMC verifies the function after the last of the sessions.
         timeout (int): the per-session timeout of the sessions, in seconds; used for diagnostics.
 
     Returns:
@@ -517,29 +522,31 @@ def _should_rerun_session(
         return _RerunDecision(False, "the specification verifies")
     if _is_usage_limit_hit(last):
         return _RerunDecision(False, "the last session was stopped by a usage limit")
+    if last.timed_out:
+        return _RerunDecision(
+            False,
+            f"the last session was stopped by the harness after {timeout} s; another would "
+            "likely time out too",
+        )
     if len(sessions) >= _MAX_AGENT_SESSIONS_PER_FUNCTION:
         return _RerunDecision(False, f"session cap of {_MAX_AGENT_SESSIONS_PER_FUNCTION} reached")
     # The most recent sessions, in a row, that added no verification attempt on the file at all,
-    # ignoring sessions that failed with an error other than a timeout.
+    # ignoring sessions that failed with an error.
     new_file_attempts = _differences(file_attempts_after_each_session)
     sessions_without_attempt = 0
     for session, count in zip(reversed(sessions), reversed(new_file_attempts), strict=True):
         if count:
             break
-        if session.timed_out or not session.is_error:
+        if not session.is_error:
             sessions_without_attempt += 1
     if sessions_without_attempt > _MAX_SESSIONS_WITHOUT_ATTEMPT:
         return _RerunDecision(
             False,
-            f"{sessions_without_attempt} sessions in a row ran without an error (or until the "
-            "timeout) and ended without running the verifier on this file; another identical "
-            "session is not expected to",
+            f"{sessions_without_attempt} sessions in a row ran without an error and ended "
+            "without running the verifier on this file; another identical session is not "
+            "expected to",
         )
-    how_it_ended = (
-        f"was stopped by the harness after {timeout} s"
-        if last.timed_out
-        else ("failed with an error" if last.is_error else "ended")
-    )
+    how_it_ended = "failed with an error" if last.is_error else "ended"
     not_verified = "; the function does not verify yet" if attempts else ""
     return _RerunDecision(
         True,
@@ -566,31 +573,30 @@ def _differences(cumulative: list[int]) -> list[int]:
     ]
 
 
-def _read_attempt_records(log_path: Path) -> list[dict[str, object]]:
-    """Return the records in the given verification-attempts log, oldest first.
+def _read_jsonl_records(log_path: Path) -> list[dict[str, object]]:
+    """Return the JSON objects in the given JSONL log, oldest first.
 
-    The log is the JSONL file that `avocado-run-cbmc` appends to, with one record per top-level
-    verification attempt, such as `{"function": "foo", "verified": true, ...}`. A missing log yields
-    no records, and blank lines and malformed records are skipped, so reading never raises.
+    A missing or unreadable log yields no records. A line that is blank, is not UTF-8, is not JSON,
+    or is JSON but not an object (such as `[]`) is skipped, so one corrupt line does not discard
+    the rest of the log.
 
     Args:
-        log_path (Path): a path to a verification-attempts JSONL log.
+        log_path (Path): a path to a JSONL log, such as a verification-attempts log or a run log.
 
     Returns:
         list[dict[str, object]]: The records, each parsed from one line of the log.
     """
     try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
+        lines = log_path.read_bytes().splitlines()
     except OSError:
         return []
     records = []
     for line in lines:
-        stripped = line.strip()
-        if not stripped:
+        if not line.strip():
             continue
         try:
-            record = json.loads(stripped)
-        except json.JSONDecodeError:
+            record = json.loads(line)
+        except ValueError:  # `UnicodeDecodeError` or `json.JSONDecodeError`
             continue
         if isinstance(record, dict):
             records.append(record)
@@ -606,7 +612,9 @@ def _count_verification_attempts(
 
     Args:
         records (list[dict[str, object]]): a list of records from a verification-attempts log, as
-            returned by `_read_attempt_records`.
+            returned by `_read_jsonl_records`. The log is the JSONL file that `avocado-run-cbmc`
+            appends to, with one record per top-level verification attempt, such as
+            `{"function": "foo", "verified": true, ...}`.
         function (str | None): the function whose attempts to count, or None to count the attempts
             on every function.
 
@@ -614,29 +622,6 @@ def _count_verification_attempts(
         int: The number of the records for `function`, or of all the records if `function` is None.
     """
     return sum(1 for record in records if function is None or record.get("function") == function)
-
-
-def _last_attempt_verified(records: list[dict[str, object]], function: str) -> bool:
-    """Return True if the most recent verification attempt on the given function succeeded.
-
-    Returns the `verified` field of the last record naming `function`. That field is the *tool's*
-    own CBMC verdict (`run_cbmc_and_mutation_testing._log_verification_attempt` records
-    `result.is_function_verified`), not Claude's self-report, so it is safe to trust here. Returns
-    False when no record names `function`, so callers never skip work on the basis of a
-    verification that did not happen.
-
-    Args:
-        records (list[dict[str, object]]): a list of records from a verification-attempts log, as
-            returned by `_read_attempt_records`.
-        function (str): the function whose latest attempt to inspect.
-
-    Returns:
-        bool: True if the most recent record for `function` reports verification success.
-    """
-    for record in reversed(records):
-        if record.get("function") == function:
-            return bool(record.get("verified", False))
-    return False
 
 
 def _read_function_outcomes(log_path: Path) -> dict[str, str]:
@@ -653,23 +638,12 @@ def _read_function_outcomes(log_path: Path) -> dict[str, str]:
         dict[str, str]: Map of function name to its last recorded outcome string.
     """
     outcomes: dict[str, str] = {}
-    try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return outcomes
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            record = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
+    for record in _read_jsonl_records(log_path):
         if "type" in record:  # terminal run-summary record, not a per-function result
             continue
         function = record.get("function")
         outcome = record.get("outcome")
-        if function is not None and outcome is not None:
+        if isinstance(function, str) and isinstance(outcome, str):
             outcomes[function] = outcome
     return outcomes
 
