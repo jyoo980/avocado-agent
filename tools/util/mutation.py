@@ -265,7 +265,7 @@ def generate_mutants_and_compute_score(
     include_dirs: list[str] | None = None,
     workspace: Path | None = None,
     keep_artifacts: bool = False,
-    skip_reverification: bool = False,
+    is_function_already_verified: bool = False,
     mutant_timeout_sec: int = DEFAULT_MUTANT_TIMEOUT_SEC,
 ) -> MutationTestingResult:
     """Return the mutation testing result for `target_function` in `file_path`.
@@ -281,8 +281,8 @@ def generate_mutants_and_compute_score(
         workspace (Path | None): Directory to write mutant files into. Defaults to the
             source file's directory.
         keep_artifacts (bool): When True, mutant `.c` files are kept for inspection.
-        skip_reverification (bool): When True, proceed with mutation testing regardless of whether
-            the function verifies or not.
+        is_function_already_verified (bool): When True, proceed with mutation testing,
+            otherwise, check if it verifies, first.
         mutant_timeout_sec (int): Per-subprocess CBMC timeout applied to each mutant's pipeline.
             Defaults to the full `tools.run_cbmc` timeout, which the evaluation metric always
             uses; the agent-facing tool passes a smaller budget so that a single hard mutant does
@@ -300,17 +300,19 @@ def generate_mutants_and_compute_score(
     workspace = workspace or source_path.parent
     workspace.mkdir(parents=True, exist_ok=True)
 
-    if not skip_reverification:
+    if not is_function_already_verified:
         cbmc_result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
         if not is_valid_mutation_candidate(cbmc_result):
             # No usable baseline if CBMC can't verify the unmutated function.
             return BaselineFailsVerification(file_path, target_function)
 
     # Operator-swap mutations never add or remove calls (or rename functions), so the call graph
-    # is identical for the original and every mutant. Build it once -- cache-hitting the JSON the
-    # baseline run above already wrote -- and pass it into each mutant's run_cbmc below. Besides
-    # avoiding redundant parsing, this keeps the non-thread-safe tree-sitter parser out of the
-    # concurrent section: no call graph is constructed inside the worker threads.
+    # is identical for the original and every mutant. Build it once and pass it into each
+    # mutant's run_cbmc below. This normally hits the cached JSON written by the run_cbmc call
+    # that verified the unmutated function (the baseline run above, or the caller's own run when
+    # `is_function_already_verified` is True). Besides avoiding redundant parsing, this keeps the
+    # non-thread-safe tree-sitter parser out of the concurrent section: no call graph is
+    # constructed inside the worker threads.
     call_graph = CallGraph(
         json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
     )
@@ -324,15 +326,14 @@ def generate_mutants_and_compute_score(
     # result, and flushed so it is not buffered until the long run completes.
     total = len(paths_to_mutants)
     max_workers = _mutation_worker_count(total)
-    if mutants:
-        print(
-            f"Verified {target_function}; now running mutation testing on {total} "
-            f"mutants across up to {max_workers} worker(s) (one CBMC run each, with a timeout "
-            f"of {mutant_timeout_sec} s on each CBMC step) -- this can take several minutes; "
-            "do not interrupt.",
-            file=sys.stderr,
-            flush=True,
-        )
+    print(
+        f"Verified {target_function}; now running mutation testing on {total} "
+        f"mutants across up to {max_workers} worker(s) (one CBMC run each, with a timeout "
+        f"of {mutant_timeout_sec} s on each CBMC step) -- this can take several minutes; "
+        "do not interrupt.",
+        file=sys.stderr,
+        flush=True,
+    )
     # Verify mutants concurrently: each mutant is an independent CBMC run, so a bounded thread
     # pool overlaps their (subprocess-bound, GIL-releasing) work. Results are collected as each
     # future completes -- emitting a flushed running tally to stderr so a consumer (a polling
