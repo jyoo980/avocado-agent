@@ -32,7 +32,7 @@ from loguru import logger
 
 from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
-from tools.run_cbmc import RunCbmcResult, run_cbmc
+from tools.run_cbmc import RunCbmcResult, verify_function
 from tools.run_cbmc_and_mutation_testing import VERIFICATION_ATTEMPTS_LOG_SUFFIX
 from tools.util.callgraph import CallGraph
 
@@ -185,6 +185,8 @@ class FunctionVerificationResult:
             "cbmc": {
                 "verdict": str(self.cbmc),
                 "is_function_verified": self.cbmc.is_function_verified,
+                "no_contract": self.cbmc.no_contract,
+                "contract_probe_failed": self.cbmc.contract_probe_failed,
                 "returncode": self.cbmc.returncode,
                 "timed_out": self.cbmc.timed_out,
                 "failed_step": None
@@ -435,7 +437,9 @@ def _verify_via_agent(
             f"{function}: agent made {attempts_summary}; "
             f"re-running session ({sessions + 1}/{_MAX_AGENT_SESSIONS_PER_FUNCTION})"
         )
-
+    # Objective verdict: re-run CBMC rather than trust Claude's self-report.
+    cbmc = verify_function(function, file_path, include_dirs=include_dirs)
+ 
     return FunctionVerificationResult(
         function=function,
         outcome=_outcome_for(claude_sessions_for_function[-1], cbmc),
