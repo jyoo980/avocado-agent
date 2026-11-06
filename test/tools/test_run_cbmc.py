@@ -5,6 +5,8 @@ import shutil
 from pathlib import Path
 from subprocess import CompletedProcess
 
+import pytest
+
 from eval.mutants.mutate_function import Mutant
 from tools.run_cbmc import (
     CbmcStep,
@@ -430,3 +432,24 @@ def test_print_mutation_progress_buckets_undecided_mutants(capsys) -> None:
         "[mutation testing] 2/2 done "
         "(killed=0 survived=0 timed_out=1 compile_failed=1 instrumentation_failed=0)" in capsys.readouterr().err
     )
+
+
+def test_run_cbmc_resolves_relative_paths_against_callers_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The subprocesses run in `scratch`, but the relative source file and include directory are
+    # relative to the caller's working directory.
+    (tmp_path / "include").mkdir()
+    (tmp_path / "include" / "seven.h").write_text("#define SEVEN 7\n", encoding="utf-8")
+    src = tmp_path / "seven.c"
+    src.write_text('#include "seven.h"\nint seven(void) { return SEVEN; }\n', encoding="utf-8")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.chdir(tmp_path)
+    result = run_cbmc(
+        function_to_verify="seven",
+        file_containing_function_to_verify=src.name,
+        include_dirs=["include"],
+        cwd=str(scratch),
+    )
+    assert result.failed_step is not CbmcStep.GOTO_CC

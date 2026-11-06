@@ -27,6 +27,7 @@ from eval.mutants.util import (
 from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import _DEFAULT_RUN_CBMC_TIMEOUT_SEC, CbmcStep, run_cbmc
 from tools.util.callgraph import CallGraph
+from tools.util.paths import resolve_parent
 
 # Per-subprocess CBMC timeout applied to each mutant unless a caller overrides it. This is the
 # full pipeline timeout, so the evaluation metric (`evaluate_specification_quality.py`) decides
@@ -292,7 +293,9 @@ def generate_mutants_and_compute_score(
     Returns:
         MutationTestingResult: The result of running mutation testing on the target function.
     """
-    source_path = Path(file_path).resolve()
+    # A symlinked file is not followed, so its mutants are written next to the symlink and see the
+    # same quoted `#include`s as the file itself.
+    source_path = resolve_parent(file_path)
     mutants = get_mutants(str(source_path), target_function)
     if not mutants:
         return NoMutantsGenerated(file_path, target_function)

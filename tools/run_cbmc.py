@@ -230,7 +230,8 @@ def run_cbmc(
 
     Args:
         function_to_verify (str): Name of the function to verify.
-        file_containing_function_to_verify (str): Path to the C file defining the function.
+        file_containing_function_to_verify (str): Path to the C file defining the function. A
+            relative path is relative to the current working directory, even when `cwd` is given.
         include_dirs (list[str] | None): Directories to add to the C preprocessor's include
             search path. Forwarded to `goto-cc` as `-I` flags.
         call_graph (CallGraph | None): When provided, this pre-built call graph is used instead
