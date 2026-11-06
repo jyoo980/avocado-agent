@@ -19,6 +19,7 @@ Usage:
 
 import argparse
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -35,6 +36,7 @@ from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
 from tools.run_cbmc import RunCbmcResult, run_cbmc
 from tools.run_cbmc_and_mutation_testing import VERIFICATION_ATTEMPTS_LOG_SUFFIX
+from tools.util import get_include_dirs
 from tools.util.callgraph import CallGraph
 
 # Per-function wall-clock budget for a single `claude -p` session. A session may run CBMC
@@ -224,12 +226,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    file_path = Path(args.file).resolve()
+    # Unlike `Path.resolve`, `os.path.abspath` does not follow symlinks. Therefore, a symlinked
+    # file is compiled, and its mutants are written, in the directory that contains the symlink,
+    # which is also where `get_include_dirs` looks for the `include/` directory.
+    file_path = Path(os.path.abspath(args.file))  # ruff: ignore[os-path-abspath] - must not follow symlinks.
     if not file_path.is_file():
         logger.error(f"No such file: {file_path}")
         sys.exit(1)
 
-    if include_dirs := _autodetect_include_dirs(str(file_path)):
+    if include_dirs := get_include_dirs(str(file_path), [], auto_include=True):
         logger.info(f"[auto-include] using {include_dirs}")
 
     path_to_call_graph = construct_call_graph(str(file_path))
@@ -817,23 +822,6 @@ def _log_summary(results: list[FunctionVerificationResult], log_path: Path) -> N
         1 for result in results if result.outcome is GroundTruthVerificationResult.VERIFIED
     )
     logger.info(f"{verified}/{len(results)} function(s) verified; log written to {log_path}")
-
-
-def _autodetect_include_dirs(source_file: str) -> list[str]:
-    """Return `[<source>/../include]` if that directory exists, else an empty list.
-
-    Many CMake projects keep public headers in `<project>/include/` while sources live in
-    `<project>/src/`. When that layout holds, returning the sibling `include/` directory lets
-    CBMC resolve `#include "foo.h"` without the caller having to configure paths by hand.
-
-    Args:
-        source_file (str): Path to a `.c` file.
-
-    Returns:
-        list[str]: `[<resolved include dir>]` when present, else `[]`.
-    """
-    candidate = Path(source_file).resolve().parent.parent / "include"
-    return [str(candidate)] if candidate.is_dir() else []
 
 
 if __name__ == "__main__":
