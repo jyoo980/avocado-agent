@@ -92,6 +92,9 @@ class _Item:
         body_offsets (tuple[int, ...]): For a function, the offset of each `{` that opens its
             body: one, or one per preprocessor branch when the header differs between branches.
             Empty for every other kind.
+        body_names (tuple[str | None, ...]): For a function, the name that the header before
+            each of `body_offsets` defines, in the same order. Branches of a conditional can give
+            one body different names. Empty for every other kind.
     """
 
     tokens: tuple[str, ...]
@@ -100,6 +103,7 @@ class _Item:
     start: int
     end: int
     body_offsets: tuple[int, ...] = ()
+    body_names: tuple[str | None, ...] = ()
 
 
 def function_body_offsets(source: bytes, function: str) -> list[int]:
@@ -112,13 +116,15 @@ def function_body_offsets(source: bytes, function: str) -> list[int]:
     Returns:
         list[int]: The offsets in source order; empty when the function is not defined. There is
             one offset per definition (a function can be defined once per preprocessor branch)
-            and, within a definition whose header differs between branches, one per header.
+            and, within a definition whose header differs between branches, one per header that
+            names the function.
     """
     return [
         offset
         for item in _split_items(_tokenize(source))
-        if item.kind == "function" and item.name == function
-        for offset in item.body_offsets
+        if item.kind == "function"
+        for offset, name in zip(item.body_offsets, item.body_names, strict=True)
+        if name == function
     ]
 
 
@@ -501,6 +507,7 @@ def _make_item(
         _Item: The item, with the name it introduces when that can be told.
     """
     texts = tuple(token.text for token in tokens)
+    body_names: tuple[str | None, ...] = ()
     if kind == "directive":
         match = _DIRECTIVE_HEAD.match(texts[0])
         # `#ifdef X` tests X and `#if defined(X)` would give `defined`; neither introduces a name.
@@ -509,13 +516,21 @@ def _make_item(
         # The parameter list is the last parenthesized group before the body, once attributes
         # and trailing macro calls are removed; in a K&R definition, it is the identifier list
         # that ends at `header_end`. A `{` before the body, as in a `struct` defined in the
-        # return type, does not end the search.
-        if header_end is None:
-            header_end = (
-                next(index for index, token in enumerate(tokens) if token.offset == body_offsets[0])
-                - 1
+        # return type, does not end the search. Each body brace gets the name from its own
+        # header, which ends just before it: with `#ifdef X` / `int f(...) {` / `#else` /
+        # `int g(...) {` / `#endif`, the first brace opens `f` and the second `g`.
+        if header_end is not None:
+            name = _name_before_last_group(_without_attributes(list(texts[: header_end + 1])))
+            body_names = (name,) * len(body_offsets)
+        else:
+            body_indexes = [
+                index for index, token in enumerate(tokens) if token.offset in body_offsets
+            ]
+            body_names = tuple(
+                _name_before_last_group(_without_attributes(list(texts[:index])))
+                for index in body_indexes
             )
-        name = _name_before_last_group(_without_attributes(list(texts[: header_end + 1])))
+            name = body_names[0]
     elif kind == "declaration":
         name = _declared_name(texts)
     else:
@@ -527,6 +542,7 @@ def _make_item(
         start=tokens[0].offset,
         end=tokens[-1].end,
         body_offsets=body_offsets,
+        body_names=body_names,
     )
 
 
