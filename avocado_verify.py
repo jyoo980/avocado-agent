@@ -30,7 +30,6 @@ from subprocess import TimeoutExpired
 
 from loguru import logger
 
-from eval.mutants.mutate_function import get_mutants
 from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
 from tools.run_cbmc import RunCbmcResult, verify_function
@@ -64,14 +63,17 @@ _MAX_PARSE_SNIPPET_CHARS = 500
 # one place; adjust these as the CLI's wording evolves.
 _USAGE_LIMIT_RESULT_PATTERNS = ("usage limit reached", "rate limit", "resets ")
 
-# The loop will not advance to the next function until the agent has *attempted* verification
-# (run `avocado-run-cbmc`) at least this many times for the current function, as counted from the
-# verification-attempts log. This guards against advancing on a session that barely tried.
-_MIN_VERIFICATION_ATTEMPTS_PER_SESSION = 2
+# The loop re-runs a function's `claude -p` session until the agent has *attempted* verification
+# (run `avocado-run-cbmc`) at least this many times for the function, summed over the function's
+# sessions and counted from the verification-attempts log. This guards against advancing on a
+# session that barely tried. The loop advances without reaching this floor if the function
+# verifies, if a session times out or hits a usage limit, or after
+# `_MAX_AGENT_SESSIONS_PER_FUNCTION` sessions.
+_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION = 2
 
-# Upper bound on how many `claude -p` sessions a single function may receive while trying to reach
-# `_MIN_VERIFICATION_ATTEMPTS`. Prevents an unproductive session from looping forever; once hit,
-# the harness proceeds anyway and records the shortfall.
+# Upper bound on how many `claude -p` sessions a single function receives while trying to reach
+# `_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION`. Prevents an unproductive session from looping forever;
+# once hit, the harness proceeds anyway and records the shortfall.
 _MAX_AGENT_SESSIONS_PER_FUNCTION = 3
 
 
@@ -145,12 +147,13 @@ class FunctionVerificationResult:
         function (str): The function under verification.
         outcome (GroundTruthVerificationResult): The harness's overall verdict for the function.
         claude_sessions (list[ClaudeRun]): The `claude -p` sessions that resulted in the spec.
-        cbmc (RunCbmcResult): The independent CBMC verification the harness ran afterward.
+        cbmc (RunCbmcResult): The independent CBMC verification the harness ran after the last
+            session.
         internal_callees (list[str]): The function's in-file callees, for the run log.
         verification_attempts (int): How many times the agent attempted verification (ran
             `avocado-run-cbmc`) for this function across all its sessions.
         agent_sessions (int): How many `claude -p` sessions this function received before the
-            harness moved on (>= 1; > 1 when re-runs were needed to reach the attempt floor).
+            harness moved on (>= 1; > 1 when the harness re-ran the session).
     """
 
     function: str
@@ -362,11 +365,11 @@ def _verify_via_agent(
     timeout: int,
     include_dirs: list[str],
 ) -> FunctionVerificationResult:
-    """Run one or more `claude -p` sessions for `function`, then re-verify it with CBMC.
+    """Run one or more `claude -p` sessions for `function`, re-verifying it with CBMC after each.
 
     Re-runs the session until the agent has attempted verification at least
-    `_MIN_VERIFICATION_ATTEMPTS` times (capped at `_MAX_AGENT_SESSIONS_PER_FUNCTION`) before the
-    caller advances to the next function.
+    `_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION` times, the function verifies, or a session times out
+    or hits a usage limit, and at most `_MAX_AGENT_SESSIONS_PER_FUNCTION` times in all.
 
     Args:
         function (str): The function to specify and verify.
@@ -389,45 +392,52 @@ def _verify_via_agent(
     # session that also exercised this one); gate only on attempts made from here forward.
     previous_verification_attempts = _count_verification_attempts(attempts_log_path, function)
 
-    # Do not advance to the next function until the agent has attempted verification at least
-    # `_MIN_VERIFICATION_ATTEMPTS` times, re-running the session up to a capped number of times.
-    claude_sessions_for_function = [_run_claude(command, timeout)]
-    sessions = len(claude_sessions_for_function)
-    current_verification_attempts = (
-        _count_verification_attempts(attempts_log_path, function) - previous_verification_attempts
-    )
-    while (
-        current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION
-        and sessions < _MAX_AGENT_SESSIONS_PER_FUNCTION
-        and is_spec_improvable_with_mutation_testing(function, file_path, attempts_log_path)
-    ):
-        logger.warning(
-            f"{function}: agent attempted verification "
-            f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} time(s); "
-            f"re-running session ({sessions + 1}/{_MAX_AGENT_SESSIONS_PER_FUNCTION})"
-        )
-        claude_sessions_for_function.append(_run_claude(command, timeout))
+    # The harness decides whether the function verifies by running CBMC itself after each session,
+    # not from the `verified` field of the attempts log. A verified record in the log is stale if
+    # the agent edited a specification after that attempt, and a function that an earlier
+    # function's session verified might get no attempt at all in its own sessions, because
+    # AGENTS.md tells the agent not to re-verify a function whose specification has not changed.
+    claude_sessions_for_function: list[ClaudeRun] = []
+    while True:
+        claude = _run_claude(command, timeout)
+        claude_sessions_for_function.append(claude)
         sessions = len(claude_sessions_for_function)
         current_verification_attempts = (
             _count_verification_attempts(attempts_log_path, function)
             - previous_verification_attempts
         )
-    if not is_spec_improvable_with_mutation_testing(function, file_path, attempts_log_path):
-        # Stopped deliberately, not short of the floor: there are no mutants to kill, so further
-        # sessions cannot strengthen the (already verifying) spec.
-        logger.info(
-            f"{function}: verified with no mutants after {sessions} session(s); skipping the "
-            f"attempt-count floor (no kill score to raise)"
-        )
-    elif current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION:
-        logger.warning(
-            f"{function}: proceeding after {sessions} session(s) with only "
-            f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} "
+        attempts_summary = (
+            f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION} "
             f"verification attempt(s)"
         )
+        # Objective verdict: re-run CBMC rather than trust Claude's self-report.
+        cbmc = verify_function(function, file_path, include_dirs=include_dirs)
+        if cbmc.is_function_verified:
+            if current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION:
+                logger.info(
+                    f"{function}: verified after {sessions} session(s) with {attempts_summary}; "
+                    f"not re-running the session"
+                )
+            break
+        if current_verification_attempts >= _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION:
+            break
+        if claude.timed_out or _is_usage_limit_hit(claude):
+            # Another session would hit the same usage limit, or would likely time out again.
+            reason = "timed out" if claude.timed_out else "hit a usage limit"
+            logger.warning(
+                f"{function}: session {sessions} {reason}; proceeding with only {attempts_summary}"
+            )
+            break
+        if sessions >= _MAX_AGENT_SESSIONS_PER_FUNCTION:
+            logger.warning(
+                f"{function}: proceeding after {sessions} session(s) with only {attempts_summary}"
+            )
+            break
+        logger.warning(
+            f"{function}: agent made {attempts_summary}; "
+            f"re-running session ({sessions + 1}/{_MAX_AGENT_SESSIONS_PER_FUNCTION})"
+        )
 
-    # Objective verdict: re-run CBMC rather than trust Claude's self-report.
-    cbmc = verify_function(function, file_path, include_dirs=include_dirs)
     return FunctionVerificationResult(
         function=function,
         outcome=_outcome_for(claude_sessions_for_function[-1], cbmc),
@@ -437,35 +447,6 @@ def _verify_via_agent(
         verification_attempts=current_verification_attempts,
         agent_sessions=sessions,
     )
-
-
-def is_spec_improvable_with_mutation_testing(
-    function: str, source_path: str, attempts_log_path: Path
-) -> bool:
-    """Return True iff a function's specification can be improved.
-
-    Whether a specification can be improved (via Avocado) depends on the availability of mutants to
-    kill; the kill score is the only metric that is provided to the agent. If no mutants are
-    generated, and the function already verifies, there is no point going further.
-
-    Args:
-        function (str): The function under specification generation.
-        source_path (str): The path to the source file where the function is declared.
-        attempts_log_path (Path): The path to the log of verification attempts.
-
-    Returns:
-        bool: True iff a function's specification can be improved, i.e., it has mutants to kill
-            and it is not successfully verified, yet.
-    """
-    function_has_mutants = False
-    try:
-        function_has_mutants = bool(get_mutants(source_path, function))
-    except Exception:  # ruff: ignore[blind-except] - any generation failure should fall back to default behavior.
-        logger.error(f"Failure in mutant generation for '{function}' in {source_path}")
-        # Assume mutants exist in the worst-case scenario.
-        function_has_mutants = True
-    is_function_successfully_verified = _last_attempt_verified(attempts_log_path, function)
-    return function_has_mutants and not is_function_successfully_verified
 
 
 def _count_verification_attempts(log_path: Path, function: str) -> int:
@@ -498,41 +479,6 @@ def _count_verification_attempts(log_path: Path, function: str) -> int:
         if record.get("function") == function:
             count += 1
     return count
-
-
-def _last_attempt_verified(log_path: Path, function: str) -> bool:
-    """Return whether the most recent logged verification attempt for `function` succeeded.
-
-    Reads the verification-attempts JSONL that `avocado-run-cbmc` appends to and returns the
-    `verified` field of the last record naming `function`. That field is the *tool's* own CBMC
-    verdict (`run_cbmc_and_mutation_testing._log_verification_attempt` records
-    `result.is_function_verified`), not Claude's self-report, so it is safe to trust here. A missing
-    log, blank lines, and malformed records are skipped; the function returns False when there is no
-    decided record, so callers never skip work on the basis of a verification that did not happen.
-
-    Args:
-        log_path (Path): Path to the verification-attempts JSONL log.
-        function (str): The function whose latest attempt should be inspected.
-
-    Returns:
-        bool: True iff the most recent attempt record for `function` reports verification success.
-    """
-    try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-    verified = False
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            record = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        if record.get("function") == function:
-            verified = bool(record.get("verified", False))
-    return verified
 
 
 def _read_function_outcomes(log_path: Path) -> dict[str, str]:
