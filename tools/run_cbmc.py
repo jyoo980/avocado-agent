@@ -19,7 +19,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -411,7 +411,8 @@ def _run_cbmc_in_directory(
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
         call_graph (CallGraph | None): A pre-built call graph, or None to construct one.
         cwd (str): Working directory for every subprocess in the pipeline.
-        timeout_sec (int): Per-subprocess timeout in seconds.
+        timeout_sec (int): Per-subprocess timeout in seconds. A timed-out run is reported as such
+            and is never mistaken for a verification result.
 
     Returns:
         RunCbmcResult: The outcome of the run.
@@ -707,10 +708,8 @@ def _kill_process_group(pgid: int) -> None:
     Args:
         pgid (int): The process group to kill (the session leader's pid).
     """
-    try:
+    with suppress(ProcessLookupError):
         os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
 
 
 def _result_from_failure(
