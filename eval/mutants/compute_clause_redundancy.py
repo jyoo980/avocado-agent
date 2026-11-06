@@ -477,12 +477,10 @@ def _run_cbmc_in_scratch_dir(function_to_verify: str, file_path: Path | str) -> 
     Returns:
         RunCbmcResult: The result of running CBMC.
     """
-    with tempfile.TemporaryDirectory(prefix="avocado-clause-") as scratch_dir:
-        return run_cbmc(
+    return run_cbmc(
             function_to_verify=function_to_verify,
             file_containing_function_to_verify=str(Path(file_path).resolve()),
-            cwd=scratch_dir,
-        )
+    )
 
 
 def _get_in_file_callers(source_path: Path, function_name: str) -> list[str]:
