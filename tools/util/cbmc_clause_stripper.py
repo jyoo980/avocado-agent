@@ -210,13 +210,17 @@ def _skip_identifier(source: bytes, i: int) -> int:
 def _skip_literal(source: bytes, i: int, quote: int) -> int:
     """Return the byte offset just past the string/character literal at ``i``.
 
+    A literal cannot span lines. As in GCC, a quote with no closing quote on its line (such as
+    the apostrophe in ``#error don't``) is a single character, not the start of a literal.
+
     Args:
         source: The source bytes.
         i: Offset of the opening quote byte.
         quote: The opening quote byte (``"`` or ``'``).
 
     Returns:
-        The offset of the byte immediately after the closing quote.
+        The offset of the byte immediately after the closing quote, or ``i + 1`` when the
+        literal is unterminated.
     """
     length = len(source)
     j = i + 1
@@ -227,8 +231,10 @@ def _skip_literal(source: bytes, i: int, quote: int) -> int:
             continue
         if b == quote:
             return j + 1
+        if b == ord("\n"):
+            return i + 1
         j += 1
-    return length
+    return i + 1
 
 
 def _consume_clause(source: bytes, i: int) -> int | None:
