@@ -264,7 +264,7 @@ def generate_mutants_and_compute_score(
     call_graph: CallGraph | None = None,
     workspace: Path | None = None,
     keep_artifacts: bool = False,
-    skip_reverification: bool = False,
+    is_function_already_verified: bool = False,
 ) -> MutationTestingResult:
     """Return the mutation testing result for `target_function` in `file_path`.
 
@@ -284,8 +284,8 @@ def generate_mutants_and_compute_score(
             source file's directory.
         keep_artifacts (bool): When True, mutant `.c` files and their CBMC run logs are kept for
             inspection.
-        skip_reverification (bool): When True, proceed with mutation testing regardless of whether
-            the function verifies or not.
+        is_function_already_verified (bool): When True, proceed with mutation testing,
+            otherwise, check if it verifies, first.
 
     Returns:
         MutationTestingResult: The result of running mutation testing on the target function.
@@ -306,7 +306,7 @@ def generate_mutants_and_compute_score(
     if call_graph is None:
         call_graph = load_call_graph(file_path)
 
-    if not skip_reverification:
+    if not is_function_already_verified:
         cbmc_result = run_cbmc(
             target_function, file_path, include_dirs=include_dirs, call_graph=call_graph
         )
@@ -323,14 +323,13 @@ def generate_mutants_and_compute_score(
     # result, and flushed so it is not buffered until the long run completes.
     total = len(paths_to_mutants)
     max_workers = _mutation_worker_count(total)
-    if mutants:
-        print(
-            f"Verified {target_function}; now running mutation testing on {total} "
-            f"mutants across up to {max_workers} worker(s) (one CBMC run each, up to 10 min "
-            "per mutant) -- this can take several minutes; do not interrupt.",
-            file=sys.stderr,
-            flush=True,
-        )
+    print(
+        f"Verified {target_function}; now running mutation testing on {total} "
+        f"mutants across up to {max_workers} worker(s) (one CBMC run each, up to 10 min "
+        "per step) -- this can take several minutes; do not interrupt.",
+        file=sys.stderr,
+        flush=True,
+    )
     # Verify mutants concurrently: each mutant is an independent CBMC run, so a bounded thread
     # pool overlaps their (subprocess-bound, GIL-releasing) work. Results are collected as each
     # future completes -- emitting a flushed running tally to stderr so a consumer (a polling

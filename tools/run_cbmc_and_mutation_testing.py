@@ -88,7 +88,7 @@ def main() -> None:
             target_function=args.function,
             include_dirs=args.include_dirs,
             call_graph=call_graph,
-            skip_reverification=True,
+            is_function_already_verified=result.is_function_verified,
         )
         print(result.response)
         print(get_mutation_testing_results_for_client(score))
