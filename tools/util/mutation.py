@@ -26,10 +26,15 @@ from eval.mutants.util import (
     remove_files,
 )
 from tools.construct_call_graph import load_call_graph
-from tools.run_cbmc import CbmcStep, run_cbmc
+from tools.run_cbmc import _DEFAULT_RUN_CBMC_TIMEOUT_SEC, CbmcStep, run_cbmc
 
 if TYPE_CHECKING:
     from tools.util.callgraph import CallGraph
+
+# Per-subprocess CBMC timeout applied to each mutant unless a caller overrides it. This is the
+# full pipeline timeout, so the evaluation metric (`evaluate_specification_quality.py`) decides
+# each mutant under the same budget as `run_cbmc` gives the original function.
+DEFAULT_MUTANT_TIMEOUT_SEC = _DEFAULT_RUN_CBMC_TIMEOUT_SEC
 
 # Matches the GNU `timeout(1)` convention used elsewhere in the codebase; surfaces in
 # MutantVerificationResult.returncode so consumers can distinguish a timed-out run from a
@@ -265,6 +270,7 @@ def generate_mutants_and_compute_score(
     workspace: Path | None = None,
     keep_artifacts: bool = False,
     is_function_already_verified: bool = False,
+    mutant_timeout_sec: int = DEFAULT_MUTANT_TIMEOUT_SEC,
 ) -> MutationTestingResult:
     """Return the mutation testing result for `target_function` in `file_path`.
 
@@ -286,6 +292,11 @@ def generate_mutants_and_compute_score(
             inspection.
         is_function_already_verified (bool): When True, proceed with mutation testing,
             otherwise, check if it verifies, first.
+        mutant_timeout_sec (int): Per-subprocess CBMC timeout applied to each mutant's pipeline.
+            Defaults to the full `tools.run_cbmc` timeout, which the evaluation metric always
+            uses; the agent-facing tool passes a smaller budget so that a single hard mutant does
+            not stall the agent for the full timeout. A timed-out mutant is undecided (never
+            killed) regardless of the budget.
 
     Returns:
         MutationTestingResult: The result of running mutation testing on the target function.
@@ -325,8 +336,9 @@ def generate_mutants_and_compute_score(
     max_workers = _mutation_worker_count(total)
     print(
         f"Verified {target_function}; now running mutation testing on {total} "
-        f"mutants across up to {max_workers} worker(s) (one CBMC run each, up to 10 min "
-        "per step) -- this can take several minutes; do not interrupt.",
+        f"mutants across up to {max_workers} worker(s) (one CBMC run each, with a timeout "
+        f"of {mutant_timeout_sec} s on each CBMC step) -- this can take several minutes; "
+        "do not interrupt.",
         file=sys.stderr,
         flush=True,
     )
@@ -347,6 +359,7 @@ def generate_mutants_and_compute_score(
                     include_dirs,
                     call_graph,
                     log_invocation=keep_artifacts,
+                    timeout_sec=mutant_timeout_sec,
                 ): index
                 for index, (path, mutant) in enumerate(paths_to_mutants.items())
             }
@@ -462,6 +475,7 @@ def _verify_mutant(
     call_graph: CallGraph,
     *,
     log_invocation: bool,
+    timeout_sec: int = DEFAULT_MUTANT_TIMEOUT_SEC,
 ) -> MutantVerificationResult:
     """Return the result of verifying a mutant.
 
@@ -481,6 +495,7 @@ def _verify_mutant(
             mutant (operator-swap mutants share the original's call graph) and passed to
             `run_cbmc()` so it skips re-parsing the mutant source.
         log_invocation (bool): Whether `run_cbmc()` writes a run log next to the mutant.
+        timeout_sec (int): Per-subprocess CBMC timeout for this mutant's pipeline.
 
     Returns:
         MutantVerificationResult: The result of verifying a mutant. The returned result's
@@ -494,6 +509,7 @@ def _verify_mutant(
         include_dirs=include_dirs,
         call_graph=call_graph,
         log_invocation=log_invocation,
+        timeout_sec=timeout_sec,
     )
     if cbmc_result.timed_out:
         return MutantVerificationResult(
