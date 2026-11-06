@@ -55,10 +55,10 @@ def main() -> None:
             "Exits with status 0 on verification success. "
             "On success, additionally runs mutation testing, which re-runs the full CBMC "
             "pipeline once per mutant (several mutants in parallel, with a timeout of "
-            f"{_AGENT_MUTANT_TIMEOUT_SEC} s on each CBMC step); this can take a few minutes, "
-            "during which the tool is mostly silent. This is expected, not a hang -- do not "
-            "interrupt the process. Consider running it in the background and polling for "
-            "completion."
+            f"{_AGENT_MUTANT_TIMEOUT_SEC} s on each CBMC step; retries can lengthen a mutant's "
+            "run); this can take a few minutes, during which the tool is mostly silent. This is "
+            "expected, not a hang -- do not interrupt the process. Consider running it in the "
+            "background and polling for completion."
         )
     )
     parser.add_argument("--function", required=True, help="Name of the function to verify.")
@@ -94,7 +94,7 @@ def main() -> None:
             file_path=args.file,
             target_function=args.function,
             include_dirs=args.include_dirs,
-            skip_reverification=True,
+            is_function_already_verified=result.is_function_verified,
             mutant_timeout_sec=_AGENT_MUTANT_TIMEOUT_SEC,
         )
         print(result.response)
