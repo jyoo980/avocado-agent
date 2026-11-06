@@ -11,6 +11,7 @@ import fcntl
 import json
 import os
 import shlex
+import signal
 import stat
 import subprocess
 import sys
@@ -18,7 +19,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -410,7 +411,8 @@ def _run_cbmc_in_directory(
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
         call_graph (CallGraph | None): A pre-built call graph, or None to construct one.
         cwd (str): Working directory for every subprocess in the pipeline.
-        timeout_sec (int): Per-subprocess timeout in seconds.
+        timeout_sec (int): Per-subprocess timeout in seconds. A timed-out run is reported as such
+            and is never mistaken for a verification result.
 
     Returns:
         RunCbmcResult: The outcome of the run.
@@ -652,6 +654,64 @@ def _run_command(
         timed_out=timed_out,
         timeout_sec=timeout_sec,
     )
+
+
+def _run_shell_command_killing_group_on_timeout(
+    command: str,
+    timeout_sec: int,
+    cwd: str | None = None,
+) -> tuple[int, str, str]:
+    """Run `command` through the shell; on timeout, kill the shell *and* everything it spawned.
+
+    `subprocess.run(..., shell=True, timeout=...)` kills only the `/bin/sh` it started. dash
+    forks the actual tool (cbmc, goto-cc, ...) as a child rather than exec'ing it, so that
+    child would be orphaned and keep solving, consuming CPU and memory while mutation-testing
+    workers start new mutants. Running the command in its own session (and hence its own
+    process group) lets us SIGKILL the whole group instead.
+
+    Args:
+        command (str): The shell command to run.
+        timeout_sec (int): Seconds the command may run before its process group is killed.
+        cwd (str | None): Working directory for the command; None inherits the current one.
+
+    Returns:
+        tuple[int, str, str]: The command's return code, stdout, and stderr.
+
+    Raises:
+        TimeoutExpired: If the command did not finish within `timeout_sec`. By the time this is
+            raised, the whole process group has been killed and the shell reaped.
+    """
+    with subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        shell=True,
+        cwd=cwd,
+        start_new_session=True,
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout_sec)
+        except TimeoutExpired:
+            _kill_process_group(process.pid)
+            # Every member of the group is dead, so the pipes reach EOF and this returns promptly.
+            process.communicate()
+            raise
+        except BaseException:
+            # E.g. KeyboardInterrupt: don't leave the solver running behind us.
+            _kill_process_group(process.pid)
+            raise
+    return process.returncode, stdout, stderr
+
+
+def _kill_process_group(pgid: int) -> None:
+    """SIGKILL every process in process group `pgid`, ignoring an already-empty group.
+
+    Args:
+        pgid (int): The process group to kill (the session leader's pid).
+    """
+    with suppress(ProcessLookupError):
+        os.killpg(pgid, signal.SIGKILL)
 
 
 def _result_from_failure(
