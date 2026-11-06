@@ -16,6 +16,7 @@ from tools.run_cbmc import (
     _get_goto_instrument_add_library_command,
     _get_goto_instrument_contract_command,
     _get_goto_instrument_unwind_command,
+    _run_command,
     compile_with_goto_cc,
     run_cbmc,
 )
@@ -180,6 +181,31 @@ def test_run_cbmc_leaves_no_goto_files_in_the_working_directory(tmp_path: Path) 
     assert result.is_function_verified, result.response
     assert list(work_dir.iterdir()) == [], "pipeline intermediates leaked into the cwd"
     assert not list(tmp_path.glob("*.goto")), "pipeline intermediates leaked next to the source"
+
+def test_run_command_honours_a_custom_timeout() -> None:
+    result = _run_command(CbmcStep.CBMC, "sleep 5", [], timeout_sec=1)
+    assert result.timed_out
+    assert result.timeout_sec == 1
+    assert not result.succeeded
+
+
+def test_run_command_timeout_kills_the_shells_children(tmp_path: Path) -> None:
+    # The shell forks `sleep` (and here also backgrounds a second one); killing only the shell
+    # on timeout would orphan them, leaving e.g. a CBMC solver running after its mutant timed out.
+    pid_file = tmp_path / "pids"
+    command = f"sleep 60 & echo $! > {pid_file}; sleep 60; true"
+    result = _run_command(CbmcStep.CBMC, command, [], timeout_sec=1)
+    assert result.timed_out
+    background_pid = int(pid_file.read_text().strip())
+    # A killed orphan may linger briefly as an unreaped zombie ("Z"); that counts as dead.
+    try:
+        stat = Path(f"/proc/{background_pid}/stat").read_text()
+    except FileNotFoundError:
+        return
+    state = stat.rsplit(")", 1)[1].split()[0]
+    if state != "Z":
+        os.kill(background_pid, 9)
+        raise AssertionError(f"child of the timed-out shell is still running (state {state})")
 
 
 def test_format_failure_response_leads_with_failure_lines_for_cbmc_step() -> None:
