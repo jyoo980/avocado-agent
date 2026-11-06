@@ -266,8 +266,8 @@ def generate_mutants_and_compute_score(
     include_dirs: list[str] | None = None,
     workspace: Path | None = None,
     keep_artifacts: bool = False,
-    mutant_timeout_sec: int = DEFAULT_MUTANT_TIMEOUT_SEC,
     is_function_already_verified: bool = False,
+    mutant_timeout_sec: int = DEFAULT_MUTANT_TIMEOUT_SEC,
 ) -> MutationTestingResult:
     """Return the mutation testing result for `target_function` in `file_path`.
 
@@ -335,7 +335,6 @@ def generate_mutants_and_compute_score(
         file=sys.stderr,
         flush=True,
     )
-
     # Verify mutants concurrently: each mutant is an independent CBMC run, so a bounded thread
     # pool overlaps their (subprocess-bound, GIL-releasing) work. Results are collected as each
     # future completes -- emitting a flushed running tally to stderr so a consumer (a polling
