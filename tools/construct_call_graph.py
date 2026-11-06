@@ -65,6 +65,11 @@ def construct_call_graph(
 ) -> str:
     """Construct a call graph for the given C file.
 
+    The call graph is cached beside `path_to_file_to_verify` (without following symlinks). A cached
+    graph is reused only if it is at least as new as the source file and, when
+    `path_to_file_to_verify` is a symlink, the link itself; so editing the source or repointing the
+    link causes the graph to be regenerated.
+
     Args:
         path_to_file_to_verify (str): The path to the file from which to construct a call graph.
 
@@ -74,7 +79,7 @@ def construct_call_graph(
     source_path = Path(path_to_file_to_verify)
     path_to_call_graph = source_path.with_name(f"{source_path.stem}-callgraph.json")
     with _CALL_GRAPH_LOCK:
-        if path_to_call_graph.exists():
+        if path_to_call_graph.exists() and _is_cache_fresh(path_to_call_graph, source_path):
             return str(path_to_call_graph)
         call_graph = get_call_graph(path_to_file_to_verify)
         # Write to a uniquely named sibling and rename it into place, so that a concurrent process
@@ -95,6 +100,25 @@ def construct_call_graph(
             tmp_path.unlink(missing_ok=True)
             raise
     return str(path_to_call_graph)
+
+
+def _is_cache_fresh(path_to_call_graph: Path, source_path: Path) -> bool:
+    """Return True iff the cached call graph is at least as new as the source it was built from.
+
+    Args:
+        path_to_call_graph (Path): The cached call-graph file.
+        source_path (Path): The C file, possibly a symlink.
+
+    Returns:
+        bool: True iff the cache is no older than the source file's contents (`stat`, which follows
+            symlinks) and than the path itself (`lstat`, which changes when a symlink is repointed).
+    """
+    try:
+        cache_mtime = path_to_call_graph.stat().st_mtime_ns
+        source_mtime = max(source_path.stat().st_mtime_ns, source_path.lstat().st_mtime_ns)
+    except OSError:
+        return False
+    return cache_mtime >= source_mtime
 
 
 if __name__ == "__main__":

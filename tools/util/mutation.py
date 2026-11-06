@@ -273,7 +273,7 @@ def generate_mutants_and_compute_score(
     *,
     include_dirs: list[str] | None = None,
     keep_artifacts: bool = False,
-    skip_reverification: bool = False,
+    is_function_already_verified: bool = False,
     mutant_timeout_sec: int = DEFAULT_MUTANT_TIMEOUT_SEC,
 ) -> MutationTestingResult:
     """Return the mutation testing result for `target_function` in `file_path`.
@@ -290,8 +290,8 @@ def generate_mutants_and_compute_score(
         include_dirs (list[str] | None): Directories forwarded to `run_cbmc()` as `-I` flags
             for both the original-function verification and every mutant run.
         keep_artifacts (bool): When True, mutant `.c` files are kept for inspection.
-        skip_reverification (bool): When True, proceed with mutation testing regardless of whether
-            the function verifies or not.
+        is_function_already_verified (bool): When True, proceed with mutation testing,
+            otherwise, check if it verifies, first.
         mutant_timeout_sec (int): Per-subprocess CBMC timeout applied to each mutant's pipeline.
             Defaults to the full `tools.run_cbmc` timeout, which the evaluation metric always
             uses; the agent-facing tool passes a smaller budget so that a single hard mutant does
@@ -308,17 +308,19 @@ def generate_mutants_and_compute_score(
     if not mutants:
         return NoMutantsGenerated(file_path, target_function)
 
-    if not skip_reverification:
+    if not is_function_already_verified:
         cbmc_result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
         if not is_valid_mutation_candidate(cbmc_result):
             # No usable baseline if CBMC can't verify the unmutated function.
             return BaselineFailsVerification(file_path, target_function)
 
     # Operator-swap mutations never add or remove calls (or rename functions), so the call graph
-    # is identical for the original and every mutant. Build it once -- cache-hitting the JSON the
-    # baseline run above already wrote -- and pass it into each mutant's run_cbmc below. Besides
-    # avoiding redundant parsing, this keeps the non-thread-safe tree-sitter parser out of the
-    # concurrent section: no call graph is constructed inside the worker threads.
+    # is identical for the original and every mutant. Build it once and pass it into each
+    # mutant's run_cbmc below. This normally hits the cached JSON written by the run_cbmc call
+    # that verified the unmutated function (the baseline run above, or the caller's own run when
+    # `is_function_already_verified` is True). Besides avoiding redundant parsing, this keeps the
+    # non-thread-safe tree-sitter parser out of the concurrent section: no call graph is
+    # constructed inside the worker threads.
     call_graph = CallGraph(
         json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
     )
@@ -336,15 +338,14 @@ def generate_mutants_and_compute_score(
     # result, and flushed so it is not buffered until the long run completes.
     total = len(paths_to_mutants)
     max_workers = _mutation_worker_count(total)
-    if mutants:
-        print(
-            f"Verified {target_function}; now running mutation testing on {total} "
-            f"mutants across up to {max_workers} worker(s) (one CBMC run each, with a timeout "
-            f"of {mutant_timeout_sec} s on each CBMC step) -- this can take several minutes; "
-            "do not interrupt.",
-            file=sys.stderr,
-            flush=True,
-        )
+    print(
+        f"Verified {target_function}; now running mutation testing on {total} "
+        f"mutants across up to {max_workers} worker(s) (one CBMC run each, with a timeout "
+        f"of {mutant_timeout_sec} s on each CBMC step) -- this can take several minutes; "
+        "do not interrupt.",
+        file=sys.stderr,
+        flush=True,
+    )
     # Verify mutants concurrently: each mutant is an independent CBMC run, so a bounded thread
     # pool overlaps their (subprocess-bound, GIL-releasing) work. Results are collected as each
     # future completes -- emitting a flushed running tally to stderr so a consumer (a polling
@@ -557,21 +558,22 @@ def _verify_mutant(
 
 
 def _get_path_for_mutated_source(
-    workspace_path: Path, path_to_original_source: Path, function: str, index: int
+    directory: Path, path_to_original_source: Path, function: str, index: int
 ) -> Path:
     """Return the path to which to write a mutated source file.
 
-    For example, given the path `/app/test/data/foo.c` and function `bar`, return
-    `/app/test/data/foo__mutant_bar_1.c`. The function name is part of the file name so that
-    mutants of different functions in the same file -- which may be scored concurrently -- never
-    overwrite one another; mutant files still match the `*__mutant_*.c` pattern that
-    `make clean-mutants` removes.
+    For example, given the directory `/app/test/data`, the path `/app/test/data/foo.c`, and
+    function `bar`, return `/app/test/data/foo__mutant_bar_1.c`. The function name is part of the
+    file name so that mutants of different functions in the same file -- which may be scored
+    concurrently -- never overwrite one another; mutant files still match the `*__mutant_*.c`
+    pattern that `make clean-mutants` removes, and `is_mutant_artifact()` recognizes them.
 
     If the readable file name would exceed the filesystem's per-component length limit, the name
     is shortened; see `get_bounded_mutant_file_name`.
 
     Args:
-        workspace_path (Path): The directory under which mutation testing occurs.
+        directory (Path): The directory in which to write the mutant; normally the directory of
+            the original source, so that a quoted `#include` finds the same header.
         path_to_original_source (Path): The path to the original source file.
         function (str): The function the mutant belongs to.
         index (int): The index of the mutant, used as a identifier for the mutant source path.
@@ -579,9 +581,9 @@ def _get_path_for_mutated_source(
     Returns:
         Path: The path to which to write a mutated source file.
     """
-    return workspace_path / get_bounded_mutant_file_name(
+    return directory / get_bounded_mutant_file_name(
         path_to_original_source.stem,
-        "mutant",
+        MUTANT_INFIX,
         function,
         index,
         path_to_original_source.suffix,

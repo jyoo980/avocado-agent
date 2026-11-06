@@ -16,11 +16,13 @@ _CBMC_RETURN_CODES_SUCCESS_FAILURE_TIMEOUT = frozenset({0, 10, 124})
 MUTANT_INFIX = "mutant"
 CLAUSE_DROP_INFIX = "clause_drop"
 
-# Matches the stem of a generated mutant source file: `<stem>__<infix>_[<run-token>_]<index>`.
-# The run token is optional so that artifacts kept by older versions are matched too.
-_MUTANT_ARTIFACT_STEM_RE = re.compile(
-    rf"__(?:{MUTANT_INFIX}|{CLAUSE_DROP_INFIX})_(?:[0-9a-f]+_)?\d+$"
-)
+# The per-component file name limit (in bytes) on common filesystems (ext4, APFS, NTFS, ...).
+_MAX_FILE_NAME_BYTES = 255
+
+# Matches the stem of a generated mutant source file: `<stem>__<infix>_[<label>_]<index>`, where
+# the label is a run token or a function name (see `get_bounded_mutant_file_name()`). The label is
+# optional so that artifacts kept by older versions are matched too.
+_MUTANT_ARTIFACT_STEM_RE = re.compile(rf"__(?:{MUTANT_INFIX}|{CLAUSE_DROP_INFIX})_(?:.+_)?\d+$")
 
 
 def is_mutant_artifact(path: Path) -> bool:
@@ -41,10 +43,11 @@ def write_mutant_sources(
     """Write each mutant source to a new file next to `source_path`, and return the paths.
 
     Each file is named `<stem>__<infix>_<run-token>_<index><suffix>`, where the run token is
-    random and shared by every file of this call, so concurrent runs on the same source do not
-    collide. If that name would be too long, it is shortened; see `get_bounded_mutant_file_name`.
-    Files are created exclusively: if a target path already exists, no existing file is
-    overwritten, the files created by this call are removed, and `FileExistsError` is raised.
+    random and shared by every file of this call, so concurrent runs on the same source (even of
+    different functions, or of the same function) do not collide. The name is bounded in length;
+    see `get_bounded_mutant_file_name()`. Files are created exclusively: if a target path already
+    exists, no existing file is overwritten, the files created by this call are removed, and
+    `FileExistsError` is raised.
 
     Args:
         source_path (Path): The original source file; mutants are written in its directory.
@@ -74,20 +77,18 @@ def write_mutant_sources(
     return created
 
 
-# The per-component file name limit (in bytes) on common filesystems (ext4, APFS, NTFS, ...).
-_MAX_FILE_NAME_BYTES = 255
-
-
 def get_bounded_mutant_file_name(
     stem: str, marker: str, function: str, index: int, suffix: str
 ) -> str:
     """Return a mutant file name `<stem>__<marker>_<function>_<index><suffix>`, bounded in length.
 
+    `function` labels the mutant: a function name, or a run token (see `write_mutant_sources()`).
+
     If the readable name would exceed the filesystem's per-component length limit, the function
     name is replaced by a short digest of the full (stem, function) pair, and the stem is truncated
     if needed. The name then stays bounded but is still distinct for each function and index. It
     always contains `__<marker>_`, so it still matches the patterns that `make clean-mutants`
-    removes.
+    removes, and `is_mutant_artifact()` recognizes it.
 
     Byte lengths are measured with `os.fsencode`, which counts name bytes the way the filesystem
     does. It uses surrogateescape, so basenames that are not valid UTF-8 do not raise.
