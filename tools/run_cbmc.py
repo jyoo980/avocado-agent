@@ -8,14 +8,13 @@ Usage:
 
 import argparse
 import json
-import re
 import os
+import re
 import shlex
 import signal
 import subprocess
 import sys
 import tempfile
-
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
