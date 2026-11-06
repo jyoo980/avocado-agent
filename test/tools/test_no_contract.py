@@ -2,6 +2,9 @@
 
 from pathlib import Path
 
+import pytest
+
+import tools.run_cbmc
 from avocado_verify import ClaudeRun, GroundTruthVerificationResult, _outcome_for
 from eval.verify_program import _verify_function
 from tools.run_cbmc import RunCbmcResult, has_contract, verify_function
@@ -73,3 +76,46 @@ def test_the_evaluation_does_not_count_a_function_without_a_contract(tmp_path: P
     assert not _verify_function("answer", source).is_function_verified
     assert _verify_function("clear", source).is_function_verified
 
+
+def _verify_with_probe(monkeypatch: pytest.MonkeyPatch, probe: bool | None) -> RunCbmcResult:
+    """Run `verify_function` on a passing pipeline whose contract probe returns `probe`.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Used to stub out the pipeline and the probe.
+        probe (bool | None): What the stubbed `has_contract` returns.
+
+    Returns:
+        RunCbmcResult: The result `verify_function` returns.
+    """
+    passing = RunCbmcResult("f", None, False, 0, "ok")
+    monkeypatch.setattr(tools.run_cbmc, "run_cbmc", lambda **_: passing)
+    monkeypatch.setattr(tools.run_cbmc, "has_contract", lambda *_: probe)
+    return verify_function("f", "f.c")
+
+
+def test_a_failed_contract_probe_is_a_distinct_unverified_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _verify_with_probe(monkeypatch, None)
+    assert str(result) == "CONTRACT_PROBE_FAILED" and not result.is_function_verified
+    assert result.contract_probe_failed and not result.no_contract
+    assert result.cbmc_ran_successfully
+    assert "could not be determined" in result.response
+    assert "has no contract" not in result.response
+
+
+def test_only_a_probe_that_finds_no_contract_sets_no_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing = _verify_with_probe(monkeypatch, False)
+    assert str(missing) == "NO_CONTRACT" and missing.no_contract
+    assert not missing.contract_probe_failed and "has no contract" in missing.response
+    present = _verify_with_probe(monkeypatch, True)
+    assert str(present) == "PASS" and present.is_function_verified
+    assert not present.no_contract and not present.contract_probe_failed
+
+
+def test_the_ground_truth_verdict_of_a_failed_contract_probe_is_not_verified() -> None:
+    claude = ClaudeRun(0, False, False, None, "done", None, None, None, "success")
+    probe_failed = RunCbmcResult("f", None, False, 0, "ok", contract_probe_failed=True)
+    assert _outcome_for(claude, probe_failed) == GroundTruthVerificationResult.UNVERIFIED

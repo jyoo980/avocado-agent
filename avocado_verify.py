@@ -183,6 +183,7 @@ class FunctionVerificationResult:
                 "verdict": str(self.cbmc),
                 "is_function_verified": self.cbmc.is_function_verified,
                 "no_contract": self.cbmc.no_contract,
+                "contract_probe_failed": self.cbmc.contract_probe_failed,
                 "returncode": self.cbmc.returncode,
                 "timed_out": self.cbmc.timed_out,
                 "failed_step": None

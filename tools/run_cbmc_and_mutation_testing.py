@@ -101,7 +101,8 @@ def main() -> None:
         sys.exit(0)
     else:
         print(result.response)
-        # A contract-less pass carries the pipeline's own exit code, which is 0.
+        # A contract-less pass, or one whose contract check failed, carries the pipeline's own
+        # exit code, which is 0.
         sys.exit(result.returncode or _EXIT_NOT_VERIFIED)
 
 

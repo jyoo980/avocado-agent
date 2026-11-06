@@ -124,6 +124,9 @@ class RunCbmcResult:
         no_contract (bool): True iff the pipeline passed but the function has no contract in the
             compiled program. CBMC then checks an empty contract, which nothing can violate, so
             such a pass proves nothing about the function and does not count as verified.
+        contract_probe_failed (bool): True iff the pipeline passed but whether the function has a
+            contract could not be determined, because `has_contract` could not compile or list the
+            program. Unknown is not proof of a contract, so such a pass does not count as verified.
     """
 
     function: str
@@ -133,6 +136,7 @@ class RunCbmcResult:
     response: str
     variant: PipelineVariant | None = None
     no_contract: bool = False
+    contract_probe_failed: bool = False
 
     @property
     def cbmc_ran_successfully(self) -> bool:
@@ -149,9 +153,14 @@ class RunCbmcResult:
         """True iff the function for this verification run is successfully verified.
 
         A function is successfully verified if all components of the CBMC pipeline ran successfully,
-        the return code is 0, and the function has a contract.
+        the return code is 0, and the function is known to have a contract.
         """
-        return self.cbmc_ran_successfully and self.returncode == 0 and not self.no_contract
+        return (
+            self.cbmc_ran_successfully
+            and self.returncode == 0
+            and not self.no_contract
+            and not self.contract_probe_failed
+        )
 
     def __str__(self) -> str:
         """Return the string representation of this result, used for logging.
@@ -165,6 +174,8 @@ class RunCbmcResult:
             return f"{self.failed_step.value.upper()}_FAILED"
         if self.no_contract:
             return "NO_CONTRACT"
+        if self.contract_probe_failed:
+            return "CONTRACT_PROBE_FAILED"
         if self.is_function_verified:
             return "PASS"
         return "FAIL"
@@ -1128,7 +1139,9 @@ def verify_function(
 
     A function without a contract is checked against an empty contract, which nothing can
     violate, so a passing run of one is returned with `RunCbmcResult.no_contract` set (printing as
-    `NO_CONTRACT`) and does not count as verified.
+    `NO_CONTRACT`) and does not count as verified. When the contract check itself fails, a passing
+    run is returned with `RunCbmcResult.contract_probe_failed` set (printing as
+    `CONTRACT_PROBE_FAILED`), which does not count as verified either.
 
     Args:
         function (str): Name of the function to verify.
@@ -1145,9 +1158,21 @@ def verify_function(
     )
     if not result.is_function_verified:
         return result
-    # None (the listing failed) keeps the pass: the pipeline just compiled the same file, so that
-    # can only be a timeout or an OS error, not evidence that the contract is missing.
-    if has_contract(function, file_path, include_dirs) is False:
+    contract = has_contract(function, file_path, include_dirs)
+    if contract is None:
+        # The probe compiles the file differently from the pipeline (no stubs, no
+        # macro-disabling flags) and has its own timeout, so its failure says nothing either
+        # way about the contract. It is reported as such rather than as a missing contract.
+        return replace(
+            result,
+            contract_probe_failed=True,
+            response=(
+                f"CBMC passed, but whether {function} has a contract could not be determined: "
+                "the contract check failed to compile or list the program, or timed out. This "
+                "does not count as verified. Re-run the same command."
+            ),
+        )
+    if contract is False:
         return replace(
             result,
             no_contract=True,
