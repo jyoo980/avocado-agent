@@ -9,13 +9,14 @@ Usage:
 import argparse
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
 import sys
 import tempfile
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -63,6 +64,15 @@ _CBMC_UNWIND = 5
 # `--depth` argument to CBMC.
 _CBMC_DEPTH = 200
 
+# What goto-instrument prints when `--replace-call-with-contract` names a function the compiled
+# program does not contain. The call graph is read from the source text without preprocessing, so
+# it also lists callees that the preprocessor removes (a call inside an `#ifdef` that is off).
+_CALLEE_NOT_COMPILED = re.compile(r"Function '([^']+)' was not found in the GOTO program")
+
+# One line of `goto-instrument --list-goto-functions`: `<name> /* <identifier>[, body not
+# available] */`. A contract is listed under the function's name with a `contract::` identifier.
+_LISTED_FUNCTION = re.compile(r"^\S+ /\* (\S+?)(?:, body not available)? \*/$")
+
 
 class CbmcStep(StrEnum):
     """Logical step in the CBMC verification pipeline.
@@ -90,6 +100,9 @@ class RunCbmcResult:
             exit code of the failing subprocess (cbmc's verification exit code when
             `failed_step` is CBMC).
         response (str): Printable summary — a success line or a truncated failure block.
+        no_contract (bool): True iff the pipeline passed but the function has no contract in the
+            compiled program. CBMC then checks an empty contract, which nothing can violate, so
+            such a pass proves nothing about the function and does not count as verified.
     """
 
     function: str
@@ -97,6 +110,7 @@ class RunCbmcResult:
     timed_out: bool
     returncode: int
     response: str
+    no_contract: bool = False
 
     @property
     def cbmc_ran_successfully(self) -> bool:
@@ -112,10 +126,10 @@ class RunCbmcResult:
     def is_function_verified(self) -> bool:
         """True iff the function for this verification run is successfully verified.
 
-        A function is successfully verified if all components of the CBMC pipeline ran successfully
-        and the return code is 0.
+        A function is successfully verified if all components of the CBMC pipeline ran successfully,
+        the return code is 0, and the function has a contract.
         """
-        return self.cbmc_ran_successfully and self.returncode == 0
+        return self.cbmc_ran_successfully and self.returncode == 0 and not self.no_contract
 
     def __str__(self) -> str:
         """Return the string representation of this result, used for logging.
@@ -127,6 +141,8 @@ class RunCbmcResult:
             return "TIMED_OUT"
         if self.failed_step:
             return f"{self.failed_step.value.upper()}_FAILED"
+        if self.no_contract:
+            return "NO_CONTRACT"
         if self.is_function_verified:
             return "PASS"
         return "FAIL"
@@ -384,7 +400,7 @@ def _run_pipeline(
         stub_paths (list[str] | None): Extra `.c` stub files compiled in alongside the source.
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
         prevent_macro_expansion (bool): When True, disable macros CBMC can't model and inject
-            the bundled C-library models before contract enforcement.
+            the bundled C-library models after contract enforcement.
         subprocess_results (list[dict]): Mutated in place by callee (_run_command). One dict per
             subprocess invocation is appended in-order. Used by `_log_invocation` to produce the
             JSONL row.
@@ -397,7 +413,8 @@ def _run_pipeline(
             stdout and stderr across every subprocess that ran. The concatenated output is used by
             the retry triggers in `run_cbmc`.
     """
-    commands: list[tuple[CbmcStep, str]] = [
+    # Each entry is (step, command, whether to drop the command's missing-body warnings).
+    commands: list[tuple[CbmcStep, str, bool]] = [
         (
             CbmcStep.GOTO_CC,
             _get_goto_cc_command(
@@ -407,37 +424,88 @@ def _run_pipeline(
                 include_dirs=include_dirs,
                 prevent_macro_expansion=prevent_macro_expansion,
             ),
+            False,
+        ),
+        (
+            CbmcStep.GOTO_INSTRUMENT,
+            _get_goto_instrument_unwind_command(_compiled_goto_file(function_to_verify)),
+            False,
+        ),
+        # When the library is added later, contract enforcement warns about every library
+        # function, such as `malloc`. Those warnings would lead the agent to write stubs that hide
+        # CBMC's models. `cbmc` itself reports each callee that still lacks a body ("no body for
+        # callee").
+        (
+            CbmcStep.GOTO_INSTRUMENT,
+            _get_goto_instrument_contract_command(function_to_verify, callees),
+            prevent_macro_expansion,
         ),
     ]
     if prevent_macro_expansion:
-        commands.append(
-            (
-                CbmcStep.GOTO_INSTRUMENT,
-                _get_goto_instrument_add_library_command(function_to_verify),
-            )
+        # The library goes in only once the contract is enforced. Enforcing it on a binary that
+        # already holds the library makes goto-instrument abort on the `__CPROVER_bool` locals of
+        # the `malloc`, `free` and `read` models. `cbmc` would link the same models itself; adding
+        # them here lets the second unwind cut the library's own loops at `_CBMC_UNWIND`, like the
+        # function's.
+        checking_goto = _checking_goto_file(function_to_verify)
+        commands.extend(
+            [
+                (
+                    CbmcStep.GOTO_INSTRUMENT,
+                    _get_goto_instrument_add_library_command(checking_goto),
+                    False,
+                ),
+                (
+                    CbmcStep.GOTO_INSTRUMENT,
+                    _get_goto_instrument_unwind_command(checking_goto),
+                    False,
+                ),
+            ]
         )
-    commands.extend(
-        [
-            (
-                CbmcStep.GOTO_INSTRUMENT,
-                _get_goto_instrument_unwind_command(function_to_verify),
-            ),
-            (
-                CbmcStep.GOTO_INSTRUMENT,
-                _get_goto_instrument_contract_command(function_to_verify, callees),
-            ),
-            (CbmcStep.CBMC, _get_cbmc_check_command(function_to_verify)),
-        ]
-    )
+    commands.append((CbmcStep.CBMC, _get_cbmc_check_command(function_to_verify), False))
 
     per_step_stdout = []
     per_step_stderr = []
-    for step, command in commands:
+
+    def record_output(
+        subprocess_result: _SubprocessResult, drop_missing_body_warnings: bool
+    ) -> None:
+        """Append `subprocess_result`'s output, possibly without missing-body warnings."""
+        stdout = subprocess_result.stdout
+        stderr = subprocess_result.stderr
+        if drop_missing_body_warnings:
+            stdout = _drop_missing_body_warnings(stdout)
+            stderr = _drop_missing_body_warnings(stderr)
+        per_step_stdout.append(stdout)
+        per_step_stderr.append(stderr)
+
+    contract_command = _get_goto_instrument_contract_command(function_to_verify, callees)
+    for step, command, drop_missing_body_warnings in commands:
         subprocess_result = _run_command(
             step, command, subprocess_results, cwd=cwd, timeout_sec=timeout_sec
         )
-        per_step_stdout.append(subprocess_result.stdout)
-        per_step_stderr.append(subprocess_result.stderr)
+        record_output(subprocess_result, drop_missing_body_warnings)
+        if command == contract_command:
+            # A callee that the preprocessor removed is not in the compiled program, so its
+            # contract cannot be substituted, and need not be: the function does not call it in
+            # this build. Leave such callees out and run the step again.
+            compiled_callees = list(callees)
+            while not subprocess_result.succeeded and not subprocess_result.timed_out:
+                missing = _CALLEE_NOT_COMPILED.search(
+                    subprocess_result.stderr + subprocess_result.stdout
+                )
+                if missing is None or missing.group(1) not in compiled_callees:
+                    break
+                compiled_callees.remove(missing.group(1))
+                subprocess_result = _run_command(
+                    step,
+                    _get_goto_instrument_contract_command(function_to_verify, compiled_callees),
+                    subprocess_results,
+                    cwd=cwd,
+                    timeout_sec=timeout_sec,
+                )
+                record_output(subprocess_result, drop_missing_body_warnings)
+
         if not subprocess_result.succeeded:
             combined_stdout = "".join(per_step_stdout)
             combined_stderr = "".join(per_step_stderr)
@@ -661,6 +729,20 @@ def has_missing_body_for_callee_or_function_message(stdout: str, stderr: str) ->
     )
 
 
+def _drop_missing_body_warnings(output: str) -> str:
+    """Return `output` without its "no body for function" warning lines.
+
+    Args:
+        output (str): The stdout or stderr of a goto-instrument command.
+
+    Returns:
+        str: `output` with every line that contains "no body for function" removed.
+    """
+    return "".join(
+        line for line in output.splitlines(keepends=True) if "no body for function" not in line
+    )
+
+
 def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, stderr: str) -> str:
     """Format a CBMC failure response, leading with the FAILURE lines, possibly truncated.
 
@@ -830,7 +912,7 @@ def _get_goto_cc_command(
     return " ".join(
         (
             f"goto-cc {flags_disabling_macro_expansion}",
-            f"-o {quoted_function}.goto",
+            f"-o {_compiled_goto_file(function)}",
             include_flags,
             shlex.quote(file_containing_function),
             extra_stub_args,
@@ -839,38 +921,57 @@ def _get_goto_cc_command(
     )
 
 
-def _get_goto_instrument_add_library_command(function: str) -> str:
-    """Return the `goto-instrument --add-library` command for `function`'s goto-binary.
-
-    This step injects CBMC's bundled C-library models (`isspace`, `strchr`, etc.) into
-    the goto-binary before contract enforcement runs. It's only used when macro expansion
-    is suppressed; without it, those calls are treated as nondeterministic, which loosens
-    precision and can cause `goto-instrument` to emit "no body for function" warnings.
+def _compiled_goto_file(function: str) -> str:
+    """Return the name of the goto-binary that `goto-cc` writes for `function`.
 
     Args:
-        function (str): The function whose goto-binary should receive the library models.
+        function (str): The function under verification.
+
+    Returns:
+        str: The file name, quoted for the shell.
+    """
+    return f"{shlex.quote(function)}.goto"
+
+
+def _checking_goto_file(function: str) -> str:
+    """Return the name of the goto-binary that `--enforce-contract` writes for `function`.
+
+    Args:
+        function (str): The function under verification.
+
+    Returns:
+        str: The file name, quoted for the shell.
+    """
+    return f"checking-{shlex.quote(function)}-contracts.goto"
+
+
+def _get_goto_instrument_add_library_command(goto_file: str) -> str:
+    """Return the `goto-instrument --add-library` command for `goto_file`.
+
+    The command adds CBMC's bundled C-library models (`isspace`, `strchr`, etc.) to the
+    goto-binary in place. `cbmc` links the same models itself when it checks a binary that lacks
+    them, so adding them earlier matters only to later goto-instrument steps, such as an unwind
+    that should also bound the models' loops.
+
+    Args:
+        goto_file (str): The goto-binary to receive the models, quoted for the shell.
 
     Returns:
         str: A single shell command.
     """
-    quoted_function = shlex.quote(function)
-    return f"goto-instrument --add-library {quoted_function}.goto {quoted_function}.goto"
+    return f"goto-instrument --add-library {goto_file} {goto_file}"
 
 
-def _get_goto_instrument_unwind_command(function: str) -> str:
-    """Return the `goto-instrument --partial-loops --unwind _CBMC_UNWIND` command for `function`.
+def _get_goto_instrument_unwind_command(goto_file: str) -> str:
+    """Return the `goto-instrument --partial-loops --unwind _CBMC_UNWIND` command for `goto_file`.
 
     Args:
-        function (str): The function whose goto-binary should be unwound.
+        goto_file (str): The goto-binary to unwind in place, quoted for the shell.
 
     Returns:
         str: A single shell command.
     """
-    quoted_function = shlex.quote(function)
-    return (
-        f"goto-instrument --partial-loops --unwind {_CBMC_UNWIND} "
-        f"{quoted_function}.goto {quoted_function}.goto"
-    )
+    return f"goto-instrument --partial-loops --unwind {_CBMC_UNWIND} {goto_file} {goto_file}"
 
 
 def _get_goto_instrument_contract_command(function: str, callees: list[str]) -> str:
@@ -889,8 +990,8 @@ def _get_goto_instrument_contract_command(function: str, callees: list[str]) -> 
     return (
         f"goto-instrument{replace_calls} "
         f"--enforce-contract {quoted_function} "
-        f"{quoted_function}.goto "
-        f"checking-{quoted_function}-contracts.goto"
+        f"{_compiled_goto_file(function)} "
+        f"{_checking_goto_file(function)}"
     )
 
 
@@ -905,9 +1006,100 @@ def _get_cbmc_check_command(function: str) -> str:
     """
     quoted_function = shlex.quote(function)
     return (
-        f"cbmc checking-{quoted_function}-contracts.goto "
-        f"--function {quoted_function} --depth {_CBMC_DEPTH}"
+        f"cbmc {_checking_goto_file(function)} --function {quoted_function} --depth {_CBMC_DEPTH}"
     )
+
+
+def has_contract(
+    function: str, file_path: str, include_dirs: list[str] | None = None
+) -> bool | None:
+    """Return whether `function`, as compiled from `file_path`, has a contract.
+
+    Asked of the compiled program rather than of the source text, so a function defined once per
+    preprocessor branch is judged by the definition that is actually built. goto-cc records a
+    `contract::<name>` symbol for a function iff that definition carries at least one contract
+    clause (`__CPROVER_requires`, `__CPROVER_ensures`, `__CPROVER_assigns`, ...).
+
+    Args:
+        function (str): The function.
+        file_path (str): Path to the C source file.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+
+    Returns:
+        bool | None: True or False, or None when the file could not be compiled or listed.
+    """
+    # The commands run in a scratch directory, so paths are resolved first.
+    include_flags = " ".join(
+        f"-I {shlex.quote(str(Path(d).resolve()))}" for d in include_dirs or []
+    )
+    source = shlex.quote(str(Path(file_path).resolve()))
+    try:
+        with tempfile.TemporaryDirectory(prefix="avocado-compiled-") as scratch_dir:
+            commands = (
+                f"goto-cc -o compiled.goto {include_flags} {source}",
+                "goto-instrument --list-goto-functions compiled.goto",
+            )
+            listing = ""
+            for command in commands:
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    shell=True,
+                    check=False,
+                    timeout=_GOTO_CC_TIMEOUT_SEC,
+                    cwd=scratch_dir,
+                )
+                if completed.returncode != 0:
+                    return None
+                listing = completed.stdout
+    except (OSError, TimeoutExpired):
+        return None
+    for line in listing.splitlines():
+        listed = _LISTED_FUNCTION.match(line.strip())
+        if listed is not None and listed.group(1) == f"contract::{function}":
+            return True
+    return False
+
+
+def verify_function(
+    function: str, file_path: str, include_dirs: list[str] | None = None
+) -> RunCbmcResult:
+    """Run the CBMC pipeline on `function`, then check that a passing function has a contract.
+
+    A function without a contract is checked against an empty contract, which nothing can
+    violate, so a passing run of one is returned with `RunCbmcResult.no_contract` set (printing as
+    `NO_CONTRACT`) and does not count as verified.
+
+    Args:
+        function (str): Name of the function to verify.
+        file_path (str): Path to the C file defining the function.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+
+    Returns:
+        RunCbmcResult: The outcome of the run.
+    """
+    result = run_cbmc(
+        function_to_verify=function,
+        file_containing_function_to_verify=file_path,
+        include_dirs=include_dirs,
+    )
+    if not result.is_function_verified:
+        return result
+    # None (the listing failed) keeps the pass: the pipeline just compiled the same file, so that
+    # can only be a timeout or an OS error, not evidence that the contract is missing.
+    if has_contract(function, file_path, include_dirs) is False:
+        return replace(
+            result,
+            no_contract=True,
+            response=(
+                f"{function} has no contract, which does not count as verified: with no "
+                "__CPROVER_requires, __CPROVER_ensures or __CPROVER_assigns clause on the "
+                "definition that is compiled, CBMC checks an empty contract that nothing can "
+                "violate. Write the function's contract between its signature and its body."
+            ),
+        )
+    return result
 
 
 def compile_with_goto_cc(
