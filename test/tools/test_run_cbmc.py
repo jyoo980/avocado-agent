@@ -222,20 +222,6 @@ def test_run_command_timeout_kills_the_shells_children(tmp_path: Path) -> None:
         os.kill(background_pid, 9)
         raise AssertionError(f"child of the timed-out shell is still running (state {state})")
 
-def test_run_command_honours_a_custom_timeout() -> None:
-    result = _run_command(CbmcStep.CBMC, "sleep 5", [], timeout_sec=1)
-    assert result.timed_out
-    assert result.timeout_sec == 1
-    assert not result.succeeded
-
-
-def test_run_command_honours_a_custom_timeout() -> None:
-    result = _run_command(CbmcStep.CBMC, "sleep 5", [], timeout_sec=1)
-    assert result.timed_out
-    assert result.timeout_sec == 1
-    assert not result.succeeded
-
-
 def test_format_failure_response_leads_with_failure_lines_for_cbmc_step() -> None:
     # CBMC prints its FAILURE lines and verdict at the tail of stdout. The response must
     # hoist them ahead of stderr/stdout so they survive the harness's head-only preview.

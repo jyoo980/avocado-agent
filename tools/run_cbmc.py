@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tempfile
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -1061,6 +1061,46 @@ def has_contract(
         if listed is not None and listed.group(1) == f"contract::{function}":
             return True
     return False
+
+
+def verify_function(
+    function: str, file_path: str, include_dirs: list[str] | None = None
+) -> RunCbmcResult:
+    """Run the CBMC pipeline on `function`, then check that a passing function has a contract.
+
+    A function without a contract is checked against an empty contract, which nothing can
+    violate, so a passing run of one is returned with `RunCbmcResult.no_contract` set (printing as
+    `NO_CONTRACT`) and does not count as verified.
+
+    Args:
+        function (str): Name of the function to verify.
+        file_path (str): Path to the C file defining the function.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+
+    Returns:
+        RunCbmcResult: The outcome of the run.
+    """
+    result = run_cbmc(
+        function_to_verify=function,
+        file_containing_function_to_verify=file_path,
+        include_dirs=include_dirs,
+    )
+    if not result.is_function_verified:
+        return result
+    # None (the listing failed) keeps the pass: the pipeline just compiled the same file, so that
+    # can only be a timeout or an OS error, not evidence that the contract is missing.
+    if has_contract(function, file_path, include_dirs) is False:
+        return replace(
+            result,
+            no_contract=True,
+            response=(
+                f"{function} has no contract, which does not count as verified: with no "
+                "__CPROVER_requires, __CPROVER_ensures or __CPROVER_assigns clause on the "
+                "definition that is compiled, CBMC checks an empty contract that nothing can "
+                "violate. Write the function's contract between its signature and its body."
+            ),
+        )
+    return result
 
 
 def compile_with_goto_cc(
