@@ -15,7 +15,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -565,7 +564,7 @@ def _run_pipeline(
                     timeout_sec=timeout_sec,
                 )
                 record_output(subprocess_result, drop_missing_body_warnings)
-    
+
         if not subprocess_result.succeeded:
             combined_stdout = "".join(per_step_stdout)
             combined_stderr = "".join(per_step_stderr)

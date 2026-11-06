@@ -13,7 +13,6 @@ testing.
 import argparse
 import json
 import sys
-
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
