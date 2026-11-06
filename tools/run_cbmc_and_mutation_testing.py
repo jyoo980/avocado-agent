@@ -92,7 +92,7 @@ def main() -> None:
             file_path=args.file,
             target_function=args.function,
             include_dirs=args.include_dirs,
-            skip_reverification=True,
+            is_function_already_verified=result.is_function_verified,
             mutant_timeout_sec=_AGENT_MUTANT_TIMEOUT_SEC,
         )
         print(result.response)
