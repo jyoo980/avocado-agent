@@ -5,8 +5,9 @@ Usage:
                        --file <PATH_TO_C_FILE> \
                        [-I <PATH_TO_INCLUDE_DIR(S)>]...
 
-The CBMC pipeline itself lives in `tools.run_cbmc`; this module adds the command-line interface,
-the verification-attempt log, and mutation testing.
+The CBMC pipeline itself, and the check that a passing function has a contract, live in
+`tools.run_cbmc`; this module adds the command-line interface, the verification-attempt log, and
+mutation testing.
 """
 
 import argparse
