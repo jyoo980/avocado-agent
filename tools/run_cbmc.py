@@ -930,7 +930,9 @@ def _get_tail_within_budget(content: str, budget: int) -> tuple[str, int]:
     tail = content[start:]
     if content[start - 1] != "\n":
         partial_line_length = tail.find("\n")
-        if 0 <= partial_line_length < budget // 2:
+        # Not `partial_line_length < budget // 2`, which keeps a partial line of `budget // 2`
+        # characters, less than half the window when `budget` is odd.
+        if 0 <= partial_line_length and 2 * partial_line_length < budget:
             tail = tail[partial_line_length + 1 :]
     return tail, len(content) - len(tail)
 

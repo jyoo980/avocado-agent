@@ -366,6 +366,11 @@ def test_get_tail_within_budget_keeps_long_partial_line_before_short_last_line()
     assert tail == content[-15_000:]
 
 
+def test_get_tail_within_budget_drops_partial_line_under_half_of_odd_budget() -> None:
+    # The window is "bb\ncc"; its partial line "bb" is 2 characters, less than half of 5.
+    assert _get_tail_within_budget("aaaaa\nbbbb\ncc", 5) == ("cc", 11)
+
+
 def test_get_tail_within_budget_zero_budget_keeps_nothing() -> None:
     assert _get_tail_within_budget("abc\n", 0) == ("", 4)
 
