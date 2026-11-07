@@ -147,12 +147,13 @@ _CANONICAL_LOCK = threading.Lock()
 # Serialises appends to the run log and the canonical-side attempts log from worker threads.
 _RUN_LOG_LOCK = threading.Lock()
 
-# Sets the max number of times a session is re-run when it initially ends without a verification
-# attempt (i.e., a CBMC execution). A session that fails with a non-timeout error does not count
-# toward this value.
-#
-# A second session that ends without a verifiation attempt leans toward evidence that the agent is
-# not able to make progress, and a third session would likely be a waste of time.
+# A session that ends without a single verification attempt (i.e., a CBMC execution) on the file is
+# re-run at most this many times in a row. A session that fails with a non-timeout error does not
+# count toward this value. One such session is bad luck; a second, identical one is evidence that
+# the prompt leads this agent nowhere on this function, and a third would repeat it. In the
+# measured runs the one function that reached this point burned two full 1800 s sessions without
+# an attempt before a third succeeded, and that third session had copied another run's finished
+# contract.
 _MAX_SESSIONS_WITHOUT_ATTEMPT = 1
 
 # Upper bound on how many times a function is given a fresh copy and another round of sessions
@@ -810,6 +811,9 @@ def _verify_via_agent(
     new helpers into the canonical file and runs the independent ground truth on a consistent
     copy of the result (`_merge_and_verify`). Safe to call for several functions concurrently as
     long as their callees are already merged.
+
+    On one copy, the session is re-run while `_should_rerun_session` says another one can do
+    better.
 
     The merge may leave out the session's edits to other functions (see `merge_copy`), and other
     sessions may have changed the contracts of functions this one calls while it worked. If the

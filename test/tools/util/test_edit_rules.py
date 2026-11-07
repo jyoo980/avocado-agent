@@ -976,7 +976,7 @@ def test_a_macro_call_after_the_parameter_list_is_not_the_function_name() -> Non
 
 def test_a_k_and_r_definition_is_one_function() -> None:
     source = b"int f(a, b) int a; char *b; { return a; }\nint g(void) { return 1; }\n"
-    items = edit_rules._split_items(edit_rules._tokenize(source)[0])
+    items = _items(source)
     assert [(item.kind, item.name) for item in items] == [("function", "f"), ("function", "g")]
     assert len(function_body_offsets(source, "f")) == 1
     # A parameter declaration that names an aggregate or a function pointer.
