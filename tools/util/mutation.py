@@ -12,8 +12,10 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
 from loguru import logger
@@ -50,6 +52,21 @@ _MAX_MUTATION_SECTION_CHARS = 50_000
 _MAX_MUTATION_WORKERS = 32
 
 
+class MutantOutcome(Enum):
+    """The outcome of verifying one mutant.
+
+    Each value is the key under which `MutationScore.summary()` reports the number of mutants with
+    that outcome, such as "timed_out". Killed and survived mutants are *decided*; the others are
+    *undecided*, because CBMC did not run to completion on them.
+    """
+
+    KILLED = "killed"
+    SURVIVED = "survived"
+    TIMED_OUT = "timed_out"
+    COMPILE_FAILED = "compile_failed"
+    INSTRUMENTATION_FAILED = "instrumentation_failed"
+
+
 @dataclass(frozen=True)
 class MutantVerificationResult:
     """Verification result for a single mutant.
@@ -79,6 +96,19 @@ class MutantVerificationResult:
     compile_failed: bool = False
     instrumentation_failed: bool = False
 
+    @property
+    def outcome(self) -> MutantOutcome:
+        """The outcome of verifying this mutant."""
+        if self.timed_out:
+            return MutantOutcome.TIMED_OUT
+        if self.compile_failed:
+            return MutantOutcome.COMPILE_FAILED
+        if self.instrumentation_failed:
+            return MutantOutcome.INSTRUMENTATION_FAILED
+        if self.killed:
+            return MutantOutcome.KILLED
+        return MutantOutcome.SURVIVED
+
 
 @dataclass(frozen=True)
 class MutationTestingResult:
@@ -92,12 +122,11 @@ class MutationTestingResult:
 class MutationScore(MutationTestingResult):
     """Mutation-testing related statistics for one function.
 
-    `num_survived` and `kill_score` are reported over *decided* mutants only —
-    timed-out, compile-failed, and instrumentation-failed mutants are excluded from both the
-    survivor count and the kill-rate denominator. `num_timed_out`, `num_compile_failed`, and
-    `num_instrumentation_failed` are reported separately so consumers can see how much of the
-    mutant space was undecidable, how much produced invalid C in the first place, and how much
-    goto-instrument could not process.
+    `kill_score` is computed over *decided* mutants only: timed-out, compile-failed, and
+    instrumentation-failed mutants are excluded from its denominator. Their counts are reported
+    separately in `outcome_counts` so consumers can see how much of the mutant space was
+    undecidable, how much produced invalid C in the first place, and how much goto-instrument
+    could not process.
 
     Note: A function can have 0 mutants (e.g., a function that solely calls another function
     will not have any mutants generated).
@@ -105,21 +134,14 @@ class MutationScore(MutationTestingResult):
     Attributes
     ----------
         num_mutants (int): The total number of mutants for this function.
-        num_killed (int): The number of killed mutants.
-        num_survived (int): The number of surviving (decided, not killed) mutants.
-        num_timed_out (int): The number of mutants for which CBMC exceeded its timeout.
-        num_compile_failed (int): The number of mutants that goto-cc rejected as invalid C.
-        num_instrumentation_failed (int): The number of mutants that goto-instrument failed on.
+        outcome_counts (Counter[MutantOutcome]): The number of mutants with each outcome, such
+            as 3 for `MutantOutcome.KILLED`. An outcome that no mutant had counts as 0.
         kill_score (float): killed / (killed + survived); 0.0 when no mutants were decided.
         results (list[MutantVerificationResult]): The verification result for each mutant.
     """
 
     num_mutants: int
-    num_killed: int
-    num_survived: int
-    num_timed_out: int
-    num_compile_failed: int
-    num_instrumentation_failed: int
+    outcome_counts: Counter[MutantOutcome]
     kill_score: float
     results: list[MutantVerificationResult] = field(default_factory=list)
 
@@ -135,11 +157,7 @@ class MutationScore(MutationTestingResult):
             "file": self.file,
             "function": self.target_function,
             "total": self.num_mutants,
-            "killed": self.num_killed,
-            "survived": self.num_survived,
-            "timed_out": self.num_timed_out,
-            "compile_failed": self.num_compile_failed,
-            "instrumentation_failed": self.num_instrumentation_failed,
+            **{outcome.value: self.outcome_counts[outcome] for outcome in MutantOutcome},
             "kill_score": f"{self.kill_score:.4f}",
         }
 
@@ -191,39 +209,25 @@ def get_mutation_testing_results_for_client(mutation_testing_result: MutationTes
     """
     match mutation_testing_result:
         case MutationScore(
-            file,
-            _,
-            num_mutants,
-            num_killed,
-            num_survived,
-            num_timed_out,
-            num_compile_failed,
-            num_instrumentation_failed,
-            kill_score,
-            results,
+            file=file,
+            num_mutants=num_mutants,
+            outcome_counts=counts,
+            kill_score=kill_score,
+            results=results,
         ):
             kill_score_line = (
                 f"Mutation kill score: {kill_score:.4f} "
-                f"(killed {num_killed}/{num_mutants}; "
-                f"{num_survived} survived, "
+                f"(killed {counts[MutantOutcome.KILLED]}/{num_mutants}; "
+                f"{counts[MutantOutcome.SURVIVED]} survived, "
                 # The kill score's denominator excludes timed-out, compile-failed, and
                 # instrumentation-failed mutants, so report their counts to show how many mutants
                 # went undecided.
-                f"{num_timed_out} timed out, "
-                f"{num_compile_failed} compile-failed, "
-                f"{num_instrumentation_failed} instrumentation-failed)"
+                f"{counts[MutantOutcome.TIMED_OUT]} timed out, "
+                f"{counts[MutantOutcome.COMPILE_FAILED]} compile-failed, "
+                f"{counts[MutantOutcome.INSTRUMENTATION_FAILED]} instrumentation-failed)"
             )
-            # A surviving mutant is one that was decided (it compiled, was instrumented, and did
-            # not time out), yet the spec did not kill.
             survivors = [
-                vresult
-                for vresult in results
-                if not (
-                    vresult.killed
-                    or vresult.compile_failed
-                    or vresult.timed_out
-                    or vresult.instrumentation_failed
-                )
+                vresult for vresult in results if vresult.outcome is MutantOutcome.SURVIVED
             ]
             if not survivors:
                 return f"{kill_score_line}\nAll decided mutants were killed."
@@ -396,23 +400,17 @@ def _print_mutation_progress(
 ) -> None:
     """Print a one-line, flushed mutation-testing progress update to stderr.
 
-    Reports the running tally over the mutants decided so far. The buckets mirror those in
-    `_aggregate_mutation_score` so the live counts agree with the final `MutationScore`.
+    Reports how many of the mutants verified so far had each outcome.
 
     Args:
         done (int): The number of mutants verified so far.
         total (int): The total number of mutants.
         vresults (list[MutantVerificationResult]): The per-mutant results accumulated so far.
     """
-    killed = sum(1 for r in vresults if r.killed)
-    timed_out = sum(1 for r in vresults if r.timed_out)
-    compile_failed = sum(1 for r in vresults if r.compile_failed)
-    instrumentation_failed = sum(1 for r in vresults if r.instrumentation_failed)
-    survived = len(vresults) - killed - timed_out - compile_failed - instrumentation_failed
+    counts = Counter(vresult.outcome for vresult in vresults)
+    tally = " ".join(f"{outcome.value}={counts[outcome]}" for outcome in MutantOutcome)
     print(
-        f"[mutation testing] {done}/{total} done "
-        f"(killed={killed} survived={survived} timed_out={timed_out} "
-        f"compile_failed={compile_failed} instrumentation_failed={instrumentation_failed})",
+        f"[mutation testing] {done}/{total} done ({tally})",
         file=sys.stderr,
         flush=True,
     )
@@ -425,9 +423,8 @@ def _aggregate_mutation_score(
 ) -> MutationScore:
     """Aggregate per-mutant results into a MutationScore.
 
-    Timed-out, compile-failed, and instrumentation-failed mutants are bucketed separately and
-    excluded from the kill-rate denominator, so `kill_score` reflects only the mutants CBMC could
-    decide.
+    Timed-out, compile-failed, and instrumentation-failed mutants are excluded from the kill-rate
+    denominator, so `kill_score` reflects only the mutants CBMC could decide.
 
     Args:
         mutant_vresults (list[MutantVerificationResult]): The per-mutant results.
@@ -437,23 +434,15 @@ def _aggregate_mutation_score(
     Returns:
         MutationScore: The aggregated score.
     """
-    total = len(mutant_vresults)
-    killed = sum(1 for r in mutant_vresults if r.killed)
-    timed_out = sum(1 for r in mutant_vresults if r.timed_out)
-    compile_failed = sum(1 for r in mutant_vresults if r.compile_failed)
-    instrumentation_failed = sum(1 for r in mutant_vresults if r.instrumentation_failed)
-    survived = total - killed - timed_out - compile_failed - instrumentation_failed
-    decided = killed + survived
+    counts = Counter(vresult.outcome for vresult in mutant_vresults)
+    killed = counts[MutantOutcome.KILLED]
+    decided = killed + counts[MutantOutcome.SURVIVED]
     kill_rate = (killed / decided) if decided else 0.0
     return MutationScore(
         file=file,
         target_function=target_function,
-        num_mutants=total,
-        num_killed=killed,
-        num_survived=survived,
-        num_timed_out=timed_out,
-        num_compile_failed=compile_failed,
-        num_instrumentation_failed=instrumentation_failed,
+        num_mutants=len(mutant_vresults),
+        outcome_counts=counts,
         kill_score=round(kill_rate, 4),
         results=mutant_vresults,
     )
