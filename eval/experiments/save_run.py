@@ -24,7 +24,8 @@ A run that was continued with `run.sh --resume` is saved by passing the original
 followed by each resumed run directory, in order (each one's `resumed_from=` in batch-info.txt must
 name the one before it). The subject/ of the last one is saved (a resumed
 run starts from the stopped run's subject/, so it covers the whole run), and the transcripts and
-outside-subject/ files of all of them are merged (a later run's file replaces an earlier one's).
+outside-subject/ files of all of them are merged (a later run's file replaces an earlier one's,
+except that the records of every run's outside-subject/SKIPPED.txt are kept, in run order).
 
 Usage:
 
@@ -58,6 +59,8 @@ IGNORE_AT_ROOT = ("*.log",)
 
 CLAUDE_FILES = "claude-files"
 OUTSIDE_SUBJECT = "outside-subject"
+# The list, at the top of an outside-subject/, of the files too large to copy there.
+SKIPPED_LIST = "SKIPPED.txt"
 
 EXIT_CODE_MEANINGS = {
     "1": "the runner failed",
@@ -282,8 +285,14 @@ def _save_runs(run_dirs: list[Path], dest: Path) -> None:
     if outside.exists():
         _exit_with_message(f"the run's subject/ already has an {OUTSIDE_SUBJECT}/; refusing to merge into it")
     for run_dir in run_dirs:
-        if (run_dir / OUTSIDE_SUBJECT).is_dir():
-            shutil.copytree(run_dir / OUTSIDE_SUBJECT, outside, dirs_exist_ok=True)
+        source = run_dir / OUTSIDE_SUBJECT
+        if source.is_dir():
+            # A later run's file replaces an earlier one's, except the list of skipped files,
+            # whose records are appended so that every run's are kept.
+            shutil.copytree(
+                source, outside, dirs_exist_ok=True, ignore=_ignore_skipped_list(source)
+            )
+            _append_skipped_list(source / SKIPPED_LIST, outside / SKIPPED_LIST)
     for index, run_dir in enumerate(run_dirs):
         shutil.copytree(run_dir / "transcripts", claude_files, dirs_exist_ok=True)
         if (run_dir / "run.log").is_file():
@@ -291,6 +300,28 @@ def _save_runs(run_dirs: list[Path], dest: Path) -> None:
         if (run_dir / "claude-output.json").is_file():
             name = "claude-output.json" if index == 0 else f"claude-output-pt{index + 1}.json"
             shutil.copy2(run_dir / "claude-output.json", claude_files / name)
+
+
+def _ignore_skipped_list(root: Path):
+    """Return a copytree `ignore` callable that skips the SKIPPED_LIST at the top of `root`."""
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        if Path(directory).resolve() == root.resolve() and SKIPPED_LIST in names:
+            return {SKIPPED_LIST}
+        return set()
+
+    return ignore
+
+
+def _append_skipped_list(source: Path, dest: Path) -> None:
+    """Append the records of the skipped-file list `source`, if it exists, to `dest`."""
+    if not source.is_file():
+        return
+    records = source.read_text()
+    if records and not records.endswith("\n"):
+        records += "\n"
+    with dest.open("a") as out:
+        out.write(records)
 
 if __name__ == "__main__":
     main()

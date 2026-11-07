@@ -194,7 +194,7 @@ and then `run.sh` itself exits with status 1. `avocado-verify` exits `2` when it
 usage limit. `transcripts/` has the full conversation(s), as `<session-id>.jsonl` plus
 `<session-id>/subagents/*.jsonl` for any subagents, and `subject/` the specified program.
 `outside-subject/` keeps every file the agent created or changed outside `subject/` during the
-run (stubs, harnesses and scripts under `/tmp`, `/app/scripts`, ...), at its absolute path in
+run (stubs, harnesses and scripts under `/tmp`, `/work`, `/app/scripts`, ...), at its absolute path in
 the container, e.g. `outside-subject/tmp/work/strstr_stub.c`. It leaves out the harness's own
 scratch directories, CBMC `*.goto` files and dot-directories under `$HOME`; files over 10 MiB
 are listed in `outside-subject/SKIPPED.txt` instead of copied.

@@ -82,9 +82,10 @@ START_MARKER=""
 # Files larger than this (KiB) are listed in outside-subject/SKIPPED.txt instead of copied.
 OUTSIDE_MAX_KB=10240
 # Save the files the agent wrote outside the subject copy, such as stubs, harnesses and scripts
-# under /tmp or /app/scripts, which would otherwise disappear with the container. They go to
-# outside-subject/, keeping their absolute paths (e.g. outside-subject/tmp/work/foo_stub.c).
-# Skipped: the subject copy (already saved), the harness's own private directories (this
+# under /tmp, /work or /app/scripts, which would otherwise disappear with the container. They go
+# to outside-subject/, keeping their absolute paths (e.g. outside-subject/tmp/work/foo_stub.c).
+# Skipped: the subject copy (already saved), /work/out (the publication mount, where this
+# function's results are going), the harness's own private directories (this
 # script's outputs, the Claude Code config, which holds credentials, and the `claude` wrapper),
 # the scratch directories of the harness's own CBMC tools, the package's .venv, dot-directories
 # under $HOME (caches), and CBMC *.goto binaries. `-cnewer` uses the status-change time, so a
@@ -93,14 +94,14 @@ OUTSIDE_MAX_KB=10240
 collect_outside_subject() {
   [ -n "$START_MARKER" ] && [ -f "$START_MARKER" ] || return 0
   local dest="$OUT_DIR/outside-subject" small big
-  local roots=(/tmp /var/tmp /app)
+  local roots=(/tmp /var/tmp /app /work)
   if [ -n "${HOME:-}" ] && [ -d "$HOME" ] && [ "$HOME" != / ]; then
     roots+=("$HOME")
   fi
   small="$(mktemp /tmp/avocado-outside.XXXXXX)"
   big="$(mktemp /tmp/avocado-outside.XXXXXX)"
   find "${roots[@]}" \
-    \( -path "$SUBJECT_DIR" -o -path "$OUT_DIR" -o -path "$START_MARKER" \
+    \( -path "$SUBJECT_DIR" -o -path /work/out -o -path "$OUT_DIR" -o -path "$START_MARKER" \
        -o -path "$small" -o -path "$big" \
        -o -path "${CLAUDE_CONFIG_DIR:-/nonexistent}" -o -path '/tmp/avocado-bin.*' \
        -o -path '/tmp/avocado-cbmc-*' -o -path '/tmp/avocado-compiled-*' \
