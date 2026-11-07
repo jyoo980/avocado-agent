@@ -618,6 +618,41 @@ def test_merge_and_verify_rejects_a_merge_that_does_not_compile(tmp_path: Path) 
     assert cbmc.function == "swap"
 
 
+def test_a_merge_keeps_the_permissions_of_the_canonical_file(tmp_path: Path, monkeypatch) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    canonical.chmod(0o664)
+    monkeypatch.setattr(avocado_verify, "verify_function", _FakeVerify())
+    monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
+    session = _fork_session("swap", canonical)
+    try:
+        _write_contract(session.file, "swap", _CONTRACTS["swap"])
+        report, _, _ = _merge_and_verify(session, canonical, include_dirs=[])
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    assert report.merged and _CONTRACTS["swap"] in canonical.read_bytes()
+    assert canonical.stat().st_mode & 0o777 == 0o664
+
+
+def test_the_scratch_copy_is_removed_when_the_merge_raises(tmp_path: Path, monkeypatch) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    scratch_parent = tmp_path / "scratch"
+    scratch_parent.mkdir()
+    monkeypatch.setattr(avocado_verify.tempfile, "tempdir", str(scratch_parent))
+
+    def fails(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", fails)
+    session = _fork_session("swap", canonical)
+    try:
+        _write_contract(session.file, "swap", _CONTRACTS["swap"])
+        with pytest.raises(RuntimeError):
+            _merge_and_verify(session, canonical, include_dirs=[])
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    assert list(scratch_parent.iterdir()) == []
+
+
 class _FakeVerify:
     """A `verify_function` stand-in that fails the functions named in `failing` and records calls."""
 
@@ -720,7 +755,8 @@ def test_merge_and_verify_reverts_carried_edits_that_break_a_verified_caller(
     assert _CONTRACTS["partition"] in merged
     assert _CONTRACTS["swap"] not in merged
     assert function_line(merged, "swap") is not None
-    assert not reverified["quickSort"].is_function_verified
+    # The trial verdicts were on edits that were reverted, so none is returned for the run log.
+    assert reverified == {}
     # Nothing that was verified before is lost.
     assert {"swap", "quickSort"} <= state.verified
     assert original.count(b"__CPROVER_") == 0 and merged.count(b"__CPROVER_ensures") == 0
@@ -755,13 +791,110 @@ def test_reverified_pass_counts_as_verified_for_recorded_functions_only(tmp_path
             "function": "partition",
             "outcome": "VERIFIED",
             "reverified": {
-                "swap": {"verdict": "PASS", "is_function_verified": True},
-                "quickSort": {"verdict": "PASS", "is_function_verified": True},
+                "swap": {"verdict": "PASS", "is_function_verified": True, "committed": True},
+                "quickSort": {"verdict": "PASS", "is_function_verified": True, "committed": True},
             },
         },
     )
     outcomes = avocado_verify._read_function_outcomes(log)
     assert outcomes == {"swap": "VERIFIED", "partition": "VERIFIED"}
+
+
+def test_replay_puts_verdicts_of_one_run_in_the_order_the_merges_recorded_them(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "run.jsonl"
+    vacuous = {"verdict": "VACUOUS", "vacuity": "end_unreachable", "order": 1}
+    _append_jsonl(
+        log, {"function": "quickSort", "outcome": "VERIFIED", "cbmc": vacuous, "merge_run": "r"}
+    )
+    # swap's merge recorded quickSort as failing (ordinal 3) and its record was written first;
+    # partition's merge had recorded quickSort as vacuous earlier (ordinal 2), but its session
+    # finished later.
+    _append_jsonl(
+        log,
+        {
+            "function": "swap",
+            "outcome": "VERIFIED",
+            "cbmc": {"verdict": "PASS", "order": 4},
+            "merge_run": "r",
+            "reverified": {
+                "quickSort": {
+                    "verdict": "FAIL",
+                    "is_function_verified": False,
+                    "committed": True,
+                    "order": 3,
+                }
+            },
+        },
+    )
+    _append_jsonl(
+        log,
+        {
+            "function": "partition",
+            "outcome": "VERIFIED",
+            "cbmc": {"verdict": "PASS", "order": 5},
+            "merge_run": "r",
+            "reverified": {
+                "quickSort": {
+                    "verdict": "VACUOUS",
+                    "vacuity": "end_unreachable",
+                    "is_function_verified": False,
+                    "committed": True,
+                    "order": 2,
+                }
+            },
+        },
+    )
+    assert avocado_verify._unverified_functions(log) == {"quickSort": "FAIL"}
+    # A later run of the harness numbers its verdicts afresh; its records come later in the log.
+    _append_jsonl(
+        log,
+        {
+            "function": "quickSort",
+            "outcome": "VERIFIED",
+            "cbmc": {"verdict": "PASS", "order": 1},
+            "merge_run": "resumed",
+        },
+    )
+    assert avocado_verify._unverified_functions(log) == {}
+
+
+def test_replay_follows_each_reverifications_commitment_not_the_last_merge(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "run.jsonl"
+    vacuous = {"verdict": "VACUOUS", "vacuity": "end_unreachable"}
+    _append_jsonl(log, {"function": "quickSort", "outcome": "VERIFIED", "cbmc": vacuous})
+    _append_jsonl(log, {"function": "swap", "outcome": "UNVERIFIED", "cbmc": {"verdict": "FAIL"}})
+    # partition's first merge committed a failure for quickSort; its last merge carried nothing.
+    _append_jsonl(
+        log,
+        {
+            "function": "partition",
+            "outcome": "VERIFIED",
+            "cbmc": {"verdict": "PASS"},
+            "merge": {"carried": []},
+            "reverified": {
+                "quickSort": {"verdict": "FAIL", "is_function_verified": False, "committed": True}
+            },
+        },
+    )
+    assert avocado_verify._unverified_functions(log)["quickSort"] == "FAIL"
+    assert "quickSort" not in avocado_verify._verified_functions(log)
+    # A trial pass on edits that were then reverted is not a verdict on the committed file, even
+    # in an older record that says only that its last merge carried edits.
+    _append_jsonl(
+        log,
+        {
+            "function": "partition",
+            "outcome": "VERIFIED",
+            "cbmc": {"verdict": "PASS"},
+            "merge": {"carried": []},
+            "reverified": {"swap": {"verdict": "PASS", "is_function_verified": True}},
+        },
+    )
+    assert "swap" not in avocado_verify._verified_functions(log)
 
 
 def test_two_overlapping_sessions_both_merge_into_the_canonical_file(
@@ -813,14 +946,22 @@ def test_a_session_may_change_the_contract_of_a_function_a_live_session_only_cal
     try:
         _write_contract(session.file, "swap", _CONTRACTS["swap"])
         _write_contract(session.file, "partition", _CONTRACTS["partition"])
+        recorded_order: dict[str, int] = {}
         report, _, reverified = _merge_and_verify(
-            session, canonical, include_dirs=[], call_graph=_quicksort_call_graph(), state=state
+            session,
+            canonical,
+            include_dirs=[],
+            call_graph=_quicksort_call_graph(),
+            state=state,
+            recorded_order=recorded_order,
         )
     finally:
         shutil.rmtree(session.directory, ignore_errors=True)
     # Only quickSort itself is frozen, so the edit to its callee is kept, and re-verified.
     assert report.merged and report.carried == ["partition"] and report.dropped == []
     assert list(reverified) == ["partition"]
+    # The re-verification is recorded before the function's own ground truth.
+    assert recorded_order == {"partition": 1, "swap": 2} and state.recorded == 2
     merged = canonical.read_bytes()
     assert _CONTRACTS["swap"] in merged and _CONTRACTS["partition"] in merged
 
@@ -1146,17 +1287,45 @@ def test_the_tools_logs_are_mirrored_beside_the_canonical_file(tmp_path: Path) -
 def test_run_claude_names_the_session_so_a_timed_out_one_can_be_found(monkeypatch) -> None:
     commands: list[list[str]] = []
 
-    def times_out(command, **kwargs):
+    def times_out(command, timeout):
         commands.append(command)
-        raise avocado_verify.TimeoutExpired(command, kwargs["timeout"])
+        raise avocado_verify.TimeoutExpired(command, timeout)
 
-    monkeypatch.setattr(avocado_verify.subprocess, "run", times_out)
+    monkeypatch.setattr(avocado_verify, "_run_and_stop_descendants", times_out)
     run = avocado_verify._run_claude(["claude", "--print", "prompt"], 7)
     assert run.timed_out and run.transcript_path is None
     assert commands[0][:3] == ["claude", "--print", "prompt"]
     assert commands[0][-2] == "--session-id" and commands[0][-1] == run.session_id
     # Every session gets an id of its own.
     assert avocado_verify._run_claude(["claude"], 7).session_id != run.session_id
+
+
+def _is_running(pid: int) -> bool:
+    """Return whether process `pid` exists and is not a zombie waiting to be reaped."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="needs /proc")
+def test_work_a_session_leaves_in_the_background_is_stopped() -> None:
+    command = ["sh", "-c", "sleep 60 >/dev/null 2>&1 & echo $!"]
+    returncode, stdout, _ = avocado_verify._run_and_stop_descendants(command, 30)
+    assert returncode == 0
+    assert not _is_running(int(stdout))
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="needs /proc")
+def test_a_session_stopped_at_the_timeout_takes_its_background_work_with_it(
+    tmp_path: Path,
+) -> None:
+    pid_file = tmp_path / "pid"
+    command = ["sh", "-c", f"sleep 60 >/dev/null 2>&1 & echo $! > {pid_file}; sleep 60"]
+    with pytest.raises(avocado_verify.TimeoutExpired):
+        avocado_verify._run_and_stop_descendants(command, 1)
+    assert not _is_running(int(pid_file.read_text()))
 
 
 def test_the_transcript_of_a_timed_out_session_is_kept_beside_the_canonical_file(
@@ -1386,7 +1555,9 @@ def test_the_log_tells_a_vacuous_verified_function_from_a_real_one(tmp_path: Pat
             "function": "quickSort",
             "outcome": "VERIFIED",
             "cbmc": {"verdict": "PASS"},
-            "reverified": {"partition": {"verdict": "PASS", "is_function_verified": True}},
+            "reverified": {
+                "partition": {"verdict": "PASS", "is_function_verified": True, "committed": True}
+            },
         },
     )
     assert avocado_verify._vacuous_functions(log) == set()

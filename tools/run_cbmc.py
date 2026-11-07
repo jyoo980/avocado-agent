@@ -1353,8 +1353,10 @@ def compile_with_goto_cc(
 
     Args:
         function (str): The function used as the goto-binary entry point.
-        file_path (str): Path to the C file to compile.
-        include_dirs (list[str] | None): Directories forwarded as `-I` flags.
+        file_path (str): Path to the C file to compile; relative to the caller's working
+            directory.
+        include_dirs (list[str] | None): Directories forwarded as `-I` flags; relative to the
+            caller's working directory.
         cwd (str | None): Working directory for the subprocess; the `<function>.goto` output
             lands there. When None, it lands in the current working directory as before.
 
@@ -1376,8 +1378,10 @@ def run_goto_cc(
 
     Args:
         function (str): The function used as the goto-binary entry point.
-        file_path (str): Path to the C file to compile.
-        include_dirs (list[str] | None): Directories forwarded as `-I` flags.
+        file_path (str): Path to the C file to compile. A relative path is relative to the
+            caller's working directory, even when `cwd` is given.
+        include_dirs (list[str] | None): Directories forwarded as `-I` flags. Relative paths are
+            relative to the caller's working directory, even when `cwd` is given.
         cwd (str | None): Working directory for the subprocess; the `<function>.goto` output
             lands there. When None, it lands in the current working directory.
 
@@ -1386,6 +1390,9 @@ def run_goto_cc(
             standard output and standard error, or None if goto-cc did not finish within
             `_GOTO_CC_TIMEOUT_SEC` seconds.
     """
+    if cwd is not None:
+        file_path = str(Path(file_path).resolve())
+        include_dirs = [str(Path(d).resolve()) for d in include_dirs or []]
     compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
     try:
         returncode, stdout, stderr = _run_shell_command_killing_group_on_timeout(

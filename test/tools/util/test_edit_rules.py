@@ -215,10 +215,11 @@ def test_violations_render_with_rule_number_title_and_line() -> None:
 
 
 def test_stray_files_become_rule_6_violations() -> None:
-    violations = stray_file_violations(["added:scratch.c", "modified:q.h"])
-    assert [violation.rule for violation in violations] == [6, 6]
+    violations = stray_file_violations(["added:scratch.c", "modified:q.h", "deleted:r.h"])
+    assert [violation.rule for violation in violations] == [6, 6, 6]
     assert "scratch.c was added" in violations[0].message
     assert "q.h was modified" in violations[1].message
+    assert "r.h was deleted" in violations[2].message
 
 
 def test_quicksort_with_quantified_contracts_matches_its_contract_free_form() -> None:
@@ -794,6 +795,17 @@ def test_each_branch_header_gives_its_own_body_brace_its_own_name() -> None:
     source = b"#ifdef X\nint f(int a) {\n#else\nint g(int a) {\n#endif\n  return a;\n}\n"
     assert function_body_offsets(source, "f") == [source.index(b"{")]
     assert function_body_offsets(source, "g") == [source.index(b"{", source.index(b"int g"))]
+
+
+def test_the_contract_of_a_later_branch_header_name_is_merged() -> None:
+    base = b"#ifdef X\nint f(int a) {\n#else\nint g(int a) {\n#endif\n  return a;\n}\n"
+    snapshot = base.replace(b"int g(int a) {", b"int g(int a)\n__CPROVER_requires(a > 0)\n{")
+    assert check_edits(base, snapshot, "g") == []
+    merged, report = merge_copy(
+        canonical=base, snapshot=snapshot, fork_base=base, function="g", frozen_functions=set()
+    )
+    assert report.merged, report.reason
+    assert merged == snapshot and report.carried == []
 
 
 def test_a_function_followed_by_macros_is_found_under_its_own_name() -> None:
