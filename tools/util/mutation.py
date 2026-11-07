@@ -292,9 +292,13 @@ def generate_mutants_and_compute_score(
     Returns:
         MutationTestingResult: The result of running mutation testing on the target function.
     """
-    # Unlike `Path.resolve`, `os.path.abspath` does not follow symlinks, so the mutants of a
-    # symlinked file see the same quoted `#include`s as the file itself.
-    source_path = Path(os.path.abspath(file_path))  # ruff: ignore[os-path-abspath] - must not follow symlinks.
+    # Unlike `Path.resolve`, `Path.absolute` does not follow symlinks, so the mutants of a
+    # symlinked file see the same quoted `#include`s as the file itself. Unlike `os.path.abspath`,
+    # it also preserves `..` components, which are not lexically removable after a symlink.
+    source_path = Path(file_path).absolute()
+    # The identity under which results are reported, matching other summaries (e.g., clause
+    # redundancy) that key on the resolved path.
+    resolved_source_path = source_path.resolve()
     mutants = get_mutants(str(source_path), target_function)
     if not mutants:
         return NoMutantsGenerated(file_path, target_function)
@@ -323,6 +327,13 @@ def generate_mutants_and_compute_score(
         _get_path_for_mutated_source(workspace, source_path, target_function, i): mutant
         for i, mutant in enumerate(mutants)
     }
+    # Writing a mutant follows symlinks, and cleanup deletes the mutant path, so refuse any mutant
+    # path that is a symlink or that aliases the source file (e.g., when the source is itself a
+    # symlink to a file whose name matches a mutant file name).
+    for path in paths_to_mutants:
+        if path.is_symlink() or path.resolve() == resolved_source_path:
+            msg = f"refusing to write mutant to {path}: it is a symlink or aliases {file_path}"
+            raise ValueError(msg)
     # Heads-up to stderr so an agent polling the run can see the slow phase has begun and is
     # making progress. Written to stderr (not stdout) so it never contaminates the kill-score
     # result, and flushed so it is not buffered until the long run completes.
@@ -371,7 +382,7 @@ def generate_mutants_and_compute_score(
     # Every future either stored a result above or raised (which would have propagated), so no
     # None slots remain; the filter just refines the type for the aggregator.
     results = [vresult for vresult in mutant_vresults if vresult is not None]
-    return _aggregate_mutation_score(results, str(source_path), target_function)
+    return _aggregate_mutation_score(results, str(resolved_source_path), target_function)
 
 
 def _mutation_worker_count(num_mutants: int) -> int:
