@@ -20,7 +20,6 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from subprocess import TimeoutExpired
 
 from loguru import logger
 
@@ -30,6 +29,7 @@ from tools.util import (
     get_in_file_callees_for,
     get_stub_paths_for,
     get_unstubbed_external_callees_for,
+    run_command,
 )
 from tools.util.callgraph import CallGraph
 from tools.util.vacuity_check_result import VacuityCheckResult
@@ -643,16 +643,17 @@ def _run_command(
     Returns:
         _SubprocessResult: The captured outcome, including stdout/stderr or the timeout sentinel.
     """
-    try:
-        returncode, stdout, stderr = _run_shell_command_killing_group_on_timeout(
-            command, timeout_sec=timeout_sec, cwd=cwd
-        )
-        timed_out = False
-    except TimeoutExpired:
+    completed = run_command(command, timeout_sec, cwd=cwd)
+    if completed is None:
         returncode = _TIMEOUT_RETURNCODE
         stdout = ""
         stderr = ""
         timed_out = True
+    else:
+        returncode = completed.returncode
+        stdout = completed.stdout
+        stderr = completed.stderr
+        timed_out = False
 
     subprocess_results.append(
         {
@@ -1326,13 +1327,10 @@ def compile_with_goto_cc(
             (0 == compiled successfully).
     """
     compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
-    try:
-        returncode, _, _ = _run_shell_command_killing_group_on_timeout(
-            compilation_command, timeout_sec=_GOTO_CC_TIMEOUT_SEC
-        )
-    except TimeoutExpired:
+    completed = run_command(compilation_command, _GOTO_CC_TIMEOUT_SEC)
+    if completed is None:
         return _TIMEOUT_RETURNCODE
-    return returncode
+    return completed.returncode
 
 
 if __name__ == "__main__":
