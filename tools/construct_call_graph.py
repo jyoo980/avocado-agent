@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import json
+import os
 import threading
 import uuid
 from pathlib import Path
@@ -26,6 +27,24 @@ from tools.util import get_call_graph
 # thread-safe); the atomic rename in `construct_call_graph` keeps other processes from reading a
 # partially written file.
 _CALL_GRAPH_LOCK = threading.Lock()
+
+
+def _read_umask() -> int:
+    """Return the process's umask.
+
+    `os.umask` can only be read by setting it, so this briefly changes it; it is called once, at
+    import time, before any threads that might create files concurrently.
+
+    Returns:
+        int: The process's umask.
+    """
+    umask = os.umask(0o077)
+    os.umask(umask)
+    return umask
+
+
+# The mode that `open` gives a newly created file: 0666 filtered by the umask.
+_DEFAULT_FILE_MODE = 0o666 & ~_read_umask()
 
 
 def main() -> None:
