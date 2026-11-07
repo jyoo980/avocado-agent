@@ -1,6 +1,7 @@
 """Tests for the run_cbmc tool."""
 
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -277,6 +278,22 @@ def test_max_concurrent_subprocesses_is_bounded_by_the_cpu_count(monkeypatch) ->
     finally:
         max_concurrent_subprocesses.cache_clear()
 
+
+def test_run_cbmc_leaves_no_goto_files_in_the_working_directory(tmp_path: Path) -> None:
+    src = tmp_path / "quicksort.c"
+    shutil.copy(Path("test/data/quicksort.c"), src)
+    work_dir = tmp_path / "cwd"
+    work_dir.mkdir()
+    original_cwd = Path.cwd()
+    try:
+        os.chdir(work_dir)
+        # A relative source path must keep working even though the pipeline runs elsewhere.
+        result = run_cbmc("swap", os.path.relpath(src, work_dir))
+    finally:
+        os.chdir(original_cwd)
+    assert result.is_function_verified, result.response
+    assert list(work_dir.iterdir()) == [], "pipeline intermediates leaked into the cwd"
+    assert not list(tmp_path.glob("*.goto")), "pipeline intermediates leaked next to the source"
 
 def test_run_command_honours_a_custom_timeout() -> None:
     result = _run_command(CbmcStep.CBMC, "sleep 5", [], timeout_sec=1)
