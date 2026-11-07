@@ -12,8 +12,7 @@ def run_command(
 ) -> subprocess.CompletedProcess[str] | None:
     """Run a command, capturing its output, and kill it and all its descendants on timeout.
 
-    Every pipeline subprocess (`goto-cc`, `goto-instrument`, `cbmc`) should be run through this
-    function. The command reads no standard input. It stays in the caller's process group, so a
+    The command reads no standard input. It stays in the caller's process group, so a
     signal sent to that group (such as the SIGINT from Ctrl-C, or the SIGKILL from a harness that
     kills a whole process group) reaches it and its descendants too. On timeout, or if an
     exception (such as `KeyboardInterrupt`) interrupts the wait, the command and every process
