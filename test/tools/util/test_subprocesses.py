@@ -48,3 +48,16 @@ def test_run_command_stays_in_the_callers_process_group() -> None:
     completed = run_command("ps -o pgid= -p $$", timeout=10)
     assert completed is not None
     assert int(completed.stdout) == os.getpgrp()
+
+
+def test_run_command_returns_on_timeout_only_after_every_killed_process_exits(
+    tmp_path: Path,
+) -> None:
+    pid_file = tmp_path / "pid"
+    completed = run_command(f"sleep 60 & echo $! > {pid_file}; sleep 60", timeout=0.3)
+    assert completed is None
+    try:
+        background = psutil.Process(int(pid_file.read_text()))
+        assert background.status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        pass
