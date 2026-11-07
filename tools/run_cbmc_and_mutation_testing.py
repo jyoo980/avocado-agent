@@ -17,7 +17,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from tools.run_cbmc import RunCbmcResult, run_cbmc
+from tools.run_cbmc import RunCbmcResult, verify_function
 from tools.util.mutation import (
     generate_mutants_and_compute_score,
     get_mutation_testing_results_for_client,
@@ -31,6 +31,10 @@ from tools.util.mutation import (
 # otherwise stall the session for the full timeout only to be reported as undecided anyway. A
 # mutant that exceeds this budget is reported as timed out -- never as killed.
 _AGENT_MUTANT_TIMEOUT_SEC = 120
+
+# Exit status of the tool when the pipeline passes but that does not count as verified, because
+# the function has no contract.
+_EXIT_NOT_VERIFIED = 1
 
 # Suffix of the sibling JSONL log in which `main` records one entry per top-level verification
 # attempt (i.e., per `avocado-run-cbmc` invocation). Public because `avocado-verify` reads this
@@ -77,11 +81,7 @@ def main() -> None:
         filter=lambda record: "failed to compile" in record["message"],
     )
 
-    result = run_cbmc(
-        function_to_verify=args.function,
-        file_containing_function_to_verify=args.file,
-        include_dirs=args.include_dirs,
-    )
+    result = verify_function(args.function, args.file, include_dirs=args.include_dirs)
     # Record this top-level verification attempt (pass or fail) so `avocado-verify` can gate its
     # per-function loop on the agent having actually attempted verification often enough.
     _log_verification_attempt(args.file, args.function, result)
@@ -100,7 +100,8 @@ def main() -> None:
         sys.exit(0)
     else:
         print(result.response)
-        sys.exit(result.returncode)
+        # A contract-less pass carries the pipeline's own exit code, which is 0.
+        sys.exit(result.returncode or _EXIT_NOT_VERIFIED)
 
 
 def _log_verification_attempt(
