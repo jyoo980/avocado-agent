@@ -50,7 +50,8 @@ give a treatment extra docs or tools, track them and add them to `HARNESS_FILES`
 - Results are written to the **host**, outside the repository and outside every container, so
   they persist after each container exits: by default
   `~/.local/share/avocado-experiments/<tag>/<timestamp>/run-<i>/` holds `subject/`,
-  `transcripts/`, `command.txt`, `run.log`, `exit-code` and, with the `claude` runner,
+  `transcripts/`, `command.txt`, `run.log`, `exit-code`, `outside-subject/` (if the agent
+  wrote files outside its subject copy) and, with the `claude` runner,
   `claude-output.json` and `prompt.txt`. The batch directory holds `batch-info.txt`
   recording the runner, the harness commit and the parameters, and `batch.log` with the
   batch's progress lines. Override the location with `--results <dir>` or
@@ -86,18 +87,21 @@ Pick one auth profile under `eval/experiments/profiles/` (the `*.env` files are 
   `ANTHROPIC_API_KEY`, such as an empty file, so a run never has two sets of credentials.)
 - **LiteLLM-hosted model**: copy `litellm.env.example` to `litellm.env` and set the proxy URL,
   key, and the model name (forwarded to `claude --model`, overriding `.claude/settings.json`).
+  
+### What Model Does A Run Use?
 
-Which model a run uses: `AVOCADO_MODEL` from the profile if set, otherwise the `"model"` key in
-`.claude/settings.json`, passed explicitly as `claude --model`. (Claude Code ignores the
-`model` key of a file given with `--settings`, so without this the account default, currently
-Sonnet, would be used.) `avocado-verify` builds its own `claude` command line, so with that
-runner `--settings` and `--model` reach every session through a `claude` wrapper placed first
-on `PATH`. A treatment without `.claude/settings.json` (e.g. `avocado-minus-mutation-testing`)
-and without `AVOCADO_MODEL` runs on the account default. `run.log` prints the runner and the
-model on its first line and, with the `claude` runner, `claude-output.json`'s `modelUsage`
-records what was actually billed (with `avocado-verify`, the per-function records in
-`subject/<file>-avocado-verify.jsonl` carry each session's cost); check these after launching
-a new treatment.
+There are two ways to set a model for an experimental run:
+
+- `AVOCADO_MODEL` from the profile if set
+- The `"model"` key in `.claude/settings.json` in the harness checkout of `avocado-agent`.
+
+If neither of these are set (e.g., `avocado-minus-mutation-testing`), then the experiment will
+run on the account default.
+
+`run.log` prints the runner and the model on its first line and, with the `claude` runner,
+`claude-output.json`'s `modelUsage` records what was actually billed
+(with `avocado-verify`, the per-function records in `subject/<file>-avocado-verify.jsonl` carry
+each session's cost); check these after launching a new treatment.
 
 ## Step 3: launch a batch
 
@@ -192,10 +196,44 @@ minute of hitting `--timeout`; `125` means the container engine could not start 
 and then `run.sh` itself exits with status 1. `avocado-verify` exits `2` when it stopped on a
 usage limit. `transcripts/` has the full conversation(s), as `<session-id>.jsonl` plus
 `<session-id>/subagents/*.jsonl` for any subagents, and `subject/` the specified program.
+`outside-subject/` keeps every file the agent created or changed outside `subject/` during the
+run (stubs, harnesses and scripts under `/tmp`, `/work`, `/app/scripts`, ...), at its absolute path in
+the container, e.g. `outside-subject/tmp/work/strstr_stub.c`. It leaves out the harness's own
+scratch directories, CBMC `*.goto` files and dot-directories under `$HOME`; files over 10 MiB
+are listed in `outside-subject/SKIPPED.txt` instead of copied.
 With the `claude` runner `claude-output.json` has the session id, cost and final message.
 With `avocado-verify`, `run.log` is the driver's log (what the manual procedure saved as
 `claude-output.json`) and `subject/<file>-avocado-verify.jsonl` holds one record per function
 plus a final `run_summary` record.
+
+## Step 5: save a run
+
+`eval/experiments/save_run.py` copies a finished run into the
+[`avocado-experimental-data`](https://github.com/jyoo980/avocado-experimental-data) repository
+(default: `$AVOCADO_DATA_DIR`, else a checkout next to this one; override with `--data-dir`):
+
+```sh
+% eval/experiments/save_run.py --model opus-5-5 --treatment avocado-minus-tools \
+      ~/.local/share/avocado-experiments/<tag>/<batch>/run-1
+```
+
+For a run continued with `--resume`, pass the original run directory and then each resumed run
+directory, in order; the script checks that each one's `resumed_from` names the one before it.
+The run is saved as:
+
+```
+<data-dir>/<treatment>/<model>/<subject>/
+    ...                  the last run's subject/, minus *.goto and the top-level *.log files
+    claude-files/        every run's transcripts/, plus run.log, run-pt2.log, ... and
+                         (claude runner) claude-output.json
+    outside-subject/     every run's outside-subject/ (files the agent wrote outside the
+                         subject, such as stubs under /tmp), merged
+```
+
+The script warns if the run did not exit `0` or if the batch's harness is not
+`.../<model>/<treatment>`, refuses to overwrite an existing destination without `--force`, and
+`--dry-run` shows what would be copied. It does not commit: review the files and commit them in the
+data repository yourself.
 
 ## Worked Example
 
