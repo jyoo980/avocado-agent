@@ -1040,16 +1040,18 @@ def _run_sessions_for(
         attempts_on_any_function_after_each_session.append(
             _count_verification_attempts(records) - previous_file_verification_attempts
         )
-        # Objective verdict: re-run CBMC rather than trust Claude's self-report. The copy is the
-        # agent's to edit, so it may no longer define the function at all (edit rule 3); that is
-        # not verified, and `_merge_and_verify` rejects such a copy.
-        try:
-            verified = verify_function(
-                function, file_path, include_dirs=include_dirs
-            ).is_function_verified
-        except ValueError as error:
-            logger.warning(f"{function}: cannot verify the session's copy: {error}")
-            verified = False
+        # Objective verdict: re-run CBMC rather than trust Claude's self-report. It is needed only
+        # when the attempt floor has not stopped the reruns already. The copy is the agent's to
+        # edit, so it may no longer define the function at all (edit rule 3); that is not
+        # verified, and `_merge_and_verify` rejects such a copy.
+        verified = False
+        if attempts_on_function_after_each_session[-1] < _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION:
+            try:
+                verified = verify_function(
+                    function, file_path, include_dirs=include_dirs
+                ).is_function_verified
+            except ValueError as error:
+                logger.warning(f"{function}: cannot verify the session's copy: {error}")
         decision = _should_rerun_session(
             claude_sessions_for_function,
             attempts_on_function_after_each_session,
