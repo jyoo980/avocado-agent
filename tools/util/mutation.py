@@ -294,7 +294,8 @@ def generate_mutants_and_compute_score(
         MutationTestingResult: The result of running mutation testing on the target function.
     """
     # A symlinked file is not followed, so its mutants are written next to the symlink and see the
-    # same quoted `#include`s as the file itself.
+    # same quoted `#include`s as the file itself (which `run_cbmc` also compiles through the
+    # symlink). This path is also the `file` of the resulting `MutationScore`.
     source_path = resolve_parent(file_path)
     mutants = get_mutants(str(source_path), target_function)
     if not mutants:
@@ -320,10 +321,13 @@ def generate_mutants_and_compute_score(
         json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
     )
 
-    paths_to_mutants = {
-        _get_path_for_mutated_source(workspace, source_path, target_function, i): mutant
-        for i, mutant in enumerate(mutants)
-    }
+    paths_to_mutants = dict(
+        zip(
+            _get_paths_for_mutated_sources(workspace, source_path, target_function, len(mutants)),
+            mutants,
+            strict=True,
+        )
+    )
     # Heads-up to stderr so an agent polling the run can see the slow phase has begun and is
     # making progress. Written to stderr (not stdout) so it never contaminates the kill-score
     # result, and flushed so it is not buffered until the long run completes.
@@ -541,6 +545,37 @@ def _verify_mutant(
         killed=cbmc_result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
         returncode=cbmc_result.returncode,
     )
+
+
+def _get_paths_for_mutated_sources(
+    workspace_path: Path, path_to_original_source: Path, function: str, count: int
+) -> list[Path]:
+    """Return `count` distinct paths to which to write mutated source files.
+
+    The paths are those of `_get_path_for_mutated_source` for increasing indices, except that an
+    index is skipped if its path already exists and is the original source file or its symlink
+    target. Writing a mutant there would overwrite the source, and cleanup would delete it.
+
+    Args:
+        workspace_path (Path): The directory under which mutation testing occurs.
+        path_to_original_source (Path): The path to the original source file.
+        function (str): The function the mutants belong to.
+        count (int): The number of paths to return.
+
+    Returns:
+        list[Path]: The paths to which to write the mutated source files.
+    """
+    paths: list[Path] = []
+    index = 0
+    while len(paths) < count:
+        path = _get_path_for_mutated_source(
+            workspace_path, path_to_original_source, function, index
+        )
+        index += 1
+        if path.exists() and path.samefile(path_to_original_source):
+            continue
+        paths.append(path)
+    return paths
 
 
 def _get_path_for_mutated_source(

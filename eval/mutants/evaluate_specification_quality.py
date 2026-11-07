@@ -38,6 +38,7 @@ from tools.util import (
     get_functions_with_cprover_annotations,
     get_include_dirs,
     resolve_include_dirs,
+    resolve_parent,
 )
 from tools.util.mutation import MutationScore
 
@@ -157,7 +158,8 @@ def _process_file(
                 result = {
                     "kind": "mutation_summary",
                     "was_mutation_tested": False,
-                    "file": str(source.resolve()),
+                    # Matches the `file` of `MutationScore.summary()` and of the redundancy summary.
+                    "file": str(resolve_parent(str(source))),
                     "function": function,
                     "metadata": str(mutation_testing_result),
                 }

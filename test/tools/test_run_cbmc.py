@@ -478,20 +478,17 @@ def test_print_mutation_progress_buckets_undecided_mutants(capsys) -> None:
 def test_run_cbmc_resolves_relative_paths_against_callers_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The subprocesses run in `scratch`, but the relative source file and include directory are
-    # relative to the caller's working directory.
+    # The subprocesses run in a private scratch directory, but the relative source file and
+    # include directory are relative to the caller's working directory.
     (tmp_path / "include").mkdir()
     (tmp_path / "include" / "seven.h").write_text("#define SEVEN 7\n", encoding="utf-8")
     src = tmp_path / "seven.c"
     src.write_text('#include "seven.h"\nint seven(void) { return SEVEN; }\n', encoding="utf-8")
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
     monkeypatch.chdir(tmp_path)
     result = run_cbmc(
         function_to_verify="seven",
         file_containing_function_to_verify=src.name,
         include_dirs=["include"],
-        cwd=str(scratch),
     )
     assert result.failed_step is not CbmcStep.GOTO_CC
 

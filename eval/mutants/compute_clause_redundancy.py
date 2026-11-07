@@ -29,7 +29,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import tempfile
 from collections import Counter
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -45,8 +44,8 @@ from eval.mutants.util import (
     is_valid_mutation_candidate,
 )
 from tools.construct_call_graph import construct_call_graph
-from tools.run_cbmc import RunCbmcResult, run_cbmc
-from tools.util import get_in_file_callers_of
+from tools.run_cbmc import run_cbmc
+from tools.util import get_in_file_callers_of, resolve_parent
 from tools.util.callgraph import CallGraph
 
 # Matches the GNU `timeout(1)` convention used elsewhere; surfaces in `returncode` for
@@ -304,19 +303,19 @@ def compute_clause_redundancy_score(
     Returns:
         ClauseRedundancyScore: Aggregated counts plus the per-clause results.
     """
-    source_path = Path(file_path).resolve()
+    # A symlinked file is not followed, so the removed-clause sources are written next to the
+    # symlink and see the same quoted `#include`s as the baseline, which `run_cbmc` compiles
+    # through the symlink.
+    source_path = resolve_parent(file_path)
     workspace = workspace or source_path.parent
     workspace.mkdir(parents=True, exist_ok=True)
 
     # Check that the original function verifies in the first place.
-    # Run in a private scratch directory, as `_run_cbmc_in_scratch_dir()` does.
-    with tempfile.TemporaryDirectory(prefix="avocado-clause-") as scratch_dir:
-        result = run_cbmc(
-            function_to_verify=function_name,
-            file_containing_function_to_verify=str(source_path),
-            include_dirs=include_dirs,
-            cwd=scratch_dir,
-        )
+    result = run_cbmc(
+        function_to_verify=function_name,
+        file_containing_function_to_verify=str(source_path),
+        include_dirs=include_dirs,
+    )
     if not is_valid_mutation_candidate(result):
         # No usable baseline; scoring would be meaningless without verifying the unmutated source.
         return None
@@ -435,28 +434,6 @@ def _aggregate_clause_redundancy_score(
     )
 
 
-def _run_cbmc_in_scratch_dir(function_to_verify: str, file_path: Path | str) -> RunCbmcResult:
-    """Run CBMC on a function in a private scratch working directory.
-
-    The CBMC pipeline writes intermediate `<function>.goto` / `checking-<function>-contracts.goto`
-    files, named only by the function, into its working directory. Several scoring runs (e.g. of
-    two functions that share a caller) may verify the same function concurrently, so each run gets
-    its own scratch directory to keep them from clobbering one another's goto-binaries.
-
-    Args:
-        function_to_verify (str): The function to verify.
-        file_path (Path | str): The C source file containing the function. It is resolved to an
-            absolute path, since CBMC runs in a different working directory.
-
-    Returns:
-        RunCbmcResult: The result of running CBMC.
-    """
-    return run_cbmc(
-            function_to_verify=function_to_verify,
-            file_containing_function_to_verify=str(Path(file_path).resolve()),
-    )
-
-
 def _get_in_file_callers(source_path: Path, function_name: str) -> list[str]:
     """Return functions in a file that directly call the function with the given name.
 
@@ -525,16 +502,11 @@ def _verify_removed_clause_source(
     """
     path_to_write_removed_clause_mutant.write_text(clause_mutant.mutant_source, encoding="utf-8")
 
-    # Run in a private scratch directory, as `_run_cbmc_in_scratch_dir()` does.
-    with tempfile.TemporaryDirectory(prefix="avocado-clause-") as scratch_dir:
-        result = run_cbmc(
-            function_to_verify=clause_mutant.function,
-            file_containing_function_to_verify=str(
-                Path(path_to_write_removed_clause_mutant).resolve()
-            ),
-            include_dirs=include_dirs,
-            cwd=scratch_dir,
-        )
+    result = run_cbmc(
+        function_to_verify=clause_mutant.function,
+        file_containing_function_to_verify=str(path_to_write_removed_clause_mutant),
+        include_dirs=include_dirs,
+    )
     if result.timed_out:
         return ClauseRemovalVerificationResult(
             clause_mutant,
@@ -568,14 +540,11 @@ def _get_baseline_verification_results_for_callers(
     """
     baselines: dict[str, bool] = {}
     for caller in in_file_callers:
-        # Run in a private scratch directory, as `_run_cbmc_in_scratch_dir()` does.
-        with tempfile.TemporaryDirectory(prefix="avocado-clause-") as scratch_dir:
-            result = run_cbmc(
-                function_to_verify=caller,
-                file_containing_function_to_verify=str(Path(source_path).resolve()),
-                include_dirs=include_dirs,
-                cwd=scratch_dir,
-            )
+        result = run_cbmc(
+            function_to_verify=caller,
+            file_containing_function_to_verify=str(source_path),
+            include_dirs=include_dirs,
+        )
         # Callers that don't verify on the unmutated source are excluded from caller-side
         # judgement via unverifiable_baseline_callers.
         baselines[caller] = is_valid_mutation_candidate(result)
@@ -623,14 +592,11 @@ def _verify_callers(
 
     caller_vresults: list[CallerVerificationResult] = []
     for caller in verifying_callers:
-        # Run in a private scratch directory, as `_run_cbmc_in_scratch_dir()` does.
-        with tempfile.TemporaryDirectory(prefix="avocado-clause-") as scratch_dir:
-            result = run_cbmc(
-                function_to_verify=caller,
-                file_containing_function_to_verify=str(Path(mutant_path).resolve()),
-                include_dirs=include_dirs,
-                cwd=scratch_dir,
-            )
+        result = run_cbmc(
+            function_to_verify=caller,
+            file_containing_function_to_verify=str(mutant_path),
+            include_dirs=include_dirs,
+        )
         if result.timed_out:
             caller_vresults.append(
                 CallerVerificationResult(
