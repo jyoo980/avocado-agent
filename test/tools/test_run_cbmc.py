@@ -9,10 +9,10 @@ from subprocess import CompletedProcess
 from eval.mutants.mutate_function import Mutant
 from tools import run_cbmc as run_cbmc_module
 from tools.run_cbmc import (
+    _MAX_RESPONSE_CHARS,
     CbmcStep,
     PipelineVariant,
     RunCbmcResult,
-    _MAX_RESPONSE_CHARS,
     _drop_missing_body_warnings,
     _format_failure_response,
     _get_cbmc_check_command,
@@ -24,7 +24,14 @@ from tools.run_cbmc import (
     compile_with_goto_cc,
     run_cbmc,
 )
-from tools.util.mutation import MutantVerificationResult, MutationScore, _MAX_MUTATION_SECTION_CHARS, _print_mutation_progress, get_mutation_testing_results_for_client
+from tools.util.mutation import (
+    _MAX_MUTATION_SECTION_CHARS,
+    MutantVerificationResult,
+    MutationScore,
+    _aggregate_mutation_score,
+    _print_mutation_progress,
+    get_mutation_testing_results_for_client,
+)
 
 
 def _make_mutant(
@@ -396,20 +403,27 @@ def test_format_mutation_success_section_excludes_undecided_mutants() -> None:
     compile_failed = MutantVerificationResult(
         mutant=survivor, path_to_mutant="m.c", killed=False, returncode=1, compile_failed=True
     )
+    instrumentation_failed = MutantVerificationResult(
+        mutant=survivor,
+        path_to_mutant="m.c",
+        killed=False,
+        returncode=1,
+        instrumentation_failed=True,
+    )
     score = MutationScore(
         file="quicksort.c",
         target_function="f",
-        num_mutants=2,
+        num_mutants=3,
         num_killed=0,
         num_survived=0,
         num_timed_out=1,
         num_compile_failed=1,
-        num_instrumentation_failed=0,
+        num_instrumentation_failed=1,
         kill_score=0.0,
-        results=[timed_out, compile_failed],
+        results=[timed_out, compile_failed, instrumentation_failed],
     )
 
-    # Neither a timed-out nor a compile-failed mutant counts as a survivor.
+    # No timed-out, compile-failed, or instrumentation-failed mutant counts as a survivor.
     assert "All decided mutants were killed." in get_mutation_testing_results_for_client(score)
 
 
@@ -484,15 +498,57 @@ def test_print_mutation_progress_buckets_undecided_mutants(capsys) -> None:
     compile_failed = MutantVerificationResult(
         mutant=mutant, path_to_mutant="m.c", killed=False, returncode=1, compile_failed=True
     )
-
-    _print_mutation_progress(done=2, total=2, vresults=[timed_out, compile_failed])
-
-    # Timed-out and compile-failed mutants are bucketed separately, not counted as survived,
-    # mirroring `_aggregate_mutation_score`.
-    assert (
-        "[mutation testing] 2/2 done "
-        "(killed=0 survived=0 timed_out=1 compile_failed=1 instrumentation_failed=0)" in capsys.readouterr().err
+    instrumentation_failed = MutantVerificationResult(
+        mutant=mutant, path_to_mutant="m.c", killed=False, returncode=1, instrumentation_failed=True
     )
+
+    _print_mutation_progress(
+        done=3, total=3, vresults=[timed_out, compile_failed, instrumentation_failed]
+    )
+
+    # Timed-out, compile-failed, and instrumentation-failed mutants are bucketed separately, not
+    # counted as survived, mirroring `_aggregate_mutation_score`.
+    assert (
+        "[mutation testing] 3/3 done "
+        "(killed=0 survived=0 timed_out=1 compile_failed=1 instrumentation_failed=1)"
+        in capsys.readouterr().err
+    )
+
+
+def test_mutation_score_summary_reports_each_undecided_count() -> None:
+    mutant = _make_mutant(
+        source="x", original_operator="<", replacement_operator=">", start_byte=0, line=1
+    )
+    vresults = [
+        _vresult(mutant, killed=True),
+        _vresult(mutant, killed=False),
+        MutantVerificationResult(
+            mutant=mutant, path_to_mutant="m.c", killed=False, returncode=124, timed_out=True
+        ),
+        MutantVerificationResult(
+            mutant=mutant, path_to_mutant="m.c", killed=False, returncode=1, compile_failed=True
+        ),
+        MutantVerificationResult(
+            mutant=mutant, path_to_mutant="m.c", killed=False, returncode=1, compile_failed=True
+        ),
+        MutantVerificationResult(
+            mutant=mutant,
+            path_to_mutant="m.c",
+            killed=False,
+            returncode=1,
+            instrumentation_failed=True,
+        ),
+    ]
+
+    summary = _aggregate_mutation_score(vresults, "quicksort.c", "f").summary()
+
+    assert summary["total"] == 6
+    assert summary["killed"] == 1
+    assert summary["survived"] == 1
+    assert summary["timed_out"] == 1
+    assert summary["compile_failed"] == 2
+    assert summary["instrumentation_failed"] == 1
+    assert summary["kill_score"] == "0.5000"
 
 
 ALLOCATING_SOURCE = """#include <stdlib.h>
