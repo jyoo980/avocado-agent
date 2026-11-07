@@ -53,7 +53,7 @@ from operator import itemgetter
 from typing import TYPE_CHECKING
 
 from tools.util.cbmc_clause_stripper import CBMC_CLAUSE_NAMES, CbmcClauseSpan, _consume_clause
-from tools.util.preproc_blanker import logical_line_end
+from tools.util.preproc_blanker import get_logical_line_end
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable, Sequence
@@ -212,6 +212,8 @@ class MergeReport:
 class _Token:
     """One token of a source file whose comments and file-scope contract clauses are erased.
 
+    A token is a word, operator or literal, or a whole preprocessor directive.
+
     Attributes:
         text (str): The token. A preprocessor directive is a single token holding its whole
             logical line, whitespace-normalized, starting with `#`. The token of an `#if 0` also
@@ -229,7 +231,7 @@ class _Token:
     depth: int
 
     @property
-    def is_directive(self) -> bool:
+    def is_preprocessor_directive(self) -> bool:
         """True iff the token is a preprocessor directive."""
         return self.text.startswith("#")
 
@@ -253,6 +255,9 @@ class _Item:
         body_offsets (tuple[int, ...]): For a function, the offset of each `{` that opens its
             body: one, or one per preprocessor branch when the header differs between branches.
             Empty for every other kind.
+        body_names (tuple[str | None, ...]): For a function, the name that the header before
+            each of `body_offsets` defines, in the same order. Branches of a conditional can give
+            one body different names. Empty for every other kind.
     """
 
     tokens: tuple[str, ...]
@@ -262,6 +267,322 @@ class _Item:
     start: int
     end: int
     body_offsets: tuple[int, ...] = ()
+    body_names: tuple[str | None, ...] = ()
+
+    @property
+    def line(self) -> int:
+        """The line the item starts on."""
+        return self.lines[0]
+
+    @property
+    def directive(self) -> str:
+        """The directive's keyword (`define`, `if`, ...), or "" for other items."""
+        if self.kind != "directive":
+            return ""
+        match = _DIRECTIVE_HEAD.match(self.tokens[0])
+        return match.group(1) if match else ""
+
+    def describe(self) -> str:
+        """Return a short description of the item for a message.
+
+        Returns:
+            str: For example `function swap`, `macro CAP` or `the declaration of table`.
+        """
+        if self.kind == "function" and self.name:
+            return f"function {self.name}"
+        if self.kind == "directive":
+            if self.directive == "define" and self.name:
+                return f"macro {self.name}"
+            return f"`{_quote(self.tokens)}`"
+        if self.name:
+            return f"the declaration of {self.name}"
+        return f"`{_quote(self.tokens)}`"
+
+
+def check_edits(base: bytes, snapshot: bytes, function: str) -> list[Violation]:
+    """Return the rules a session's copy breaks, in the order of the lines they are at.
+
+    Args:
+        base (bytes): The file as it was when the session's copy was taken.
+        snapshot (bytes): The session's finished copy.
+        function (str): The function the session works on.
+
+    Returns:
+        list[Violation]: One entry per violation of rules 1-5 and 8; empty when the copy is clean.
+    """
+    comparison = _compare(base, snapshot)
+    violations = list(comparison.violations)
+    violations += _check_function_intact(comparison.base.items, comparison.snapshot.items, function)
+    violations += _check_new_items(
+        comparison.base.items, comparison.snapshot.items, comparison.new_indices
+    )
+    violations += _check_new_clauses(base, snapshot, comparison)
+    return sorted(violations, key=lambda violation: (violation.line or 0, violation.rule))
+
+
+def merge_copy(
+    *,
+    canonical: bytes,
+    snapshot: bytes,
+    fork_base: bytes,
+    function: str,
+    frozen_functions: Collection[str] | None = None,
+) -> tuple[bytes, MergeReport]:
+    """Return the file to commit for a session whose copy passed `check_edits`.
+
+    Every version of the file is the same original code plus contracts on some items plus new,
+    prefixed items, so the merge is decided item by item, with no function to locate or parse.
+    Three versions are reconciled: the fork base, the session's copy (*mine*) and the canonical
+    file as it is now (*theirs*), which other sessions may have merged into since the fork.
+
+    - The session's own function always takes its contract from the copy.
+    - A contract the session changed on *another* item is kept, and the item named in
+      `MergeReport.carried` for the caller to re-verify, unless `frozen_functions` is None (no
+      such edit is kept), the item is frozen (a live session is working on it), or the
+      item's contract also changed in the canonical file since the fork. In those cases the
+      edit is left out and named in `MergeReport.dropped`; the rest of the copy still merges.
+    - Items the session added are inserted after the original item they followed in the copy,
+      after the items other sessions added right after that original item, and after the
+      original comments that preceded them in the copy. A new conditional block, from
+      its `#if` to its `#endif`, is handled as one unit, and so is every other new item.
+    - A unit that the canonical file already has among its new items, with the same text, is
+      skipped when the canonical file has it before the place the unit would go. When it is
+      later, it is moved to that place, because the session's items and contracts after the
+      unit can use it. A unit that introduces a name that the canonical file's new items
+      introduce fails the merge, unless one is a function prototype and the other a definition.
+
+    When the canonical file is still the fork base -- always the case with one session at a time
+    -- this reduces to taking the copy itself, minus the edits that are left out. (One
+    exception: a comment the session wrote before an original comment ends up after it.)
+
+    The session's own contract is never left out silently: the merge fails, and says why, when
+    the session's function cannot be found as a function definition in the copy, or when the
+    copy changes the contract of an item the merge cannot name. A session can only edit contract
+    slots, so such an item is a function definition the parser could not make out, and it may be
+    the session's own.
+
+    `MergeReport.changed_since_fork` names every function whose contract changed in the canonical
+    file since the fork, whether or not the session edited it too.
+
+    Args:
+        canonical (bytes): The current canonical file.
+        snapshot (bytes): The session's finished copy.
+        fork_base (bytes): The canonical file when the copy was taken.
+        function (str): The function the session worked on.
+        frozen_functions (Collection[str] | None): Functions whose contracts this session may
+            not change; None means it may change no other function's contract.
+
+    Returns:
+        tuple[bytes, MergeReport]: The merged file (or `canonical` unchanged on failure) and the
+            report of what was kept and dropped.
+    """
+    base = _parse(fork_base)
+    mine = _align(base, _parse(snapshot))
+    if mine.violations:
+        rendered = [str(violation) for violation in mine.violations]
+        return canonical, MergeReport(
+            False, f"the session copy breaks {len(rendered)} edit rule(s)", violations=rendered
+        )
+    if not any(item.kind == "function" and item.name == function for item in mine.snapshot.items):
+        return canonical, MergeReport(
+            False,
+            f"{function} could not be found as a function definition in the session copy, so its "
+            "contract could not be merged; nothing was merged",
+        )
+    theirs = _align(base, base if canonical == fork_base else _parse(canonical))
+    if theirs.violations:
+        return canonical, MergeReport(
+            False,
+            "the code of the canonical file changed since the copy was taken: "
+            f"{theirs.violations[0].message}",
+        )
+    theirs_items = theirs.snapshot.items
+    theirs_index = dict(theirs.pairs)
+
+    carried: list[str] = []
+    dropped: list[str] = []
+    changed_since_fork: list[str] = []
+    edits: list[tuple[int, int, bytes]] = []  # (start, end, replacement) in `canonical`
+    mine_to_theirs: dict[int, int] = {}  # index in the copy to index in the canonical file
+    for base_index, snapshot_index in mine.pairs:
+        original = mine.base.items[base_index]
+        edited = mine.snapshot.items[snapshot_index]
+        mine_to_theirs[snapshot_index] = theirs_index[base_index]
+        current = theirs_items[theirs_index[base_index]]
+        if edited.kind == "directive":
+            continue
+        base_text = _code_text(fork_base[original.start : original.end])
+        my_text = _code_text(snapshot[edited.start : edited.end])
+        their_text = _code_text(canonical[current.start : current.end])
+        if (
+            their_text != base_text
+            and current.kind == "function"
+            and current.name
+            and current.name not in changed_since_fork
+        ):
+            changed_since_fork.append(current.name)
+        # The session's own function takes its contract from the copy even when the copy left
+        # that contract as it was at the fork.
+        if my_text == their_text or (my_text == base_text and edited.name != function):
+            continue
+        if edited.name is None:
+            return canonical, MergeReport(
+                False,
+                f"the copy changes the contract of an item at line {edited.line} that the merge "
+                f"cannot name, so it cannot tell whether that is the contract of {function}; "
+                "nothing was merged",
+                dropped=dropped,
+            )
+        if edited.name != function:
+            reason = _reason_not_carried(
+                edited.name, frozen_functions, their_changed=their_text != base_text
+            )
+            if reason is not None:
+                dropped.append(f"function:{edited.name}{reason}")
+                continue
+            if edited.name not in carried:
+                carried.append(edited.name)
+        edits.append((current.start, current.end, snapshot[edited.start : edited.end]))
+
+    their_new = set(theirs.new_indices)
+    their_units = [unit for run in _runs(theirs.new_indices) for unit in _units(theirs_items, run)]
+    their_by_text = {_unit_text(canonical, theirs_items, unit): unit for unit in their_units}
+    their_by_name: dict[str, list[_Item]] = {}
+    for index in sorted(their_new):
+        if (name := theirs_items[index].name) is not None:
+            their_by_name.setdefault(name, []).append(theirs_items[index])
+    snapshot_to_base = {snapshot_index: base_index for base_index, snapshot_index in mine.pairs}
+    transplanted: list[str] = []
+    skipped: list[str] = []
+    removals: list[
+        tuple[int, int]
+    ] = []  # other sessions' units moved to where the session has them
+    for run in _runs(mine.new_indices):
+        before = run[0] - 1  # the original item the run follows in the copy, or -1
+        gap_start = mine.snapshot.items[before].end if before >= 0 else 0
+        cut, leading, new_comments = _leading_original_comments(
+            snapshot[gap_start : mine.snapshot.items[run[0]].start],
+            _base_gap(fork_base, mine.base.items, snapshot_to_base.get(before, -1)),
+        )
+        # Go after the items other sessions added after the same original item, which the run's
+        # items can use, and after the original comments that precede the run in the copy.
+        last = mine_to_theirs.get(before, -1)
+        while last + 1 in their_new:
+            last += 1
+        position = _after_comments(
+            canonical, theirs.snapshot.starts, theirs_items[last].end if last >= 0 else 0, leading
+        )
+        for start, end in removals:
+            if start < position <= end:
+                position = start
+        previous_end = gap_start + cut
+        pieces: list[bytes] = [b"".join(b"\n" + comment for comment in new_comments)]
+        for unit in _units(mine.snapshot.items, run):
+            items = [mine.snapshot.items[index] for index in unit]
+            rendered = [
+                _render_new_item(item)
+                for item in items
+                if item.directive not in _CONDITIONAL_CONTINUATIONS
+            ]
+            theirs_unit = their_by_text.get(_unit_text(snapshot, mine.snapshot.items, unit))
+            if theirs_unit is not None and theirs_items[theirs_unit[0]].start < position:
+                skipped += rendered
+            elif theirs_unit is not None:
+                del their_by_text[_unit_text(snapshot, mine.snapshot.items, unit)]
+                end = theirs_items[theirs_unit[-1]].end
+                removals.append(
+                    (theirs_items[theirs_unit[0]].start, end + canonical[end:].startswith(b"\n"))
+                )
+                skipped += [f"{label} (moved before its first use)" for label in rendered]
+                pieces.append(snapshot[previous_end : items[-1].end])
+            else:
+                clash = next(
+                    (item for item in items if _clashes(item, their_by_name.get(item.name or ""))),
+                    None,
+                )
+                if clash is not None:
+                    return canonical, MergeReport(
+                        False,
+                        f"{_render_new_item(clash)} is already defined differently in the "
+                        "canonical file",
+                        dropped=dropped,
+                    )
+                transplanted += rendered
+                pieces.append(snapshot[previous_end : items[-1].end])
+            previous_end = items[-1].end
+        if len(pieces) == 1:
+            continue
+        text = b"".join(pieces)
+        if not canonical[position : position + 1].isspace():
+            text += b"\n"
+        edits.append((position, position, text))
+
+    merged = _apply(canonical, edits + [(start, end, b"") for start, end in removals])
+    reference = (
+        _parse(_apply(canonical, [(start, end, b"") for start, end in removals]))
+        if removals
+        else theirs.snapshot
+    )
+    check = _align(reference, _parse(merged))
+    if check.violations or _check_conditional_nesting(check.snapshot.items, set(check.new_indices)):
+        return canonical, MergeReport(
+            False,
+            "the merge would change code of the canonical file or enclose it in a new "
+            "conditional; nothing was merged",
+        )
+    return merged, MergeReport(
+        True,
+        transplanted=transplanted,
+        skipped_duplicates=skipped,
+        dropped=dropped,
+        carried=carried,
+        changed_since_fork=changed_since_fork,
+    )
+
+
+def functions_with_changed_contracts(before: bytes, after: bytes) -> list[str]:
+    """Return the functions whose contracts differ between two versions of a file.
+
+    Both versions must hold the same code, as any two versions of the canonical file do. A
+    function that only one of them has is not reported.
+
+    Args:
+        before (bytes): One version of the file.
+        after (bytes): Another version of it.
+
+    Returns:
+        list[str]: The names of the functions, in source order.
+    """
+    if before == after:
+        return []
+    comparison = _compare(before, after)
+    changed: list[str] = []
+    for before_index, after_index in comparison.pairs:
+        old = comparison.base.items[before_index]
+        new = comparison.snapshot.items[after_index]
+        if old.kind != "function" or not old.name or old.name in changed:
+            continue
+        if _code_text(before[old.start : old.end]) != _code_text(after[new.start : new.end]):
+            changed.append(old.name)
+    return changed
+
+
+def function_header(source: bytes, function: str) -> bytes | None:
+    """Return a function definition's text before its body: its signature and its contract.
+
+    Args:
+        source (bytes): A C source.
+        function (str): The function's name.
+
+    Returns:
+        bytes | None: The text from the start of the first definition of `function` up to the
+            opening brace of its body, or None when the definition is not found.
+    """
+    definitions = _definitions(source, function)
+    if not definitions:
+        return None
+    start, brace = definitions[0]
+    return source[start:brace].rstrip()
 
     @property
     def line(self) -> int:
@@ -627,7 +948,8 @@ def function_body_offsets(source: bytes, function: str) -> list[int]:
     Returns:
         list[int]: The offsets in source order; empty when the function is not defined. There is
             one offset per definition (a function can be defined once per preprocessor branch)
-            and, within a definition whose header differs between branches, one per header.
+            and, within a definition whose header differs between branches, one per header that
+            names the function.
     """
     return [brace for _, brace in _definitions(source, function)]
 
@@ -649,8 +971,9 @@ def _definitions(source: bytes, function: str) -> list[tuple[int, int]]:
     return [
         (item.start, offset)
         for item in _split_items(tokens)
-        if item.kind == "function" and item.name == function
-        for offset in item.body_offsets
+        if item.kind == "function"
+        for offset, name in zip(item.body_offsets, item.body_names, strict=True)
+        if name == function
     ]
 
 
@@ -1132,7 +1455,7 @@ def _tokenize(source: bytes) -> tuple[list[_Token], list[CbmcClauseSpan]]:
     length = len(text)
     while position < length:
         if at_line_start and text[position] == "#":
-            end = logical_line_end(source, position)
+            end = get_logical_line_end(source, position)
             directive = _normalize_directive(text[position:end])
             newlines = text.count("\n", position, end)
             head = _DIRECTIVE_HEAD.match(directive)
@@ -1260,9 +1583,10 @@ def _split_items(tokens: list[_Token]) -> list[_Item]:
 
     A directive at file scope is an item by itself unless it interrupts one (a conditional around
     part of a declaration stays inside that declaration). A function definition ends at the brace
-    that closes its body; every other item ends at a `;` at file scope. The opening and the
-    closing brace of an `extern "C" { ... }` block are items of their own, so the declarations
-    inside the block are split like any others.
+    that closes its body; every other item ends at a `;` at file scope, except the `;`s of the
+    parameter declarations of a K&R definition, as in `int f(a) int a; { ... }`. The opening and
+    the closing brace of an `extern "C" { ... }` block are items of their own, so the
+    declarations inside the block are split like any others.
 
     Args:
         tokens (list[_Token]): The file's tokens.
@@ -1274,8 +1598,11 @@ def _split_items(tokens: list[_Token]) -> list[_Item]:
     pending: list[_Token] = []
     body_offsets: list[int] = []  # The `{` tokens in `pending` that open a function body.
     in_function_body = False
+    # In a K&R definition's parameter declarations: the index in `pending` of the `)` that ends
+    # its identifier list; else None.
+    knr_header_end: int | None = None
     for token in tokens:
-        if token.is_directive and not pending and token.depth == 0:
+        if token.is_preprocessor_directive and not pending and token.depth == 0:
             items.append(_make_item([token], "directive"))
             continue
         pending.append(token)
@@ -1283,25 +1610,87 @@ def _split_items(tokens: list[_Token]) -> list[_Item]:
             if _opens_linkage_block(pending):
                 items.append(_make_item(pending, "linkage"))
                 pending = []
+                knr_header_end = None
             else:
-                in_function_body = _opens_function_body(pending[:-1])
+                in_function_body = knr_header_end is not None or _opens_function_body(pending[:-1])
                 if in_function_body:
                     body_offsets.append(token.offset)
         elif token.depth == 0 and token.text == "}":
             items.append(_make_item(pending, "linkage"))
             pending = []
+            knr_header_end = None
         elif token.depth == 1 and token.text == "}" and in_function_body:
-            items.append(_make_item(pending, "function", tuple(body_offsets)))
+            items.append(_make_item(pending, "function", tuple(body_offsets), knr_header_end))
             pending = []
             body_offsets = []
             in_function_body = False
+            knr_header_end = None
         elif token.depth == 0 and token.text == ";":
+            if knr_header_end is None:
+                knr_header_end = _knr_identifier_list_end(pending)
+            if knr_header_end is not None:
+                continue
             items.append(_make_item(pending, "declaration"))
             pending = []
             body_offsets = []
     if pending:
         items.append(_make_item(pending, "incomplete"))
     return items
+
+
+def _knr_identifier_list_end(tokens: list[_Token]) -> int | None:
+    """Return where the identifier list ends, when `tokens` start a K&R function definition.
+
+    In `int f(a, b) int a; char *b; { ... }`, the `;`s end parameter declarations, not items.
+    The tokens start such a definition when a name is followed by a parenthesized list of
+    identifiers, and the tokens after that list declare one of those identifiers with a type, as
+    `int a` does. A prototype has at most attributes after its parameter list, so neither
+    `int f(size_t);` nor `int f(T) NORETURN;` starts one, and a macro call that declares a
+    variable, as in `VEC(v) v;`, gives no type.
+
+    Args:
+        tokens (list[_Token]): An item's tokens, ending with a `;` at file scope.
+
+    Returns:
+        int | None: The index in `tokens` of the `)` that ends the identifier list, or None when
+            the tokens do not start a K&R definition.
+    """
+    indices = [index for index, token in enumerate(tokens) if not token.is_preprocessor_directive]
+    texts = [tokens[index].text for index in indices]
+    if "=" in texts:
+        return None
+    braces = 0
+    parentheses = 0
+    for opening, text in enumerate(texts):
+        if text == "{":
+            braces += 1
+        elif text == "}":
+            braces -= 1
+        elif text == ")":
+            parentheses -= 1
+        elif text == "(":
+            parentheses += 1
+            if braces or parentheses > 1 or opening == 0:
+                continue
+            name = texts[opening - 1]
+            if not _IDENTIFIER.match(name) or name in _ATTRIBUTE_KEYWORDS:
+                continue
+            closing = _group_end(texts, opening)
+            if closing is None:
+                return None
+            identifiers = texts[opening + 1 : closing]
+            if not (
+                len(identifiers) % 2 == 1
+                and all(_IDENTIFIER.match(identifier) for identifier in identifiers[::2])
+                and all(separator == "," for separator in identifiers[1::2])
+            ):
+                continue
+            parameters = set(identifiers[::2])
+            declarations = set(_without_attributes(texts[closing + 1 : -1]))
+            types = {text for text in declarations - parameters if _IDENTIFIER.match(text)}
+            if parameters & declarations and types:
+                return indices[closing]
+    return None
 
 
 def _opens_function_body(prefix: list[_Token]) -> bool:
@@ -1320,7 +1709,9 @@ def _opens_function_body(prefix: list[_Token]) -> bool:
     Returns:
         bool: True iff the brace opens a function body.
     """
-    texts = _without_attributes([token.text for token in prefix if not token.is_directive])
+    texts = _without_attributes(
+        [token.text for token in prefix if not token.is_preprocessor_directive]
+    )
     if "=" in texts:
         return False
     last_aggregate = -1
@@ -1405,7 +1796,12 @@ def _group_start(texts: Sequence[str], closing: int) -> int | None:
     return None
 
 
-def _make_item(tokens: list[_Token], kind: str, body_offsets: tuple[int, ...] = ()) -> _Item:
+def _make_item(
+    tokens: list[_Token],
+    kind: str,
+    body_offsets: tuple[int, ...] = (),
+    header_end: int | None = None,
+) -> _Item:
     """Return the item that consists of the given tokens.
 
     Args:
@@ -1413,22 +1809,37 @@ def _make_item(tokens: list[_Token], kind: str, body_offsets: tuple[int, ...] = 
         kind (str): The item's kind.
         body_offsets (tuple[int, ...]): For a function, the offsets of the braces that open its
             body; at least one.
+        header_end (int | None): For a K&R function definition, the index in `tokens` of the
+            `)` that ends its identifier list. None for every other item.
 
     Returns:
         _Item: The item, with the name it introduces when that can be told.
     """
     texts = tuple(token.text for token in tokens)
+    body_names: tuple[str | None, ...] = ()
     if kind == "directive":
         match = _DIRECTIVE_HEAD.match(texts[0])
         # `#ifdef X` tests X and `#if defined(X)` would give `defined`; neither introduces a name.
         name = match.group(2) or None if match and match.group(1) in _NAMING_DIRECTIVES else None
     elif kind == "function":
         # The parameter list is the last parenthesized group before the body, once attributes
-        # are removed. A `{` before the body, as in a `struct` defined in the return type, does
-        # not end the search. An unknown macro after the parameter list, as in
-        # `int f(int x) REQUIRES(x > 0) {`, is taken for the parameter list.
-        body = next(index for index, token in enumerate(tokens) if token.offset == body_offsets[0])
-        name = _name_before_last_group(_without_attributes(list(texts[:body])))
+        # and trailing macro calls are removed; in a K&R definition, it is the identifier list
+        # that ends at `header_end`. A `{` before the body, as in a `struct` defined in the
+        # return type, does not end the search. Each body brace gets the name from its own
+        # header, which ends just before it: with `#ifdef X` / `int f(...) {` / `#else` /
+        # `int g(...) {` / `#endif`, the first brace opens `f` and the second `g`.
+        if header_end is not None:
+            name = _name_before_last_group(_without_attributes(list(texts[: header_end + 1])))
+            body_names = (name,) * len(body_offsets)
+        else:
+            body_indexes = [
+                index for index, token in enumerate(tokens) if token.offset in body_offsets
+            ]
+            body_names = tuple(
+                _name_before_last_group(_without_attributes(list(texts[:index])))
+                for index in body_indexes
+            )
+            name = body_names[0]
     elif kind == "declaration":
         name = _declared_name(texts)
     else:
@@ -1441,6 +1852,7 @@ def _make_item(tokens: list[_Token], kind: str, body_offsets: tuple[int, ...] = 
         start=tokens[0].offset,
         end=tokens[-1].end,
         body_offsets=body_offsets,
+        body_names=body_names,
     )
 
 
@@ -1450,6 +1862,9 @@ def _name_before_last_group(texts: Sequence[str]) -> str | None:
     The name is usually the identifier before that group. When a parenthesized declarator
     precedes the group instead, the name is inside that declarator: in `int (*get(void))(int)`, a
     function that returns a function pointer, it is `get`, and in `int (f)(int x)` it is `f`.
+    Macro calls after the parameter list are skipped, so `int f(int x) REQUIRES(x > 0)` names
+    `f`. In an implicit-`int` definition led by a storage class and an attribute macro, as in
+    `static ATTR(x) f(void)`, the macro is taken for the name.
 
     Args:
         texts (Sequence[str]): Tokens ending, possibly after directives, with a `)`.
@@ -1466,6 +1881,13 @@ def _name_before_last_group(texts: Sequence[str]) -> str | None:
     if opening is None or opening == 0:
         return None
     candidate = texts[opening - 1]
+    if _IDENTIFIER.match(candidate) and opening >= 2 and texts[opening - 2] == ")":
+        # A macro call after the parameter list, as in `int f(int x) NONNULL(1)`. The group
+        # before it is the parameter list unless nothing precedes its name, as in an implicit
+        # `int` with an attribute macro: `ATTR(x) f(void)`.
+        earlier_opening = _group_start(texts, opening - 2)
+        if earlier_opening is not None and earlier_opening >= 2:
+            return _name_before_last_group(texts[: opening - 1])
     if candidate == ")":
         declarator_start = _group_start(texts, opening - 1)
         if declarator_start is None:
@@ -1492,7 +1914,7 @@ def _declared_name(texts: tuple[str, ...]) -> str | None:
     body = _without_attributes([text for text in texts[:-1] if not text.startswith("#")])
     if not body:
         return None
-    top_level = _top_level(body)
+    top_level = _without_brace_groups(body)
     # A tag, possibly after attribute macros, as in `struct ALIGNED(8) S { int a; };`.
     if top_level and top_level[0] in _AGGREGATE_KEYWORDS and _is_aggregate_head(top_level[1:]):
         tag = top_level[-1]
@@ -1513,8 +1935,8 @@ def _declared_name(texts: tuple[str, ...]) -> str | None:
         elif text == ")":
             parentheses = max(parentheses - 1, 0)
     if body[0] != "typedef" and "(" in top_level:
-        candidate = top_level[top_level.index("(") - 1] if top_level.index("(") > 0 else ""
-        return candidate if _IDENTIFIER.match(candidate) else None
+        # A prototype is named like a definition, so `int (*get(void))(int);` declares `get`.
+        return _name_before_last_group(top_level)
     if "[" in top_level:
         top_level = top_level[: top_level.index("[")]
     candidate = top_level[-1] if top_level else ""
@@ -1553,11 +1975,19 @@ def _without_attributes(texts: list[str]) -> list[str]:
     return kept
 
 
-def _top_level(texts: list[str]) -> list[str]:
+def _without_brace_groups(texts: list[str]) -> list[str]:
     """Return the tokens of a declaration that are outside every brace group.
 
     Parentheses and brackets are kept, so a declarator can still be read; only `{ ... }` groups
     (a struct body, an initializer list) are dropped.
+
+    For example, given the following:
+
+        struct S { int a; } s = { 1 };
+
+    The brace groups are removed, returning:
+
+        struct S s =
 
     Args:
         texts (list[str]): The declaration's tokens.

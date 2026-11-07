@@ -183,6 +183,86 @@ def test_run_cbmc_names_failed_step_for_uncompilable_source(tmp_path: Path) -> N
     assert not result.cbmc_ran_successfully
     assert result.returncode != 0
 
+def test_run_cbmc_leaves_no_goto_files_in_the_working_directory(tmp_path: Path) -> None:
+    src = tmp_path / "quicksort.c"
+    shutil.copy(Path("test/data/quicksort.c"), src)
+    work_dir = tmp_path / "cwd"
+    work_dir.mkdir()
+    original_cwd = Path.cwd()
+    try:
+        os.chdir(work_dir)
+        # A relative source path must keep working even though the pipeline runs elsewhere.
+        result = run_cbmc("swap", os.path.relpath(src, work_dir))
+    finally:
+        os.chdir(original_cwd)
+    assert result.is_function_verified, result.response
+    assert list(work_dir.iterdir()) == [], "pipeline intermediates leaked into the cwd"
+    assert not list(tmp_path.glob("*.goto")), "pipeline intermediates leaked next to the source"
+
+def test_run_command_honours_a_custom_timeout() -> None:
+    result = _run_command(CbmcStep.CBMC, "sleep 5", [], timeout_sec=1)
+    assert result.timed_out
+    assert result.timeout_sec == 1
+    assert not result.succeeded
+
+
+def test_run_cbmc_leaves_no_goto_files_in_the_working_directory(tmp_path: Path) -> None:
+    src = tmp_path / "quicksort.c"
+    shutil.copy(Path("test/data/quicksort.c"), src)
+    work_dir = tmp_path / "cwd"
+    work_dir.mkdir()
+    original_cwd = Path.cwd()
+    try:
+        os.chdir(work_dir)
+        # A relative source path must keep working even though the pipeline runs elsewhere.
+        result = run_cbmc("swap", os.path.relpath(src, work_dir))
+    finally:
+        os.chdir(original_cwd)
+    assert result.is_function_verified, result.response
+    assert list(work_dir.iterdir()) == [], "pipeline intermediates leaked into the cwd"
+    assert not list(tmp_path.glob("*.goto")), "pipeline intermediates leaked next to the source"
+
+
+def test_a_result_records_the_pipeline_variant_that_produced_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    src = tmp_path / "quicksort.c"
+    shutil.copy(Path("test/data/quicksort.c"), src)
+    result = run_cbmc("swap", str(src))
+    assert result.is_function_verified, result.response
+    assert result.variant == PipelineVariant()
+
+    # Given a variant, `run_cbmc` runs the pipeline once, in that variant, and does not retry.
+    macro_expansion_flags: list[bool] = []
+    run_pipeline = run_cbmc_module._run_pipeline
+
+    def recording_run_pipeline(*args, **kwargs):
+        macro_expansion_flags.append(kwargs["prevent_macro_expansion"])
+        return run_pipeline(*args, **kwargs)
+
+    monkeypatch.setattr(run_cbmc_module, "_run_pipeline", recording_run_pipeline)
+    variant = PipelineVariant(prevent_macro_expansion=True)
+    assert run_cbmc("swap", str(src), variant=variant).variant == variant
+    assert macro_expansion_flags == [True]
+
+
+def test_run_command_timeout_kills_the_shells_children(tmp_path: Path) -> None:
+    # The shell forks `sleep` (and here also backgrounds a second one); killing only the shell
+    # on timeout would orphan them, leaving e.g. a CBMC solver running after its mutant timed out.
+    pid_file = tmp_path / "pids"
+    command = f"sleep 60 & echo $! > {pid_file}; sleep 60; true"
+    result = _run_command(CbmcStep.CBMC, command, [], timeout_sec=1)
+    assert result.timed_out
+    background_pid = int(pid_file.read_text().strip())
+    # A killed orphan may linger briefly as an unreaped zombie ("Z"); that counts as dead.
+    try:
+        stat = Path(f"/proc/{background_pid}/stat").read_text()
+    except FileNotFoundError:
+        return
+    state = stat.rsplit(")", 1)[1].split()[0]
+    if state != "Z":
+        os.kill(background_pid, 9)
+        raise AssertionError(f"child of the timed-out shell is still running (state {state})")
 
 def test_run_command_honours_a_custom_timeout() -> None:
     result = _run_command(CbmcStep.CBMC, "sleep 5", [], timeout_sec=1)

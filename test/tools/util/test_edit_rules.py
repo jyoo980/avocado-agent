@@ -496,7 +496,7 @@ def test_contracts_on_functions_with_or_after_a_struct_parameter_are_merged() ->
 
 def _parser_without_the_struct_parameter_fix(prefix) -> bool:
     """`_opens_function_body` as it was before the fix: a `struct` parameter hides the body."""
-    texts = [token.text for token in prefix if not token.is_directive]
+    texts = [token.text for token in prefix if not token.is_preprocessor_directive]
     if "=" in texts:
         return False
     last_aggregate = max(
@@ -771,6 +771,34 @@ def test_a_header_that_differs_between_branches_has_one_body_offset_per_header()
     assert len(function_body_offsets(source, "g")) == 1
 
 
+def test_each_branch_header_gives_its_own_body_brace_its_own_name() -> None:
+    source = b"#ifdef X\nint f(int a) {\n#else\nint g(int a) {\n#endif\n  return a;\n}\n"
+    assert function_body_offsets(source, "f") == [source.index(b"{")]
+    assert function_body_offsets(source, "g") == [source.index(b"{", source.index(b"int g"))]
+
+
+def test_a_function_followed_by_macros_is_found_under_its_own_name() -> None:
+    source = (
+        b"int f(int x) REQUIRES(x > 0) {\n  return x;\n}\n"
+        b"int g(int x) REQUIRES(x > 0) ENSURES(1) {\n  return x;\n}\n"
+    )
+    assert function_body_offsets(source, "f") == [source.index(b"{")]
+    assert function_body_offsets(source, "g") == [source.index(b"{", source.index(b"int g"))]
+
+
+def test_a_function_after_a_macro_return_type_is_found_under_its_own_name() -> None:
+    source = b"LIST(int) f(void) {\n  return 0;\n}\n"
+    assert function_body_offsets(source, "f") == [source.index(b"{")]
+    assert _names(source) == ["f"]
+
+
+def test_a_parenthesized_declarator_is_not_taken_for_a_macro() -> None:
+    source = b"int (*get(void))(int) {\n  return 0;\n}\nint (h)(int x) {\n  return x;\n}\n"
+    assert _names(source) == ["get", "h"]
+    assert len(function_body_offsets(source, "get")) == 1
+    assert len(function_body_offsets(source, "h")) == 1
+
+
 def test_braces_opened_in_each_branch_of_a_conditional_inside_a_body_count_once() -> None:
     source = (
         b"int f(int a) {\n#ifdef X\n  if (a) {\n#else\n  if (!a) {\n#endif\n"
@@ -892,6 +920,13 @@ def test_a_function_that_returns_a_function_pointer_is_named() -> None:
     assert _names(b"int (isalpha)(int c) { return c; }") == ["isalpha"]
 
 
+def test_a_prototype_is_named_like_its_definition() -> None:
+    assert _names(b"int (*get(void))(int);") == ["get"]
+    assert _names(b"void (*signal(int s, void (*h)(int)))(int);") == ["signal"]
+    assert _names(b"int (isalpha)(int c);") == ["isalpha"]
+    assert _names(b"int f(int x);") == ["f"]
+
+
 def test_an_attribute_macro_after_an_aggregate_keyword_does_not_make_a_function() -> None:
     items = _items(b"struct ALIGNED(8) S { int a; };\nstruct S f(void) { }\n")
     assert [(item.kind, item.name) for item in items] == [
@@ -909,3 +944,28 @@ def test_only_define_and_undef_name_a_directive() -> None:
         None,
         None,
     ]
+
+
+def test_a_macro_call_after_the_parameter_list_is_not_the_function_name() -> None:
+    assert _names(b"int f(int x) REQUIRES(x > 0) { return x; }") == ["f"]
+    assert _names(b"int f(int x) A(1) B(2) { return x; }") == ["f"]
+    assert _names(b"int (*get(void))(int) M(1) { return 0; }") == ["get"]
+    assert _names(b"int f(int x) NONNULL(1);") == ["f"]
+    # With an implicit `int`, a macro call before the name is not taken for the parameter list.
+    assert _names(b"ATTR(x) f(void) { return 0; }") == ["f"]
+
+
+def test_a_k_and_r_definition_is_one_function() -> None:
+    source = b"int f(a, b) int a; char *b; { return a; }\nint g(void) { return 1; }\n"
+    items = _items(source)
+    assert [(item.kind, item.name) for item in items] == [("function", "f"), ("function", "g")]
+    assert len(function_body_offsets(source, "f")) == 1
+    # A parameter declaration that names an aggregate or a function pointer.
+    assert _names(b"int f(p) struct S *p; { return 0; }") == ["f"]
+    assert _names(b"int f(fp) int (*fp)(void); { return fp(); }") == ["f"]
+
+
+def test_a_prototype_with_a_typedef_parameter_is_not_a_k_and_r_definition() -> None:
+    assert _names(b"int f(size_t);\nint g(void) { return 0; }") == ["f", "g"]
+    assert _names(b"int f(T) NORETURN;\nint g(void) { return 0; }") == ["f", "g"]
+    assert _names(b"VEC(v) v;\nstruct S { int a; };")[1] == "S"
