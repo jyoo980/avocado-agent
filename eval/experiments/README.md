@@ -87,18 +87,21 @@ Pick one auth profile under `eval/experiments/profiles/` (the `*.env` files are 
   `ANTHROPIC_API_KEY`, such as an empty file, so a run never has two sets of credentials.)
 - **LiteLLM-hosted model**: copy `litellm.env.example` to `litellm.env` and set the proxy URL,
   key, and the model name (forwarded to `claude --model`, overriding `.claude/settings.json`).
+  
+### What Model Does A Run Use?
 
-Which model a run uses: `AVOCADO_MODEL` from the profile if set, otherwise the `"model"` key in
-`.claude/settings.json`, passed explicitly as `claude --model`. (Claude Code ignores the
-`model` key of a file given with `--settings`, so without this the account default, currently
-Sonnet, would be used.) `avocado-verify` builds its own `claude` command line, so with that
-runner `--settings` and `--model` reach every session through a `claude` wrapper placed first
-on `PATH`. A treatment without `.claude/settings.json` (e.g. `avocado-minus-mutation-testing`)
-and without `AVOCADO_MODEL` runs on the account default. `run.log` prints the runner and the
-model on its first line and, with the `claude` runner, `claude-output.json`'s `modelUsage`
-records what was actually billed (with `avocado-verify`, the per-function records in
-`subject/<file>-avocado-verify.jsonl` carry each session's cost); check these after launching
-a new treatment.
+There are two ways to set a model for an experimental run:
+
+- `AVOCADO_MODEL` from the profile if set
+- The `"model"` key in `.claude/settings.json` in the harness checkout of `avocado-agent`.
+
+If neither of these are set (e.g., `avocado-minus-mutation-testing`), then the experiment will
+run on the account default.
+
+`run.log` prints the runner and the model on its first line and, with the `claude` runner,
+`claude-output.json`'s `modelUsage` records what was actually billed
+(with `avocado-verify`, the per-function records in `subject/<file>-avocado-verify.jsonl` carry
+each session's cost); check these after launching a new treatment.
 
 ## Step 3: launch a batch
 
