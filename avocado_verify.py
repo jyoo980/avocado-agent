@@ -43,6 +43,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from subprocess import TimeoutExpired
+from typing import Any, cast
 
 from loguru import logger
 
@@ -1715,6 +1716,20 @@ def _count_verification_attempts(
     return sum(1 for record in records if function is None or record.get("function") == function)
 
 
+def _object_field(record: dict[str, object], key: str) -> dict[str, Any]:
+    """Return the JSON object under `key` in a log record, or `{}` if it is absent or not one.
+
+    Args:
+        record (dict[str, object]): A record read by `_read_jsonl_records`.
+        key (str): The field to read, such as `"cbmc"`.
+
+    Returns:
+        dict[str, Any]: The field's value, or an empty dict.
+    """
+    value = record.get(key)
+    return cast("dict[str, Any]", value) if isinstance(value, dict) else {}
+
+
 def _read_function_verdicts(log_path: Path) -> dict[str, tuple[str, str]]:
     """Return the last recorded outcome and ground-truth verdict of each function in the run log.
 
@@ -1738,14 +1753,14 @@ def _read_function_verdicts(log_path: Path) -> dict[str, tuple[str, str]]:
         function = record.get("function")
         outcome = record.get("outcome")
         if isinstance(function, str) and isinstance(outcome, str):
-            cbmc = record.get("cbmc") or {}
+            cbmc = _object_field(record, "cbmc")
             verdict = cbmc.get("verdict") or outcome
             if verdict == VACUOUS_VERDICT and cbmc.get("vacuity"):
                 verdict = vacuous_status(cbmc["vacuity"])
             verdicts[function] = (outcome, verdict)
-        kept = bool((record.get("merge") or {}).get("carried"))
-        for other, result in (record.get("reverified") or {}).items():
-            if other not in verdicts:
+        kept = bool(_object_field(record, "merge").get("carried"))
+        for other, result in _object_field(record, "reverified").items():
+            if other not in verdicts or not isinstance(result, dict):
                 continue
             if result.get("is_function_verified"):
                 verdicts[other] = (str(GroundTruthVerificationResult.VERIFIED), "PASS")
