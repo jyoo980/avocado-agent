@@ -300,7 +300,9 @@ def run_shell_command(
     share `_SLOT_DIR`, never exceeds `max_concurrent_subprocesses()` (or, if those processes
     disagree about the cap, the largest of their caps). The timeout starts once the subprocess is
     launched; waiting for a slot does not count against it. On timeout, the command and every
-    process it started are killed, so no `cbmc` keeps running without holding a subprocess slot.
+    process it started are killed. The command inherits the slot's locked file descriptor, so the
+    slot stays held while the command or any descendant that keeps the descriptor is running, even
+    if this process is killed first. So no `cbmc` keeps running without holding a subprocess slot.
 
     Args:
         command (str): The shell command to run.
@@ -312,23 +314,25 @@ def run_shell_command(
         subprocess.CompletedProcess[str] | None: The finished subprocess, with its captured stdout
             and stderr, or None if it hit the timeout.
     """
-    with _subprocess_slot():
-        return run_command(command, timeout, cwd=cwd)
+    with _subprocess_slot() as slot_fd:
+        return run_command(command, timeout, cwd=cwd, pass_fds=(slot_fd,))
 
 
 @contextmanager
-def _subprocess_slot() -> Generator[None]:
+def _subprocess_slot() -> Generator[int]:
     """Hold one of the `max_concurrent_subprocesses()` subprocess slots for the `with` body.
 
     Each slot is an exclusive `flock` on a file in `_SLOT_DIR`. An `flock` belongs to an open file
     description, so it excludes other threads of this process as well as other processes, and the
-    kernel releases it when its process dies, so a killed process never leaks a slot. The lock's
-    file descriptor is not inherited by subprocesses. Blocks until a slot is free: a thread first
-    waits for a permit from this process's semaphore for the cap, then polls the slot files every
-    `_SLOT_POLL_SEC`.
+    kernel releases it once every file descriptor for that open file description is closed, so a
+    killed process never leaks a slot. The lock's file descriptor is inherited only by a
+    subprocess it is passed to explicitly (as `run_shell_command` does); that subprocess and its
+    descendants then keep the slot held until they close the descriptor or exit. Blocks until a
+    slot is free: a thread first waits for a permit from this process's semaphore for the cap,
+    then polls the slot files every `_SLOT_POLL_SEC`.
 
     Yields:
-        None: Control, while the slot is held.
+        int: The slot's locked file descriptor, while the slot is held.
 
     Raises:
         PermissionError: If `_SLOT_DIR` is not a directory that this user owns and that no other
@@ -357,7 +361,7 @@ def _subprocess_slot() -> Generator[None]:
                     os.close(fd)
                     continue
                 try:
-                    yield
+                    yield fd
                 finally:
                     os.close(fd)
                 return

@@ -8,7 +8,10 @@ import psutil
 
 
 def run_command(
-    command: str | list[str], timeout: float, cwd: str | None = None
+    command: str | list[str],
+    timeout: float,
+    cwd: str | None = None,
+    pass_fds: tuple[int, ...] = (),
 ) -> subprocess.CompletedProcess[str] | None:
     """Run a command, capturing its output, and kill it and all its descendants on timeout.
 
@@ -26,6 +29,8 @@ def run_command(
         timeout (float): Seconds after which the command and every process it started are killed.
         cwd (str | None): Working directory for the subprocess. When None, the subprocess
             inherits the current working directory.
+        pass_fds (tuple[int, ...]): File descriptors that the command inherits. All other file
+            descriptors except the standard streams are closed in the command.
 
     Returns:
         subprocess.CompletedProcess[str] | None: The finished subprocess, with its captured stdout
@@ -39,6 +44,7 @@ def run_command(
         text=True,
         shell=isinstance(command, str),
         cwd=cwd,
+        pass_fds=pass_fds,
     ) as process:
         try:
             stdout, stderr = process.communicate(timeout=timeout)
