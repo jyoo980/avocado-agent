@@ -499,7 +499,6 @@ def _verify_mutant(
         call_graph=call_graph,
         timeout_sec=timeout_sec,
     )
-
     if cbmc_result.timed_out:
         return MutantVerificationResult(
             mutant,
