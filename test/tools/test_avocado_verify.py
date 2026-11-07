@@ -30,7 +30,9 @@ def _decide(
     return _should_rerun_session(
         sessions,
         attempts,
-        file_attempts_after_each_session=attempts if file_attempts is None else file_attempts,
+        attempts_on_any_function_after_each_session=(
+            attempts if file_attempts is None else file_attempts
+        ),
         verified=verified,
         timeout=timeout,
     )

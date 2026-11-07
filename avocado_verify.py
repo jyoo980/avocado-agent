@@ -76,13 +76,16 @@ _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION = 2
 # once hit, the harness proceeds anyway and records the shortfall.
 _MAX_AGENT_SESSIONS_PER_FUNCTION = 3
 
-# A session that ends without a single verification attempt on the file is re-run at most this many
-# times in a row. A session that fails with an error other than a timeout does not count, and does
-# not interrupt the row: it typically fails within seconds, so a re-run costs little. One such
-# session is bad luck; a second, identical one is evidence that the prompt leads this agent nowhere
 # on this function, and a third would repeat it. In the measured runs the one function that reached
 # this point burned two full 1800 s sessions without an attempt before a third succeeded, and that
 # third session had copied another run's finished contract.
+
+# Sets the max number of times a session is re-run when it initially ends without a verification
+# attempt (i.e., a CBMC execution). A session that fails with a non-timeout error does not count
+# toward this value.
+#
+# A second session that ends without a verifiation attempt leans toward evidence that the agent is
+# not able to make progress, and a third session would likely be a waste of time.
 _MAX_SESSIONS_WITHOUT_ATTEMPT = 1
 
 
@@ -531,15 +534,15 @@ def _verify_via_agent(
     # function's session verified might get no attempt at all in its own sessions, because
     # AGENTS.md tells the agent not to re-verify a function whose specification has not changed.
     claude_sessions_for_function: list[ClaudeRun] = []
-    attempts_after_each_session: list[int] = []
-    file_attempts_after_each_session: list[int] = []
+    attempts_on_function_after_each_session: list[int] = []
+    attempts_on_any_function_after_each_session: list[int] = []
     while True:
         claude_sessions_for_function.append(_run_claude(command, timeout))
         records = _read_jsonl_records(attempts_log_path)
-        attempts_after_each_session.append(
+        attempts_on_function_after_each_session.append(
             _count_verification_attempts(records, function) - previous_verification_attempts
         )
-        file_attempts_after_each_session.append(
+        attempts_on_any_function_after_each_session.append(
             _count_verification_attempts(records) - previous_file_verification_attempts
         )
         # Objective verdict: re-run CBMC rather than trust Claude's self-report.
@@ -547,8 +550,10 @@ def _verify_via_agent(
         verified = cbmc.is_function_verified
         decision = _should_rerun_session(
             claude_sessions_for_function,
-            attempts_after_each_session,
-            file_attempts_after_each_session=file_attempts_after_each_session,
+            attempts_on_function_after_each_session,
+            attempts_on_any_function_after_each_session=(
+                attempts_on_any_function_after_each_session
+            ),
             verified=verified,
             timeout=timeout,
         )
@@ -560,7 +565,7 @@ def _verify_via_agent(
             f"{decision.rationale}"
         )
     sessions = len(claude_sessions_for_function)
-    current_verification_attempts = attempts_after_each_session[-1]
+    current_verification_attempts = attempts_on_function_after_each_session[-1]
     logger.info(f"{function}: not re-running: {decision.rationale}")
     # A specification that verifies stopped the loop deliberately, not short of the floor.
     if not verified and current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION:
@@ -595,21 +600,23 @@ class _RerunDecision:
 
 
 def _should_rerun_session(
-    sessions: list[ClaudeRun],
-    attempts_after_each_session: list[int],
+    sessions_verifying_current_function: list[ClaudeRun],
+    attempts_on_function_after_each_session: list[int],
     *,
-    file_attempts_after_each_session: list[int],
+    attempts_on_any_function_after_each_session: list[int],
     verified: bool,
     timeout: int,
 ) -> _RerunDecision:
     """Return the decision whether to start another session for the current function.
 
     The attempt floor (`_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION`) exists so the loop does not
-    advance on a session that barely tried. Re-running is only worth its cost, though, when the
-    next session can plausibly do better than the last, and four kinds of session say it cannot:
+    advance on a session that barely tried. Re-running should only occur when the next session can
+    plausibly do better than the last.
 
-    - one stopped by a usage limit: the account is throttled, and every further session would
-      fail the same way (52 such re-runs were logged across the measured runs);
+    Here are conditions under which a rerun should *not* occur:
+
+    - one stopped by a usage limit: the account is throttled, and every further session would fail
+      the same way.
     - one stopped by the harness's timeout: another session would likely time out again;
     - one that made no verification attempt on the file at all, when the session before it did the
       same: the prompt, file and model are unchanged, so a third identical session is expected to
@@ -618,21 +625,22 @@ def _should_rerun_session(
       achieve (`verified` is True).
 
     Args:
-        sessions (list[ClaudeRun]): a list of the `claude -p` sessions run so far in a function's
-            turn, oldest first.
-        attempts_after_each_session (list[int]): the number of verification attempts on the
-            function logged after each of the sessions, cumulative over the turn.
-        file_attempts_after_each_session (list[int]): the number of verification attempts on any
-            function in the file (the function or its callees) logged after each of the sessions,
-            cumulative over the turn.
+        sessions_verifying_current_function (list[ClaudeRun]): a list of the `claude -p` sessions
+            so far in a function's turn, oldest first.
+        attempts_on_function_after_each_session (list[int]): the number of verification
+            attempts on the function logged after each of the sessions, cumulative over the turn.
+        attempts_on_any_function_after_each_session (list[int]): the number of verification
+            attempts on any function in the file logged after each of the sessions, cumulative
+            over the turn. Attempts on callees count, so a session that works on a callee's
+            contract is not mistaken for one that never ran the verifier.
         verified (bool): True if CBMC verifies the function after the last of the sessions.
         timeout (int): the per-session timeout of the sessions, in seconds; used for diagnostics.
 
     Returns:
         _RerunDecision: The decision, with a one-sentence rationale.
     """
-    last = sessions[-1]
-    attempts = attempts_after_each_session[-1]
+    last = sessions_verifying_current_function[-1]
+    attempts = attempts_on_function_after_each_session[-1]
     if attempts >= _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION:
         return _RerunDecision(
             False,
@@ -649,13 +657,19 @@ def _should_rerun_session(
             f"the last session was stopped by the harness after {timeout} s; another would "
             "likely time out too",
         )
-    if len(sessions) >= _MAX_AGENT_SESSIONS_PER_FUNCTION:
+    if len(sessions_verifying_current_function) >= _MAX_AGENT_SESSIONS_PER_FUNCTION:
         return _RerunDecision(False, f"session cap of {_MAX_AGENT_SESSIONS_PER_FUNCTION} reached")
     # The most recent sessions, in a row, that added no verification attempt on the file at all,
     # ignoring sessions that failed with an error.
-    new_file_attempts = _differences(file_attempts_after_each_session)
+    attempts_on_any_function_by_each_session = _attempts_added_by_each_session(
+        attempts_on_any_function_after_each_session
+    )
     sessions_without_attempt = 0
-    for session, count in zip(reversed(sessions), reversed(new_file_attempts), strict=True):
+    for session, count in zip(
+        reversed(sessions_verifying_current_function),
+        reversed(attempts_on_any_function_by_each_session),
+        strict=True,
+    ):
         if count:
             break
         if not session.is_error:
@@ -672,25 +686,29 @@ def _should_rerun_session(
     return _RerunDecision(
         True,
         f"the previous session {how_it_ended}; it recorded "
-        f"{_differences(attempts_after_each_session)[-1]} verification attempt(s) on this "
-        f"function, for {attempts} in {len(sessions)} session(s), short of the "
+        f"{_attempts_added_by_each_session(attempts_on_function_after_each_session)[-1]} "
+        f"verification attempt(s) on this function, for {attempts} in "
+        f"{len(sessions_verifying_current_function)} session(s), short of the "
         f"{_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION} required{not_verified}",
     )
 
 
-def _differences(cumulative: list[int]) -> list[int]:
-    """Return the per-session increments of the given cumulative counts.
+def _attempts_added_by_each_session(attempts_after_each_session: list[int]) -> list[int]:
+    """Return how many verification attempts each session made, given the running totals.
 
-    For example, `_differences([0, 2, 3])` is `[0, 2, 1]`.
+    For example, `_attempts_added_by_each_session([0, 2, 3])` is `[0, 2, 1]`: the first session
+    made no attempt, the second made 2 and the third made 1.
 
     Args:
-        cumulative (list[int]): A running total after each session, oldest first.
+        attempts_after_each_session (list[int]): the total number of attempts logged after each
+            session, oldest first.
 
     Returns:
-        list[int]: The amount that each session added to the total.
+        list[int]: The number of attempts that each session added to the total.
     """
     return [
-        after - (cumulative[index - 1] if index else 0) for index, after in enumerate(cumulative)
+        after - (attempts_after_each_session[index - 1] if index else 0)
+        for index, after in enumerate(attempts_after_each_session)
     ]
 
 
