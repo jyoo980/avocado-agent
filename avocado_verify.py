@@ -64,12 +64,13 @@ _MAX_PARSE_SNIPPET_CHARS = 500
 _USAGE_LIMIT_RESULT_PATTERNS = ("usage limit reached", "rate limit", "resets ")
 
 # The loop re-runs a function's `claude -p` session until the agent has *attempted* verification
-# [[MDE: what is "the loop"?  Giving it a name, such as "the belly-rubbing loop".]]
+# [[MDE: what is "the loop"?  Giving it a name, such as "the belly-rubbing loop", would clarify
+# the code.]]
 # (run `avocado-run-cbmc`) at least this many times for the function, summed over the function's
 # sessions and counted from the verification-attempts log. This guards against advancing on a
 # session that barely tried. The loop advances without reaching this floor if the function
 # [[MDE: Is this the same loop?  Does this text mean that there is a number that it does not
-# increment?]]
+# necessarily increment?]]
 # verifies, if a session times out or hits a usage limit, or after
 # `_MAX_AGENT_SESSIONS_PER_FUNCTION` sessions.
 _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION = 2
@@ -521,7 +522,8 @@ def _verify_via_agent(
     )
 
     # Attempts already logged before this turn (e.g. by an earlier function's session that also
-    # [[Does each function's session strictly work on that function, or might it also do work on some other function, such as callees or callers?]]
+    # [[MDE: Does each function's session strictly work on that function, or might it also do work
+    # on some other function, such as callees or callers?]]
     # exercised this one); gate only on attempts made from here forward.
     records = _read_jsonl_records(attempts_log_path)
     previous_verification_attempts = _count_verification_attempts(records, function)
@@ -531,7 +533,10 @@ def _verify_via_agent(
     # [[MDE: I find it hard to remember the meaning of "attempted verification":  is it claude
     # sessions or cbmc calls?  Maybe neither, but calls to `avocado-run-cbmc`, which might run cbmc
     # multiple times (or possibly zero).  I suggest giving a different name to each of those things,
-    # for clarity.  (One of them could still be "attempted verification", perhaps.)]]
+    # for clarity.  (One of them could still be "attempted verification", perhaps.)  Maybe another
+    # is "agent sessions" and I am just confused because everything is already unambiguous except
+    # the number of cbmc calls, and that is irrelevant.  Anyway, when reading the code, I did find
+    # it hard to follow.]]
     # `_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION` times, re-running the session up to a capped number
     # of times -- but only while a re-run can plausibly do better than the session before it (see
     # `_should_rerun_session`).
@@ -982,7 +987,7 @@ def _parse_claude_output(returncode: int, stdout: str, stderr: str) -> ClaudeRun
     )
 
 
-[[MDE: Should this be an instance method?]]
+# [[MDE: Should this be an instance method?]]
 def _is_usage_limit_hit(claude: ClaudeRun) -> bool:
     """Return True iff a `claude -p` session failed because of a usage/rate limit.
 
