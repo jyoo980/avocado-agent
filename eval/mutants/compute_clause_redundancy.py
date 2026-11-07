@@ -375,8 +375,12 @@ def compute_clause_redundancy_score(
         ]
     finally:
         if not keep_artifacts:
+            # Each mutant's `run_cbmc` call also writes a call-graph cache and a run log next to
+            # the mutant; both are named after the mutant, so they were created by this call too.
             for path in created_paths:
                 path.unlink(missing_ok=True)
+                path.with_name(f"{path.stem}-callgraph.json").unlink(missing_ok=True)
+                path.with_name(f"{path.stem}-cbmc-runs.jsonl").unlink(missing_ok=True)
 
     return _aggregate_clause_redundancy_score(
         in_isolation_results,
@@ -471,15 +475,16 @@ def _run_cbmc_in_scratch_dir(function_to_verify: str, file_path: Path | str) -> 
 
     Args:
         function_to_verify (str): The function to verify.
-        file_path (Path | str): The C source file containing the function. It is resolved to an
-            absolute path, since CBMC runs in a different working directory.
+        file_path (Path | str): The C source file containing the function. It is made absolute
+            without following symlinks, since CBMC runs in a different working directory and the
+            source's quoted `#include`s are looked up relative to the source's directory.
 
     Returns:
         RunCbmcResult: The result of running CBMC.
     """
     return run_cbmc(
         function_to_verify=function_to_verify,
-        file_containing_function_to_verify=str(Path(file_path).resolve()),
+        file_containing_function_to_verify=str(absolute_path_without_resolving(str(file_path))),
     )
 
 

@@ -304,6 +304,9 @@ def generate_mutants_and_compute_score(
     # Neither follows symlinks nor collapses `..`, so `source_path` names the same file as
     # `file_path` and the mutants of a symlinked file see the same quoted `#include`s.
     source_path = absolute_path_without_resolving(file_path)
+    # The identity under which results are reported, matching other summaries (e.g., clause
+    # redundancy) that key on the resolved path.
+    resolved_source_path = source_path.resolve()
     mutants = get_mutants(str(source_path), target_function)
     if not mutants:
         return NoMutantsGenerated(file_path, target_function)
@@ -325,7 +328,10 @@ def generate_mutants_and_compute_score(
         json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
     )
 
-    # Only the files created here are removed in the `finally` block below.
+    # `write_mutant_sources` creates each mutant file exclusively, so it never writes through a
+    # symlink or to a path that aliases the source file (e.g., when the source is itself a symlink
+    # to a file whose name matches a mutant file name). Only the files created here are removed in
+    # the `finally` block below.
     paths_to_mutants = dict(
         zip(
             write_mutant_sources(source_path, MUTANT_INFIX, [m.mutant_source for m in mutants]),
@@ -387,7 +393,7 @@ def generate_mutants_and_compute_score(
     # Every future either stored a result above or raised (which would have propagated), so no
     # None slots remain; the filter just refines the type for the aggregator.
     results = [vresult for vresult in mutant_vresults if vresult is not None]
-    return _aggregate_mutation_score(results, str(source_path), target_function)
+    return _aggregate_mutation_score(results, str(resolved_source_path), target_function)
 
 
 def _mutation_worker_count(num_mutants: int) -> int:
