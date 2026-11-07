@@ -34,7 +34,9 @@
 # survive between runs), seeded with credentials from `/auth` if present.
 
 # All outputs are collected in a private directory and copied to /work/out only when the session has
-# ended. The agent never sees a log, a result file, or this script: the bootstrap directory is
+# ended. They include `outside-subject/`: every file the agent created or changed outside the
+# subject copy (e.g. a stub it wrote under /tmp), so nothing it relied on is lost with the
+# container. The agent never sees a log, a result file, or this script: the bootstrap directory is
 # deleted once the harness has been installed. If `AVOCADO_MODEL` is set
 # (e.g. by a LiteLLM profile), it is forwarded as `--model`. `avocado-verify` builds its own
 # `claude` command, so with that runner `--settings` and `--model` reach every session through a
@@ -75,8 +77,58 @@ fi
 # finishes, fails, or is stopped by the host (SIGTERM reaches this shell, which is the
 # container's PID 1).
 OUT_DIR="$(mktemp -d /tmp/avocado-out.XXXXXX)"
+# Created just before the runner starts. Files whose status changed after it are the run's.
+START_MARKER=""
+# Files larger than this (KiB) are listed in outside-subject/SKIPPED.txt instead of copied.
+OUTSIDE_MAX_KB=10240
+# Save the files the agent wrote outside the subject copy, such as stubs, harnesses and scripts
+# under /tmp or /app/scripts, which would otherwise disappear with the container. They go to
+# outside-subject/, keeping their absolute paths (e.g. outside-subject/tmp/work/foo_stub.c).
+# Skipped: the subject copy (already saved), the harness's own private directories (this
+# script's outputs, the Claude Code config, which holds credentials, and the `claude` wrapper),
+# the scratch directories of the harness's own CBMC tools, the package's .venv, dot-directories
+# under $HOME (caches), and CBMC *.goto binaries. `-cnewer` uses the status-change time, so a
+# file copied with `cp -p` (which keeps an old mtime) still counts.
+# shellcheck disable=SC2329
+collect_outside_subject() {
+  [ -n "$START_MARKER" ] && [ -f "$START_MARKER" ] || return 0
+  local dest="$OUT_DIR/outside-subject" list
+  local roots=(/tmp /var/tmp /app)
+  if [ -n "${HOME:-}" ] && [ -d "$HOME" ] && [ "$HOME" != / ]; then
+    roots+=("$HOME")
+  fi
+  list="$(mktemp /tmp/avocado-outside.XXXXXX)"
+  find "${roots[@]}" \
+    \( -path "$SUBJECT_DIR" -o -path "$OUT_DIR" -o -path "$START_MARKER" -o -path "$list" \
+       -o -path "${CLAUDE_CONFIG_DIR:-/nonexistent}" -o -path '/tmp/avocado-bin.*' \
+       -o -path '/tmp/avocado-cbmc-*' -o -path '/tmp/avocado-compiled-*' \
+       -o -path '/tmp/avocado-vacuity-*' -o -path /app/.venv -o -path "${HOME:-/nonexistent}/.*" \) -prune \
+    -o -type f -cnewer "$START_MARKER" ! -name '*.goto' -print0 2>/dev/null >"$list" || true
+  if [ -s "$list" ]; then
+    mkdir -p "$dest"
+    local small big
+    small="$(mktemp /tmp/avocado-outside.XXXXXX)"
+    big="$(mktemp /tmp/avocado-outside.XXXXXX)"
+    while IFS= read -r -d '' f; do
+      if [ "$(du -k -- "$f" 2>/dev/null | cut -f1)" -le "$OUTSIDE_MAX_KB" ] 2>/dev/null; then
+        printf '%s\0' "$f" >>"$small"
+      else
+        printf '%s\t%s KiB\n' "$f" "$(du -k -- "$f" 2>/dev/null | cut -f1)" >>"$big"
+      fi
+    done <"$list"
+    if [ -s "$small" ]; then
+      tar --null -T "$small" -cf - 2>/dev/null | tar -C "$dest" -xf - 2>/dev/null || true
+    fi
+    if [ -s "$big" ]; then
+      cp "$big" "$dest/SKIPPED.txt"
+    fi
+    rm -f "$small" "$big"
+  fi
+  rm -f "$list"
+}
 # shellcheck disable=SC2329
 publish() {
+  collect_outside_subject || true
   # Save the conversation transcript(s) before the config dir disappears with the container.
   # A project directory holds <session-id>.jsonl for each session and, for a session that
   # started subagents, <session-id>/subagents/*.jsonl; copy all of it.
@@ -241,6 +293,7 @@ case "$RUNNER" in
 esac
 printf '%q ' "${COMMAND[@]}" >"$OUT_DIR/command.txt"
 echo >>"$OUT_DIR/command.txt"
+START_MARKER="$(mktemp /tmp/avocado-start.XXXXXX)"
 rc=0
 if [ "$RUNNER" = claude ]; then
   run_child "${COMMAND[@]}" >"$OUT_DIR/claude-output.json" </dev/null || rc=$?

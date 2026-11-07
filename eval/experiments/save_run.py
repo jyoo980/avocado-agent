@@ -15,14 +15,16 @@ the experimental-data repository under `<treatment>/<model>/<subject>/`, laid ou
             run.log             the run's log (the driver's log with avocado-verify)
             run-pt2.log, ...    the logs of runs resumed from it, in order
             claude-output.json  (claude runner only) the `claude -p` result
+        outside-subject/        (if the run has one) the files the agent wrote outside the
+                                subject copy, e.g. stubs under /tmp, at their absolute paths
 
 `<subject>` is the basename of the `subject=` line in the run's `batch-info.txt`.
 
 A run that was continued with `run.sh --resume` is saved by passing the original run directory
 followed by each resumed run directory, in order (each one's `resumed_from=` in batch-info.txt must
 name the one before it). The subject/ of the last one is saved (a resumed
-run starts from the stopped run's subject/, so it covers the whole run), and the transcripts of all
-of them are merged.
+run starts from the stopped run's subject/, so it covers the whole run), and the transcripts and
+outside-subject/ files of all of them are merged (a later run's file replaces an earlier one's).
 
 Usage:
 
@@ -55,6 +57,7 @@ IGNORE_ANYWHERE = ("*.goto",)
 IGNORE_AT_ROOT = ("*.log",)
 
 CLAUDE_FILES = "claude-files"
+OUTSIDE_SUBJECT = "outside-subject"
 
 EXIT_CODE_MEANINGS = {
     "1": "the runner failed",
@@ -97,12 +100,14 @@ def main() -> None:
     subject_dir = run_dirs[-1] / "subject"
     count = _get_file_count_under_path(subject_dir, _ignore_subject(subject_dir))
     t_count = sum(_get_file_count_under_path(run_dir / "transcripts") for run_dir in run_dirs)
+    o_count = sum(_get_file_count_under_path(run_dir / OUTSIDE_SUBJECT) for run_dir in run_dirs)
     excluded = ", ".join(IGNORE_ANYWHERE + tuple(f"./{p}" for p in IGNORE_AT_ROOT))
     print(f"subject:     {subject_dir}")
     print(f"             {count} files (excluding {excluded})")
     for index, run_dir in enumerate(run_dirs):
         print(f"run {index + 1}:       {run_dir} -> {CLAUDE_FILES}/{_get_log_name(index)}")
     print(f"transcripts: {t_count} files")
+    print(f"outside:     {o_count} files written outside the subject -> {OUTSIDE_SUBJECT}/")
     print(f"destination: {dest}{' (replacing)' if dest.exists() else ''}")
 
     if args.dry_run:
@@ -273,6 +278,12 @@ def _save_runs(run_dirs: list[Path], dest: Path) -> None:
     if claude_files.exists():
         _exit_with_message(f"the run's subject/ already has a {CLAUDE_FILES}/; refusing to merge into it")
     claude_files.mkdir()
+    outside = dest / OUTSIDE_SUBJECT
+    if outside.exists():
+        _exit_with_message(f"the run's subject/ already has an {OUTSIDE_SUBJECT}/; refusing to merge into it")
+    for run_dir in run_dirs:
+        if (run_dir / OUTSIDE_SUBJECT).is_dir():
+            shutil.copytree(run_dir / OUTSIDE_SUBJECT, outside, dirs_exist_ok=True)
     for index, run_dir in enumerate(run_dirs):
         shutil.copytree(run_dir / "transcripts", claude_files, dirs_exist_ok=True)
         if (run_dir / "run.log").is_file():
