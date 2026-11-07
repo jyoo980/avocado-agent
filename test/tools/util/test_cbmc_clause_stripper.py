@@ -205,3 +205,9 @@ def test_find_cbmc_annotation_spans_skips_identifiers_without_parens() -> None:
     spans = find_cbmc_annotation_spans(source)
     kinds = [s.kind for s in spans]
     assert kinds == ["__CPROVER_ensures"]
+
+
+def test_an_apostrophe_in_a_directive_does_not_hide_a_clause() -> None:
+    source = b"#error don't\nvoid f(int a)\n__CPROVER_requires(a > 0)\n{\n}\n"
+    _, spans = strip_cbmc_clauses(source)
+    assert [span.kind for span in spans] == ["__CPROVER_requires"]
