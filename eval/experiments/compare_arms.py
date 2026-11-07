@@ -14,6 +14,8 @@ Given a baseline label and a treatment label plus the run ids they share, report
 
 A run's benchmarks are read from `<data-dir>/<label>-<run-id>-<benchmark>.jsonl` (scores) and
 `<data-dir>/runs/<label>/<run-id>/` (agent logs), the layout `run_agent_experiment.sh` produces.
+The comparison stops if any run lacks a score file for a named benchmark or has no agent logs, so
+a run that never ran or failed cannot contribute zeros to an arm's means.
 
 Because the arms are run in paired batches (one run of each arm at a time, on the same machine),
 the per-batch difference is the meaningful quantity; the report prints it alongside the arm means.
@@ -134,7 +136,8 @@ def _run_metrics(
     for benchmark in benchmarks:
         path = data_dir / f"{label}-{run_id}-{benchmark}.jsonl"
         if not path.is_file():
-            continue
+            # A missing run would otherwise contribute zeros that look measured.
+            raise SystemExit(f"compare_arms.py: missing score file for {label} run {run_id}: {path}")
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
@@ -156,7 +159,10 @@ def _run_metrics(
     agent_ms = 0.0
     cost = 0.0
     run_dir = data_dir / "runs" / label / run_id
-    for log in sorted(run_dir.rglob("*-avocado-verify.jsonl")):
+    logs = sorted(run_dir.rglob("*-avocado-verify.jsonl"))
+    if not logs:
+        raise SystemExit(f"compare_arms.py: no agent logs for {label} run {run_id} in {run_dir}")
+    for log in logs:
         for line in log.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
