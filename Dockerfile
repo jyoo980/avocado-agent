@@ -44,6 +44,10 @@ RUN cd /tmp/avocado-deps && uv sync --frozen --no-dev --no-install-project && rm
 
 WORKDIR /app
 
+# Cap how many CBMC pipeline subprocesses run at once in the container.  The
+# cap is the smaller of this value and the number of CPUs available; without
+# this setting, it is the smaller of 32 and that CPU count.
+ENV AVOCADO_MAX_CONCURRENT_CBMC=8
 ENV IS_SANDBOX=1
 ENV VIRTUAL_ENV="/app/.venv"
 ENV PATH="/app/.venv/bin:$PATH"
