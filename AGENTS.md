@@ -127,6 +127,10 @@ causes:
   preconditions allow only executions too long for the harness's bounds. Bound sizes and counts by
   smaller constants so that a complete execution fits.
 
+The contract of a function you call may itself be unverified or vacuous; your prompt names the
+callees for which that is so. Do not build on such a contract as it is. Read it, and repair it if
+your proof depends on it.
+
 ## Writing contracts that verify and kill mutants
 
 - `__CPROVER_is_fresh(p, n)` demands a *separate* object for every such pointer at each call
@@ -148,6 +152,71 @@ causes:
   `__CPROVER_object_upto` for buffers); a missing target fails verification, an over-broad one
   weakens callers.
 
+## Edit rules
+
+You work in a private copy of the source directory. When your session ends, the harness merges
+your copy of the source file into the shared file that every later session builds on. The goal is
+specifications only: the program must behave exactly as it did before you touched it, and a
+function that already verified must stay verified. A copy that breaks any of rules 1-8 is not
+merged at all: none of the session's work is kept. The harness checks every rule below when it
+merges your copy.
+
+In these rules, *original* means everything that was in the file when your session started,
+including helpers that earlier sessions added. *New* means what you add in this
+session.
+
+1. **Original code is unchanged.** Every original top-level item -- function signatures and
+   bodies, macros, typedefs, structs, globals, includes, declarations -- must still be present, in
+   the same order, with identical text. Whitespace, comments and contract clauses do not count.
+   *Why:* changing code, a macro or a signature changes what the program does.
+2. **Insertions go in two places only.** New text may appear only in the contract slot of a
+   function (between its signature and its opening brace; this may be any function in the file),
+   or at file scope. Never insert anything inside an existing function body.
+   *Why:* this keeps every original body identical, and rules out in-body assumptions,
+   assertions, havocs and plain statements.
+3. **The function you were asked to verify is intact.** It must still be defined, as many times
+   as it was when your session started (once, unless it is defined per preprocessor branch).
+   *Why:* a contract can only be kept on a function that is still there to carry it.
+4. **New names carry the reserved prefix.** Every new top-level item must introduce a name that
+   starts with `AVOCADO_SPEC_` (macros) or `avocado_spec_` (functions, variables, types) and is not
+   already defined in the file. Do not add definitions of unprefixed names, `#undef`, `#pragma` or
+   `#include`. A new `#if`/`#ifdef`
+   block is allowed only if everything inside it is new and prefixed.
+   *Why:* a prefixed addition cannot redefine or switch off existing code. An unprefixed one can:
+   a `#define` can change which branch of an `#if` is compiled, a body for `malloc` replaces the
+   model every other function is verified against, and `#pragma CPROVER check disable` turns off
+   the very checks that make a verification mean something.
+5. **No `__CPROVER_assume` in new text.** It may not appear in any new helper or macro.
+   *Why:* an assumption can make a proof pass by assuming the problem away.
+6. **Only the source file is edited.** Do not add or modify any other file in the copied
+   directory, including headers and stub files. Keep scratch files and scripts outside it.
+   *Why:* other files are never merged, so a proof that depends on them does not hold on the
+   shared file.
+7. **The file compiles.** It must compile with `goto-cc`; `avocado-run-cbmc` reports a `goto-cc`
+   failure when it does not.
+   *Why:* a file that does not compile can be neither verified nor merged.
+8. **No literally false preconditions.** Do not write a `__CPROVER_requires` clause that is
+   constant false, such as `__CPROVER_requires(0)`.
+   *Why:* a false precondition makes any contract verify while proving nothing. Subtler vacuous
+   contracts are caught by `avocado-run-cbmc`, which reports them as `VACUOUS` (see
+   [Vacuous proofs](#vacuous-proofs)).
+
+9. **No broken verified specs.** Every function that verified before your session must still
+   verify with your edits, and not vacuously. If one does not, your edits to other functions'
+   contracts are discarded and only the rest of your work is merged.
+   *Why:* a merge must never turn a verified function into an unverified one. Changing a
+   function's contract changes what each of its callers was verified against.
+
+10. **No merge conflict.** Your edit to another function's contract is left out of the merge if
+    another live session is working on that function, or if someone else has changed that
+    contract since your copy was taken; the rest of your work still merges, so your function
+    must verify without that edit. You may change the contract of a function that other sessions
+    only call. None of your work is merged if a name you add is already defined differently in
+    the shared file; rename it.
+    *Why:* the shared file moves on while you work. A function with a live session is that
+    session's to specify, and a contract that changed since your copy was taken is one you have
+    not seen.
+
 ## Rules
 
 - Never hard-code any values into the specifications that are related to CBMC's command-line
@@ -158,8 +227,10 @@ causes:
   - The specification has changed, or
   - The specification of a callee has changed, or
   - You need information from a callee's verification run to help verify a caller.
-- You must not delete any scripts if you create and use them to help you.
-- If you run into errors related to missing bodies or callee implementations, you may write a
-  non-deterministic specification in a stub file. A function inside a preprocessor block that this
+- You must not delete any scripts if you create and use them to help you. Create them outside the
+  copied source directory (edit rule 6).
+- If you run into errors related to missing bodies or callee implementations, do not write a body,
+  a contract or a stub for the missing function (edit rules 4 and 6). Say which function is
+  missing in your final message and move on. A function inside a preprocessor block that this
   build leaves out is not part of the program: the harness gives it no session and leaves it out
   of its callers' callees, so you need neither a contract for it nor a `#define` to switch it on.
