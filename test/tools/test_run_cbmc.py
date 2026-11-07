@@ -15,6 +15,7 @@ from eval.mutants.mutate_function import Mutant
 from tools import run_cbmc as run_cbmc_module
 from tools.run_cbmc import (
     CbmcStep,
+    PipelineVariant,
     RunCbmcResult,
     _MAX_RESPONSE_CHARS,
     _drop_missing_body_warnings,
@@ -336,6 +337,29 @@ def test_run_command_timeout_kills_the_shells_children(tmp_path: Path) -> None:
     if state != "Z":
         os.kill(background_pid, 9)
         raise AssertionError(f"child of the timed-out shell is still running (state {state})")
+
+
+def test_a_result_records_the_pipeline_variant_that_produced_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    src = tmp_path / "quicksort.c"
+    shutil.copy(Path("test/data/quicksort.c"), src)
+    result = run_cbmc("swap", str(src))
+    assert result.is_function_verified, result.response
+    assert result.variant == PipelineVariant()
+
+    # Given a variant, `run_cbmc` runs the pipeline once, in that variant, and does not retry.
+    macro_expansion_flags: list[bool] = []
+    run_pipeline = run_cbmc_module._run_pipeline
+
+    def recording_run_pipeline(*args, **kwargs):
+        macro_expansion_flags.append(kwargs["prevent_macro_expansion"])
+        return run_pipeline(*args, **kwargs)
+
+    monkeypatch.setattr(run_cbmc_module, "_run_pipeline", recording_run_pipeline)
+    variant = PipelineVariant(prevent_macro_expansion=True)
+    assert run_cbmc("swap", str(src), variant=variant).variant == variant
+    assert macro_expansion_flags == [True]
 
 
 def test_format_failure_response_leads_with_failure_lines_for_cbmc_step() -> None:
