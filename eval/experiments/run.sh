@@ -39,6 +39,8 @@
 #   prompt.txt          (claude runner) the prompt that was sent
 #   command.txt         the command line the runner was launched with
 #   run.log             stdout+stderr of the run; with avocado-verify, the driver's log
+#   outside-subject/    files the agent created or changed outside subject/ (e.g. stubs it
+#                       wrote under /tmp), at their absolute paths in the container
 #   exit-code           the container's exit code (124 = --timeout hit; 137 = killed, by the
 #                       OOM killer or because it did not stop within a minute of --timeout;
 #                       125 = the container could not be started, which fails the batch)

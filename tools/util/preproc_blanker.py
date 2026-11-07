@@ -1,4 +1,4 @@
-"""Blank preprocessor conditionals that break tree-sitter's C grammar.
+"""Insert whitespace for preprocessor conditionals that break tree-sitter's C grammar.
 
 Tree-sitter parses raw, unpreprocessed C. Two preprocessor idioms that are common in real
 code make it produce a badly broken AST:
@@ -18,9 +18,9 @@ AST still indexes the original source verbatim.
   brace depth > 0 are blanked; their branch contents are kept, so the parser sees the union of all
   branches. Top-level conditional directives are left alone since tree-sitter handles them.
 - The contents of an ``#if 0`` branch are blanked up to its matching ``#elif``/``#else``/``#endif``.
-- A directive extends over backslash-newline continuations, so a multi-line ``#define`` (or
-  ``#if``) is treated as a single logical line: braces on its continuation lines don't count, and
-  a blanked directive is blanked in full.
+- A directive extends over backslash-newline continuations and over block comments that span
+  lines, so a multi-line ``#define`` (or ``#if``) is treated as a single logical line: braces on
+  its continuation lines don't count, and a blanked directive is blanked in full.
 
 Which branch of an unknown condition a compiler would take cannot be decided without
 preprocessing, so nothing else is touched.
@@ -51,7 +51,7 @@ _OPEN_BRACE = ord("{")
 _CLOSE_BRACE = ord("}")
 
 
-def blank_preprocessor_conditionals(source: bytes) -> bytes:
+def insert_whitespace_for_preprocessor_conditionals(source: bytes) -> bytes:
     """Return ``source`` with problematic preprocessor conditionals replaced by whitespace.
 
     The result has the same length as ``source`` and newlines at the same offsets.
@@ -70,12 +70,13 @@ def blank_preprocessor_conditionals(source: bytes) -> bytes:
     i = 0
     while i < length:
         at_line_start = i == 0 or source[i - 1] == _NEWLINE
-        if at_line_start:
-            line_end = _logical_line_end(source, i)
-            match = _CONDITIONAL_DIRECTIVE.fullmatch(source, i, line_end)
+        hash_offset = _directive_hash_offset(source, i) if at_line_start else None
+        if hash_offset is not None:
+            line_end = get_logical_line_end(source, i)
+            match = _CONDITIONAL_DIRECTIVE.fullmatch(source, hash_offset, line_end)
             if match:
                 kind = match.group(1)
-                argument = match.group(2).replace(b"\\\n", b" ").strip()
+                argument = match.group(2).replace(b"\\\r\n", b" ").replace(b"\\\n", b" ").strip()
                 if dead_branch_start is not None:
                     if kind in _OPENING_DIRECTIVES:
                         dead_nesting += 1
@@ -83,23 +84,20 @@ def blank_preprocessor_conditionals(source: bytes) -> bytes:
                         dead_nesting -= 1
                     elif dead_nesting == 0:
                         # `#elif`/`#else`/`#endif` closing the dead branch.
-                        _blank(buffer, dead_branch_start, i)
+                        _insert_whitespace(buffer, dead_branch_start, i)
                         dead_branch_start = None
                         if brace_depth > 0:
-                            _blank(buffer, i, line_end)
+                            _insert_whitespace(buffer, i, line_end)
                 elif kind == b"if" and _LITERAL_ZERO.fullmatch(argument):
                     dead_branch_start = min(line_end + 1, length)
                     dead_nesting = 0
                     if brace_depth > 0:
-                        _blank(buffer, i, line_end)
+                        _insert_whitespace(buffer, i, line_end)
                 elif brace_depth > 0:
-                    _blank(buffer, i, line_end)
-                i = line_end + 1
-                continue
-            if source[i:line_end].lstrip().startswith(b"#"):
-                # Any other directive (`#define`, `#include`, ...): braces on it don't count.
-                i = line_end + 1
-                continue
+                    _insert_whitespace(buffer, i, line_end)
+            # Braces on a directive (`#define`, `#include`, ...) don't count.
+            i = line_end + 1
+            continue
         if dead_branch_start is not None:
             # Dead code: only look for the directive that ends it.
             i += 1
@@ -126,17 +124,50 @@ def blank_preprocessor_conditionals(source: bytes) -> bytes:
         i += 1
     if dead_branch_start is not None:
         # Unterminated `#if 0`: treat the rest of the file as dead.
-        _blank(buffer, dead_branch_start, length)
+        _insert_whitespace(buffer, dead_branch_start, length)
     result = bytes(buffer)
     assert len(result) == len(source), "blanking must preserve length"
     return result
 
 
-def _logical_line_end(source: bytes, start: int) -> int:
+def _directive_hash_offset(source: bytes, start: int) -> int | None:
+    """Return the offset of the ``#`` that starts the directive on the line at ``start``, if any.
+
+    C treats a comment as whitespace, so horizontal whitespace and block comments that end on
+    the same line may precede the ``#``, as in ``/* note */ #if 0``.
+
+    Args:
+        source: The C source as bytes.
+        start: Offset of the first byte of the line.
+
+    Returns:
+        The offset of the ``#``, or None when the line is not a preprocessor directive.
+    """
+    i = start
+    length = len(source)
+    while i < length:
+        if source[i] in b" \t\f\v\r":
+            i += 1
+        elif source.startswith(b"/*", i):
+            closing = source.find(b"*/", i + 2)
+            if closing < 0 or _NEWLINE in source[i:closing]:
+                return None
+            i = closing + 2
+        else:
+            break
+    return i if i < length and source[i] == ord("#") else None
+
+
+def get_logical_line_end(source: bytes, start: int) -> int:
     """Return the offset of the newline ending the logical line starting at ``start``.
 
-    A physical line whose last byte before the newline is a backslash continues onto the next
-    physical line, as in a multi-line macro definition.
+    A physical line whose last byte before the newline (or before the CRLF) is a backslash
+    continues onto the next physical line, as in a multi-line macro definition. A block comment
+    that spans lines also continues the logical line. Comment delimiters inside a string or
+    character literal do not count.
+
+    A "logical line" is one or more physical/text lines in source code created into a single line
+    by removing each backslash that delimits a new line.
 
     Args:
         source: The C source as bytes.
@@ -147,17 +178,34 @@ def _logical_line_end(source: bytes, start: int) -> int:
     """
     length = len(source)
     i = start
-    while True:
-        line_end = source.find(b"\n", i)
-        if line_end == -1:
-            return length
-        if line_end > start and source[line_end - 1] == _BACKSLASH:
-            i = line_end + 1
-            continue
-        return line_end
+    while i < length:
+        byte = source[i]
+        if byte == _NEWLINE:
+            return i
+        if byte == _BACKSLASH and source.startswith(b"\r\n", i + 1):
+            i += 3
+        elif byte == _BACKSLASH and i + 1 < length and source[i + 1] == _NEWLINE:
+            i += 2
+        elif byte == _SLASH and i + 1 < length and source[i + 1] == _STAR:
+            closing = source.find(b"*/", i + 2)
+            i = length if closing < 0 else closing + 2
+        elif byte == _SLASH and i + 1 < length and source[i + 1] == _SLASH:
+            # A line comment ends at the first newline that no backslash continues.
+            while True:
+                newline = source.find(b"\n", i + 2)
+                if newline < 0:
+                    return length
+                if source[newline - 1] != _BACKSLASH and not source.endswith(b"\\\r", 0, newline):
+                    return newline
+                i = newline - 1
+        elif byte == ord('"') or byte == ord("'"):
+            i = _skip_literal(source, i, byte)
+        else:
+            i += 1
+    return length
 
 
-def _blank(buffer: bytearray, start: int, end: int) -> None:
+def _insert_whitespace(buffer: bytearray, start: int, end: int) -> None:
     """Replace ``buffer[start:end]`` with spaces, keeping newlines.
 
     Args:
