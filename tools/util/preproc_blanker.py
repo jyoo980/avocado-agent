@@ -70,12 +70,13 @@ def insert_whitespace_for_preprocessor_conditionals(source: bytes) -> bytes:
     i = 0
     while i < length:
         at_line_start = i == 0 or source[i - 1] == _NEWLINE
-        if at_line_start and _is_start_of_preprocessor_directive(source, i):
+        hash_offset = _directive_hash_offset(source, i) if at_line_start else None
+        if hash_offset is not None:
             line_end = get_logical_line_end(source, i)
-            match = _CONDITIONAL_DIRECTIVE.fullmatch(source, i, line_end)
+            match = _CONDITIONAL_DIRECTIVE.fullmatch(source, hash_offset, line_end)
             if match:
                 kind = match.group(1)
-                argument = match.group(2).replace(b"\\\n", b" ").strip()
+                argument = match.group(2).replace(b"\\\r\n", b" ").replace(b"\\\n", b" ").strip()
                 if dead_branch_start is not None:
                     if kind in _OPENING_DIRECTIVES:
                         dead_nesting += 1
@@ -129,30 +130,41 @@ def insert_whitespace_for_preprocessor_conditionals(source: bytes) -> bytes:
     return result
 
 
-def _is_start_of_preprocessor_directive(source: bytes, start: int) -> bool:
-    """Return True iff the line starting at ``start`` is a preprocessor directive.
+def _directive_hash_offset(source: bytes, start: int) -> int | None:
+    """Return the offset of the ``#`` that starts the directive on the line at ``start``, if any.
+
+    C treats a comment as whitespace, so horizontal whitespace and block comments that end on
+    the same line may precede the ``#``, as in ``/* note */ #if 0``.
 
     Args:
         source: The C source as bytes.
         start: Offset of the first byte of the line.
 
     Returns:
-        True iff the line's first byte other than horizontal whitespace is ``#``.
+        The offset of the ``#``, or None when the line is not a preprocessor directive.
     """
     i = start
     length = len(source)
-    while i < length and source[i] in b" \t\f\v\r":
-        i += 1
-    return i < length and source[i] == ord("#")
+    while i < length:
+        if source[i] in b" \t\f\v\r":
+            i += 1
+        elif source.startswith(b"/*", i):
+            closing = source.find(b"*/", i + 2)
+            if closing < 0 or _NEWLINE in source[i:closing]:
+                return None
+            i = closing + 2
+        else:
+            break
+    return i if i < length and source[i] == ord("#") else None
 
 
 def get_logical_line_end(source: bytes, start: int) -> int:
     """Return the offset of the newline ending the logical line starting at ``start``.
 
-    A physical line whose last byte before the newline is a backslash continues onto the next
-    physical line, as in a multi-line macro definition. A block comment that spans lines also
-    continues the logical line. Comment delimiters inside a string or character literal do not
-    count.
+    A physical line whose last byte before the newline (or before the CRLF) is a backslash
+    continues onto the next physical line, as in a multi-line macro definition. A block comment
+    that spans lines also continues the logical line. Comment delimiters inside a string or
+    character literal do not count.
 
     A "logical line" is one or more physical/text lines in source code created into a single line
     by removing each backslash that delimits a new line.
@@ -170,7 +182,9 @@ def get_logical_line_end(source: bytes, start: int) -> int:
         byte = source[i]
         if byte == _NEWLINE:
             return i
-        if byte == _BACKSLASH and i + 1 < length and source[i + 1] == _NEWLINE:
+        if byte == _BACKSLASH and source.startswith(b"\r\n", i + 1):
+            i += 3
+        elif byte == _BACKSLASH and i + 1 < length and source[i + 1] == _NEWLINE:
             i += 2
         elif byte == _SLASH and i + 1 < length and source[i + 1] == _STAR:
             closing = source.find(b"*/", i + 2)
@@ -181,7 +195,7 @@ def get_logical_line_end(source: bytes, start: int) -> int:
                 newline = source.find(b"\n", i + 2)
                 if newline < 0:
                     return length
-                if source[newline - 1] != _BACKSLASH:
+                if source[newline - 1] != _BACKSLASH and not source.endswith(b"\\\r", 0, newline):
                     return newline
                 i = newline - 1
         elif byte == ord('"') or byte == ord("'"):
