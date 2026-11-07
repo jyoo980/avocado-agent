@@ -76,10 +76,6 @@ _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION = 2
 # once hit, the harness proceeds anyway and records the shortfall.
 _MAX_AGENT_SESSIONS_PER_FUNCTION = 3
 
-# on this function, and a third would repeat it. In the measured runs the one function that reached
-# this point burned two full 1800 s sessions without an attempt before a third succeeded, and that
-# third session had copied another run's finished contract.
-
 # Sets the max number of times a session is re-run when it initially ends without a verification
 # attempt (i.e., a CBMC execution). A session that fails with a non-timeout error does not count
 # toward this value.
