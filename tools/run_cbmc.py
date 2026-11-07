@@ -362,12 +362,13 @@ def _subprocess_slot() -> Generator[None]:
         while True:
             for slot_path in slot_paths:
                 fd = os.open(slot_path, os.O_RDWR | os.O_CREAT, 0o600)
+                # The descriptor is closed on every path: when the slot is busy, when `flock`
+                # fails some other way, and when the `with` body finishes.
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    os.close(fd)
-                    continue
-                try:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
                     yield
                 finally:
                     os.close(fd)
