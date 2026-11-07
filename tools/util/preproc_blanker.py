@@ -1,4 +1,4 @@
-"""Blank preprocessor conditionals that break tree-sitter's C grammar.
+"""Insert whitespace for preprocessor conditionals that break tree-sitter's C grammar.
 
 Tree-sitter parses raw, unpreprocessed C. Two preprocessor idioms that are common in real
 code make it produce a badly broken AST:
@@ -51,7 +51,7 @@ _OPEN_BRACE = ord("{")
 _CLOSE_BRACE = ord("}")
 
 
-def blank_preprocessor_conditionals(source: bytes) -> bytes:
+def insert_whitespace_for_preprocessor_conditionals(source: bytes) -> bytes:
     """Return ``source`` with problematic preprocessor conditionals replaced by whitespace.
 
     The result has the same length as ``source`` and newlines at the same offsets.
@@ -70,8 +70,8 @@ def blank_preprocessor_conditionals(source: bytes) -> bytes:
     i = 0
     while i < length:
         at_line_start = i == 0 or source[i - 1] == _NEWLINE
-        if at_line_start and _starts_directive(source, i):
-            line_end = logical_line_end(source, i)
+        if at_line_start and _is_start_of_preprocessor_directive(source, i):
+            line_end = get_logical_line_end(source, i)
             match = _CONDITIONAL_DIRECTIVE.fullmatch(source, i, line_end)
             if match:
                 kind = match.group(1)
@@ -83,17 +83,17 @@ def blank_preprocessor_conditionals(source: bytes) -> bytes:
                         dead_nesting -= 1
                     elif dead_nesting == 0:
                         # `#elif`/`#else`/`#endif` closing the dead branch.
-                        _blank(buffer, dead_branch_start, i)
+                        _insert_whitespace(buffer, dead_branch_start, i)
                         dead_branch_start = None
                         if brace_depth > 0:
-                            _blank(buffer, i, line_end)
+                            _insert_whitespace(buffer, i, line_end)
                 elif kind == b"if" and _LITERAL_ZERO.fullmatch(argument):
                     dead_branch_start = min(line_end + 1, length)
                     dead_nesting = 0
                     if brace_depth > 0:
-                        _blank(buffer, i, line_end)
+                        _insert_whitespace(buffer, i, line_end)
                 elif brace_depth > 0:
-                    _blank(buffer, i, line_end)
+                    _insert_whitespace(buffer, i, line_end)
             # Braces on a directive (`#define`, `#include`, ...) don't count.
             i = line_end + 1
             continue
@@ -123,13 +123,13 @@ def blank_preprocessor_conditionals(source: bytes) -> bytes:
         i += 1
     if dead_branch_start is not None:
         # Unterminated `#if 0`: treat the rest of the file as dead.
-        _blank(buffer, dead_branch_start, length)
+        _insert_whitespace(buffer, dead_branch_start, length)
     result = bytes(buffer)
     assert len(result) == len(source), "blanking must preserve length"
     return result
 
 
-def _starts_directive(source: bytes, start: int) -> bool:
+def _is_start_of_preprocessor_directive(source: bytes, start: int) -> bool:
     """Return True iff the line starting at ``start`` is a preprocessor directive.
 
     Args:
@@ -146,13 +146,16 @@ def _starts_directive(source: bytes, start: int) -> bool:
     return i < length and source[i] == ord("#")
 
 
-def logical_line_end(source: bytes, start: int) -> int:
+def get_logical_line_end(source: bytes, start: int) -> int:
     """Return the offset of the newline ending the logical line starting at ``start``.
 
     A physical line whose last byte before the newline is a backslash continues onto the next
     physical line, as in a multi-line macro definition. A block comment that spans lines also
     continues the logical line. Comment delimiters inside a string or character literal do not
     count.
+
+    A "logical line" is one or more physical/text lines in source code created into a single line
+    by removing each backslash that delimits a new line.
 
     Args:
         source: The C source as bytes.
@@ -188,7 +191,7 @@ def logical_line_end(source: bytes, start: int) -> int:
     return length
 
 
-def _blank(buffer: bytearray, start: int, end: int) -> None:
+def _insert_whitespace(buffer: bytearray, start: int, end: int) -> None:
     """Replace ``buffer[start:end]`` with spaces, keeping newlines.
 
     Args:
