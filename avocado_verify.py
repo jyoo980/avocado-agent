@@ -1889,11 +1889,19 @@ def _read_function_verdicts(log_path: Path) -> dict[str, tuple[str, str]]:
     stamps: dict[str, tuple[str, int]] = {}
 
     def is_newer(name: str, run: object, order: object) -> bool:
-        """Return whether a verdict for `name` replaces the one in `verdicts`, and if so stamp it.
+        """Return true if a verdict for `name` replaces the one in `verdicts`, and if so stamp it.
 
         Records are written in the order sessions finish, which is not the order their merges
         recorded verdicts in. Two verdicts recorded in the same run are put in the order of
         their ordinals (`_MergeState.record`); otherwise the one later in the log wins.
+
+        Args:
+            name (str): A function's name.
+            run (object): The `merge_run` of the record that holds the verdict.
+            order (object): The ordinal of the verdict within its run.
+
+        Returns:
+            bool: True if the verdict replaces the one in `verdicts`.
         """
         if not isinstance(run, str) or not isinstance(order, int):
             stamps.pop(name, None)

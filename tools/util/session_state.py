@@ -243,9 +243,11 @@ def find_stray_files(session_file: Path, canonical_dir: Path) -> list[str]:
             stray.append(f"added:{relative}")
         elif not filecmp.cmp(original, path, shallow=False):
             stray.append(f"modified:{relative}")
-    for relative in sorted(_snapshot_files(canonical_dir)):
-        if relative != session_relative and not (session_dir / relative).is_file():
-            stray.append(f"deleted:{relative}")
+    stray.extend(
+        f"deleted:{relative}"
+        for relative in sorted(_snapshot_files(canonical_dir))
+        if relative != session_relative and not (session_dir / relative).is_file()
+    )
     return sorted(stray, key=lambda entry: entry.partition(":")[2])
 
 
