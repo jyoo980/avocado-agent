@@ -400,9 +400,10 @@ def _run_cbmc_in_directory(
             timeout_sec=timeout_sec,
         )
         result = replace(result, variant=variant)
-        _log_invocation(
-            file_containing_function_to_verify, result, subprocess_results, nondet_callees
-        )
+        if log_invocation:
+            _log_invocation(
+                file_containing_function_to_verify, result, subprocess_results, nondet_callees
+            )
         return result
 
     used = PipelineVariant()
@@ -1166,8 +1167,10 @@ def _run_cbmc_without_depth_bound(
         include_dirs,
         None,
         cwd,
-        timeout_sec,
-        variant,
+        # The probed copy lives in a scratch directory that is about to be removed.
+        log_invocation=False,
+        timeout_sec=timeout_sec,
+        variant=variant,
     )
     if not bounded.cbmc_ran_successfully:
         return bounded
