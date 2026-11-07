@@ -6,6 +6,7 @@ from contextlib import suppress
 from subprocess import TimeoutExpired
 
 import psutil
+from loguru import logger
 
 # Seconds that `_kill_process_tree` waits for the processes it killed to exit. A process that
 # receives SIGKILL exits promptly, but freeing a large address space (as of a CBMC solver) can
@@ -25,9 +26,9 @@ def run_command(
     exception (such as `KeyboardInterrupt`) interrupts the wait, the command and every process
     descended from it are killed, not just the immediate child. Two kinds of descendant are not
     killed: those still running after the command exits normally, and those already orphaned
-    (i.e., whose parent exited, so that they are no longer descendants). After killing them,
-    this function waits until they have exited, so that they no longer use CPU or memory
-    when it returns.
+    (i.e., whose parent exited, so that they are no longer descendants). After killing the
+    command and its descendants, this function waits up to `_KILLED_PROCESS_EXIT_TIMEOUT_SEC`
+    seconds for them to exit, so that they no longer use CPU or memory when it returns.
 
     Args:
         command (str | list[str]): The command to run. A string is run by the shell; a list is
@@ -69,7 +70,8 @@ def _kill_process_tree(pid: int) -> None:
     Each process is stopped before its children are listed, so that no process can start a child
     that escapes the kill. A process that cannot be stopped still has its children listed and is
     still sent SIGKILL. This function returns once every process that was sent SIGKILL has
-    exited (a zombie counts as exited), or after `_KILLED_PROCESS_EXIT_TIMEOUT_SEC` seconds.
+    exited (a zombie counts as exited), or after `_KILLED_PROCESS_EXIT_TIMEOUT_SEC` seconds, in
+    which case it logs a warning that lists the processes that have not exited.
 
     Args:
         pid (int): The id of the root process.
@@ -92,12 +94,18 @@ def _kill_process_tree(pid: int) -> None:
             process.kill()
             killed.append(process)
     deadline = time.monotonic() + _KILLED_PROCESS_EXIT_TIMEOUT_SEC
-    while any(_is_running(process) for process in killed) and time.monotonic() < deadline:
+    while killed := [process for process in killed if not _has_exited(process)]:
+        if time.monotonic() >= deadline:
+            logger.warning(
+                f"processes {[process.pid for process in killed]} had not exited "
+                f"{_KILLED_PROCESS_EXIT_TIMEOUT_SEC} seconds after being sent SIGKILL"
+            )
+            return
         time.sleep(0.01)
 
 
-def _is_running(process: psutil.Process) -> bool:
-    """Return True if the given process has not exited.
+def _has_exited(process: psutil.Process) -> bool:
+    """Return True if the given process has exited, or if its state cannot be read.
 
     A zombie (a process that has exited but whose parent has not yet collected its exit status)
     counts as exited. Waiting for a zombie to be collected could take indefinitely long: the
@@ -108,9 +116,10 @@ def _is_running(process: psutil.Process) -> bool:
         process (psutil.Process): a process.
 
     Returns:
-        bool: True if the process is running or stopped, False if it has exited.
+        bool: True if the process has exited or its state cannot be read, False if it is
+            running or stopped.
     """
     try:
-        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
-    except psutil.NoSuchProcess:
-        return False
+        return not process.is_running() or process.status() == psutil.STATUS_ZOMBIE
+    except psutil.Error:
+        return True
