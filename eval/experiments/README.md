@@ -50,7 +50,8 @@ give a treatment extra docs or tools, track them and add them to `HARNESS_FILES`
 - Results are written to the **host**, outside the repository and outside every container, so
   they persist after each container exits: by default
   `~/.local/share/avocado-experiments/<tag>/<timestamp>/run-<i>/` holds `subject/`,
-  `transcripts/`, `command.txt`, `run.log`, `exit-code` and, with the `claude` runner,
+  `transcripts/`, `command.txt`, `run.log`, `exit-code`, `outside-subject/` (if the agent
+  wrote files outside its subject copy) and, with the `claude` runner,
   `claude-output.json` and `prompt.txt`. The batch directory holds `batch-info.txt`
   recording the runner, the harness commit and the parameters, and `batch.log` with the
   batch's progress lines. Override the location with `--results <dir>` or
@@ -192,6 +193,11 @@ minute of hitting `--timeout`; `125` means the container engine could not start 
 and then `run.sh` itself exits with status 1. `avocado-verify` exits `2` when it stopped on a
 usage limit. `transcripts/` has the full conversation(s), as `<session-id>.jsonl` plus
 `<session-id>/subagents/*.jsonl` for any subagents, and `subject/` the specified program.
+`outside-subject/` keeps every file the agent created or changed outside `subject/` during the
+run (stubs, harnesses and scripts under `/tmp`, `/work`, `/app/scripts`, ...), at its absolute path in
+the container, e.g. `outside-subject/tmp/work/strstr_stub.c`. It leaves out the harness's own
+scratch directories, CBMC `*.goto` files and dot-directories under `$HOME`; files over 10 MiB
+are listed in `outside-subject/SKIPPED.txt` instead of copied.
 With the `claude` runner `claude-output.json` has the session id, cost and final message.
 With `avocado-verify`, `run.log` is the driver's log (what the manual procedure saved as
 `claude-output.json`) and `subject/<file>-avocado-verify.jsonl` holds one record per function
@@ -217,6 +223,8 @@ The run is saved as:
     ...                  the last run's subject/, minus *.goto and the top-level *.log files
     claude-files/        every run's transcripts/, plus run.log, run-pt2.log, ... and
                          (claude runner) claude-output.json
+    outside-subject/     every run's outside-subject/ (files the agent wrote outside the
+                         subject, such as stubs under /tmp), merged
 ```
 
 The script warns if the run did not exit `0` or if the batch's harness is not
