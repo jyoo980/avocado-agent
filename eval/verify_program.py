@@ -28,7 +28,7 @@ from tools.util import (
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tools.run_cbmc import RunCbmcResult, run_cbmc
+from tools.run_cbmc import RunCbmcResult, verify_function
 from tools.util.include_dirs import autodetect_include_dirs
 
 
@@ -225,7 +225,7 @@ def _verify_function(
     Returns:
         VerificationResult: The result of verifying a function.
     """
-    result = run_cbmc(function, file, include_dirs=include_dirs)
+    result = verify_function(function, file, include_dirs=include_dirs)
     if result.timed_out:
         return FunctionVerificationResult(file, function, failures=[], run_cbmc_result=result)
     if result.cbmc_ran_successfully and not result.is_function_verified:

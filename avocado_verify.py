@@ -30,10 +30,9 @@ from subprocess import TimeoutExpired
 
 from loguru import logger
 
-from eval.mutants.mutate_function import get_mutants
 from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
-from tools.run_cbmc import RunCbmcResult, run_cbmc
+from tools.run_cbmc import CbmcStep, RunCbmcResult, list_compiled_functions, verify_function
 from tools.run_cbmc_and_mutation_testing import VERIFICATION_ATTEMPTS_LOG_SUFFIX
 from tools.util.callgraph import CallGraph
 from tools.util.include_dirs import autodetect_include_dirs
@@ -65,14 +64,17 @@ _MAX_PARSE_SNIPPET_CHARS = 500
 # one place; adjust these as the CLI's wording evolves.
 _USAGE_LIMIT_RESULT_PATTERNS = ("usage limit reached", "rate limit", "resets ")
 
-# The loop will not advance to the next function until the agent has *attempted* verification
-# (run `avocado-run-cbmc`) at least this many times for the current function, as counted from the
-# verification-attempts log. This guards against advancing on a session that barely tried.
-_MIN_VERIFICATION_ATTEMPTS_PER_SESSION = 2
+# The loop re-runs a function's `claude -p` session until the agent has *attempted* verification
+# (run `avocado-run-cbmc`) at least this many times for the function, summed over the function's
+# sessions and counted from the verification-attempts log. This guards against advancing on a
+# session that barely tried. The loop advances without reaching this floor if the function
+# verifies, if a session times out or hits a usage limit, or after
+# `_MAX_AGENT_SESSIONS_PER_FUNCTION` sessions.
+_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION = 2
 
-# Upper bound on how many `claude -p` sessions a single function may receive while trying to reach
-# `_MIN_VERIFICATION_ATTEMPTS`. Prevents an unproductive session from looping forever; once hit,
-# the harness proceeds anyway and records the shortfall.
+# Upper bound on how many `claude -p` sessions a single function receives while trying to reach
+# `_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION`. Prevents an unproductive session from looping forever;
+# once hit, the harness proceeds anyway and records the shortfall.
 _MAX_AGENT_SESSIONS_PER_FUNCTION = 3
 
 
@@ -146,12 +148,16 @@ class FunctionVerificationResult:
         function (str): The function under verification.
         outcome (GroundTruthVerificationResult): The harness's overall verdict for the function.
         claude_sessions (list[ClaudeRun]): The `claude -p` sessions that resulted in the spec.
-        cbmc (RunCbmcResult): The independent CBMC verification the harness ran afterward.
+        cbmc (RunCbmcResult): The independent CBMC verification the harness ran after the last
+            session.
         internal_callees (list[str]): The function's in-file callees, for the run log.
         verification_attempts (int): How many times the agent attempted verification (ran
             `avocado-run-cbmc`) for this function across all its sessions.
         agent_sessions (int): How many `claude -p` sessions this function received before the
             harness moved on (>= 1; > 1 when re-runs were needed to reach the attempt floor).
+        not_in_build (bool): True iff the function is in the source text but not in the compiled
+            program (the preprocessor removes it), so it was given no session and no CBMC run
+            (see `_functions_not_in_build`). It is recorded as unverified.
     """
 
     function: str
@@ -161,6 +167,7 @@ class FunctionVerificationResult:
     internal_callees: list[str]
     verification_attempts: int
     agent_sessions: int
+    not_in_build: bool = False
 
     def to_record(self) -> dict:
         """Return a JSON-serializable record of this result for the run log.
@@ -183,12 +190,15 @@ class FunctionVerificationResult:
             "cbmc": {
                 "verdict": str(self.cbmc),
                 "is_function_verified": self.cbmc.is_function_verified,
+                "no_contract": self.cbmc.no_contract,
+                "contract_probe_failed": self.cbmc.contract_probe_failed,
                 "returncode": self.cbmc.returncode,
                 "timed_out": self.cbmc.timed_out,
                 "failed_step": None
                 if self.cbmc.failed_step is None
                 else self.cbmc.failed_step.value,
             },
+            "not_in_build": self.not_in_build,
             "total_cost_to_verify_usd": total_cost_to_verify_usd,
         }
 
@@ -255,6 +265,20 @@ def main() -> None:
         )
         attempts_log_path.write_text("", encoding="utf-8")  # Scope the attempts log to this run.
 
+    # Functions the preprocessor removes cannot be verified and are never really called, so they
+    # get no session and are taken out of every other function's callees.
+    not_in_build = _functions_not_in_build(functions, str(file_path), include_dirs)
+    if not_in_build:
+        logger.warning(
+            f"{len(not_in_build)} function(s) are in the source but not in the compiled program "
+            f"and are recorded as unverified without a session: {', '.join(not_in_build)}"
+        )
+        call_graph = _without_functions(call_graph, not_in_build)
+        for function in not_in_build:
+            if function not in already_done:
+                _append_jsonl(log_path, _not_in_build_result(function).to_record())
+                already_done.add(function)
+
     num_functions = len(functions)
     pending = [function for function in functions if function not in already_done]
     if args.resume_from and already_done:
@@ -266,7 +290,12 @@ def main() -> None:
     if not pending:
         logger.info(f"Nothing to do; all {num_functions} function(s) already complete.")
         _finalize_run(
-            log_path, functions=functions, remaining=[], status="completed", stopped_early=False
+            log_path,
+            functions=functions,
+            remaining=[],
+            status="completed",
+            stopped_early=False,
+            not_in_build=not_in_build,
         )
 
     logger.info(
@@ -302,11 +331,99 @@ def main() -> None:
                 remaining=[function, *remaining],
                 status="usage_limited",
                 stopped_early=True,
+                not_in_build=not_in_build,
             )
 
     _log_summary(results, log_path)
     _finalize_run(
-        log_path, functions=functions, remaining=[], status="completed", stopped_early=False
+        log_path,
+        functions=functions,
+        remaining=[],
+        status="completed",
+        stopped_early=False,
+        not_in_build=not_in_build,
+    )
+
+
+def _functions_not_in_build(
+    functions: list[str], file_path: str, include_dirs: list[str]
+) -> list[str]:
+    """Return the functions that are in the source text but not in the compiled program.
+
+    The call graph is read from the source without preprocessing, so it lists functions inside
+    conditional blocks that this build leaves out. CBMC has no such function: a session for one
+    cannot succeed, and a caller whose callee list names one fails at `goto-instrument`.
+
+    Args:
+        functions (list[str]): The verifiable functions found in the source text.
+        file_path (str): Absolute path to the C file.
+        include_dirs (list[str]): Include directories forwarded to `goto-cc`.
+
+    Returns:
+        list[str]: The functions the compiler does not build, in the order of `functions`; empty
+            when the file could not be compiled, since nothing is then known.
+    """
+    compiled = list_compiled_functions(file_path, include_dirs)
+    if compiled is None:
+        logger.warning(
+            f"could not list the functions compiled from {file_path}; treating every function "
+            "in the source as part of the build"
+        )
+        return []
+    return [function for function in functions if function not in compiled]
+
+
+def _without_functions(call_graph: CallGraph, removed: list[str]) -> CallGraph:
+    """Return a call graph without the given functions, as nodes and as callees.
+
+    Args:
+        call_graph (CallGraph): A call graph.
+        removed (list[str]): Functions to take out.
+
+    Returns:
+        CallGraph: A new call graph in which no function is, or calls, one of `removed`.
+    """
+    gone = set(removed)
+    return CallGraph(
+        {
+            function: {
+                "internal": [callee for callee in callees.internal if callee not in gone],
+                "external": list(callees.external),
+            }
+            for function, callees in call_graph.items()
+            if function not in gone
+        }
+    )
+
+
+def _not_in_build_result(function: str) -> FunctionVerificationResult:
+    """Return the result recorded for a function that is not in the compiled program.
+
+    It is recorded the way such a function ended up before it was recognised -- unverified,
+    because goto-cc finds no such function -- but without the session that used to be spent
+    finding that out, and marked `not_in_build`.
+
+    Args:
+        function (str): A function the compiler does not build.
+
+    Returns:
+        FunctionVerificationResult: An unverified result with no sessions and no cost.
+    """
+    return FunctionVerificationResult(
+        function=function,
+        outcome=GroundTruthVerificationResult.UNVERIFIED,
+        claude_sessions=[],
+        cbmc=RunCbmcResult(
+            function=function,
+            failed_step=CbmcStep.GOTO_CC,
+            timed_out=False,
+            returncode=1,
+            response=f"{function} is not in the compiled program: the preprocessor removes it",
+        ),
+        internal_callees=[],
+        verification_attempts=0,
+        agent_sessions=0,
+        not_in_build=True,
     )
 
 
@@ -326,6 +443,7 @@ def _finalize_run(
     remaining: list[str],
     status: str,
     stopped_early: bool,
+    not_in_build: list[str] | None = None,
 ) -> None:
     """Append the terminal run-summary record and exit with the appropriate code.
 
@@ -338,6 +456,8 @@ def _finalize_run(
         remaining (list[str]): Functions still pending (empty on normal completion).
         status (str): "usage_limited" or "completed" for the summary record.
         stopped_early (bool): True iff the run stopped on a usage limit; selects the exit code.
+        not_in_build (list[str] | None): Functions that are not in the compiled program. They
+            are part of `functions` and count as unverified; the summary names them.
     """
     verified_set = _verified_functions(log_path)
     verified = sum(1 for function in functions if function in verified_set)
@@ -345,7 +465,12 @@ def _finalize_run(
     _append_jsonl(
         log_path,
         _run_summary_record(
-            status, done=done, remaining=remaining, verified=verified, total=len(functions)
+            status,
+            done=done,
+            remaining=remaining,
+            verified=verified,
+            total=len(functions),
+            not_in_build=not_in_build,
         ),
     )
     if stopped_early:
@@ -361,11 +486,11 @@ def _verify_via_agent(
     timeout: int,
     include_dirs: list[str],
 ) -> FunctionVerificationResult:
-    """Run one or more `claude -p` sessions for `function`, then re-verify it with CBMC.
+    """Run one or more `claude -p` sessions for `function`, re-verifying it with CBMC after each.
 
     Re-runs the session until the agent has attempted verification at least
-    `_MIN_VERIFICATION_ATTEMPTS` times (capped at `_MAX_AGENT_SESSIONS_PER_FUNCTION`) before the
-    caller advances to the next function.
+    `_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION` times, the function verifies, or a session times out
+    or hits a usage limit, and at most `_MAX_AGENT_SESSIONS_PER_FUNCTION` times in all.
 
     Args:
         function (str): The function to specify and verify.
@@ -386,47 +511,55 @@ def _verify_via_agent(
 
     # Attempts already logged for this function before this turn (e.g. by an earlier function's
     # session that also exercised this one); gate only on attempts made from here forward.
-    previous_verification_attempts = _count_verification_attempts(attempts_log_path, function)
+    records = _read_jsonl_records(attempts_log_path)
+    previous_verification_attempts = _count_verification_attempts(records, function)
 
-    # Do not advance to the next function until the agent has attempted verification at least
-    # `_MIN_VERIFICATION_ATTEMPTS` times, re-running the session up to a capped number of times.
-    claude_sessions_for_function = [_run_claude(command, timeout)]
-    sessions = len(claude_sessions_for_function)
-    current_verification_attempts = (
-        _count_verification_attempts(attempts_log_path, function) - previous_verification_attempts
-    )
-    while (
-        current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION
-        and sessions < _MAX_AGENT_SESSIONS_PER_FUNCTION
-        and is_spec_improvable_with_mutation_testing(function, file_path, attempts_log_path)
-    ):
-        logger.warning(
-            f"{function}: agent attempted verification "
-            f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} time(s); "
-            f"re-running session ({sessions + 1}/{_MAX_AGENT_SESSIONS_PER_FUNCTION})"
-        )
-        claude_sessions_for_function.append(_run_claude(command, timeout))
+    # The harness decides whether the function verifies by running CBMC itself after each session,
+    # not from the `verified` field of the attempts log. A verified record in the log is stale if
+    # the agent edited a specification after that attempt, and a function that an earlier
+    # function's session verified might get no attempt at all in its own sessions, because
+    # AGENTS.md tells the agent not to re-verify a function whose specification has not changed.
+    claude_sessions_for_function: list[ClaudeRun] = []
+    while True:
+        claude = _run_claude(command, timeout)
+        claude_sessions_for_function.append(claude)
         sessions = len(claude_sessions_for_function)
+        records = _read_jsonl_records(attempts_log_path)
         current_verification_attempts = (
-            _count_verification_attempts(attempts_log_path, function)
-            - previous_verification_attempts
+            _count_verification_attempts(records, function) - previous_verification_attempts
         )
-    if not is_spec_improvable_with_mutation_testing(function, file_path, attempts_log_path):
-        # Stopped deliberately, not short of the floor: there are no mutants to kill, so further
-        # sessions cannot strengthen the (already verifying) spec.
-        logger.info(
-            f"{function}: verified with no mutants after {sessions} session(s); skipping the "
-            f"attempt-count floor (no kill score to raise)"
-        )
-    elif current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION:
-        logger.warning(
-            f"{function}: proceeding after {sessions} session(s) with only "
-            f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} "
+        attempts_summary = (
+            f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION} "
             f"verification attempt(s)"
         )
+        # Objective verdict: re-run CBMC rather than trust Claude's self-report.
+        cbmc = verify_function(function, file_path, include_dirs=include_dirs)
+        if cbmc.is_function_verified:
+            if current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION:
+                logger.info(
+                    f"{function}: verified after {sessions} session(s) with {attempts_summary}; "
+                    f"not re-running the session"
+                )
+            break
+        if current_verification_attempts >= _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION:
+            break
+        if claude.timed_out or _is_usage_limit_hit(claude):
+            # Another session would hit the same usage limit, or would likely time out again.
+            reason = "timed out" if claude.timed_out else "hit a usage limit"
+            logger.warning(
+                f"{function}: session {sessions} {reason}; proceeding with only {attempts_summary}"
+            )
+            break
+        if sessions >= _MAX_AGENT_SESSIONS_PER_FUNCTION:
+            logger.warning(
+                f"{function}: proceeding after {sessions} session(s) with only {attempts_summary}"
+            )
+            break
+        logger.warning(
+            f"{function}: agent made {attempts_summary}; "
+            f"re-running session ({sessions + 1}/{_MAX_AGENT_SESSIONS_PER_FUNCTION})"
+        )
 
-    # Objective verdict: re-run CBMC rather than trust Claude's self-report.
-    cbmc = run_cbmc(function, file_path, include_dirs=include_dirs)
     return FunctionVerificationResult(
         function=function,
         outcome=_outcome_for(claude_sessions_for_function[-1], cbmc),
@@ -438,100 +571,51 @@ def _verify_via_agent(
     )
 
 
-def is_spec_improvable_with_mutation_testing(
-    function: str, source_path: str, attempts_log_path: Path
-) -> bool:
-    """Return True iff a function's specification can be improved.
+def _read_jsonl_records(log_path: Path) -> list[dict[str, object]]:
+    """Return the JSON objects in the given JSONL log, oldest first.
 
-    Whether a specification can be improved (via Avocado) depends on the availability of mutants to
-    kill; the kill score is the only metric that is provided to the agent. If no mutants are
-    generated, and the function already verifies, there is no point going further.
+    A missing or unreadable log yields no records. A line that is blank, is not UTF-8, is not JSON,
+    or is JSON but not an object (such as `[]`) is skipped, so one corrupt line does not discard
+    the rest of the log.
 
     Args:
-        function (str): The function under specification generation.
-        source_path (str): The path to the source file where the function is declared.
-        attempts_log_path (Path): The path to the log of verification attempts.
+        log_path (Path): a path to a JSONL log, such as a verification-attempts log or a run log.
 
     Returns:
-        bool: True iff a function's specification can be improved, i.e., it has mutants to kill
-            and it is not successfully verified, yet.
-    """
-    function_has_mutants = False
-    try:
-        function_has_mutants = bool(get_mutants(source_path, function))
-    except Exception:  # ruff: ignore[blind-except] - any generation failure should fall back to default behavior.
-        logger.error(f"Failure in mutant generation for '{function}' in {source_path}")
-        # Assume mutants exist in the worst-case scenario.
-        function_has_mutants = True
-    is_function_successfully_verified = _last_attempt_verified(attempts_log_path, function)
-    return function_has_mutants and not is_function_successfully_verified
+        list[dict[str, object]]: The records, each parsed from one line of the log.
 
-
-def _count_verification_attempts(log_path: Path, function: str) -> int:
-    """Return the number of logged `avocado-run-cbmc` verification attempts for `function`.
-
-    Reads the verification-attempts JSONL that `avocado-run-cbmc` appends to (one record per
-    top-level verification attempt). A missing log, blank lines, and malformed records are treated
-    as zero/skipped so counting never raises.
-
-    Args:
-        log_path (Path): Path to the verification-attempts JSONL log.
-        function (str): The function whose attempts should be counted.
-
-    Returns:
-        int: The number of attempts recorded for `function`.
     """
     try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
+        lines = log_path.read_bytes().splitlines()
     except OSError:
-        return 0
-    count = 0
+        return []
+    records = []
     for line in lines:
-        stripped = line.strip()
-        if not stripped:
+        if not line.strip():
             continue
         try:
-            record = json.loads(stripped)
-        except json.JSONDecodeError:
+            record = json.loads(line)
+        except ValueError:  # `UnicodeDecodeError` or `json.JSONDecodeError`
             continue
-        if record.get("function") == function:
-            count += 1
-    return count
+        if isinstance(record, dict):
+            records.append(record)
+    return records
 
 
-def _last_attempt_verified(log_path: Path, function: str) -> bool:
-    """Return whether the most recent logged verification attempt for `function` succeeded.
-
-    Reads the verification-attempts JSONL that `avocado-run-cbmc` appends to and returns the
-    `verified` field of the last record naming `function`. That field is the *tool's* own CBMC
-    verdict (`run_cbmc_and_mutation_testing._log_verification_attempt` records
-    `result.is_function_verified`), not Claude's self-report, so it is safe to trust here. A missing
-    log, blank lines, and malformed records are skipped; the function returns False when there is no
-    decided record, so callers never skip work on the basis of a verification that did not happen.
+def _count_verification_attempts(records: list[dict[str, object]], function: str) -> int:
+    """Return the number of verification attempts on the given function among the given records.
 
     Args:
-        log_path (Path): Path to the verification-attempts JSONL log.
-        function (str): The function whose latest attempt should be inspected.
+        records (list[dict[str, object]]): a list of records from a verification-attempts log, as
+            returned by `_read_jsonl_records`. The log is the JSONL file that `avocado-run-cbmc`
+            appends to, with one record per top-level verification attempt, such as
+            `{"function": "foo", "verified": true, ...}`.
+        function (str): the function whose attempts to count.
 
     Returns:
-        bool: True iff the most recent attempt record for `function` reports verification success.
+        int: The number of the records for `function`.
     """
-    try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-    verified = False
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            record = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        if record.get("function") == function:
-            verified = bool(record.get("verified", False))
-    return verified
+    return sum(1 for record in records if record.get("function") == function)
 
 
 def _read_function_outcomes(log_path: Path) -> dict[str, str]:
@@ -548,23 +632,12 @@ def _read_function_outcomes(log_path: Path) -> dict[str, str]:
         dict[str, str]: Map of function name to its last recorded outcome string.
     """
     outcomes: dict[str, str] = {}
-    try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return outcomes
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            record = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
+    for record in _read_jsonl_records(log_path):
         if "type" in record:  # terminal run-summary record, not a per-function result
             continue
         function = record.get("function")
         outcome = record.get("outcome")
-        if function is not None and outcome is not None:
+        if isinstance(function, str) and isinstance(outcome, str):
             outcomes[function] = outcome
     return outcomes
 
@@ -609,7 +682,13 @@ def _verified_functions(log_path: Path) -> set[str]:
 
 
 def _run_summary_record(
-    status: str, *, done: list[str], remaining: list[str], verified: int, total: int
+    status: str,
+    *,
+    done: list[str],
+    remaining: list[str],
+    verified: int,
+    total: int,
+    not_in_build: list[str] | None = None,
 ) -> dict:
     """Build the terminal run-summary record appended to the run log.
 
@@ -622,6 +701,8 @@ def _run_summary_record(
         remaining (list[str]): Functions still pending, in topological order.
         verified (int): Count of functions verified across all runs.
         total (int): Total verifiable functions in the file.
+        not_in_build (list[str] | None): Functions that are in the source but not in the
+            compiled program. They are included in `total` and are not verified.
 
     Returns:
         dict: A JSON-serializable terminal run-summary record.
@@ -634,6 +715,7 @@ def _run_summary_record(
         "remaining": remaining,
         "verified": verified,
         "total": total,
+        "not_in_build": list(not_in_build or []),
     }
 
 
