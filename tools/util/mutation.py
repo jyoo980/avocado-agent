@@ -308,9 +308,7 @@ def generate_mutants_and_compute_score(
 
     # Operator-swap mutations never add or remove calls (or rename functions), so the call graph
     # is identical for the original and every mutant. Build it once and pass it into each
-    # mutant's run_cbmc below. This normally hits the cached JSON written by the run_cbmc call
-    # that verified the unmutated function (the baseline run above, or the caller's own run when
-    # `is_function_already_verified` is True). Besides avoiding redundant parsing, this keeps the
+    # mutant's run_cbmc below. Besides avoiding redundant parsing, this keeps the
     # non-thread-safe tree-sitter parser out of the concurrent section: no call graph is
     # constructed inside the worker threads.
     call_graph = CallGraph(

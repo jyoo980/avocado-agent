@@ -47,7 +47,7 @@ def test_construct_call_graph_with_callees_no_libraries() -> None:
 
 
 def test_construct_call_graph_matches_checked_in_artifact() -> None:
-    # `construct_call_graph` caches its output next to the source; the checked-in artifact for
+    # `construct_call_graph` writes its output next to the source; the checked-in artifact for
     # quicksort.c must stay in sync with what `get_call_graph` produces.
     call_graph = tree_sitter_utils.get_call_graph("test/data/quicksort.c")
     expected = json.loads(Path("test/data/quicksort-callgraph.json").read_text())

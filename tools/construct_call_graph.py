@@ -50,31 +50,33 @@ def construct_call_graph(
         path_to_file_to_verify (str): The path to the file from which to construct a call graph.
 
     Returns:
-        str: The path to the file to which the call graph is written.
+        str: The path to the file to which the call graph is written.  The file is always
+            rewritten, so it reflects the current contents of the C file.
     """
     source_path = Path(path_to_file_to_verify)
     path_to_call_graph = source_path.with_name(f"{source_path.stem}-callgraph.json")
     with _CALL_GRAPH_LOCK:
-        if path_to_call_graph.exists():
-            return str(path_to_call_graph)
         call_graph = get_call_graph(path_to_file_to_verify)
-        # Write to a uniquely named sibling and rename it into place, so that a concurrent process
-        # sees either no file or a complete one. Two processes that race both write identical
-        # content, so whichever rename lands last is harmless.
+        # `construct_call_graph` is called from concurrent code paths (e.g. the evaluation driver
+        # scoring several functions of one file at once), in one process or several. Write to a
+        # uniquely named sibling and rename it into place, so that a concurrent reader sees either
+        # the previous file or a complete new one, never a partially written one.
         #
         # The temporary file is created with `open(..., "x")` rather than `tempfile`, because
         # `tempfile` creates owner-only (0600) files and the rename would preserve that mode,
-        # making the cache unreadable to other users (e.g. a host user after a root Docker run).
+        # making the file unreadable to other users (e.g. a host user after a root Docker run).
         # `open` creates the file with the usual 0666 & ~umask permissions. The name uses a short
-        # fixed prefix, not the cache name, so it stays within filesystem filename-length limits.
+        # fixed prefix, not the call graph's name, so it stays within filesystem filename-length
+        # limits.
         tmp_path = path_to_call_graph.with_name(f".callgraph-{uuid.uuid4().hex}.tmp")
         try:
             with tmp_path.open("x", encoding="utf-8") as tmp:
                 tmp.write(json.dumps(call_graph, indent=4))
             tmp_path.replace(path_to_call_graph)
-        except BaseException:
+        finally:
+            # After a successful replace the temporary path no longer exists; after a failure,
+            # this removes the abandoned temporary file.
             tmp_path.unlink(missing_ok=True)
-            raise
     return str(path_to_call_graph)
 
 
