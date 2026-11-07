@@ -748,9 +748,6 @@ def _run_swap_whose_edit_to_partition_is_left_out(tmp_path, monkeypatch, swap_ve
     monkeypatch.setattr(avocado_verify, "_run_claude", claude)
     monkeypatch.setattr(avocado_verify, "verify_function", ground_truth)
     monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
-    monkeypatch.setattr(
-        avocado_verify, "is_spec_improvable_with_mutation_testing", lambda *a, **k: False
-    )
     state = avocado_verify._MergeState(active={"swap", "partition"}, verified=set())
     result = avocado_verify._verify_via_agent(
         "swap",
@@ -895,9 +892,6 @@ def test_a_function_broken_by_another_sessions_edit_to_its_callee_gets_another_s
     monkeypatch.setattr(avocado_verify, "_run_claude", claude)
     monkeypatch.setattr(avocado_verify, "verify_function", ground_truth)
     monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
-    monkeypatch.setattr(
-        avocado_verify, "is_spec_improvable_with_mutation_testing", lambda *a, **k: False
-    )
     state = avocado_verify._MergeState(active={"quickSort"}, verified={"partition"})
     result = avocado_verify._verify_via_agent(
         "quickSort",
@@ -947,9 +941,6 @@ def test_merge_reruns_stop_at_their_own_cap(tmp_path: Path, monkeypatch) -> None
     monkeypatch.setattr(avocado_verify, "_run_claude", claude)
     monkeypatch.setattr(avocado_verify, "verify_function", ground_truth)
     monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
-    monkeypatch.setattr(
-        avocado_verify, "is_spec_improvable_with_mutation_testing", lambda *a, **k: False
-    )
     state = avocado_verify._MergeState(active={"quickSort"}, verified=set())
     result = avocado_verify._verify_via_agent(
         "quickSort",
@@ -1139,9 +1130,6 @@ def test_a_function_verified_against_an_unverified_callee_says_so(
     monkeypatch.setattr(avocado_verify, "_run_claude", claude)
     monkeypatch.setattr(avocado_verify, "verify_function", _FakeVerify())
     monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
-    monkeypatch.setattr(
-        avocado_verify, "is_spec_improvable_with_mutation_testing", lambda *a, **k: False
-    )
     state = avocado_verify._MergeState(
         active={"quickSort"}, unverified={"partition": "VACUOUS (end_unreachable)"}
     )
