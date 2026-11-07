@@ -92,39 +92,37 @@ OUTSIDE_MAX_KB=10240
 # shellcheck disable=SC2329
 collect_outside_subject() {
   [ -n "$START_MARKER" ] && [ -f "$START_MARKER" ] || return 0
-  local dest="$OUT_DIR/outside-subject" list
+  local dest="$OUT_DIR/outside-subject" small big
   local roots=(/tmp /var/tmp /app)
   if [ -n "${HOME:-}" ] && [ -d "$HOME" ] && [ "$HOME" != / ]; then
     roots+=("$HOME")
   fi
-  list="$(mktemp /tmp/avocado-outside.XXXXXX)"
+  small="$(mktemp /tmp/avocado-outside.XXXXXX)"
+  big="$(mktemp /tmp/avocado-outside.XXXXXX)"
   find "${roots[@]}" \
-    \( -path "$SUBJECT_DIR" -o -path "$OUT_DIR" -o -path "$START_MARKER" -o -path "$list" \
+    \( -path "$SUBJECT_DIR" -o -path "$OUT_DIR" -o -path "$START_MARKER" \
+       -o -path "$small" -o -path "$big" \
        -o -path "${CLAUDE_CONFIG_DIR:-/nonexistent}" -o -path '/tmp/avocado-bin.*' \
        -o -path '/tmp/avocado-cbmc-*' -o -path '/tmp/avocado-compiled-*' \
        -o -path '/tmp/avocado-vacuity-*' -o -path /app/.venv -o -path "${HOME:-/nonexistent}/.*" \) -prune \
-    -o -type f -cnewer "$START_MARKER" ! -name '*.goto' -print0 2>/dev/null >"$list" || true
-  if [ -s "$list" ]; then
-    mkdir -p "$dest"
-    local small big
-    small="$(mktemp /tmp/avocado-outside.XXXXXX)"
-    big="$(mktemp /tmp/avocado-outside.XXXXXX)"
+    -o -type f -cnewer "$START_MARKER" ! -name '*.goto' -print0 2>/dev/null |
     while IFS= read -r -d '' f; do
       if [ "$(du -k -- "$f" 2>/dev/null | cut -f1)" -le "$OUTSIDE_MAX_KB" ] 2>/dev/null; then
         printf '%s\0' "$f" >>"$small"
       else
         printf '%s\t%s KiB\n' "$f" "$(du -k -- "$f" 2>/dev/null | cut -f1)" >>"$big"
       fi
-    done <"$list"
-    if [ -s "$small" ]; then
-      tar --null -T "$small" -cf - 2>/dev/null | tar -C "$dest" -xf - 2>/dev/null || true
-    fi
-    if [ -s "$big" ]; then
-      cp "$big" "$dest/SKIPPED.txt"
-    fi
-    rm -f "$small" "$big"
+    done
+  if [ -s "$small" ] || [ -s "$big" ]; then
+    mkdir -p "$dest"
   fi
-  rm -f "$list"
+  if [ -s "$small" ]; then
+    tar --null -T "$small" -cf - 2>/dev/null | tar -C "$dest" -xf - 2>/dev/null || true
+  fi
+  if [ -s "$big" ]; then
+    cp "$big" "$dest/SKIPPED.txt"
+  fi
+  rm -f "$small" "$big"
 }
 # shellcheck disable=SC2329
 publish() {
