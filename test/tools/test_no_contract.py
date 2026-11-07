@@ -2,8 +2,12 @@
 
 from pathlib import Path
 
-from tools.run_cbmc import DEFAULT_CBMC_DEPTH, RunCbmcResult, has_contract
-from tools.run_cbmc_and_mutation_testing import verify_function
+import pytest
+
+import tools.run_cbmc
+from avocado_verify import ClaudeRun, GroundTruthVerificationResult, _outcome_for
+from eval.verify_program import _verify_function
+from tools.run_cbmc import DEFAULT_CBMC_DEPTH, RunCbmcResult, has_contract, verify_function
 
 SOURCE = b"""int answer(void) { return 42; }
 
@@ -37,7 +41,6 @@ def test_the_compiled_program_says_which_functions_have_a_contract(tmp_path: Pat
     assert has_contract("pick", source) is False
 
 
-
 def test_a_file_that_does_not_compile_tells_nothing(tmp_path: Path) -> None:
     broken = tmp_path / "broken.c"
     broken.write_text("int f(void) { return }\n")
@@ -49,7 +52,9 @@ def test_a_function_without_a_contract_is_not_verified(tmp_path: Path) -> None:
     source = str(_source(tmp_path))
     result = verify_function("answer", source, depth=DEFAULT_CBMC_DEPTH)
     assert str(result) == "NO_CONTRACT" and not result.is_function_verified
-    assert result.no_contract and result.cbmc_ran_successfully and result.vacuity_check_result is None
+    assert (
+        result.no_contract and result.cbmc_ran_successfully and result.vacuity_check_result is None
+    )
     assert "has no contract" in result.response
     assert str(verify_function("pick", source, depth=DEFAULT_CBMC_DEPTH)) == "NO_CONTRACT"
     assert verify_function("clear", source, depth=DEFAULT_CBMC_DEPTH).is_function_verified
@@ -58,3 +63,62 @@ def test_a_function_without_a_contract_is_not_verified(tmp_path: Path) -> None:
 def test_no_contract_outranks_the_other_verdicts_of_a_pass() -> None:
     result = RunCbmcResult("f", None, False, 0, "ok", no_contract=True)
     assert str(result) == "NO_CONTRACT" and not result.is_function_verified
+
+
+def test_the_ground_truth_verdict_of_a_function_without_a_contract_is_not_verified() -> None:
+    claude = ClaudeRun(0, False, False, None, "done", None, None, None, "success")
+    no_contract = RunCbmcResult("f", None, False, 0, "ok", no_contract=True)
+    assert _outcome_for(claude, no_contract) == GroundTruthVerificationResult.UNVERIFIED
+    verified = RunCbmcResult("f", None, False, 0, "ok")
+    assert _outcome_for(claude, verified) == GroundTruthVerificationResult.VERIFIED
+
+
+def test_the_evaluation_does_not_count_a_function_without_a_contract(tmp_path: Path) -> None:
+    source = str(_source(tmp_path))
+    assert str(_verify_function("answer", source).run_cbmc_result) == "NO_CONTRACT"
+    assert not _verify_function("answer", source).is_function_verified
+    assert _verify_function("clear", source).is_function_verified
+
+
+def _verify_with_probe(monkeypatch: pytest.MonkeyPatch, probe: bool | None) -> RunCbmcResult:
+    """Run `verify_function` on a passing pipeline whose contract probe returns `probe`.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Used to stub out the pipeline and the probe.
+        probe (bool | None): What the stubbed `has_contract` returns.
+
+    Returns:
+        RunCbmcResult: The result `verify_function` returns.
+    """
+    passing = RunCbmcResult("f", None, False, 0, "ok")
+    monkeypatch.setattr(tools.run_cbmc, "run_cbmc", lambda **_: passing)
+    monkeypatch.setattr(tools.run_cbmc, "has_contract", lambda *_: probe)
+    return verify_function("f", "f.c")
+
+
+def test_a_failed_contract_probe_is_a_distinct_unverified_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _verify_with_probe(monkeypatch, None)
+    assert str(result) == "CONTRACT_PROBE_FAILED" and not result.is_function_verified
+    assert result.contract_probe_failed and not result.no_contract
+    assert result.cbmc_ran_successfully
+    assert "could not be determined" in result.response
+    assert "has no contract" not in result.response
+
+
+def test_only_a_probe_that_finds_no_contract_sets_no_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing = _verify_with_probe(monkeypatch, False)
+    assert str(missing) == "NO_CONTRACT" and missing.no_contract
+    assert not missing.contract_probe_failed and "has no contract" in missing.response
+    present = _verify_with_probe(monkeypatch, True)
+    assert str(present) == "PASS" and present.is_function_verified
+    assert not present.no_contract and not present.contract_probe_failed
+
+
+def test_the_ground_truth_verdict_of_a_failed_contract_probe_is_not_verified() -> None:
+    claude = ClaudeRun(0, False, False, None, "done", None, None, None, "success")
+    probe_failed = RunCbmcResult("f", None, False, 0, "ok", contract_probe_failed=True)
+    assert _outcome_for(claude, probe_failed) == GroundTruthVerificationResult.UNVERIFIED

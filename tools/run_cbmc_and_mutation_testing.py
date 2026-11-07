@@ -6,10 +6,10 @@ Usage:
                        [--depth <DEPTH>] \
                        [-I <PATH_TO_INCLUDE_DIR(S)>]...
 
-The CBMC pipeline itself lives in `tools.run_cbmc`; this module adds the command-line interface,
-the checks that a passing function has a contract and that the run is not vacuous
-(`tools.util.vacuity`), the verification-attempt log, and mutation testing (only when the function
-verifies, and not vacuously).
+The CBMC pipeline itself, and the check that a passing function has a contract, live in
+`tools.run_cbmc`; this module adds the command-line interface, the check that the run is not
+vacuous (`tools.util.vacuity`), the verification-attempt log, mutation testing (only when the
+function verifies, and not vacuously), and the mutation-feedback log.
 """
 
 import argparse
@@ -22,7 +22,8 @@ from pathlib import Path
 
 from loguru import logger
 
-from tools.run_cbmc import DEFAULT_CBMC_DEPTH, RunCbmcResult, has_contract, run_cbmc
+from tools.run_cbmc import DEFAULT_CBMC_DEPTH, RunCbmcResult
+from tools.run_cbmc import verify_function as verify_function_and_contract
 from tools.util.edit_rules import hash_for_function_definition
 from tools.util.mutation import (
     MutationScore,
@@ -43,7 +44,7 @@ from tools.util.vacuity_check_result import Vacuity
 _AGENT_MUTANT_TIMEOUT_SEC = 120
 
 # Exit status of the tool when the pipeline passes but that does not count as verified: the proof
-# is vacuous, or the function has no contract.
+# is vacuous, the function has no contract, or its contract check failed.
 _EXIT_NOT_VERIFIED = 1
 
 # Suffix of the sibling JSONL log in which `main` records one entry per top-level verification
@@ -72,11 +73,11 @@ def main() -> None:
             "vacuity with one more CBMC run; a vacuous pass is reported as VACUOUS and exits "
             "with a non-zero status. "
             "On success, additionally runs mutation testing, which re-runs the full CBMC "
-            "pipeline once per mutant (several mutants in parallel, with a timeout of "
-            f"{_AGENT_MUTANT_TIMEOUT_SEC} s on each CBMC step); this can take a few minutes, "
-            "during which the tool is mostly silent. This is expected, not a hang -- do not "
-            "interrupt the process. Consider running it in the background and polling for "
-            "completion."
+            "pipeline once per mutant (several mutants in parallel; each CBMC step has a timeout "
+            f"of {_AGENT_MUTANT_TIMEOUT_SEC} s, and retries can lengthen a mutant's run); this "
+            "can take a few minutes, during which the tool is mostly silent. This is expected, "
+            "not a hang -- do not interrupt the process. Consider running it in the background "
+            "and polling for completion."
         )
     )
     parser.add_argument("--function", required=True, help="Name of the function to verify.")
@@ -134,7 +135,7 @@ def main() -> None:
             file_path=args.file,
             target_function=args.function,
             include_dirs=args.include_dirs,
-            skip_reverification=True,
+            is_function_already_verified=result.is_function_verified,
             mutant_timeout_sec=_AGENT_MUTANT_TIMEOUT_SEC,
             depth=args.depth,
         )
@@ -144,7 +145,8 @@ def main() -> None:
         sys.exit(0)
     else:
         print(result.response)
-        # A vacuous or contract-less pass carries the pipeline's own exit code, which is 0.
+        # A vacuous or contract-less pass, or one whose contract check failed, carries the
+        # pipeline's own exit code, which is 0.
         sys.exit(result.returncode or _EXIT_NOT_VERIFIED)
 
 
@@ -156,19 +158,15 @@ def verify_function(
     depth: int,
     vacuity_check: bool = True,
 ) -> RunCbmcResult:
-    """Run the CBMC pipeline on `function`, then check a passing run for a contract and vacuity.
+    """Run `tools.run_cbmc.verify_function` on `function`, then check a passing run for vacuity.
 
-    A run that passes is then checked for a contract: a function without one is checked against
-    an empty contract, which nothing can violate, so it is returned with
-    `RunCbmcResult.no_contract` set (printing as `NO_CONTRACT`) and does not count as verified.
-    A run that passes and has a contract is then checked for vacuity
+    `tools.run_cbmc.verify_function` runs the pipeline and checks that a passing function has a
+    contract. A run that passes and has a contract is then checked for vacuity
     (`tools.util.vacuity.check_vacuity`), with one more run of the pipeline. A vacuous pass is
     returned with `RunCbmcResult.vacuity_check_result` set, so it does not count as verified
     (`is_function_verified` is False and it prints as `VACUOUS`), and with a response that says
-    what was found. This is the one function through which the agent's tool, the harness's ground
-    truth and both re-verification checks verify a function, so they all agree on what a
-    contract-less or vacuous proof is. When the check itself gives no answer the pass stands,
-    with a `vacuity_check_result` whose vacuity is `Vacuity.UNKNOWN`.
+    what was found. When the check itself gives no answer the pass stands, with a
+    `vacuity_check_result` whose vacuity is `Vacuity.UNKNOWN`.
 
     Args:
         function (str): Name of the function to verify.
@@ -183,25 +181,9 @@ def verify_function(
     Returns:
         RunCbmcResult: The outcome of the run.
     """
-    result = run_cbmc(
-        function_to_verify=function,
-        file_containing_function_to_verify=file_path,
-        include_dirs=include_dirs,
-        depth=depth,
-    )
+    result = verify_function_and_contract(function, file_path, include_dirs, depth=depth)
     if not result.is_function_verified:
         return result
-    if has_contract(function, file_path, include_dirs) is False:
-        return replace(
-            result,
-            no_contract=True,
-            response=(
-                f"{function} has no contract, which does not count as verified: with no "
-                "__CPROVER_requires, __CPROVER_ensures or __CPROVER_assigns clause on the "
-                "definition that is compiled, CBMC checks an empty contract that nothing can "
-                "violate. Write the function's contract between its signature and its body."
-            ),
-        )
     if not vacuity_check:
         return result
     vacuity_check_result = check_vacuity(

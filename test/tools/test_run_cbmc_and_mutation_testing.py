@@ -97,7 +97,10 @@ def test_the_depth_of_a_run_reaches_the_record_the_probe_and_the_mutants(
 
     monkeypatch.setattr(tools.util.mutation, "run_cbmc", mutant_spy)
     score = generate_mutants_and_compute_score(
-        file_path=str(src), target_function="partition", skip_reverification=True, depth=300
+        file_path=str(src),
+        target_function="partition",
+        is_function_already_verified=True,
+        depth=300,
     )
     assert isinstance(score, MutationScore) and score.num_mutants == len(mutant_depths) > 0
     assert set(mutant_depths) == {300}
