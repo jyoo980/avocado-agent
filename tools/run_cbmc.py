@@ -9,9 +9,9 @@ Usage:
 import argparse
 import fcntl
 import json
+import os
 import re
 import shlex
-import os
 import stat
 import subprocess
 import sys
