@@ -12,14 +12,10 @@ from tools.util import tree_sitter_utils
 
 def test_construct_call_graph_only_leaf_nodes() -> None:
     call_graph = tree_sitter_utils.get_call_graph("test/data/no_callees.c")
-    assert call_graph.size() == 3, (
-        f"Expected 3 functions in simple.c, but got {call_graph.size()}"
-    )
+    assert call_graph.size() == 3, f"Expected 3 functions in simple.c, but got {call_graph.size()}"
     functions = ["foo", "bar", "baz"]
     for f in functions:
-        assert call_graph.get_callees(f) == CallGraphCallees(
-            internal=[], external=[]
-        ), (
+        assert call_graph.get_callees(f) == CallGraphCallees(internal=[], external=[]), (
             f"Expected '{f}' in simple.c to have no callees, but got {call_graph.get_callees(f)}"
         )
 
@@ -29,9 +25,7 @@ def test_construct_call_graph_with_callees_no_libraries() -> None:
     assert call_graph.size() == 3, (
         f"Expected 3 functions in quicksort.c, but got {call_graph.size()}"
     )
-    assert call_graph.get_callees("swap") == CallGraphCallees(
-        internal=[], external=[]
-    ), (
+    assert call_graph.get_callees("swap") == CallGraphCallees(internal=[], external=[]), (
         f"Expected 'swap' in quicksort.c' to have no callees, but got {call_graph.get_callees('swap')}"
     )
     partition_callees = call_graph.get_callees("partition")
@@ -81,15 +75,11 @@ def test_construct_call_graph_recovers_function_with_cprover_forall_clause() -> 
     )
 
 
-def test_construct_call_graph_recovers_function_with_cprover_forall_and_subscript_clause() -> (
-    None
-):
+def test_construct_call_graph_recovers_function_with_cprover_forall_and_subscript_clause() -> None:
     # Subscript syntax inside a `__CPROVER_forall` clause (e.g., `arr[k]`) nests the real
     # `function_declarator` under one or more `array_declarator` wrappers inside the ERROR node,
     # rather than as a direct child. The call-graph build must still recover the function.
-    call_graph = tree_sitter_utils.get_call_graph(
-        "test/data/quicksort_with_forall_subscript.c"
-    )
+    call_graph = tree_sitter_utils.get_call_graph("test/data/quicksort_with_forall_subscript.c")
     assert call_graph.size() == 3, (
         f"Expected 3 functions in quicksort_with_forall_subscript.c, but got {call_graph.size()}"
     )
