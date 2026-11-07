@@ -868,16 +868,30 @@ def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, 
 
     # Over budget: keep the leading FAILURE lines and replace each stream with its tail.
     remaining = max(_MAX_RESPONSE_CHARS - len(header) - len(failure_section), 0)
-    stdout_budget = int(remaining * _STDOUT_TAIL_SHARE)
-    # Give stderr whatever stdout's share does not need, then give stdout whatever stderr does
-    # not use. When both streams are long, the sections get their shares of `remaining`.
-    stdout_section = _tail_section("stdout (tail)", stdout, stdout_budget)
-    stderr_section = _tail_section("stderr (tail)", stderr, remaining - len(stdout_section))
-    stdout_section = _tail_section("stdout (tail)", stdout, remaining - len(stderr_section))
+    # The shortest each section can be: its label, its truncation marker, and no tail.
+    stdout_minimum = len(_tail_section("stdout (tail)", stdout, 0))
+    stderr_minimum = len(_tail_section("stderr (tail)", stderr, 0))
+    if remaining < stdout_minimum + stderr_minimum:
+        # There is no room for both sections. Omit stderr, because CBMC prints its verdict at
+        # the end of stdout; omit stdout too if even its shortest section does not fit.
+        stderr_section = ""
+        stdout_section = (
+            _tail_section("stdout (tail)", stdout, remaining)
+            if remaining >= stdout_minimum
+            else ""
+        )
+    else:
+        stdout_budget = int(remaining * _STDOUT_TAIL_SHARE)
+        # Give stderr whatever stdout's share does not need, then give stdout whatever stderr
+        # does not use. When both streams are long, the sections get their shares of
+        # `remaining`. Because `remaining` holds both shortest sections, both sections fit.
+        stdout_section = _tail_section("stdout (tail)", stdout, stdout_budget)
+        stderr_section = _tail_section("stderr (tail)", stderr, remaining - len(stdout_section))
+        stdout_section = _tail_section("stdout (tail)", stdout, remaining - len(stderr_section))
 
     response = f"{header}{failure_section}{stderr_section}{stdout_section}"
-    # Hard clamp: each section fits its budget unless the budget cannot hold even the section's
-    # label and truncation marker.
+    # Hard clamp: the sections fit `remaining`, so this cuts only a header and FAILURE section
+    # that by themselves exceed the budget (which requires an enormous function name).
     return response[:_MAX_RESPONSE_CHARS]
 
 
