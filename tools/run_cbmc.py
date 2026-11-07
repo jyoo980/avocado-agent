@@ -1267,7 +1267,11 @@ def _list_goto_functions(
 
 
 def verify_function(
-    function: str, file_path: str, include_dirs: list[str] | None = None
+    function: str,
+    file_path: str,
+    include_dirs: list[str] | None = None,
+    *,
+    call_graph: CallGraph | None = None,
 ) -> RunCbmcResult:
     """Run the CBMC pipeline on `function`, then check that a passing function has a contract.
 
@@ -1281,6 +1285,8 @@ def verify_function(
         function (str): Name of the function to verify.
         file_path (str): Path to the C file defining the function.
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+        call_graph (CallGraph | None): The call graph of `file_path`, forwarded to `run_cbmc`.
+            When None, it is constructed from `file_path`.
 
     Returns:
         RunCbmcResult: The outcome of the run.
@@ -1289,6 +1295,7 @@ def verify_function(
         function_to_verify=function,
         file_containing_function_to_verify=file_path,
         include_dirs=include_dirs,
+        call_graph=call_graph,
     )
     if not result.is_function_verified:
         return result
