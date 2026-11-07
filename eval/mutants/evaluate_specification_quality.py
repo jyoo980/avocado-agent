@@ -45,7 +45,12 @@ from eval.mutants.compute_clause_redundancy import compute_clause_redundancy_sco
 from eval.mutants.generate_mutants_and_compute_score import generate_mutants_and_compute_score
 from eval.mutants.util import get_files_with_extension
 from tools.run_cbmc import max_concurrent_subprocesses
-from tools.util import get_functions_with_cprover_annotations
+from tools.util import (
+    AUTO_INCLUDE_HELP,
+    get_functions_with_cprover_annotations,
+    get_include_dirs,
+    resolve_include_dirs,
+)
 from tools.util.mutation import MutationScore
 
 
@@ -57,11 +62,7 @@ def main() -> None:
     parser.add_argument("path", help="Path to a C file or directory of C files.")
     parser.add_argument(
         "--auto-include",
-        help=(
-            "For each .c file, look for a sibling include/ directory at "
-            "<source>/../include and pass it to CBMC as an include path. "
-            "Fits projects whose headers live next to their src/ tree."
-        ),
+        help=AUTO_INCLUDE_HELP,
         action="store_true",
     )
     parser.add_argument(
@@ -112,12 +113,15 @@ def main() -> None:
         logger.error(f"No .c files found at: {args.path}")
         sys.exit(1)
 
+    try:
+        include_dirs_from_cli = resolve_include_dirs(args.include_dirs or [])
+    except ValueError as e:
+        parser.error(str(e))
     # This stream is closed in a `finally` block.
     output_stream: IO[str] = (
         Path(args.jsonl).open("w", encoding="utf-8") if args.jsonl else sys.stdout  # ruff: ignore[open-file-with-context-handler]
     )
     try:
-        include_dirs_from_cli = args.include_dirs or []
         with ThreadPoolExecutor(max_workers=args.jobs) as executor:
             try:
                 # Submit every file's scoring tasks up front so the pool is never idle while one
@@ -179,10 +183,10 @@ def _submit_file(
 
     Arguments:
         source (Path): The path to the file for evaluation.
-        auto_include (bool): True iff an `include` dir (i.e., a dir containing headers) should be
-            automatically detected.
+        auto_include (bool): True iff the auto-detected include directory (see
+            `get_include_dirs()`) should be added to CBMC's include search path.
         include_dirs (list[str]): List of directories containing files (e.g., headers) that should
-            be included in verification.
+            be included in verification, as returned by `resolve_include_dirs()`.
         run_mutation (bool): True iff mutation testing should be reported.
         run_redundancy (bool): True iff redundancy scoring should be reported.
         keep_artifacts (bool): True iff the mutant files should be retained after evaluation.
@@ -197,11 +201,7 @@ def _submit_file(
         logger.warning(f"{source} had no functions with CBMC annotations")
         return _SubmittedFile(source, [], [], [])
 
-    include_dirs = (
-        [*_autodetect_include_dirs(str(source)), *include_dirs] if auto_include else include_dirs
-    )
-    if include_dirs:
-        logger.debug(f"[auto-include] using {include_dirs}")
+    include_dirs = get_include_dirs(str(source), include_dirs, auto_include=auto_include)
 
     mutation_futures: list[Future[dict]] = []
     if run_mutation:
@@ -218,7 +218,13 @@ def _submit_file(
     redundancy_futures: list[Future[dict | None]] = []
     if run_redundancy:
         redundancy_futures = [
-            executor.submit(_redundancy_record, source, function, keep_artifacts=keep_artifacts)
+            executor.submit(
+                _redundancy_record,
+                source,
+                function,
+                include_dirs=include_dirs,
+                keep_artifacts=keep_artifacts,
+            )
             for function in functions_with_cprover_annotations
         ]
     return _SubmittedFile(
@@ -273,12 +279,15 @@ def _mutation_record(
     }
 
 
-def _redundancy_record(source: Path, function: str, *, keep_artifacts: bool) -> dict | None:
+def _redundancy_record(
+    source: Path, function: str, *, include_dirs: list[str], keep_artifacts: bool
+) -> dict | None:
     """Return the clause-redundancy-summary JSONL record for one function.
 
     Arguments:
         source (Path): The path to the file containing the function.
         function (str): The function whose contract clauses should be scored.
+        include_dirs (list[str]): Directories forwarded to CBMC as include paths.
         keep_artifacts (bool): True iff the removed-clause files should be retained after
             evaluation.
 
@@ -287,29 +296,12 @@ def _redundancy_record(source: Path, function: str, *, keep_artifacts: bool) -> 
             function could not be scored (for example, because it does not verify).
     """
     clause_redundancy_score = compute_clause_redundancy_score(
-        str(source), function, keep_artifacts=keep_artifacts
+        str(source), function, keep_artifacts=keep_artifacts, include_dirs=include_dirs
     )
     if not clause_redundancy_score:
         logger.warning(f"No redundancy score calculation reported for: '{source!s}#{function}'")
         return None
     return clause_redundancy_score.summary()
-
-
-def _autodetect_include_dirs(source_file: str) -> list[str]:
-    """Return `[<source>/../include]` if that directory exists, else an empty list.
-
-    Many CMake projects keep public headers in `<project>/include/` while sources live in
-    `<project>/src/`. When that layout holds, returning the sibling `include/` directory lets
-    CBMC resolve `#include "foo.h"` without the caller having to configure paths by hand.
-
-    Args:
-        source_file (str): Path to a `.c` file.
-
-    Returns:
-        list[str]: `[<resolved include dir>]` when present, else `[]`.
-    """
-    candidate = Path(source_file).resolve().parent.parent / "include"
-    return [str(candidate)] if candidate.is_dir() else []
 
 
 if __name__ == "__main__":

@@ -495,10 +495,12 @@ def _run_cbmc_in_directory(
         RunCbmcResult: The outcome of the run.
     """
     # The pipeline's commands are executed relative to `cwd`, so relative paths given by the
-    # caller (which are relative to the process's working directory) must be resolved first. The
-    # invocation log still records the path as the caller gave it.
-    resolved_file = str(Path(file_containing_function_to_verify).resolve())
-    include_dirs = [str(Path(d).resolve()) for d in include_dirs or []]
+    # caller (which are relative to the process's working directory) must be made absolute first.
+    # Unlike `Path.resolve`, `Path.absolute` does not follow symlinks, so a symlinked file sees the
+    # same quoted `#include`s as it would if compiled in place. The invocation log still records
+    # the path as the caller gave it.
+    resolved_file = str(Path(file_containing_function_to_verify).absolute())
+    include_dirs = [str(Path(d).absolute()) for d in include_dirs or []]
 
     if call_graph is None:
         path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)

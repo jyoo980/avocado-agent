@@ -586,6 +586,29 @@ def test_print_mutation_progress_buckets_undecided_mutants(capsys) -> None:
     )
 
 
+def test_run_cbmc_resolves_relative_paths_against_callers_cwd(tmp_path: Path) -> None:
+    # The subprocesses run in `scratch`, but the relative source file and include directory are
+    # relative to the caller's working directory.
+    (tmp_path / "include").mkdir()
+    (tmp_path / "include" / "seven.h").write_text("#define SEVEN 7\n", encoding="utf-8")
+    src = tmp_path / "seven.c"
+    src.write_text('#include "seven.h"\nint seven(void) { return SEVEN; }\n', encoding="utf-8")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    original_cwd = Path.cwd()
+    try:
+        os.chdir(tmp_path)
+        result = run_cbmc(
+            function_to_verify="seven",
+            file_containing_function_to_verify=src.name,
+            include_dirs=["include"],
+            cwd=str(scratch),
+        )
+    finally:
+        os.chdir(original_cwd)
+    assert result.failed_step is not CbmcStep.GOTO_CC
+
+
 ALLOCATING_SOURCE = """#include <stdlib.h>
 struct abuf { char *b; int len; };
 
