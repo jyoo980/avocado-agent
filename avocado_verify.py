@@ -64,16 +64,22 @@ _MAX_PARSE_SNIPPET_CHARS = 500
 _USAGE_LIMIT_RESULT_PATTERNS = ("usage limit reached", "rate limit", "resets ")
 
 # The loop re-runs a function's `claude -p` session until the agent has *attempted* verification
+# [[MDE: what is "the loop"?  Giving it a name, such as "the belly-rubbing loop".]]
 # (run `avocado-run-cbmc`) at least this many times for the function, summed over the function's
 # sessions and counted from the verification-attempts log. This guards against advancing on a
 # session that barely tried. The loop advances without reaching this floor if the function
+# [[MDE: Is this the same loop?  Does this text mean that there is a number that it does not
+# increment?]]
 # verifies, if a session times out or hits a usage limit, or after
 # `_MAX_AGENT_SESSIONS_PER_FUNCTION` sessions.
 _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION = 2
 
 # Upper bound on how many `claude -p` sessions a single function receives while trying to reach
+# [[MDE: Which `claude -p` sessions don't count toward this bound?]]
 # `_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION`. Prevents an unproductive session from looping forever;
 # once hit, the harness proceeds anyway and records the shortfall.
+# [[MDE: How and when do `_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION` and
+# `_MAX_AGENT_SESSIONS_PER_FUNCTION` get out of sync?]]
 _MAX_AGENT_SESSIONS_PER_FUNCTION = 3
 
 # Sets the max number of times a session is re-run when it initially ends without a verification
@@ -155,8 +161,8 @@ class FunctionVerificationResult:
         function (str): The function under verification.
         outcome (GroundTruthVerificationResult): The harness's overall verdict for the function.
         claude_sessions (list[ClaudeRun]): The `claude -p` sessions that resulted in the spec.
-        cbmc (RunCbmcResult): The independent CBMC verification the harness ran after the last
-            session.
+        cbmc_result (RunCbmcResult): The independent CBMC verification the harness ran after the
+            last session.
         internal_callees (list[str]): The function's in-file callees, for the run log.
         verification_attempts (int): How many times the agent attempted verification (ran
             `avocado-run-cbmc`) for this function across all its sessions.
@@ -170,7 +176,7 @@ class FunctionVerificationResult:
     function: str
     outcome: GroundTruthVerificationResult
     claude_sessions: list[ClaudeRun]
-    cbmc: RunCbmcResult
+    cbmc_result: RunCbmcResult
     internal_callees: list[str]
     verification_attempts: int
     agent_sessions: int
@@ -195,15 +201,15 @@ class FunctionVerificationResult:
             "agent_sessions": self.agent_sessions,
             "claude": claude_session_records,
             "cbmc": {
-                "verdict": str(self.cbmc),
-                "is_function_verified": self.cbmc.is_function_verified,
-                "no_contract": self.cbmc.no_contract,
-                "contract_probe_failed": self.cbmc.contract_probe_failed,
-                "returncode": self.cbmc.returncode,
-                "timed_out": self.cbmc.timed_out,
+                "verdict": str(self.cbmc_result),
+                "is_function_verified": self.cbmc_result.is_function_verified,
+                "no_contract": self.cbmc_result.no_contract,
+                "contract_probe_failed": self.cbmc_result.contract_probe_failed,
+                "returncode": self.cbmc_result.returncode,
+                "timed_out": self.cbmc_result.timed_out,
                 "failed_step": None
-                if self.cbmc.failed_step is None
-                else self.cbmc.failed_step.value,
+                if self.cbmc_result.failed_step is None
+                else self.cbmc_result.failed_step.value,
             },
             "not_in_build": self.not_in_build,
             "total_cost_to_verify_usd": total_cost_to_verify_usd,
@@ -420,7 +426,7 @@ def _not_in_build_result(function: str) -> FunctionVerificationResult:
         function=function,
         outcome=GroundTruthVerificationResult.UNVERIFIED,
         claude_sessions=[],
-        cbmc=RunCbmcResult(
+        cbmc_result=RunCbmcResult(
             function=function,
             failed_step=CbmcStep.GOTO_CC,
             timed_out=False,
@@ -515,12 +521,17 @@ def _verify_via_agent(
     )
 
     # Attempts already logged before this turn (e.g. by an earlier function's session that also
+    # [[Does each function's session strictly work on that function, or might it also do work on some other function, such as callees or callers?]]
     # exercised this one); gate only on attempts made from here forward.
     records = _read_jsonl_records(attempts_log_path)
     previous_verification_attempts = _count_verification_attempts(records, function)
     previous_file_verification_attempts = _count_verification_attempts(records)
 
     # Do not advance to the next function until the agent has attempted verification at least
+    # [[MDE: I find it hard to remember the meaning of "attempted verification":  is it claude
+    # sessions or cbmc calls?  Maybe neither, but calls to `avocado-run-cbmc`, which might run cbmc
+    # multiple times (or possibly zero).  I suggest giving a different name to each of those things,
+    # for clarity.  (One of them could still be "attempted verification", perhaps.)]]
     # `_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION` times, re-running the session up to a capped number
     # of times -- but only while a re-run can plausibly do better than the session before it (see
     # `_should_rerun_session`).
@@ -542,8 +553,8 @@ def _verify_via_agent(
             _count_verification_attempts(records) - previous_file_verification_attempts
         )
         # Objective verdict: re-run CBMC rather than trust Claude's self-report.
-        cbmc = verify_function(function, file_path, include_dirs=include_dirs)
-        verified = cbmc.is_function_verified
+        cbmc_result = verify_function(function, file_path, include_dirs=include_dirs)
+        verified = cbmc_result.is_function_verified
         decision = _should_rerun_session(
             claude_sessions_for_function,
             attempts_on_function_after_each_session,
@@ -573,9 +584,9 @@ def _verify_via_agent(
 
     return FunctionVerificationResult(
         function=function,
-        outcome=_outcome_for(claude_sessions_for_function[-1], cbmc),
+        outcome=_outcome_for(claude_sessions_for_function[-1], cbmc_result),
         claude_sessions=claude_sessions_for_function,
-        cbmc=cbmc,
+        cbmc_result=cbmc_result,
         internal_callees=call_graph.get_callees(function).internal,
         verification_attempts=current_verification_attempts,
         agent_sessions=sessions,
@@ -739,6 +750,8 @@ def _read_jsonl_records(log_path: Path) -> list[dict[str, object]]:
     return records
 
 
+# [[MDE: Nit: "count" in this name is ambiguous between a verb an a noun.  Maybe it doesn't
+# matter.]]
 def _count_verification_attempts(
     records: list[dict[str, object]], function: str | None = None
 ) -> int:
@@ -969,6 +982,7 @@ def _parse_claude_output(returncode: int, stdout: str, stderr: str) -> ClaudeRun
     )
 
 
+[[MDE: Should this be an instance method?]]
 def _is_usage_limit_hit(claude: ClaudeRun) -> bool:
     """Return True iff a `claude -p` session failed because of a usage/rate limit.
 
@@ -989,7 +1003,7 @@ def _is_usage_limit_hit(claude: ClaudeRun) -> bool:
     return any(pattern in text for pattern in _USAGE_LIMIT_RESULT_PATTERNS)
 
 
-def _outcome_for(claude: ClaudeRun, cbmc: RunCbmcResult) -> GroundTruthVerificationResult:
+def _outcome_for(claude: ClaudeRun, cbmc_result: RunCbmcResult) -> GroundTruthVerificationResult:
     """Combine the Claude session and CBMC verdict into a single outcome.
 
     A passing CBMC run is authoritative; otherwise a Claude-side timeout, usage limit, or error is
@@ -997,12 +1011,12 @@ def _outcome_for(claude: ClaudeRun, cbmc: RunCbmcResult) -> GroundTruthVerificat
 
     Args:
         claude (ClaudeRun): The Claude session outcome.
-        cbmc (RunCbmcResult): The independent CBMC verification result.
+        cbmc_result (RunCbmcResult): The independent CBMC verification result.
 
     Returns:
         GroundTruthVerificationResult: The overall per-function verdict.
     """
-    if cbmc.is_function_verified:
+    if cbmc_result.is_function_verified:
         return GroundTruthVerificationResult.VERIFIED
     if claude.timed_out:
         return GroundTruthVerificationResult.CLAUDE_TIMED_OUT
