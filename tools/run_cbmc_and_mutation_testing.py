@@ -5,10 +5,10 @@ Usage:
                        --file <PATH_TO_C_FILE> \
                        [-I <PATH_TO_INCLUDE_DIR(S)>]...
 
-The CBMC pipeline itself lives in `tools.run_cbmc`; this module adds the command-line interface,
-the checks that a passing function has a contract and that the run is not vacuous
-(`tools.util.vacuity`), the verification-attempt log, and mutation testing (only when the function
-verifies, and not vacuously).
+The CBMC pipeline itself, and the check that a passing function has a contract, live in
+`tools.run_cbmc`; this module adds the command-line interface, the check that the run is not
+vacuous (`tools.util.vacuity`), the verification-attempt log, and mutation testing (only when the
+function verifies, and not vacuously).
 """
 
 import argparse
@@ -20,7 +20,8 @@ from pathlib import Path
 
 from loguru import logger
 
-from tools.run_cbmc import RunCbmcResult, has_contract, run_cbmc
+from tools.run_cbmc import RunCbmcResult
+from tools.run_cbmc import verify_function as verify_function_and_contract
 from tools.util.mutation import (
     generate_mutants_and_compute_score,
     get_mutation_testing_results_for_client,
@@ -37,7 +38,7 @@ from tools.util.vacuity import Vacuity, check_vacuity, describe_vacuous_result
 _AGENT_MUTANT_TIMEOUT_SEC = 120
 
 # Exit status of the tool when the pipeline passes but that does not count as verified: the proof
-# is vacuous, or the function has no contract.
+# is vacuous, the function has no contract, or its contract check failed.
 _EXIT_NOT_VERIFIED = 1
 
 # Suffix of the sibling JSONL log in which `main` records one entry per top-level verification
@@ -106,7 +107,8 @@ def main() -> None:
         sys.exit(0)
     else:
         print(result.response)
-        # A vacuous or contract-less pass carries the pipeline's own exit code, which is 0.
+        # A vacuous or contract-less pass, or one whose contract check failed, carries the
+        # pipeline's own exit code, which is 0.
         sys.exit(result.returncode or _EXIT_NOT_VERIFIED)
 
 
@@ -117,12 +119,10 @@ def verify_function(
     *,
     vacuity_check: bool = True,
 ) -> RunCbmcResult:
-    """Run the CBMC pipeline on `function`, then check a passing run for a contract and vacuity.
+    """Run `tools.run_cbmc.verify_function` on `function`, then check a passing run for vacuity.
 
-    A run that passes is then checked for a contract: a function without one is checked against
-    an empty contract, which nothing can violate, so it is returned with
-    `RunCbmcResult.no_contract` set (printing as `NO_CONTRACT`) and does not count as verified.
-    A run that passes and has a contract is then checked for vacuity
+    `tools.run_cbmc.verify_function` runs the pipeline and checks that a passing function has a
+    contract. A run that passes and has a contract is then checked for vacuity
     (`tools.util.vacuity.check_vacuity`), with one more run of the pipeline. A vacuous pass is
     returned with `RunCbmcResult.vacuity_check_result` set, so it does not count as verified
     (`is_function_verified` is False and it prints as `VACUOUS`), and with a response that says
@@ -140,24 +140,9 @@ def verify_function(
     Returns:
         RunCbmcResult: The outcome of the run.
     """
-    result = run_cbmc(
-        function_to_verify=function,
-        file_containing_function_to_verify=file_path,
-        include_dirs=include_dirs,
-    )
+    result = verify_function_and_contract(function, file_path, include_dirs)
     if not result.is_function_verified:
         return result
-    if has_contract(function, file_path, include_dirs) is False:
-        return replace(
-            result,
-            no_contract=True,
-            response=(
-                f"{function} has no contract, which does not count as verified: with no "
-                "__CPROVER_requires, __CPROVER_ensures or __CPROVER_assigns clause on the "
-                "definition that is compiled, CBMC checks an empty contract that nothing can "
-                "violate. Write the function's contract between its signature and its body."
-            ),
-        )
     if not vacuity_check:
         return result
     vacuity_check_result = check_vacuity(function, file_path, include_dirs, variant=result.variant)
