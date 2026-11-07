@@ -375,8 +375,12 @@ def compute_clause_redundancy_score(
         ]
     finally:
         if not keep_artifacts:
+            # Each mutant's `run_cbmc` call also writes a call-graph cache and a run log next to
+            # the mutant; both are named after the mutant, so they were created by this call too.
             for path in created_paths:
                 path.unlink(missing_ok=True)
+                path.with_name(f"{path.stem}-callgraph.json").unlink(missing_ok=True)
+                path.with_name(f"{path.stem}-cbmc-runs.jsonl").unlink(missing_ok=True)
 
     return _aggregate_clause_redundancy_score(
         in_isolation_results,
