@@ -62,10 +62,18 @@ label="$1"
 run_id="$2"
 shift 2
 
+# Resolve every path to an absolute one before the `cd "${repo_root}"` below, so that relative
+# paths given by the caller keep their caller-relative meaning.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="${AVOCADO_REPO_ROOT:-$(cd "${script_dir}/../.." && pwd)}"
+repo_root="$(realpath -- "${AVOCADO_REPO_ROOT:-${script_dir}/../..}")"
 data_dir="${AVOCADO_DATA_DIR:-${repo_root}/avocado-experimental-data}"
-scorer_root="${AVOCADO_SCORER_ROOT:-${repo_root}}"
+mkdir -p "${data_dir}"
+data_dir="$(realpath -- "${data_dir}")"
+scorer_root="$(realpath -- "${AVOCADO_SCORER_ROOT:-${repo_root}}")"
+benchmark_dirs=()
+for benchmark_dir in "$@"; do
+  benchmark_dirs+=("$(realpath -- "${benchmark_dir}")")
+done
 run_root="${data_dir}/runs/${label}/${run_id}"
 mkdir -p "${run_root}"
 
@@ -112,7 +120,7 @@ verify_completed() {
     && tail -n 1 "${log}" | grep -q '"status": *"completed"'
 }
 
-for benchmark_dir in "$@"; do
+for benchmark_dir in "${benchmark_dirs[@]}"; do
   benchmark="$(basename "${benchmark_dir}")"
   reset_harness
   work_dir="${run_root}/${benchmark}"

@@ -51,14 +51,34 @@ if [ "${#arms[@]}" -lt 2 ] || [ "${#benchmarks[@]}" -lt 1 ] || [ "${#run_ids[@]}
 fi
 
 mkdir -p "${data}"
+# A bare `wait` returns 0 even if an arm fails (e.g. on a usage limit), so wait on each arm's PID
+# and report any failure in the batch summary and the exit status.
+failed=0
 for id in "${run_ids[@]}"; do
+  pids=()
+  labels=()
   for arm in "${arms[@]}"; do
     IFS=: read -r label checkout jobs <<<"${arm}"
     AVOCADO_REPO_ROOT="${checkout}" AVOCADO_DATA_DIR="${data}" AVOCADO_JOBS="${jobs:-}" \
       AVOCADO_SCORER_ROOT="${AVOCADO_SCORER_ROOT:-${repo_root}}" \
       "${script_dir}/run_agent_experiment.sh" "${label}" "${id}" "${benchmarks[@]}" \
       > "${data}/${label}-${id}-run.log" 2>&1 &
+    pids+=("$!")
+    labels+=("${label}")
   done
-  wait
-  echo "batch ${id} finished $(date -u +%FT%TZ)"
+  batch_failed=0
+  for index in "${!pids[@]}"; do
+    if ! wait "${pids[${index}]}"; then
+      echo "batch ${id}: arm ${labels[${index}]} failed; see" \
+        "${data}/${labels[${index}]}-${id}-run.log" >&2
+      batch_failed=1
+    fi
+  done
+  if [ "${batch_failed}" -ne 0 ]; then
+    echo "batch ${id} finished with a failed arm $(date -u +%FT%TZ)" >&2
+    failed=1
+  else
+    echo "batch ${id} finished $(date -u +%FT%TZ)"
+  fi
 done
+exit "${failed}"
