@@ -107,8 +107,12 @@ each session's cost); check these after launching a new treatment.
 
 ```sh
 % eval/experiments/run.sh --harness path/to/harness --subject path/to/subject \
-      --profile eval/experiments/profiles/subscription.env -n 5 --memory 100g
+      --file src/foo.c --profile eval/experiments/profiles/subscription.env -n 5 --memory 100g
 ```
+
+`--file` names the C file to verify, relative to `--subject`. It is required with the
+`avocado-verify` runner (the default for a harness that tracks `avocado_verify.py`) and
+optional with the `claude` runner when the harness has an `AGENTS.md`.
 
 With the `claude` runner the default prompt is
 `Carefully read @../AGENTS.md. Then, verify the C source files in this directory` when the
@@ -168,6 +172,10 @@ and profile default to those in the stopped batch's `batch-info.txt`, which for 
 also records `resumed_from`. `--profile` may name another account, as long as it sets the same
 `AVOCADO_MODEL`; `--timeout`, `--memory` and `--cpus` are not carried over, so pass them again.
 The `claude` runner (one session) cannot be resumed.
+
+Resuming needs the driver's log, `subject/<file>-avocado-verify.jsonl`, in the stopped run. A
+run that timed out or was killed before the driver wrote its log has nothing to resume from, and
+`--resume` refuses it; start a fresh run instead.
 
 #### Resuming a stopped batch
 
@@ -238,25 +246,26 @@ data repository yourself.
 ## Worked Example
 
 Assume you want to run the baseline Claude Code system to generate specs for the `kilo` subject
-    program.
+    program. Run every command below from your home directory (`cd ~`).
 
 1. Set up the harness; clone `avocado-agent` and switch to the
    `yoo/treatments/pure-agentic-baseline` branch:
    ```sh
+   % cd ~
    % git clone -b yoo/treatments/pure-agentic-baseline git@github.com:jyoo980/avocado-agent.git pure-agentic-baseline
    ```
    This clones the `avocado-agent` repository's agentic baseline branch to the working directory.
 2. Set up the subject program:
    ```sh
    % mkdir subject-programs
-   % cd subject-programs && git clone git@github.com:antirez/kilo.git
+   % (cd subject-programs && git clone git@github.com:antirez/kilo.git)
    ```
-   This creates `subject-programs/kilo`.
+   This creates `~/subject-programs/kilo` and leaves the shell in `~`.
 3. Obtain a copy of the experimental scripts (clone the `main` branch of the avocado-agent repo) and
    build the image:
    ```sh
    % git clone git@github.com:jyoo980/avocado-agent.git
-   % cd avocado-agent && make build-image
+   % (cd avocado-agent && make build-image)
    ```
 4. Obtain the long-lived auth token you want to run experiments under (see earlier section titled "Step 2: log in once")
    and save the key to the profile you create (e.g., under `avocado-profiles/anthropic.env`).

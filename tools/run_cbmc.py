@@ -12,7 +12,6 @@ import json
 import os
 import re
 import shlex
-import signal
 import stat
 import subprocess
 import sys
@@ -20,13 +19,12 @@ import tempfile
 import threading
 import time
 from collections.abc import Generator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
-from subprocess import TimeoutExpired
 
 from loguru import logger
 
@@ -311,7 +309,9 @@ def run_shell_command(
     share `_SLOT_DIR`, never exceeds `max_concurrent_subprocesses()` (or, if those processes
     disagree about the cap, the largest of their caps). The timeout starts once the subprocess is
     launched; waiting for a slot does not count against it. On timeout, the command and every
-    process it started are killed, so no `cbmc` keeps running without holding a subprocess slot.
+    process it started are killed. The command inherits the slot's locked file descriptor, so the
+    slot stays held while the command or any descendant that keeps the descriptor is running, even
+    if this process is killed first. So no `cbmc` keeps running without holding a subprocess slot.
 
     Args:
         command (str): The shell command to run.
@@ -323,23 +323,25 @@ def run_shell_command(
         subprocess.CompletedProcess[str] | None: The finished subprocess, with its captured stdout
             and stderr, or None if it hit the timeout.
     """
-    with _subprocess_slot():
-        return run_command(command, timeout, cwd=cwd)
+    with _subprocess_slot() as slot_fd:
+        return run_command(command, timeout, cwd=cwd, pass_fds=(slot_fd,))
 
 
 @contextmanager
-def _subprocess_slot() -> Generator[None]:
+def _subprocess_slot() -> Generator[int]:
     """Hold one of the `max_concurrent_subprocesses()` subprocess slots for the `with` body.
 
     Each slot is an exclusive `flock` on a file in `_SLOT_DIR`. An `flock` belongs to an open file
     description, so it excludes other threads of this process as well as other processes, and the
-    kernel releases it when its process dies, so a killed process never leaks a slot. The lock's
-    file descriptor is not inherited by subprocesses. Blocks until a slot is free: a thread first
-    waits for a permit from this process's semaphore for the cap, then polls the slot files every
-    `_SLOT_POLL_SEC`.
+    kernel releases it once every file descriptor for that open file description is closed, so a
+    killed process never leaks a slot. The lock's file descriptor is inherited only by a
+    subprocess it is passed to explicitly (as `run_shell_command` does); that subprocess and its
+    descendants then keep the slot held until they close the descriptor or exit. Blocks until a
+    slot is free: a thread first waits for a permit from this process's semaphore for the cap,
+    then polls the slot files every `_SLOT_POLL_SEC`.
 
     Yields:
-        None: Control, while the slot is held.
+        int: The slot's locked file descriptor, while the slot is held.
 
     Raises:
         PermissionError: If `_SLOT_DIR` is not a directory that this user owns and that no other
@@ -369,7 +371,7 @@ def _subprocess_slot() -> Generator[None]:
                         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     except BlockingIOError:
                         continue
-                    yield
+                    yield fd
                 finally:
                     os.close(fd)
                 return
@@ -819,64 +821,6 @@ def _run_command(
         timed_out=timed_out,
         timeout_sec=timeout_sec,
     )
-
-
-def _run_shell_command_killing_group_on_timeout(
-    command: str,
-    timeout_sec: int,
-    cwd: str | None = None,
-) -> tuple[int, str, str]:
-    """Run `command` through the shell; on timeout, kill the shell *and* everything it spawned.
-
-    `subprocess.run(..., shell=True, timeout=...)` kills only the `/bin/sh` it started. dash
-    forks the actual tool (cbmc, goto-cc, ...) as a child rather than exec'ing it, so that
-    child would be orphaned and keep solving, consuming CPU and memory while mutation-testing
-    workers start new mutants. Running the command in its own session (and hence its own
-    process group) lets us SIGKILL the whole group instead.
-
-    Args:
-        command (str): The shell command to run.
-        timeout_sec (int): Seconds the command may run before its process group is killed.
-        cwd (str | None): Working directory for the command; None inherits the current one.
-
-    Returns:
-        tuple[int, str, str]: The command's return code, stdout, and stderr.
-
-    Raises:
-        TimeoutExpired: If the command did not finish within `timeout_sec`. By the time this is
-            raised, the whole process group has been killed and the shell reaped.
-    """
-    with subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        shell=True,
-        cwd=cwd,
-        start_new_session=True,
-    ) as process:
-        try:
-            stdout, stderr = process.communicate(timeout=timeout_sec)
-        except TimeoutExpired:
-            _kill_process_group(process.pid)
-            # Every member of the group is dead, so the pipes reach EOF and this returns promptly.
-            process.communicate()
-            raise
-        except BaseException:
-            # E.g. KeyboardInterrupt: don't leave the solver running behind us.
-            _kill_process_group(process.pid)
-            raise
-    return process.returncode, stdout, stderr
-
-
-def _kill_process_group(pgid: int) -> None:
-    """SIGKILL every process in process group `pgid`, ignoring an already-empty group.
-
-    Args:
-        pgid (int): The process group to kill (the session leader's pid).
-    """
-    with suppress(ProcessLookupError):
-        os.killpg(pgid, signal.SIGKILL)
 
 
 def _result_from_failure(

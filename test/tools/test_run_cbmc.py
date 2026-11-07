@@ -1,11 +1,14 @@
 """Tests for the run_cbmc tool."""
 
+import contextlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from subprocess import CompletedProcess
 
@@ -274,6 +277,41 @@ def test_run_shell_command_waits_for_a_slot_used_by_another_process(tmp_path: Pa
     assert [process.wait() for process in processes] == [0, 0]
 
 
+def test_a_slot_stays_held_while_the_command_outlives_its_killed_owner(tmp_path: Path) -> None:
+    started = tmp_path / "started"
+    finished = tmp_path / "finished"
+    command = f"touch {started}; sleep 2; touch {finished}"
+    script = (
+        "from tools.run_cbmc import run_shell_command; "
+        f"run_shell_command({command!r}, timeout=30)"
+    )
+    env = os.environ | {"TMPDIR": str(tmp_path), "AVOCADO_MAX_CONCURRENT_CBMC": "1"}
+    repo_root = Path(__file__).resolve().parents[2]
+    owner = subprocess.Popen(
+        [sys.executable, "-c", script], env=env, cwd=repo_root, start_new_session=True
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not started.exists():
+            assert time.monotonic() < deadline, "the command never started"
+            time.sleep(0.05)
+        # Kill only the Python owner; the command it started keeps running.
+        owner.kill()
+        owner.wait()
+        slot_path = tmp_path / f"avocado-cbmc-slots-{os.getuid()}" / "slot-0"
+        fcntl = run_cbmc_module.fcntl
+        fd = os.open(slot_path, os.O_RDWR)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            assert not finished.exists(), "the command finished before the slot was checked"
+        finally:
+            os.close(fd)
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(owner.pid, signal.SIGKILL)
+
+
 @pytest.mark.parametrize("setting", ["0", "-3", "auto", "8.0"])
 def test_max_concurrent_subprocesses_rejects_a_malformed_setting(monkeypatch, setting: str) -> None:
     monkeypatch.setenv("AVOCADO_MAX_CONCURRENT_CBMC", setting)
@@ -304,15 +342,21 @@ def test_run_command_timeout_kills_the_shells_children(tmp_path: Path) -> None:
     result = _run_command(CbmcStep.CBMC, command, [], timeout_sec=1)
     assert result.timed_out
     background_pid = int(pid_file.read_text().strip())
-    # A killed orphan may linger briefly as an unreaped zombie ("Z"); that counts as dead.
-    try:
-        stat = Path(f"/proc/{background_pid}/stat").read_text()
-    except FileNotFoundError:
-        return
-    state = stat.rsplit(")", 1)[1].split()[0]
-    if state != "Z":
-        os.kill(background_pid, 9)
-        raise AssertionError(f"child of the timed-out shell is still running (state {state})")
+    # `_run_command` waits for the shell, not for the orphan, so a killed orphan can briefly
+    # still be running (state "R") while it exits. An unreaped zombie ("Z") counts as dead.
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            stat = Path(f"/proc/{background_pid}/stat").read_text()
+        except FileNotFoundError:
+            return
+        state = stat.rsplit(")", 1)[1].split()[0]
+        if state == "Z":
+            return
+        if time.monotonic() > deadline:
+            os.kill(background_pid, 9)
+            raise AssertionError(f"child of the timed-out shell is still running (state {state})")
+        time.sleep(0.01)
 
 def test_run_command_honours_a_custom_timeout() -> None:
     result = _run_command(CbmcStep.CBMC, "sleep 5", [], timeout_sec=1)
