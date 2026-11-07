@@ -105,6 +105,11 @@ def test_functions_outside_the_build_are_no_ones_callee_and_are_recorded_unverif
     call_graph = avocado_verify._without_functions(get_call_graph(str(_source(tmp_path))), ["thrice"])
     assert set(call_graph) == {"twice", "scale"}
     assert call_graph.get_callees("scale").internal == ["twice"]
+    # `scale` no longer waits for, or is told about, a callee that does not exist.
+    ready = avocado_verify._ready_functions(
+        ["twice", "thrice", "scale"], call_graph, done={"twice", "thrice"}, active=set()
+    )
+    assert ready == ["scale"]
     record = avocado_verify._not_in_build_result("thrice").to_record()
     assert record["outcome"] == "UNVERIFIED" and record["not_in_build"] is True
     assert record["cbmc"]["verdict"] == "GOTO-CC_FAILED"
