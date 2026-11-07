@@ -41,9 +41,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from eval.mutants.mutate_specification import ClauseMutant, get_clause_mutants
 from eval.mutants.util import (
+    absolute_path_without_resolving,
     check_expected_cbmc_return_code,
     get_bounded_mutant_file_name,
     is_valid_mutation_candidate,
+    write_new_file,
 )
 from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import RunCbmcResult, run_cbmc
@@ -282,29 +284,29 @@ def main() -> None:
 def compute_clause_redundancy_score(
     file_path: str,
     function_name: str,
-    workspace: Path | None = None,
     keep_artifacts: bool = False,
 ) -> ClauseRedundancyScore | None:
     """Score clause redundancy for `function_name` in `file_path`.
 
-    Mutant `.c` files are written next to the original source by default to simplify compilation
-    and instrumentation with CBMC. Mutants are removed unless keep_artifacts is set to `True`.
+    Mutant `.c` files are written next to the original source, so that a quoted `#include` finds
+    the same header for a mutant as for the original source. Mutants are removed unless
+    keep_artifacts is set to `True`. An existing file is never overwritten or removed; if a mutant
+    path already exists (e.g., kept by an earlier run; `make clean-mutants` removes such files),
+    `FileExistsError` is raised.
 
     If the unmutated function does not verify, return None.
 
     Args:
         file_path (str): Path to the C source defining the function.
         function_name (str): The function whose contract clauses should be tested.
-        workspace (Path | None): Directory to write mutant files into. Defaults to the
-            source file's directory so relative `#include` paths still resolve.
         keep_artifacts (bool): When True, mutant `.c` files are kept for inspection.
 
     Returns:
         ClauseRedundancyScore: Aggregated counts plus the per-clause results.
     """
-    source_path = Path(file_path).resolve()
-    workspace = workspace or source_path.parent
-    workspace.mkdir(parents=True, exist_ok=True)
+    # Neither follows symlinks nor collapses `..`, so `source_path` names the same file as
+    # `file_path` and the mutants of a symlinked file see the same quoted `#include`s.
+    source_path = absolute_path_without_resolving(file_path)
 
     # Check that the original function verifies in the first place.
     result = _run_cbmc_in_scratch_dir(function_name, source_path)
@@ -314,7 +316,7 @@ def compute_clause_redundancy_score(
 
     mutants = get_clause_mutants(str(source_path), function_name)
     paths_to_removed_clauses = {
-        _get_path_to_source_with_removed_clause(workspace, source_path, function_name, i): mutant
+        _get_path_to_source_with_removed_clause(source_path, function_name, i): mutant
         for i, mutant in enumerate(mutants)
     }
 
@@ -323,7 +325,13 @@ def compute_clause_redundancy_score(
         _get_baseline_verification_results_for_callers(in_file_callers, source_path)
     )
 
+    # Only files created by this call are deleted, so a pre-existing sibling file is never
+    # clobbered: `write_new_file` raises rather than overwrite it.
+    created_paths: list[Path] = []
     try:
+        for mutant_path, mutant in paths_to_removed_clauses.items():
+            write_new_file(mutant_path, mutant.mutant_source)
+            created_paths.append(mutant_path)
         in_isolation_results = list(
             starmap(_verify_removed_clause_source, paths_to_removed_clauses.items())
         )
@@ -338,7 +346,7 @@ def compute_clause_redundancy_score(
         ]
     finally:
         if not keep_artifacts:
-            for path in paths_to_removed_clauses:
+            for path in created_paths:
                 path.unlink(missing_ok=True)
 
     return _aggregate_clause_redundancy_score(
@@ -465,11 +473,12 @@ def _get_in_file_callers(source_path: Path, function_name: str) -> list[str]:
 
 
 def _get_path_to_source_with_removed_clause(
-    workspace_path: Path, path_to_original_source: Path, function: str, index: int
+    path_to_original_source: Path, function: str, index: int
 ) -> Path:
     """Return the path to which to write a source file with a removed clause.
 
-    For example, given the path `/app/test/data/foo.c` and function `bar`, return
+    The source file with a removed clause is in the same directory as the original source file.
+    For example, given the path `/app/test/data/foo.c`, function `bar`, and the index 1, return
     `/app/test/data/foo__clause_drop_bar_1.c`. The function name is part of the file name so that
     removed-clause sources of different functions in the same file -- which may be scored
     concurrently -- never overwrite one another; the files still match the `*__clause_drop_*.c`
@@ -479,39 +488,38 @@ def _get_path_to_source_with_removed_clause(
     is shortened; see `get_bounded_mutant_file_name`.
 
     Args:
-        workspace_path (Path): The directory under which redundancy score computation occurs.
-        path_to_original_source (Path): The path to the original source file.
+        path_to_original_source (Path): A path to an original source file.
         function (str): The function whose clause was removed.
         index (int): The index of the mutant, used as a identifier for the mutant source path.
 
     Returns:
         Path: The path to which to write a mutated source file.
     """
-    return workspace_path / get_bounded_mutant_file_name(
-        path_to_original_source.stem,
-        "clause_drop",
-        function,
-        index,
-        path_to_original_source.suffix,
+    return path_to_original_source.with_name(
+        get_bounded_mutant_file_name(
+            path_to_original_source.stem,
+            "clause_drop",
+            function,
+            index,
+            path_to_original_source.suffix,
+        )
     )
 
 
 def _verify_removed_clause_source(
-    path_to_write_removed_clause_mutant: Path, clause_mutant: ClauseMutant
+    path_to_removed_clause_mutant: Path, clause_mutant: ClauseMutant
 ) -> ClauseRemovalVerificationResult:
     """Return the result of verifying a removed-clause mutant in isolation.
 
     Args:
-        path_to_write_removed_clause_mutant (Path): The path to which to write the source with the
+        path_to_removed_clause_mutant (Path): The path to the already-written source with the
             mutated specification.
         clause_mutant (ClauseMutant): The clause mutant.
 
     Returns:
         ClauseRemovalVerificationResult: The result of verifying a removed-clause mutant.
     """
-    path_to_write_removed_clause_mutant.write_text(clause_mutant.mutant_source, encoding="utf-8")
-
-    result = _run_cbmc_in_scratch_dir(clause_mutant.function, path_to_write_removed_clause_mutant)
+    result = _run_cbmc_in_scratch_dir(clause_mutant.function, path_to_removed_clause_mutant)
     if result.timed_out:
         return ClauseRemovalVerificationResult(
             clause_mutant,
