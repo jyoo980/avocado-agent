@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import stat
 import subprocess
 import sys
@@ -19,7 +20,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -190,6 +191,9 @@ class RunCbmcResult:
         no_contract (bool): True iff the pipeline passed but the function has no contract in the
             compiled program. CBMC then checks an empty contract, which nothing can violate, so
             such a pass proves nothing about the function and does not count as verified.
+        contract_probe_failed (bool): True iff the pipeline passed but whether the function has a
+            contract could not be determined, because `has_contract` could not compile or list the
+            program. Unknown is not proof of a contract, so such a pass does not count as verified.
     """
 
     function: str
@@ -200,6 +204,7 @@ class RunCbmcResult:
     vacuity_check_result: VacuityCheckResult | None = None
     variant: PipelineVariant | None = None
     no_contract: bool = False
+    contract_probe_failed: bool = False
 
     @property
     def cbmc_ran_successfully(self) -> bool:
@@ -216,13 +221,14 @@ class RunCbmcResult:
         """True iff the function for this verification run is successfully verified.
 
         A function is successfully verified if all components of the CBMC pipeline ran successfully,
-        the return code is 0, the function has a contract, and the vacuity check (when one was
-        made) did not find the proof vacuous.
+        the return code is 0, the function is known to have a contract, and the vacuity check
+        (when one was made) did not find the proof vacuous.
         """
         return (
             self.cbmc_ran_successfully
             and self.returncode == 0
             and not self.no_contract
+            and not self.contract_probe_failed
             and not self.is_vacuous
         )
 
@@ -243,6 +249,8 @@ class RunCbmcResult:
             return f"{self.failed_step.value.upper()}_FAILED"
         if self.no_contract:
             return "NO_CONTRACT"
+        if self.contract_probe_failed:
+            return "CONTRACT_PROBE_FAILED"
         if self.is_vacuous:
             return VACUOUS_VERDICT
         if self.is_function_verified:
@@ -718,6 +726,7 @@ def _run_pipeline(
                     timeout_sec=timeout_sec,
                 )
                 record_output(subprocess_result, drop_missing_body_warnings)
+
         if not subprocess_result.succeeded:
             combined_stdout = "".join(per_step_stdout)
             combined_stderr = "".join(per_step_stderr)
@@ -795,6 +804,64 @@ def _run_command(
         timed_out=timed_out,
         timeout_sec=timeout_sec,
     )
+
+
+def _run_shell_command_killing_group_on_timeout(
+    command: str,
+    timeout_sec: int,
+    cwd: str | None = None,
+) -> tuple[int, str, str]:
+    """Run `command` through the shell; on timeout, kill the shell *and* everything it spawned.
+
+    `subprocess.run(..., shell=True, timeout=...)` kills only the `/bin/sh` it started. dash
+    forks the actual tool (cbmc, goto-cc, ...) as a child rather than exec'ing it, so that
+    child would be orphaned and keep solving, consuming CPU and memory while mutation-testing
+    workers start new mutants. Running the command in its own session (and hence its own
+    process group) lets us SIGKILL the whole group instead.
+
+    Args:
+        command (str): The shell command to run.
+        timeout_sec (int): Seconds the command may run before its process group is killed.
+        cwd (str | None): Working directory for the command; None inherits the current one.
+
+    Returns:
+        tuple[int, str, str]: The command's return code, stdout, and stderr.
+
+    Raises:
+        TimeoutExpired: If the command did not finish within `timeout_sec`. By the time this is
+            raised, the whole process group has been killed and the shell reaped.
+    """
+    with subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        shell=True,
+        cwd=cwd,
+        start_new_session=True,
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout_sec)
+        except TimeoutExpired:
+            _kill_process_group(process.pid)
+            # Every member of the group is dead, so the pipes reach EOF and this returns promptly.
+            process.communicate()
+            raise
+        except BaseException:
+            # E.g. KeyboardInterrupt: don't leave the solver running behind us.
+            _kill_process_group(process.pid)
+            raise
+    return process.returncode, stdout, stderr
+
+
+def _kill_process_group(pgid: int) -> None:
+    """SIGKILL every process in process group `pgid`, ignoring an already-empty group.
+
+    Args:
+        pgid (int): The process group to kill (the session leader's pid).
+    """
+    with suppress(ProcessLookupError):
+        os.killpg(pgid, signal.SIGKILL)
 
 
 def _result_from_failure(
@@ -1165,6 +1232,28 @@ def _get_cbmc_check_command(function: str) -> str:
     )
 
 
+def list_compiled_functions(
+    file_path: str, include_dirs: list[str] | None = None
+) -> set[str] | None:
+    """Return the names of the functions that are compiled when `file_path` is built.
+
+    The harness finds a file's functions by reading its text, without running the preprocessor,
+    so it also finds the ones inside conditional blocks that this build leaves out. Such a
+    function does not exist as far as CBMC is concerned: it cannot be verified, and its contract
+    cannot be substituted at a call site. This asks the compiler, once, which functions do exist.
+
+    Args:
+        file_path (str): Path to the C source file.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+
+    Returns:
+        set[str] | None: The functions that have a body in the compiled program, or None when
+            the file could not be compiled or listed, in which case nothing is known.
+    """
+    listing = _list_goto_functions(file_path, include_dirs)
+    return None if listing is None else listing[0]
+
+
 def _run_cbmc_without_depth_bound(
     function_to_verify: str,
     file_containing_function_to_verify: str,
@@ -1218,28 +1307,6 @@ def _run_cbmc_without_depth_bound(
         _result_from_failure(function_to_verify, unbounded, unbounded.stdout, unbounded.stderr),
         variant=variant,
     )
-
-
-def list_compiled_functions(
-    file_path: str, include_dirs: list[str] | None = None
-) -> set[str] | None:
-    """Return the names of the functions that are compiled when `file_path` is built.
-
-    The harness finds a file's functions by reading its text, without running the preprocessor,
-    so it also finds the ones inside conditional blocks that this build leaves out. Such a
-    function does not exist as far as CBMC is concerned: it cannot be verified, and its contract
-    cannot be substituted at a call site. This asks the compiler, once, which functions do exist.
-
-    Args:
-        file_path (str): Path to the C source file.
-        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
-
-    Returns:
-        set[str] | None: The functions that have a body in the compiled program, or None when
-            the file could not be compiled or listed, in which case nothing is known.
-    """
-    listing = _list_goto_functions(file_path, include_dirs)
-    return None if listing is None else listing[0]
 
 
 def has_contract(
@@ -1305,6 +1372,60 @@ def _list_goto_functions(
         elif identifier == f"contract::{name}":
             contracted.add(name)
     return compiled, contracted
+
+
+def verify_function(
+    function: str, file_path: str, include_dirs: list[str] | None = None
+) -> RunCbmcResult:
+    """Run the CBMC pipeline on `function`, then check that a passing function has a contract.
+
+    A function without a contract is checked against an empty contract, which nothing can
+    violate, so a passing run of one is returned with `RunCbmcResult.no_contract` set (printing as
+    `NO_CONTRACT`) and does not count as verified. When the contract check itself fails, a passing
+    run is returned with `RunCbmcResult.contract_probe_failed` set (printing as
+    `CONTRACT_PROBE_FAILED`), which does not count as verified either.
+
+    Args:
+        function (str): Name of the function to verify.
+        file_path (str): Path to the C file defining the function.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+
+    Returns:
+        RunCbmcResult: The outcome of the run.
+    """
+    result = run_cbmc(
+        function_to_verify=function,
+        file_containing_function_to_verify=file_path,
+        include_dirs=include_dirs,
+    )
+    if not result.is_function_verified:
+        return result
+    contract = has_contract(function, file_path, include_dirs)
+    if contract is None:
+        # The probe compiles the file differently from the pipeline (no stubs, no
+        # macro-disabling flags) and has its own timeout, so its failure says nothing either
+        # way about the contract. It is reported as such rather than as a missing contract.
+        return replace(
+            result,
+            contract_probe_failed=True,
+            response=(
+                f"CBMC passed, but whether {function} has a contract could not be determined: "
+                "the contract check failed to compile or list the program, or timed out. This "
+                "does not count as verified. Re-run the same command."
+            ),
+        )
+    if contract is False:
+        return replace(
+            result,
+            no_contract=True,
+            response=(
+                f"{function} has no contract, which does not count as verified: with no "
+                "__CPROVER_requires, __CPROVER_ensures or __CPROVER_assigns clause on the "
+                "definition that is compiled, CBMC checks an empty contract that nothing can "
+                "violate. Write the function's contract between its signature and its body."
+            ),
+        )
+    return result
 
 
 def compile_with_goto_cc(

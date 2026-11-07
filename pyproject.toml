@@ -38,6 +38,11 @@ packages = ["tools", "scripts"]
 pythonpath = ["."]
 testpaths = ["test"]
 
+[tool.basedpyright]
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "standard"
+
 [dependency-groups]
 dev = [
     "matplotlib>=3.10.9",

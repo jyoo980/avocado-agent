@@ -44,7 +44,6 @@ from pathlib import Path
 
 from loguru import logger
 
-from eval.mutants.mutate_function import get_mutants
 from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
 from tools.run_cbmc import (
@@ -107,14 +106,17 @@ _MAX_PARSE_SNIPPET_CHARS = 500
 # one place; adjust these as the CLI's wording evolves.
 _USAGE_LIMIT_RESULT_PATTERNS = ("usage limit reached", "rate limit", "resets ")
 
-# The loop will not advance to the next function until the agent has *attempted* verification
-# (run `avocado-run-cbmc`) at least this many times for the current function, as counted from the
-# verification-attempts log. This guards against advancing on a session that barely tried.
-_MIN_VERIFICATION_ATTEMPTS_PER_SESSION = 2
+# The loop re-runs a function's `claude -p` session until the agent has *attempted* verification
+# (run `avocado-run-cbmc`) at least this many times for the function, summed over the function's
+# sessions and counted from the verification-attempts log. This guards against advancing on a
+# session that barely tried. The loop advances without reaching this floor if the function
+# verifies, if a session times out or hits a usage limit, or after
+# `_MAX_AGENT_SESSIONS_PER_FUNCTION` sessions.
+_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION = 2
 
-# Upper bound on how many `claude -p` sessions a single function may receive while trying to reach
-# `_MIN_VERIFICATION_ATTEMPTS`. Prevents an unproductive session from looping forever; once hit,
-# the harness proceeds anyway and records the shortfall.
+# Upper bound on how many `claude -p` sessions a single function receives while trying to reach
+# `_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION`. Prevents an unproductive session from looping forever;
+# once hit, the harness proceeds anyway and records the shortfall.
 _MAX_AGENT_SESSIONS_PER_FUNCTION = 3
 
 # How many functions' sessions run at once unless `--jobs` says otherwise. A function can only
@@ -231,7 +233,8 @@ class FunctionVerificationResult:
         function (str): The function under verification.
         outcome (GroundTruthVerificationResult): The harness's overall verdict for the function.
         claude_sessions (list[ClaudeRun]): The `claude -p` sessions that resulted in the spec.
-        cbmc (RunCbmcResult): The independent CBMC verification the harness ran afterward.
+        cbmc (RunCbmcResult): The independent CBMC verification the harness ran after the last
+            session.
         internal_callees (list[str]): The function's in-file callees, for the run log.
         verification_attempts (int): How many times the agent attempted verification (ran
             `avocado-run-cbmc`) for this function across all its sessions.
@@ -293,6 +296,8 @@ class FunctionVerificationResult:
             "cbmc": {
                 "verdict": str(self.cbmc),
                 "is_function_verified": self.cbmc.is_function_verified,
+                "no_contract": self.cbmc.no_contract,
+                "contract_probe_failed": self.cbmc.contract_probe_failed,
                 "returncode": self.cbmc.returncode,
                 "timed_out": self.cbmc.timed_out,
                 "failed_step": None
@@ -782,6 +787,11 @@ def _verify_via_agent(
     copy of the result (`_merge_and_verify`). Safe to call for several functions concurrently as
     long as their callees are already merged.
 
+    On one copy, the session is re-run until the agent has attempted verification at least
+    `_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION` times or the function verifies on the copy, while
+    `_should_rerun_session` says another session can do better, and at most
+    `_MAX_AGENT_SESSIONS_PER_FUNCTION` times in all.
+
     The merge may leave out the session's edits to other functions (see `merge_copy`), and other
     sessions may have changed the contracts of functions this one calls while it worked. If the
     function then fails its ground truth, it is given another session on a fresh copy of the
@@ -1007,18 +1017,20 @@ def _run_sessions_for(
 
     # Attempts already logged for this function before this turn (e.g. by an earlier function's
     # session that also exercised this one); gate only on attempts made from here forward.
-    previous_verification_attempts = _count_verification_attempts(attempts_log_path, function)
+    records = _read_jsonl_records(attempts_log_path)
+    previous_verification_attempts = _count_verification_attempts(records, function)
 
     def attempts_so_far() -> int:
         return (
-            _count_verification_attempts(attempts_log_path, function)
+            _count_verification_attempts(_read_jsonl_records(attempts_log_path), function)
             - previous_verification_attempts
         )
 
     # Do not advance to the next function until the agent has attempted verification at least
-    # `_MIN_VERIFICATION_ATTEMPTS` times, re-running the session up to a capped number of times --
-    # but only while a re-run can plausibly do better than the session before it (see
-    # `_should_rerun_session`). A re-run is never identical: its prompt says why it is happening.
+    # `_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION` times, re-running the session up to a capped number
+    # of times -- but only while a re-run can plausibly do better than the session before it (see
+    # `_should_rerun_session`), which it cannot once the function verifies, whether or not it has
+    # mutants. A re-run is never identical: its prompt says why it is happening.
     command = _build_claude_command(
         _build_prompt(
             function,
@@ -1034,12 +1046,15 @@ def _run_sessions_for(
     claude_sessions_for_function = [_run_claude(command, timeout)]
     attempts_after_each_session = [attempts_so_far()]
     while True:
+        # CBMC is run on the copy only when the attempt floor is not met, the one case in which
+        # whether the function verifies decides anything.
+        improvable = True
+        if attempts_after_each_session[-1] < _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION:
+            improvable = is_spec_improvable_with_mutation_testing(
+                function, file_path, include_dirs
+            )
         decision = _should_rerun_session(
-            claude_sessions_for_function,
-            attempts_after_each_session,
-            improvable=is_spec_improvable_with_mutation_testing(
-                function, file_path, attempts_log_path
-            ),
+            claude_sessions_for_function, attempts_after_each_session, improvable=improvable
         )
         if not decision.rerun:
             break
@@ -1066,20 +1081,46 @@ def _run_sessions_for(
     current_verification_attempts = attempts_after_each_session[-1]
     if not decision.rerun and decision.rationale:
         logger.info(f"{function}: not re-running: {decision.rationale}")
-    if not is_spec_improvable_with_mutation_testing(function, file_path, attempts_log_path):
-        # Stopped deliberately, not short of the floor: there are no mutants to kill, so further
-        # sessions cannot strengthen the (already verifying) spec.
+    if not improvable:
+        # Stopped deliberately, not short of the floor: the function verifies on the copy, so
+        # another session is not needed, whether or not mutants survive.
         logger.info(
-            f"{function}: verified with no mutants after {sessions} session(s); skipping the "
-            f"attempt-count floor (no kill score to raise)"
+            f"{function}: verified after {sessions} session(s) with "
+            f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION} "
+            "verification attempt(s); not re-running the session"
         )
-    elif current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_SESSION:
+    elif current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION:
         logger.warning(
             f"{function}: proceeding after {sessions} session(s) with only "
-            f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} "
+            f"{current_verification_attempts}/{_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION} "
             f"verification attempt(s)"
         )
     return claude_sessions_for_function, current_verification_attempts, sessions
+
+
+def is_spec_improvable_with_mutation_testing(
+    function: str, file_path: str, include_dirs: list[str]
+) -> bool:
+    """Return True iff another session could improve the function's specification.
+
+    That is so while the function does not verify, whether or not it has mutants to kill: one that
+    does not verify still needs a specification that does, and one that verifies has nothing left
+    for a re-run to fix. The harness decides whether the function verifies by running CBMC itself
+    (`verify_function`), not from the `verified` field of the attempts log. A verified record in
+    the log is stale if the agent edited a specification after that attempt, and a function that an
+    earlier function's session verified might get no attempt at all in its own sessions, because
+    AGENTS.md tells the agent not to re-verify a function whose specification has not changed.
+
+    Args:
+        function (str): The function under specification generation.
+        file_path (str): The session's copy of the source file.
+        include_dirs (list[str]): Include directories forwarded to CBMC.
+
+    Returns:
+        bool: True iff the function does not verify in `file_path`.
+    """
+    cbmc = verify_function(function, file_path, include_dirs=include_dirs)
+    return not cbmc.is_function_verified
 
 
 def _merge_and_verify(
@@ -1558,7 +1599,7 @@ def _should_rerun_session(
 ) -> _RerunDecision:
     """Decide whether to start another session for the current function.
 
-    The attempt floor (`_MIN_VERIFICATION_ATTEMPTS_PER_SESSION`) exists so the loop does not
+    The attempt floor (`_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION`) exists so the loop does not
     advance on a session that barely tried. Re-running is only worth its cost, though, when the
     next session can plausibly do better than the last, and three kinds of session say it cannot:
 
@@ -1567,22 +1608,22 @@ def _should_rerun_session(
     - one that made no verification attempt on the file at all, when a previous session in this
       turn already did the same: the prompt, file and model are unchanged, so a third identical
       session is expected to end the same way (the measured case cost 2 x 1800 s);
-    - a session after which the specification verifies, or after which there are no mutants to
-      kill: there is no score left for a re-run to raise (`improvable` is False).
+    - a session after which the function verifies, whether or not it has mutants left to kill:
+      there is nothing left for a re-run to fix (`improvable` is False).
 
     Args:
         sessions (list[ClaudeRun]): The sessions run so far this turn, oldest first.
         attempts_after_each_session (list[int]): Verification attempts logged for the function
             after each of those sessions, cumulative over the turn.
-        improvable (bool): Whether the specification can still be improved, per
-            `is_spec_improvable_with_mutation_testing`.
+        improvable (bool): Whether the specification can still be improved, that is, whether the
+            function does not verify yet, per `is_spec_improvable_with_mutation_testing`.
 
     Returns:
         _RerunDecision: The decision, with a rationale suitable for the log and the retry prompt.
     """
     last = sessions[-1]
     attempts = attempts_after_each_session[-1]
-    if attempts >= _MIN_VERIFICATION_ATTEMPTS_PER_SESSION:
+    if attempts >= _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION:
         return _RerunDecision(False, "")
     if not improvable:
         return _RerunDecision(False, "")
@@ -1610,105 +1651,56 @@ def _should_rerun_session(
     return _RerunDecision(
         True,
         f"the previous session {how_it_ended} after recording {new_attempts[-1]} verification "
-        f"attempt(s) on this file, short of the {_MIN_VERIFICATION_ATTEMPTS_PER_SESSION} "
+        f"attempt(s) on this file, short of the {_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION} "
         "required; the function does not verify yet",
     )
 
 
-def is_spec_improvable_with_mutation_testing(
-    function: str, source_path: str, attempts_log_path: Path
-) -> bool:
-    """Return True iff a function's specification can be improved.
+def _read_jsonl_records(log_path: Path) -> list[dict[str, object]]:
+    """Return the JSON objects in the given JSONL log, oldest first.
 
-    Whether a specification can be improved (via Avocado) depends on the availability of mutants to
-    kill; the kill score is the only metric that is provided to the agent. If no mutants are
-    generated, and the function already verifies, there is no point going further.
+    A missing or unreadable log yields no records. A line that is blank, is not UTF-8, is not JSON,
+    or is JSON but not an object (such as `[]`) is skipped, so one corrupt line does not discard
+    the rest of the log.
 
     Args:
-        function (str): The function under specification generation.
-        source_path (str): The path to the source file where the function is declared.
-        attempts_log_path (Path): The path to the log of verification attempts.
+        log_path (Path): a path to a JSONL log, such as a verification-attempts log or a run log.
 
     Returns:
-        bool: True iff a function's specification can be improved, i.e., it has mutants to kill
-            and it is not successfully verified, yet.
-    """
-    function_has_mutants = False
-    try:
-        function_has_mutants = bool(get_mutants(source_path, function))
-    except Exception:  # ruff: ignore[blind-except] - any generation failure should fall back to default behavior.
-        logger.error(f"Failure in mutant generation for '{function}' in {source_path}")
-        # Assume mutants exist in the worst-case scenario.
-        function_has_mutants = True
-    is_function_successfully_verified = _last_attempt_verified(attempts_log_path, function)
-    return function_has_mutants and not is_function_successfully_verified
+        list[dict[str, object]]: The records, each parsed from one line of the log.
 
-
-def _count_verification_attempts(log_path: Path, function: str) -> int:
-    """Return the number of logged `avocado-run-cbmc` verification attempts for `function`.
-
-    Reads the verification-attempts JSONL that `avocado-run-cbmc` appends to (one record per
-    top-level verification attempt). A missing log, blank lines, and malformed records are treated
-    as zero/skipped so counting never raises.
-
-    Args:
-        log_path (Path): Path to the verification-attempts JSONL log.
-        function (str): The function whose attempts should be counted.
-
-    Returns:
-        int: The number of attempts recorded for `function`.
     """
     try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
+        lines = log_path.read_bytes().splitlines()
     except OSError:
-        return 0
-    count = 0
+        return []
+    records = []
     for line in lines:
-        stripped = line.strip()
-        if not stripped:
+        if not line.strip():
             continue
         try:
-            record = json.loads(stripped)
-        except json.JSONDecodeError:
+            record = json.loads(line)
+        except ValueError:  # `UnicodeDecodeError` or `json.JSONDecodeError`
             continue
-        if record.get("function") == function:
-            count += 1
-    return count
+        if isinstance(record, dict):
+            records.append(record)
+    return records
 
 
-def _last_attempt_verified(log_path: Path, function: str) -> bool:
-    """Return whether the most recent logged verification attempt for `function` succeeded.
-
-    Reads the verification-attempts JSONL that `avocado-run-cbmc` appends to and returns the
-    `verified` field of the last record naming `function`. That field is the *tool's* own CBMC
-    verdict (`run_cbmc_and_mutation_testing._log_verification_attempt` records
-    `result.is_function_verified`), not Claude's self-report, so it is safe to trust here. A missing
-    log, blank lines, and malformed records are skipped; the function returns False when there is no
-    decided record, so callers never skip work on the basis of a verification that did not happen.
+def _count_verification_attempts(records: list[dict[str, object]], function: str) -> int:
+    """Return the number of verification attempts on the given function among the given records.
 
     Args:
-        log_path (Path): Path to the verification-attempts JSONL log.
-        function (str): The function whose latest attempt should be inspected.
+        records (list[dict[str, object]]): a list of records from a verification-attempts log, as
+            returned by `_read_jsonl_records`. The log is the JSONL file that `avocado-run-cbmc`
+            appends to, with one record per top-level verification attempt, such as
+            `{"function": "foo", "verified": true, ...}`.
+        function (str): the function whose attempts to count.
 
     Returns:
-        bool: True iff the most recent attempt record for `function` reports verification success.
+        int: The number of the records for `function`.
     """
-    try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-    verified = False
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            record = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        if record.get("function") == function:
-            verified = bool(record.get("verified", False))
-    return verified
+    return sum(1 for record in records if record.get("function") == function)
 
 
 def _read_function_verdicts(log_path: Path) -> dict[str, tuple[str, str]]:
@@ -1728,23 +1720,12 @@ def _read_function_verdicts(log_path: Path) -> dict[str, tuple[str, str]]:
             example `VACUOUS (end_unreachable)`), or the outcome when no verdict was recorded.
     """
     verdicts: dict[str, tuple[str, str]] = {}
-    try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return verdicts
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
+    for record in _read_jsonl_records(log_path):
+        if "type" in record:  # terminal run-summary record, not a per-function result
             continue
-        try:
-            record = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(record, dict) or "type" in record:
-            continue  # the terminal run-summary record, not a per-function result
         function = record.get("function")
         outcome = record.get("outcome")
-        if function is not None and outcome is not None:
+        if isinstance(function, str) and isinstance(outcome, str):
             cbmc = record.get("cbmc") or {}
             verdict = cbmc.get("verdict") or outcome
             if verdict == VACUOUS_VERDICT and cbmc.get("vacuity"):
