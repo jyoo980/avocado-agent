@@ -1,8 +1,10 @@
 """Tests for the run_cbmc tool."""
 
+import contextlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -290,6 +292,41 @@ def test_run_shell_command_waits_for_a_slot_used_by_another_process(tmp_path: Pa
         subprocess.Popen([sys.executable, "-c", script], env=env, cwd=repo_root) for _ in range(2)
     ]
     assert [process.wait() for process in processes] == [0, 0]
+
+
+def test_a_slot_stays_held_while_the_command_outlives_its_killed_owner(tmp_path: Path) -> None:
+    started = tmp_path / "started"
+    finished = tmp_path / "finished"
+    command = f"touch {started}; sleep 2; touch {finished}"
+    script = (
+        "from tools.run_cbmc import run_shell_command; "
+        f"run_shell_command({command!r}, timeout=30)"
+    )
+    env = os.environ | {"TMPDIR": str(tmp_path), "AVOCADO_MAX_CONCURRENT_CBMC": "1"}
+    repo_root = Path(__file__).resolve().parents[2]
+    owner = subprocess.Popen(
+        [sys.executable, "-c", script], env=env, cwd=repo_root, start_new_session=True
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not started.exists():
+            assert time.monotonic() < deadline, "the command never started"
+            time.sleep(0.05)
+        # Kill only the Python owner; the command it started keeps running.
+        owner.kill()
+        owner.wait()
+        slot_path = tmp_path / f"avocado-cbmc-slots-{os.getuid()}" / "slot-0"
+        fcntl = run_cbmc_module.fcntl
+        fd = os.open(slot_path, os.O_RDWR)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            assert not finished.exists(), "the command finished before the slot was checked"
+        finally:
+            os.close(fd)
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(owner.pid, signal.SIGKILL)
 
 
 @pytest.mark.parametrize("setting", ["0", "-3", "auto", "8.0"])

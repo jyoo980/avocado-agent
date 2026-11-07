@@ -14,7 +14,6 @@ Usage:
 
 import argparse
 import json
-import os
 import threading
 import uuid
 from pathlib import Path
@@ -28,23 +27,8 @@ from tools.util import get_call_graph
 # partially written file.
 _CALL_GRAPH_LOCK = threading.Lock()
 
-
-def _read_umask() -> int:
-    """Return the process's umask.
-
-    `os.umask` can only be read by setting it, so this briefly changes it; it is called once, at
-    import time, before any threads that might create files concurrently.
-
-    Returns:
-        int: The process's umask.
-    """
-    umask = os.umask(0o077)
-    os.umask(umask)
-    return umask
-
-
-# The mode that `open` gives a newly created file: 0666 filtered by the umask.
-_DEFAULT_FILE_MODE = 0o666 & ~_read_umask()
+# The call-graph cache for `<dir>/<stem>.<ext>` is written to `<dir>/<stem><CALL_GRAPH_SUFFIX>`.
+CALL_GRAPH_SUFFIX = "-callgraph.json"
 
 
 def main() -> None:
@@ -72,7 +56,7 @@ def construct_call_graph(
         str: The path to the file to which the call graph is written.
     """
     source_path = Path(path_to_file_to_verify)
-    path_to_call_graph = source_path.with_name(f"{source_path.stem}-callgraph.json")
+    path_to_call_graph = source_path.with_name(f"{source_path.stem}{CALL_GRAPH_SUFFIX}")
     with _CALL_GRAPH_LOCK:
         if path_to_call_graph.exists():
             return str(path_to_call_graph)
