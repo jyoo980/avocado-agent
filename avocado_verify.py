@@ -41,6 +41,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Any, cast
 
 from loguru import logger
 
@@ -1021,12 +1022,32 @@ def _run_sessions_for(
     previous_verification_attempts = _count_verification_attempts(records, function)
     previous_file_verification_attempts = _count_verification_attempts(records)
 
+    # Do not advance to the next function until the agent has attempted verification at least
+    # `_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION` times, re-running the session up to a capped number
+    # of times -- but only while a re-run can plausibly do better than the session before it (see
+    # `_should_rerun_session`). A re-run is never identical: its prompt says why it is happening.
+    # Whether the function verifies is decided by running CBMC on the session's copy after each
+    # session, not from the `verified` field of the attempts log. A verified record in the log is
+    # stale if the agent edited a specification after that attempt, and a function that an earlier
+    # function's session verified might get no attempt at all in its own sessions, because
+    # AGENTS.md tells the agent not to re-verify a function whose specification has not changed.
+    claude_sessions_for_function: list[ClaudeRun] = []
     attempts_on_function_after_each_session: list[int] = []
     attempts_on_any_function_after_each_session: list[int] = []
-
-    def record_attempts() -> None:
-        # Attempts on the function, and on any function in the file (so that a session that worked
-        # on a callee's contract is not mistaken for one that never ran the verifier).
+    while True:
+        command = _build_claude_command(
+            _build_prompt(
+                function,
+                file_path=file_path,
+                call_graph=call_graph,
+                include_dirs=include_dirs,
+                retry_note=retry_note,
+                callee_status=callee_status,
+            ),
+            file_path=file_path,
+            include_dirs=include_dirs,
+        )
+        claude_sessions_for_function.append(_run_claude(command, timeout))
         records = _read_jsonl_records(attempts_log_path)
         attempts_on_function_after_each_session.append(
             _count_verification_attempts(records, function) - previous_verification_attempts
@@ -1034,34 +1055,18 @@ def _run_sessions_for(
         attempts_on_any_function_after_each_session.append(
             _count_verification_attempts(records) - previous_file_verification_attempts
         )
-
-    # Do not advance to the next function until the agent has attempted verification at least
-    # `_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION` times, re-running the session up to a capped number
-    # of times -- but only while a re-run can plausibly do better than the session before it (see
-    # `_should_rerun_session`), which it cannot once the function verifies, whether or not it has
-    # mutants. A re-run is never identical: its prompt says why it is happening.
-    command = _build_claude_command(
-        _build_prompt(
-            function,
-            file_path=file_path,
-            call_graph=call_graph,
-            include_dirs=include_dirs,
-            retry_note=retry_note,
-            callee_status=callee_status,
-        ),
-        file_path=file_path,
-        include_dirs=include_dirs,
-    )
-    claude_sessions_for_function = [_run_claude(command, timeout)]
-    record_attempts()
-    while True:
-        # CBMC is run on the copy only when the attempt floor is not met, the one case in which
-        # whether the function verifies decides anything.
+        # Objective verdict: re-run CBMC rather than trust Claude's self-report. It is needed only
+        # when the attempt floor has not stopped the reruns already. The copy is the agent's to
+        # edit, so it may no longer define the function at all (edit rule 3); that is not
+        # verified, and `_merge_and_verify` rejects such a copy.
         verified = False
         if attempts_on_function_after_each_session[-1] < _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION:
-            verified = not is_spec_improvable_with_mutation_testing(
-                function, file_path, include_dirs
-            )
+            try:
+                verified = verify_function(
+                    function, file_path, include_dirs=include_dirs
+                ).is_function_verified
+            except ValueError as error:
+                logger.warning(f"{function}: cannot verify the session's copy: {error}")
         decision = _should_rerun_session(
             claude_sessions_for_function,
             attempts_on_function_after_each_session,
@@ -1073,30 +1078,16 @@ def _run_sessions_for(
         )
         if not decision.rerun:
             break
-        sessions = len(claude_sessions_for_function)
         logger.warning(
-            f"{function}: re-running session ({sessions + 1}/{_MAX_AGENT_SESSIONS_PER_FUNCTION}): "
+            f"{function}: re-running session "
+            f"({len(claude_sessions_for_function) + 1}/{_MAX_AGENT_SESSIONS_PER_FUNCTION}): "
             f"{decision.rationale}"
         )
-        retry_command = _build_claude_command(
-            _build_prompt(
-                function,
-                file_path=file_path,
-                call_graph=call_graph,
-                include_dirs=include_dirs,
-                retry_note=decision.rationale,
-                callee_status=callee_status,
-            ),
-            file_path=file_path,
-            include_dirs=include_dirs,
-        )
-        claude_sessions_for_function.append(_run_claude(retry_command, timeout))
-        record_attempts()
+        retry_note = decision.rationale
     sessions = len(claude_sessions_for_function)
     current_verification_attempts = attempts_on_function_after_each_session[-1]
     logger.info(f"{function}: not re-running: {decision.rationale}")
-    # A specification that verifies on the copy stopped the loop deliberately, not short of the
-    # floor, whether or not mutants survive.
+    # A specification that verifies stopped the loop deliberately, not short of the floor.
     if not verified and current_verification_attempts < _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION:
         logger.warning(
             f"{function}: proceeding after {sessions} session(s) with only "
@@ -1104,31 +1095,6 @@ def _run_sessions_for(
             f"verification attempt(s)"
         )
     return claude_sessions_for_function, current_verification_attempts, sessions
-
-
-def is_spec_improvable_with_mutation_testing(
-    function: str, file_path: str, include_dirs: list[str]
-) -> bool:
-    """Return True iff another session could improve the function's specification.
-
-    That is so while the function does not verify, whether or not it has mutants to kill: one that
-    does not verify still needs a specification that does, and one that verifies has nothing left
-    for a re-run to fix. The harness decides whether the function verifies by running CBMC itself
-    (`verify_function`), not from the `verified` field of the attempts log. A verified record in
-    the log is stale if the agent edited a specification after that attempt, and a function that an
-    earlier function's session verified might get no attempt at all in its own sessions, because
-    AGENTS.md tells the agent not to re-verify a function whose specification has not changed.
-
-    Args:
-        function (str): The function under specification generation.
-        file_path (str): The session's copy of the source file.
-        include_dirs (list[str]): Include directories forwarded to CBMC.
-
-    Returns:
-        bool: True iff the function does not verify in `file_path`.
-    """
-    cbmc = verify_function(function, file_path, include_dirs=include_dirs)
-    return not cbmc.is_function_verified
 
 
 def _merge_and_verify(
@@ -1590,87 +1556,12 @@ def _verify_functions(
 
 @dataclass(frozen=True)
 class _RerunDecision:
-    """Whether a function has earned another `claude -p` session, and why.
+    """The decision whether a function gets another `claude -p` session, and the reason for it.
 
     Attributes:
         rerun (bool): True iff another session should be started.
         rationale (str): One sentence explaining the decision. When `rerun` is True it is also
             passed to the new session as a retry note, so the re-run is never a blind repeat.
-    """
-
-    rerun: bool
-    rationale: str
-
-
-def _should_rerun_session(
-    sessions: list[ClaudeRun], attempts_after_each_session: list[int], *, improvable: bool
-) -> _RerunDecision:
-    """Decide whether to start another session for the current function.
-
-    The attempt floor (`_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION`) exists so the loop does not
-    advance on a session that barely tried. Re-running is only worth its cost, though, when the
-    next session can plausibly do better than the last, and three kinds of session say it cannot:
-
-    - one stopped by a usage limit: the account is throttled, and every further session would
-      fail the same way (52 such re-runs were logged across the measured runs);
-    - one that made no verification attempt on the file at all, when a previous session in this
-      turn already did the same: the prompt, file and model are unchanged, so a third identical
-      session is expected to end the same way (the measured case cost 2 x 1800 s);
-    - a session after which the function verifies, whether or not it has mutants left to kill:
-      there is nothing left for a re-run to fix (`improvable` is False).
-
-    Args:
-        sessions (list[ClaudeRun]): The sessions run so far this turn, oldest first.
-        attempts_after_each_session (list[int]): Verification attempts logged for the function
-            after each of those sessions, cumulative over the turn.
-        improvable (bool): Whether the specification can still be improved, that is, whether the
-            function does not verify yet, per `is_spec_improvable_with_mutation_testing`.
-
-    Returns:
-        _RerunDecision: The decision, with a rationale suitable for the log and the retry prompt.
-    """
-    last = sessions[-1]
-    attempts = attempts_after_each_session[-1]
-    if attempts >= _MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION:
-        return _RerunDecision(False, "")
-    if not improvable:
-        return _RerunDecision(False, "")
-    if len(sessions) >= _MAX_AGENT_SESSIONS_PER_FUNCTION:
-        return _RerunDecision(False, f"session cap of {_MAX_AGENT_SESSIONS_PER_FUNCTION} reached")
-    if _is_usage_limit_hit(last):
-        return _RerunDecision(False, "the last session was stopped by a usage limit")
-    # Sessions this turn that added no verification attempt at all.
-    new_attempts = [
-        after - (attempts_after_each_session[index - 1] if index else 0)
-        for index, after in enumerate(attempts_after_each_session)
-    ]
-    sessions_without_attempt = sum(1 for count in new_attempts if count == 0)
-    if new_attempts[-1] == 0 and sessions_without_attempt > _MAX_SESSIONS_WITHOUT_ATTEMPT:
-        return _RerunDecision(
-            False,
-            f"{sessions_without_attempt} sessions in a row ended without running the verifier "
-            "on this file; another identical session is not expected to",
-        )
-    how_it_ended = (
-        f"was stopped by the harness after {_DEFAULT_CLAUDE_TIMEOUT_SEC} s"
-        if last.timed_out
-        else ("failed with an error" if last.is_error else "ended")
-    )
-    return _RerunDecision(
-        True,
-        f"the previous session {how_it_ended} after recording {new_attempts[-1]} verification "
-        f"attempt(s) on this file, short of the {_MIN_VERIFICATION_ATTEMPTS_PER_FUNCTION} "
-        "required; the function does not verify yet",
-    )
-
-
-@dataclass(frozen=True)
-class _RerunDecision:
-    """The decision whether a function gets another `claude -p` session, and the reason for it.
-
-    Attributes:
-        rerun (bool): True iff another session should be started.
-        rationale (str): One sentence explaining the decision, for the log.
     """
 
     rerun: bool
@@ -1842,6 +1733,20 @@ def _count_verification_attempts(
     return sum(1 for record in records if function is None or record.get("function") == function)
 
 
+def _object_field(record: dict[str, object], key: str) -> dict[str, Any]:
+    """Return the JSON object under `key` in a log record, or `{}` if it is absent or not one.
+
+    Args:
+        record (dict[str, object]): A record read by `_read_jsonl_records`.
+        key (str): The field to read, such as `"cbmc"`.
+
+    Returns:
+        dict[str, Any]: The field's value, or an empty dict.
+    """
+    value = record.get(key)
+    return cast("dict[str, Any]", value) if isinstance(value, dict) else {}
+
+
 def _read_function_verdicts(log_path: Path) -> dict[str, tuple[str, str]]:
     """Return the last recorded outcome and ground-truth verdict of each function in the run log.
 
@@ -1865,14 +1770,14 @@ def _read_function_verdicts(log_path: Path) -> dict[str, tuple[str, str]]:
         function = record.get("function")
         outcome = record.get("outcome")
         if isinstance(function, str) and isinstance(outcome, str):
-            cbmc = record.get("cbmc") or {}
+            cbmc = _object_field(record, "cbmc")
             verdict = cbmc.get("verdict") or outcome
             if verdict == VACUOUS_VERDICT and cbmc.get("vacuity"):
                 verdict = vacuous_status(cbmc["vacuity"])
             verdicts[function] = (outcome, verdict)
-        kept = bool((record.get("merge") or {}).get("carried"))
-        for other, result in (record.get("reverified") or {}).items():
-            if other not in verdicts:
+        kept = bool(_object_field(record, "merge").get("carried"))
+        for other, result in _object_field(record, "reverified").items():
+            if other not in verdicts or not isinstance(result, dict):
                 continue
             if result.get("is_function_verified"):
                 verdicts[other] = (str(GroundTruthVerificationResult.VERIFIED), "PASS")

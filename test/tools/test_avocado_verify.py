@@ -129,74 +129,6 @@ def test_no_rerun_when_floor_met_or_verified_or_capped() -> None:
     assert "cap" in capped.rationale
 
 
-def test_the_timeout_in_the_rationale_is_the_configured_one() -> None:
-    decision = _decide([_session(timed_out=True)], [0], timeout=600)
-    assert "after 600 s" in decision.rationale
-
-
-def test_attempts_on_callees_prevent_the_no_attempt_stop() -> None:
-    # Neither session attempted the function itself, but both verified a callee in the file.
-    decision = _decide([_session(), _session()], [0, 0], file_attempts=[1, 2])
-    assert decision.rerun
-
-
-def test_meeting_the_floor_is_explained() -> None:
-    decision = _decide([_session()], [2])
-    assert not decision.rerun
-    assert "2 verification attempt(s)" in decision.rationale
-
-
-def test_the_rationale_reports_the_attempts_over_the_turn() -> None:
-    decision = _decide([_session(), _session()], [1, 1], file_attempts=[1, 2])
-    assert decision.rerun
-    assert "recorded 0 verification attempt(s)" in decision.rationale
-    assert "for 1 in 2 session(s)" in decision.rationale
-
-
-def test_the_no_attempt_stop_counts_only_consecutive_sessions(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("avocado_verify._MAX_AGENT_SESSIONS_PER_FUNCTION", 4)
-    # Sessions 1 and 3 made no attempt, but session 2 did, so they are not in a row.
-    assert _decide([_session()] * 3, [0, 1, 1]).rerun
-    stopped = _decide([_session()] * 3, [1, 1, 1])
-    assert not stopped.rerun
-    assert "2 sessions in a row" in stopped.rationale
-
-
-def test_a_usage_limit_on_the_last_allowed_session_is_reported() -> None:
-    sessions = [_session()] * 2 + [
-        _session(is_error=True, text="Usage limit reached")
-    ]
-    decision = _decide(sessions, [0, 0, 0], file_attempts=[0, 1, 1])
-    assert not decision.rerun
-    assert "usage limit" in decision.rationale
-
-
-def test_a_verifying_specification_is_explained() -> None:
-    decision = _decide([_session()], [0], verified=True)
-    assert not decision.rerun
-    assert "verifies" in decision.rationale
-
-
-def test_sessions_that_failed_with_an_error_do_not_count_toward_the_no_attempt_stop(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("avocado_verify._MAX_AGENT_SESSIONS_PER_FUNCTION", 4)
-    errored = _session(is_error=True, text="API Error: 529 overloaded")
-    assert _decide([errored, errored], [0, 0]).rerun
-    # An error between two sessions without an attempt neither counts nor interrupts the row.
-    sessions = [_session(), errored, _session()]
-    stopped = _decide(sessions, [0, 0, 0])
-    assert not stopped.rerun
-    assert "2 sessions in a row" in stopped.rationale
-
-
-def test_the_rationale_claims_no_verdict_before_any_attempt() -> None:
-    assert "does not verify yet" not in _decide([_session()], [0]).rationale
-    assert "does not verify yet" in _decide([_session()], [1]).rationale
-
-
 def test_retry_note_leads_the_prompt_and_attempts_rule_is_stated() -> None:
     prompt = _build_prompt(
         "swap",
@@ -290,6 +222,74 @@ def test_prompt_states_the_isolation_rule() -> None:
     assert "must stay exactly as it was" in prompt and "contract and body" not in prompt
     assert "A copy that breaks an edit rule is not merged at all" in prompt
     assert prompt.endswith("avocado-validate edits --file /tmp/copy/q.c")
+
+
+def test_the_timeout_in_the_rationale_is_the_configured_one() -> None:
+    decision = _decide([_session(timed_out=True)], [0], timeout=600)
+    assert "after 600 s" in decision.rationale
+
+
+def test_attempts_on_callees_prevent_the_no_attempt_stop() -> None:
+    # Neither session attempted the function itself, but both verified a callee in the file.
+    decision = _decide([_session(), _session()], [0, 0], file_attempts=[1, 2])
+    assert decision.rerun
+
+
+def test_meeting_the_floor_is_explained() -> None:
+    decision = _decide([_session()], [2])
+    assert not decision.rerun
+    assert "2 verification attempt(s)" in decision.rationale
+
+
+def test_the_rationale_reports_the_attempts_over_the_turn() -> None:
+    decision = _decide([_session(), _session()], [1, 1], file_attempts=[1, 2])
+    assert decision.rerun
+    assert "recorded 0 verification attempt(s)" in decision.rationale
+    assert "for 1 in 2 session(s)" in decision.rationale
+
+
+def test_the_no_attempt_stop_counts_only_consecutive_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("avocado_verify._MAX_AGENT_SESSIONS_PER_FUNCTION", 4)
+    # Sessions 1 and 3 made no attempt, but session 2 did, so they are not in a row.
+    assert _decide([_session()] * 3, [0, 1, 1]).rerun
+    stopped = _decide([_session()] * 3, [1, 1, 1])
+    assert not stopped.rerun
+    assert "2 sessions in a row" in stopped.rationale
+
+
+def test_a_usage_limit_on_the_last_allowed_session_is_reported() -> None:
+    sessions = [_session()] * 2 + [
+        _session(is_error=True, text="Usage limit reached")
+    ]
+    decision = _decide(sessions, [0, 0, 0], file_attempts=[0, 1, 1])
+    assert not decision.rerun
+    assert "usage limit" in decision.rationale
+
+
+def test_a_verifying_specification_is_explained() -> None:
+    decision = _decide([_session()], [0], verified=True)
+    assert not decision.rerun
+    assert "verifies" in decision.rationale
+
+
+def test_sessions_that_failed_with_an_error_do_not_count_toward_the_no_attempt_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("avocado_verify._MAX_AGENT_SESSIONS_PER_FUNCTION", 4)
+    errored = _session(is_error=True, text="API Error: 529 overloaded")
+    assert _decide([errored, errored], [0, 0]).rerun
+    # An error between two sessions without an attempt neither counts nor interrupts the row.
+    sessions = [_session(), errored, _session()]
+    stopped = _decide(sessions, [0, 0, 0])
+    assert not stopped.rerun
+    assert "2 sessions in a row" in stopped.rationale
+
+
+def test_the_rationale_claims_no_verdict_before_any_attempt() -> None:
+    assert "does not verify yet" not in _decide([_session()], [0]).rationale
+    assert "does not verify yet" in _decide([_session()], [1]).rationale
 
 
 def test_prompt_edits_command_carries_the_include_dirs() -> None:
@@ -840,9 +840,6 @@ def _run_swap_whose_edit_to_partition_is_left_out(tmp_path, monkeypatch, swap_ve
     monkeypatch.setattr(avocado_verify, "_run_claude", claude)
     monkeypatch.setattr(avocado_verify, "verify_function", ground_truth)
     monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
-    monkeypatch.setattr(
-        avocado_verify, "is_spec_improvable_with_mutation_testing", lambda *a, **k: False
-    )
     state = avocado_verify._MergeState(active={"swap", "partition"}, verified=set())
     result = avocado_verify._verify_via_agent(
         "swap",
@@ -987,9 +984,6 @@ def test_a_function_broken_by_another_sessions_edit_to_its_callee_gets_another_s
     monkeypatch.setattr(avocado_verify, "_run_claude", claude)
     monkeypatch.setattr(avocado_verify, "verify_function", ground_truth)
     monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
-    monkeypatch.setattr(
-        avocado_verify, "is_spec_improvable_with_mutation_testing", lambda *a, **k: False
-    )
     state = avocado_verify._MergeState(active={"quickSort"}, verified={"partition"})
     result = avocado_verify._verify_via_agent(
         "quickSort",
@@ -1039,9 +1033,6 @@ def test_merge_reruns_stop_at_their_own_cap(tmp_path: Path, monkeypatch) -> None
     monkeypatch.setattr(avocado_verify, "_run_claude", claude)
     monkeypatch.setattr(avocado_verify, "verify_function", ground_truth)
     monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
-    monkeypatch.setattr(
-        avocado_verify, "is_spec_improvable_with_mutation_testing", lambda *a, **k: False
-    )
     state = avocado_verify._MergeState(active={"quickSort"}, verified=set())
     result = avocado_verify._verify_via_agent(
         "quickSort",
@@ -1231,9 +1222,6 @@ def test_a_function_verified_against_an_unverified_callee_says_so(
     monkeypatch.setattr(avocado_verify, "_run_claude", claude)
     monkeypatch.setattr(avocado_verify, "verify_function", _FakeVerify())
     monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
-    monkeypatch.setattr(
-        avocado_verify, "is_spec_improvable_with_mutation_testing", lambda *a, **k: False
-    )
     state = avocado_verify._MergeState(
         active={"quickSort"}, unverified={"partition": "VACUOUS (end_unreachable)"}
     )
