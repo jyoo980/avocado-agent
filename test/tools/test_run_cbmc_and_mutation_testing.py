@@ -30,7 +30,7 @@ def test_mutation_feedback_of_each_passing_run_is_logged_beside_the_file(tmp_pat
     src = tmp_path / "quicksort.c"
     src.write_text("int f(void) { return 0; }\n")
     scores = [(1, 3, 0.25), (2, 2, 0.5)]
-    for killed, survived, kill_score in scores:
+    for i, (killed, survived, kill_score) in enumerate(scores):
         score = MutationScore(
             file=str(src),
             target_function="partition",
@@ -42,12 +42,22 @@ def test_mutation_feedback_of_each_passing_run_is_logged_beside_the_file(tmp_pat
             num_instrumentation_failed=0,
             kill_score=kill_score,
         )
-        _log_mutation_feedback(str(src), "partition", score, seconds=12.34)
-    _log_mutation_feedback(str(src), "swap", NoMutantsGenerated(str(src), "swap"), seconds=0.01)
+        _log_mutation_feedback(
+            str(src), "partition", score, attempt_id=f"attempt{i}", seconds=12.34
+        )
+    _log_mutation_feedback(
+        str(src),
+        "swap",
+        NoMutantsGenerated(str(src), "swap"),
+        attempt_id="attempt2",
+        seconds=0.01,
+    )
     log = tmp_path / "quicksort-mutation-feedback.jsonl"
     records = [json.loads(line) for line in log.read_text().splitlines()]
     # One record per passing run, in order, so successive scores can be compared.
     assert [record["kill_score"] for record in records] == [0.25, 0.5, None]
+    # Each record names its attempt, so it can be joined to the verification-attempts log.
+    assert [record["attempt_id"] for record in records] == ["attempt0", "attempt1", "attempt2"]
     first = records[0]
     assert first["function"] == "partition" and first["was_mutation_tested"] is True
     assert (first["total"], first["killed"], first["survived"]) == (6, 1, 3)
