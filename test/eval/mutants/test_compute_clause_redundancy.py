@@ -14,6 +14,7 @@ from eval.mutants.compute_clause_redundancy import (
 )
 from eval.mutants.mutate_specification import CbmcClause
 from eval.mutants.util import CLAUSE_DROP_INFIX, get_bounded_mutant_file_name, is_mutant_artifact
+from tools.construct_call_graph import CALL_GRAPH_SUFFIX
 
 requires_cbmc = pytest.mark.skipif(
     not all(shutil.which(tool) for tool in ("goto-cc", "goto-instrument", "cbmc")),
@@ -119,6 +120,16 @@ def test_removed_clause_name_is_bounded_for_long_names() -> None:
         assert is_mutant_artifact(Path(name))
     assert name_a != name_b
     assert name_a != get_bounded_mutant_file_name(stem, CLAUSE_DROP_INFIX, long_a, 4, ".c")
+
+
+def test_removed_clause_path_leaves_room_for_call_graph_cache_name() -> None:
+    workspace = Path("/work")
+    # Without reserving room, this mutant name fits in 255 bytes but its cache name does not.
+    source = Path("/src/" + "s" * 205 + ".c")
+    path = _get_path_to_source_with_removed_clause(workspace, source, "f" * 30, 0)
+    assert len(os.fsencode(path.name)) <= 255
+    assert len(os.fsencode(path.stem + CALL_GRAPH_SUFFIX)) <= 255
+    assert "__clause_drop_" in path.name
 
 
 def test_removed_clause_name_handles_non_utf8_stems() -> None:

@@ -7,6 +7,7 @@ import secrets
 from collections.abc import Sequence
 from pathlib import Path
 
+from tools.construct_call_graph import CALL_GRAPH_SUFFIX
 from tools.run_cbmc import RunCbmcResult
 
 # 0 indicates success, 10 indicates failure, 124 indicates timeout.
@@ -90,6 +91,9 @@ def get_bounded_mutant_file_name(
     always contains `__<marker>_`, so it still matches the patterns that `make clean-mutants`
     removes, and `is_mutant_artifact()` recognizes it.
 
+    The bound also leaves room for the call-graph cache that `construct_call_graph` writes next to
+    the mutant (`<mutant stem>-callgraph.json`), since CBMC runs on a mutant may build one.
+
     Byte lengths are measured with `os.fsencode`, which counts name bytes the way the filesystem
     does. It uses surrogateescape, so basenames that are not valid UTF-8 do not raise.
 
@@ -103,15 +107,20 @@ def get_bounded_mutant_file_name(
     Returns:
         str: The mutant file name (a single path component).
     """
+    # The call-graph cache name replaces `suffix` with `CALL_GRAPH_SUFFIX`; if that is longer, the
+    # mutant name must be shorter by the difference so that the cache name fits too.
+    max_name_bytes = _MAX_FILE_NAME_BYTES - max(
+        0, len(os.fsencode(CALL_GRAPH_SUFFIX)) - len(os.fsencode(suffix))
+    )
     name = f"{stem}__{marker}_{function}_{index}{suffix}"
-    if len(os.fsencode(name)) <= _MAX_FILE_NAME_BYTES:
+    if len(os.fsencode(name)) <= max_name_bytes:
         return name
 
     # Too long: replace the function name with a digest of the full (stem, function) pair, so that
     # truncating the stem cannot make two distinct inputs collide.
     digest = hashlib.sha256(os.fsencode(f"{stem}\0{function}")).hexdigest()[:16]
     tail = f"__{marker}_{digest}_{index}{suffix}"
-    stem_budget = max(0, _MAX_FILE_NAME_BYTES - len(os.fsencode(tail)))
+    stem_budget = max(0, max_name_bytes - len(os.fsencode(tail)))
     # Truncate at character boundaries so that a multibyte character is never split.
     truncated_stem = ""
     used = 0

@@ -465,9 +465,9 @@ def _run_cbmc_in_scratch_dir(function_to_verify: str, file_path: Path | str) -> 
     """Run CBMC on a function in a private scratch working directory.
 
     The CBMC pipeline writes intermediate `<function>.goto` / `checking-<function>-contracts.goto`
-    files, named only by the function, into its working directory. Several scoring runs (e.g. of
-    two functions that share a caller) may verify the same function concurrently, so each run gets
-    its own scratch directory to keep them from clobbering one another's goto-binaries.
+    files, named only by the function. Several scoring runs (e.g. of two functions that share a
+    caller) may verify the same function concurrently; `run_cbmc` runs each pipeline in its own
+    private temporary directory, so they never clobber one another's goto-binaries.
 
     Args:
         function_to_verify (str): The function to verify.
@@ -478,8 +478,8 @@ def _run_cbmc_in_scratch_dir(function_to_verify: str, file_path: Path | str) -> 
         RunCbmcResult: The result of running CBMC.
     """
     return run_cbmc(
-            function_to_verify=function_to_verify,
-            file_containing_function_to_verify=str(Path(file_path).resolve()),
+        function_to_verify=function_to_verify,
+        file_containing_function_to_verify=str(Path(file_path).resolve()),
     )
 
 
