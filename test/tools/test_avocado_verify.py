@@ -80,7 +80,9 @@ def _decide(
     return _should_rerun_session(
         sessions,
         attempts,
-        file_attempts_after_each_session=attempts if file_attempts is None else file_attempts,
+        attempts_on_any_function_after_each_session=(
+            attempts if file_attempts is None else file_attempts
+        ),
         verified=verified,
         timeout=timeout,
     )
@@ -92,19 +94,24 @@ def test_rerun_when_one_session_ended_short_of_the_floor() -> None:
     assert "1 verification attempt(s)" in decision.rationale
 
 
-def test_rerun_once_after_a_timeout_with_no_attempt_but_not_twice() -> None:
-    first = _decide([_session(timed_out=True)], [0])
+def test_rerun_once_after_a_session_with_no_attempt_but_not_twice() -> None:
+    first = _decide([_session()], [0])
     assert first.rerun
-    assert "stopped by the harness" in first.rationale
-    second = _decide([_session(timed_out=True), _session(timed_out=True)], [0, 0])
+    second = _decide([_session(), _session()], [0, 0])
     assert not second.rerun
     assert "2 sessions in a row" in second.rationale
+
+
+def test_no_rerun_after_a_timeout() -> None:
+    decision = _decide([_session(timed_out=True)], [0])
+    assert not decision.rerun
+    assert "stopped by the harness" in decision.rationale
 
 
 def test_a_session_that_finally_attempts_resets_the_no_attempt_stop() -> None:
     # Session 1 made no attempt, session 2 made one: the last session did try, so the
     # no-attempt rule does not apply and the ordinary floor decides.
-    decision = _decide([_session(timed_out=True), _session()], [0, 1])
+    decision = _decide([_session(), _session()], [0, 1])
     assert decision.rerun
 
 
@@ -1425,7 +1432,7 @@ def test_meeting_the_floor_is_explained() -> None:
 def test_the_rationale_reports_the_attempts_over_the_turn() -> None:
     decision = _decide([_session(), _session()], [1, 1], file_attempts=[1, 2])
     assert decision.rerun
-    assert "recording 0 verification attempt(s)" in decision.rationale
+    assert "recorded 0 verification attempt(s)" in decision.rationale
     assert "for 1 in 2 session(s)" in decision.rationale
 
 
@@ -1441,7 +1448,7 @@ def test_the_no_attempt_stop_counts_only_consecutive_sessions(
 
 
 def test_a_usage_limit_on_the_last_allowed_session_is_reported() -> None:
-    sessions = [_session(timed_out=True)] * 2 + [
+    sessions = [_session()] * 2 + [
         _session(is_error=True, text="Usage limit reached")
     ]
     decision = _decide(sessions, [0, 0, 0], file_attempts=[0, 1, 1])
@@ -1453,3 +1460,21 @@ def test_a_verifying_specification_is_explained() -> None:
     decision = _decide([_session()], [0], verified=True)
     assert not decision.rerun
     assert "verifies" in decision.rationale
+
+
+def test_sessions_that_failed_with_an_error_do_not_count_toward_the_no_attempt_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("avocado_verify._MAX_AGENT_SESSIONS_PER_FUNCTION", 4)
+    errored = _session(is_error=True, text="API Error: 529 overloaded")
+    assert _decide([errored, errored], [0, 0]).rerun
+    # An error between two sessions without an attempt neither counts nor interrupts the row.
+    sessions = [_session(), errored, _session()]
+    stopped = _decide(sessions, [0, 0, 0])
+    assert not stopped.rerun
+    assert "2 sessions in a row" in stopped.rationale
+
+
+def test_the_rationale_claims_no_verdict_before_any_attempt() -> None:
+    assert "does not verify yet" not in _decide([_session()], [0]).rationale
+    assert "does not verify yet" in _decide([_session()], [1]).rationale

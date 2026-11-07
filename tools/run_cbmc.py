@@ -132,6 +132,9 @@ class RunCbmcResult:
         no_contract (bool): True iff the pipeline passed but the function has no contract in the
             compiled program. CBMC then checks an empty contract, which nothing can violate, so
             such a pass proves nothing about the function and does not count as verified.
+        contract_probe_failed (bool): True iff the pipeline passed but whether the function has a
+            contract could not be determined, because `has_contract` could not compile or list the
+            program. Unknown is not proof of a contract, so such a pass does not count as verified.
     """
 
     function: str
@@ -142,6 +145,7 @@ class RunCbmcResult:
     vacuity_check_result: VacuityCheckResult | None = None
     variant: PipelineVariant | None = None
     no_contract: bool = False
+    contract_probe_failed: bool = False
 
     @property
     def cbmc_ran_successfully(self) -> bool:
@@ -158,13 +162,14 @@ class RunCbmcResult:
         """True iff the function for this verification run is successfully verified.
 
         A function is successfully verified if all components of the CBMC pipeline ran successfully,
-        the return code is 0, the function has a contract, and the vacuity check (when one was
-        made) did not find the proof vacuous.
+        the return code is 0, the function is known to have a contract, and the vacuity check
+        (when one was made) did not find the proof vacuous.
         """
         return (
             self.cbmc_ran_successfully
             and self.returncode == 0
             and not self.no_contract
+            and not self.contract_probe_failed
             and not self.is_vacuous
         )
 
@@ -185,6 +190,8 @@ class RunCbmcResult:
             return f"{self.failed_step.value.upper()}_FAILED"
         if self.no_contract:
             return "NO_CONTRACT"
+        if self.contract_probe_failed:
+            return "CONTRACT_PROBE_FAILED"
         if self.is_vacuous:
             return VACUOUS_VERDICT
         if self.is_function_verified:
@@ -342,8 +349,7 @@ def _run_cbmc_in_directory(
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
         call_graph (CallGraph | None): A pre-built call graph, or None to construct one.
         cwd (str): Working directory for every subprocess in the pipeline.
-        timeout_sec (int): Per-subprocess timeout in seconds. A timed-out run is reported as such
-            and is never mistaken for a verification result.
+        timeout_sec (int): Per-subprocess timeout in seconds.
         variant (PipelineVariant | None): When given, the only variant of the pipeline to run.
 
     Returns:
@@ -1092,6 +1098,28 @@ def _get_cbmc_check_command(function: str) -> str:
     )
 
 
+def list_compiled_functions(
+    file_path: str, include_dirs: list[str] | None = None
+) -> set[str] | None:
+    """Return the names of the functions that are compiled when `file_path` is built.
+
+    The harness finds a file's functions by reading its text, without running the preprocessor,
+    so it also finds the ones inside conditional blocks that this build leaves out. Such a
+    function does not exist as far as CBMC is concerned: it cannot be verified, and its contract
+    cannot be substituted at a call site. This asks the compiler, once, which functions do exist.
+
+    Args:
+        file_path (str): Path to the C source file.
+        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+
+    Returns:
+        set[str] | None: The functions that have a body in the compiled program, or None when
+            the file could not be compiled or listed, in which case nothing is known.
+    """
+    listing = _list_goto_functions(file_path, include_dirs)
+    return None if listing is None else listing[0]
+
+
 def _run_cbmc_without_depth_bound(
     function_to_verify: str,
     file_containing_function_to_verify: str,
@@ -1145,28 +1173,6 @@ def _run_cbmc_without_depth_bound(
         _result_from_failure(function_to_verify, unbounded, unbounded.stdout, unbounded.stderr),
         variant=variant,
     )
-
-
-def list_compiled_functions(
-    file_path: str, include_dirs: list[str] | None = None
-) -> set[str] | None:
-    """Return the names of the functions that are compiled when `file_path` is built.
-
-    The harness finds a file's functions by reading its text, without running the preprocessor,
-    so it also finds the ones inside conditional blocks that this build leaves out. Such a
-    function does not exist as far as CBMC is concerned: it cannot be verified, and its contract
-    cannot be substituted at a call site. This asks the compiler, once, which functions do exist.
-
-    Args:
-        file_path (str): Path to the C source file.
-        include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
-
-    Returns:
-        set[str] | None: The functions that have a body in the compiled program, or None when
-            the file could not be compiled or listed, in which case nothing is known.
-    """
-    listing = _list_goto_functions(file_path, include_dirs)
-    return None if listing is None else listing[0]
 
 
 def has_contract(
@@ -1252,7 +1258,9 @@ def verify_function(
 
     A function without a contract is checked against an empty contract, which nothing can
     violate, so a passing run of one is returned with `RunCbmcResult.no_contract` set (printing as
-    `NO_CONTRACT`) and does not count as verified.
+    `NO_CONTRACT`) and does not count as verified. When the contract check itself fails, a passing
+    run is returned with `RunCbmcResult.contract_probe_failed` set (printing as
+    `CONTRACT_PROBE_FAILED`), which does not count as verified either.
 
     Args:
         function (str): Name of the function to verify.
@@ -1269,9 +1277,21 @@ def verify_function(
     )
     if not result.is_function_verified:
         return result
-    # None (the listing failed) keeps the pass: the pipeline just compiled the same file, so that
-    # can only be a timeout or an OS error, not evidence that the contract is missing.
-    if has_contract(function, file_path, include_dirs) is False:
+    contract = has_contract(function, file_path, include_dirs)
+    if contract is None:
+        # The probe compiles the file differently from the pipeline (no stubs, no
+        # macro-disabling flags) and has its own timeout, so its failure says nothing either
+        # way about the contract. It is reported as such rather than as a missing contract.
+        return replace(
+            result,
+            contract_probe_failed=True,
+            response=(
+                f"CBMC passed, but whether {function} has a contract could not be determined: "
+                "the contract check failed to compile or list the program, or timed out. This "
+                "does not count as verified. Re-run the same command."
+            ),
+        )
+    if contract is False:
         return replace(
             result,
             no_contract=True,
