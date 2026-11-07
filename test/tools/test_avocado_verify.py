@@ -1,6 +1,14 @@
-"""Tests for the per-function prompt built by `avocado_verify`."""
+"""Tests for `avocado_verify`: the per-function prompt and when to re-run a session."""
 
-from avocado_verify import ClaudeRun, _build_claude_command, _build_prompt, _should_rerun_session
+import pytest
+
+from avocado_verify import (
+    ClaudeRun,
+    _build_claude_command,
+    _build_prompt,
+    _RerunDecision,
+    _should_rerun_session,
+)
 from tools.construct_call_graph import construct_call_graph
 from tools.util.callgraph import CallGraph
 
@@ -61,46 +69,132 @@ def _session(*, timed_out: bool = False, is_error: bool = False, text: str = "")
     )
 
 
+def _decide(
+    sessions: list[ClaudeRun],
+    attempts: list[int],
+    *,
+    file_attempts: list[int] | None = None,
+    verified: bool = False,
+    timeout: int = 1800,
+) -> _RerunDecision:
+    return _should_rerun_session(
+        sessions,
+        attempts,
+        attempts_on_any_function_after_each_session=(
+            attempts if file_attempts is None else file_attempts
+        ),
+        verified=verified,
+        timeout=timeout,
+    )
+
+
 def test_rerun_when_one_session_ended_short_of_the_floor() -> None:
-    decision = _should_rerun_session([_session()], [1], improvable=True)
+    decision = _decide([_session()], [1])
     assert decision.rerun
     assert "1 verification attempt(s)" in decision.rationale
 
 
-def test_rerun_once_after_a_timeout_with_no_attempt_but_not_twice() -> None:
-    first = _should_rerun_session([_session(timed_out=True)], [0], improvable=True)
+def test_rerun_once_after_a_session_with_no_attempt_but_not_twice() -> None:
+    first = _decide([_session()], [0])
     assert first.rerun
-    assert "stopped by the harness" in first.rationale
-    second = _should_rerun_session(
-        [_session(timed_out=True), _session(timed_out=True)], [0, 0], improvable=True
-    )
+    second = _decide([_session(), _session()], [0, 0])
     assert not second.rerun
     assert "2 sessions in a row" in second.rationale
+
+
+def test_no_rerun_after_a_timeout() -> None:
+    decision = _decide([_session(timed_out=True)], [0])
+    assert not decision.rerun
+    assert "stopped by the harness" in decision.rationale
 
 
 def test_a_session_that_finally_attempts_resets_the_no_attempt_stop() -> None:
     # Session 1 made no attempt, session 2 made one: the last session did try, so the
     # no-attempt rule does not apply and the ordinary floor decides.
-    decision = _should_rerun_session(
-        [_session(timed_out=True), _session()], [0, 1], improvable=True
-    )
+    decision = _decide([_session(), _session()], [0, 1])
     assert decision.rerun
 
 
 def test_no_rerun_after_a_usage_limit() -> None:
-    decision = _should_rerun_session(
-        [_session(is_error=True, text="Usage limit reached; resets at 3pm")], [0], improvable=True
-    )
+    decision = _decide([_session(is_error=True, text="Usage limit reached; resets at 3pm")], [0])
     assert not decision.rerun
     assert "usage limit" in decision.rationale
 
 
-def test_no_rerun_when_floor_met_or_not_improvable_or_capped() -> None:
-    assert not _should_rerun_session([_session()], [2], improvable=True).rerun
-    assert not _should_rerun_session([_session()], [0], improvable=False).rerun
-    capped = _should_rerun_session([_session()] * 3, [0, 0, 0], improvable=True)
+def test_no_rerun_when_floor_met_or_verified_or_capped() -> None:
+    assert not _decide([_session()], [2]).rerun
+    assert not _decide([_session()], [0], verified=True).rerun
+    capped = _decide([_session()] * 3, [0, 0, 0])
     assert not capped.rerun
     assert "cap" in capped.rationale
+
+
+def test_the_timeout_in_the_rationale_is_the_configured_one() -> None:
+    decision = _decide([_session(timed_out=True)], [0], timeout=600)
+    assert "after 600 s" in decision.rationale
+
+
+def test_attempts_on_callees_prevent_the_no_attempt_stop() -> None:
+    # Neither session attempted the function itself, but both verified a callee in the file.
+    decision = _decide([_session(), _session()], [0, 0], file_attempts=[1, 2])
+    assert decision.rerun
+
+
+def test_meeting_the_floor_is_explained() -> None:
+    decision = _decide([_session()], [2])
+    assert not decision.rerun
+    assert "2 verification attempt(s)" in decision.rationale
+
+
+def test_the_rationale_reports_the_attempts_over_the_turn() -> None:
+    decision = _decide([_session(), _session()], [1, 1], file_attempts=[1, 2])
+    assert decision.rerun
+    assert "recorded 0 verification attempt(s)" in decision.rationale
+    assert "for 1 in 2 session(s)" in decision.rationale
+
+
+def test_the_no_attempt_stop_counts_only_consecutive_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("avocado_verify._MAX_AGENT_SESSIONS_PER_FUNCTION", 4)
+    # Sessions 1 and 3 made no attempt, but session 2 did, so they are not in a row.
+    assert _decide([_session()] * 3, [0, 1, 1]).rerun
+    stopped = _decide([_session()] * 3, [1, 1, 1])
+    assert not stopped.rerun
+    assert "2 sessions in a row" in stopped.rationale
+
+
+def test_a_usage_limit_on_the_last_allowed_session_is_reported() -> None:
+    sessions = [_session()] * 2 + [
+        _session(is_error=True, text="Usage limit reached")
+    ]
+    decision = _decide(sessions, [0, 0, 0], file_attempts=[0, 1, 1])
+    assert not decision.rerun
+    assert "usage limit" in decision.rationale
+
+
+def test_a_verifying_specification_is_explained() -> None:
+    decision = _decide([_session()], [0], verified=True)
+    assert not decision.rerun
+    assert "verifies" in decision.rationale
+
+
+def test_sessions_that_failed_with_an_error_do_not_count_toward_the_no_attempt_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("avocado_verify._MAX_AGENT_SESSIONS_PER_FUNCTION", 4)
+    errored = _session(is_error=True, text="API Error: 529 overloaded")
+    assert _decide([errored, errored], [0, 0]).rerun
+    # An error between two sessions without an attempt neither counts nor interrupts the row.
+    sessions = [_session(), errored, _session()]
+    stopped = _decide(sessions, [0, 0, 0])
+    assert not stopped.rerun
+    assert "2 sessions in a row" in stopped.rationale
+
+
+def test_the_rationale_claims_no_verdict_before_any_attempt() -> None:
+    assert "does not verify yet" not in _decide([_session()], [0]).rationale
+    assert "does not verify yet" in _decide([_session()], [1]).rationale
 
 
 def test_retry_note_leads_the_prompt_and_attempts_rule_is_stated() -> None:
