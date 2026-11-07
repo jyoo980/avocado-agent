@@ -1,9 +1,19 @@
-"""Tests for the concurrency-related pieces of `tools.util.mutation`."""
+"""Tests for `tools.util.mutation`."""
 
 import os
 from pathlib import Path
 
-from tools.util.mutation import _get_path_for_mutated_source
+from tools.util.mutation import (
+    MutationScore,
+    _get_path_for_mutated_source,
+    generate_mutants_and_compute_score,
+)
+
+
+def test_mutation_testing_leaves_no_per_mutant_files(isolated_inc_source: Path) -> None:
+    # The `isolated_inc_source` fixture checks for leftover files.
+    result = generate_mutants_and_compute_score(str(isolated_inc_source), "inc")
+    assert isinstance(result, MutationScore) and result.num_mutants > 0
 
 
 def test_mutant_path_includes_function_name_so_functions_never_collide() -> None:

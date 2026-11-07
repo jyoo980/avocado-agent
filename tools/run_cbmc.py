@@ -24,7 +24,7 @@ from subprocess import TimeoutExpired
 
 from loguru import logger
 
-from tools.construct_call_graph import construct_call_graph
+from tools.construct_call_graph import load_call_graph
 from tools.util import (
     build_stub_index,
     get_in_file_callees_for,
@@ -277,6 +277,7 @@ def run_cbmc(
     file_containing_function_to_verify: str,
     include_dirs: list[str] | None = None,
     call_graph: CallGraph | None = None,
+    log_invocation: bool = True,
     timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
     variant: PipelineVariant | None = None,
 ) -> RunCbmcResult:
@@ -307,6 +308,10 @@ def run_cbmc(
             graph) can build it once and pass it in, which both avoids redundant parsing and keeps
             the non-thread-safe tree-sitter parser out of concurrent code paths. When None, the
             call graph is constructed from the source file as usual.
+        log_invocation (bool): When True, a record of the run is appended to the
+            `<stem>-cbmc-runs.jsonl` log next to `file_containing_function_to_verify`. Callers
+            that verify throwaway sources (e.g., mutants) can pass False so that no log is left
+            behind for a file that no longer exists.
         timeout_sec (int): Per-subprocess timeout in seconds. Defaults to
             `_DEFAULT_RUN_CBMC_TIMEOUT_SEC`; callers that only need a quick verdict (e.g. mutation
             feedback for the agent) can pass a smaller budget. A timed-out run is reported as such
@@ -327,8 +332,9 @@ def run_cbmc(
             include_dirs,
             call_graph,
             scratch_dir,
-            timeout_sec,
-            variant,
+            log_invocation=log_invocation,
+            timeout_sec=timeout_sec,
+            variant=variant,
         )
 
 
@@ -338,6 +344,8 @@ def _run_cbmc_in_directory(
     include_dirs: list[str] | None,
     call_graph: CallGraph | None,
     cwd: str,
+    *,
+    log_invocation: bool,
     timeout_sec: int,
     variant: PipelineVariant | None,
 ) -> RunCbmcResult:
@@ -349,6 +357,7 @@ def _run_cbmc_in_directory(
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
         call_graph (CallGraph | None): A pre-built call graph, or None to construct one.
         cwd (str): Working directory for every subprocess in the pipeline.
+        log_invocation (bool): Whether to append a record of the run to the run log.
         timeout_sec (int): Per-subprocess timeout in seconds.
         variant (PipelineVariant | None): When given, the only variant of the pipeline to run.
 
@@ -362,8 +371,7 @@ def _run_cbmc_in_directory(
     include_dirs = [str(Path(d).resolve()) for d in include_dirs or []]
 
     if call_graph is None:
-        path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)
-        call_graph = CallGraph(json.loads(Path(path_to_raw_call_graph).read_text(encoding="utf-8")))
+        call_graph = load_call_graph(file_containing_function_to_verify)
     callees = get_in_file_callees_for(function_to_verify, call_graph)
     # Building the stub index is inexpensive for now (there is a single file).
     # Re-visit this if/when we have more stub files to parse.
@@ -413,12 +421,13 @@ def _run_cbmc_in_directory(
     # First, check if the run was successful or if it timed out.
     if result.cbmc_ran_successfully or result.timed_out:
         result = replace(result, variant=used)
-        _log_invocation(
-            file_containing_function_to_verify,
-            result,
-            subprocess_results,
-            nondet_callees,
-        )
+        if log_invocation:
+            _log_invocation(
+                file_containing_function_to_verify,
+                result,
+                subprocess_results,
+                nondet_callees,
+            )
         return result
 
     # Recursion-inlining retry.
@@ -461,7 +470,10 @@ def _run_cbmc_in_directory(
         )
 
     result = replace(result, variant=used)
-    _log_invocation(file_containing_function_to_verify, result, subprocess_results, nondet_callees)
+    if log_invocation:
+        _log_invocation(
+            file_containing_function_to_verify, result, subprocess_results, nondet_callees
+        )
     return result
 
 
