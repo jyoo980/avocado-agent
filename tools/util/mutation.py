@@ -295,8 +295,11 @@ def generate_mutants_and_compute_score(
     """
     # A symlinked file is not followed, so its mutants are written next to the symlink and see the
     # same quoted `#include`s as the file itself (which `run_cbmc` also compiles through the
-    # symlink). This path is also the `file` of the resulting `MutationScore`.
+    # symlink).
     source_path = resolve_parent(file_path)
+    # The identity under which results are reported, matching other summaries (e.g., clause
+    # redundancy) that key on the resolved path.
+    resolved_source_path = source_path.resolve()
     mutants = get_mutants(str(source_path), target_function)
     if not mutants:
         return NoMutantsGenerated(file_path, target_function)
@@ -328,6 +331,13 @@ def generate_mutants_and_compute_score(
             strict=True,
         )
     )
+    # Writing a mutant follows symlinks, and cleanup deletes the mutant path, so refuse any mutant
+    # path that is a symlink or that aliases the source file (e.g., when the source is itself a
+    # symlink to a file whose name matches a mutant file name).
+    for path in paths_to_mutants:
+        if path.is_symlink() or path.resolve() == resolved_source_path:
+            msg = f"refusing to write mutant to {path}: it is a symlink or aliases {file_path}"
+            raise ValueError(msg)
     # Heads-up to stderr so an agent polling the run can see the slow phase has begun and is
     # making progress. Written to stderr (not stdout) so it never contaminates the kill-score
     # result, and flushed so it is not buffered until the long run completes.
@@ -376,7 +386,7 @@ def generate_mutants_and_compute_score(
     # Every future either stored a result above or raised (which would have propagated), so no
     # None slots remain; the filter just refines the type for the aggregator.
     results = [vresult for vresult in mutant_vresults if vresult is not None]
-    return _aggregate_mutation_score(results, str(source_path), target_function)
+    return _aggregate_mutation_score(results, str(resolved_source_path), target_function)
 
 
 def _mutation_worker_count(num_mutants: int) -> int:

@@ -478,7 +478,7 @@ def test_print_mutation_progress_buckets_undecided_mutants(capsys) -> None:
 def test_run_cbmc_resolves_relative_paths_against_callers_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The subprocesses run in a private scratch directory, but the relative source file and
+    # The subprocesses run in a private temporary directory, but the relative source file and
     # include directory are relative to the caller's working directory.
     (tmp_path / "include").mkdir()
     (tmp_path / "include" / "seven.h").write_text("#define SEVEN 7\n", encoding="utf-8")
