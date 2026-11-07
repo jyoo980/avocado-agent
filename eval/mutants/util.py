@@ -163,6 +163,9 @@ def absolute_path_without_resolving(file_path: str) -> Path:
 def write_new_file(path: Path, text: str) -> None:
     """Write `text` to `path`, which must not already exist.
 
+    If writing or closing the newly created file fails, the file is removed and the failure is
+    propagated.
+
     Args:
         path (Path): The file to create.
         text (str): The contents of the file.
@@ -170,8 +173,13 @@ def write_new_file(path: Path, text: str) -> None:
     Raises:
         FileExistsError: If `path` already exists; the existing file is left untouched.
     """
-    with path.open("x", encoding="utf-8") as f:
-        f.write(text)
+    f = path.open("x", encoding="utf-8")
+    try:
+        with f:
+            f.write(text)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
 
 
 def check_expected_cbmc_return_code(return_code: int):
