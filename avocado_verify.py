@@ -32,9 +32,12 @@ import json
 import os
 import shlex
 import shutil
+import signal
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field, replace
@@ -69,6 +72,7 @@ from tools.util.edit_rules import (
     merge_copy,
 )
 from tools.util.session_state import (
+    MERGE_STAGING_SUFFIX,
     SNAPSHOT_IGNORE,
     TRANSCRIPTS_DIR_SUFFIX,
     find_stray_files,
@@ -245,11 +249,13 @@ class FunctionVerificationResult:
             harness moved on (>= 1; > 1 when re-runs were needed to reach the attempt floor).
         merge (MergeReport | None): What the merge of the session's copy into the canonical file
             kept and dropped, or None when no merge was attempted.
-        stray_files (list[str]): Files other than the source file that the agent added or changed
-            in its private copy; they are never merged, only reported.
-        reverified (dict[str, RunCbmcResult]): Ground-truth verdicts of the other functions this
-            merge had to re-verify because it carried edits to them or to their callees (see
-            `_merge_and_verify`); empty when it carried none.
+        stray_files (list[str]): Files other than the source file that the agent added, changed
+            or deleted in its private copy; any of them blocks the merge (edit rule 6).
+        reverified (dict[str, RunCbmcResult]): Ground-truth verdicts of the other functions that
+            this function's merges re-verified because they carried edits to them or to their
+            callees, for every merge whose carried edits were committed (see
+            `_merge_and_verify`); empty when none were. A later merge's verdict replaces an
+            earlier one's.
         merge_reruns (int): How many times the function was given another session on a fresh
             copy because a merge left out edits its proof depended on, or because another
             session changed the contract of a function it calls
@@ -261,6 +267,12 @@ class FunctionVerificationResult:
         not_in_build (bool): True iff the function is in the source text but not in the compiled
             program (the preprocessor removes it), so it was given no session and no CBMC run
             (see `_functions_not_in_build`). It is recorded as unverified.
+        merge_run (str | None): The run of the harness whose merge state recorded the verdicts
+            (`_MergeState.run`), or None when none was recorded.
+        recorded_order (dict[str, int]): For the function and for each function in
+            `reverified`, the ordinal with which the merge state recorded the verdict given here
+            (`_MergeState.record`). Within one run, the verdict with the larger ordinal is the
+            later one, whatever order the records are written in.
     """
 
     function: str
@@ -276,6 +288,8 @@ class FunctionVerificationResult:
     merge_reruns: int = 0
     unverified_callees: dict[str, str] = field(default_factory=dict)
     not_in_build: bool = False
+    merge_run: str | None = None
+    recorded_order: dict[str, int] = field(default_factory=dict)
 
     def to_record(self) -> dict:
         """Return a JSON-serializable record of this result for the run log.
@@ -309,7 +323,9 @@ class FunctionVerificationResult:
                 "vacuity": None
                 if self.cbmc.vacuity_check_result is None
                 else str(self.cbmc.vacuity_check_result.vacuity),
+                "order": self.recorded_order.get(self.function),
             },
+            "merge_run": self.merge_run,
             "unverified_callees": dict(self.unverified_callees),
             "not_in_build": self.not_in_build,
             "total_cost_to_verify_usd": total_cost_to_verify_usd,
@@ -320,6 +336,9 @@ class FunctionVerificationResult:
                 function: {
                     "verdict": str(result),
                     "is_function_verified": result.is_function_verified,
+                    # Only verdicts on committed edits are kept (see `_merge_and_verify`).
+                    "committed": True,
+                    "order": self.recorded_order.get(function),
                     "vacuity": None
                     if result.vacuity_check_result is None
                     else str(result.vacuity_check_result.vacuity),
@@ -676,18 +695,29 @@ class _MergeState:
             why (`_status_of`). Their contracts are in the canonical file all the same, because
             a caller cannot be verified against a callee that has no contract; a session for a
             caller is told about them, and a function verified against one records it.
+        run (str): Identifies this run of the harness, so that the run log can tell which
+            recorded verdicts the ordinals of `record` can order.
+        recorded (int): How many verdicts `record` has recorded in this run.
     """
 
     active: set[str] = field(default_factory=set)
     verified: set[str] = field(default_factory=set)
     unverified: dict[str, str] = field(default_factory=dict)
+    run: str = field(default_factory=lambda: uuid.uuid4().hex)
+    recorded: int = 0
 
-    def record(self, function: str, cbmc: RunCbmcResult) -> None:
+    def record(self, function: str, cbmc: RunCbmcResult) -> int:
         """Record a function's latest ground truth; the caller holds `_CANONICAL_LOCK`.
 
         Args:
             function (str): The function.
             cbmc (RunCbmcResult): Its ground truth on the canonical file.
+
+        Returns:
+            int: The verdict's ordinal in this run: verdicts recorded later have larger ones. The
+                run log is written in the order sessions finish, not the order their merges
+                recorded verdicts, so the ordinal goes into the log to put them back in order
+                (`_read_function_verdicts`).
         """
         if cbmc.is_function_verified:
             self.verified.add(function)
@@ -695,6 +725,8 @@ class _MergeState:
         else:
             self.verified.discard(function)
             self.unverified[function] = _status_of(cbmc)
+        self.recorded += 1
+        return self.recorded
 
     def rechecked_on_change(self) -> set[str]:
         """Return the functions to re-verify when a merge changes one of their callees' contracts.
@@ -757,7 +789,11 @@ def _fork_session(function: str, canonical_file: Path) -> _Session:
         fork_base = canonical_file.read_bytes()
         root = Path(tempfile.mkdtemp(prefix=_SESSION_DIR_PREFIX))
         directory = root / canonical_file.parent.name
-        shutil.copytree(canonical_file.parent, directory, ignore=_SNAPSHOT_IGNORE)
+        try:
+            shutil.copytree(canonical_file.parent, directory, ignore=_SNAPSHOT_IGNORE)
+        except BaseException:
+            shutil.rmtree(root, ignore_errors=True)
+            raise
     try:
         write_session_info(
             root, function=function, canonical_file=canonical_file, fork_base=fork_base
@@ -819,6 +855,8 @@ def _verify_via_agent(
     attempts = 0
     merge_reruns = 0
     reverified: dict[str, RunCbmcResult] = {}
+    # A later merge's ordinal replaces an earlier one's, as its verdict does in `reverified`.
+    recorded_order: dict[str, int] = {}
     retry_note = ""
     callees = [callee for callee in call_graph.get_callees(function).internal if callee != function]
     while True:
@@ -848,6 +886,7 @@ def _verify_via_agent(
                 call_graph=call_graph,
                 state=state,
                 stray_files=stray_files,
+                recorded_order=recorded_order,
             )
             reverified.update(newly_reverified)
         finally:
@@ -891,6 +930,8 @@ def _verify_via_agent(
         reverified=reverified,
         merge_reruns=merge_reruns,
         unverified_callees=unverified_callees,
+        merge_run=None if state is None else state.run,
+        recorded_order=recorded_order,
     )
 
 
@@ -1105,6 +1146,7 @@ def _merge_and_verify(
     call_graph: CallGraph | None = None,
     state: _MergeState | None = None,
     stray_files: list[str] | None = None,
+    recorded_order: dict[str, int] | None = None,
 ) -> tuple[MergeReport, RunCbmcResult, dict[str, RunCbmcResult]]:
     """Merge the session's copy into the canonical file, then run the independent ground truth.
 
@@ -1138,9 +1180,13 @@ def _merge_and_verify(
     lock; if a function that verified before would stop verifying, or the file no
     longer compiles, the merge is redone without the carried edits and the reason is appended to
     `MergeReport.dropped`. A merge therefore never turns a verified function into an unverified
-    one, and the re-verification verdicts are returned for the run log. A vacuous caller is
-    re-verified so that its verdict is not left stale, but is not protected: if the kept edits
-    make it fail, its new verdict is recorded.
+    one. The re-verification verdicts are returned for the run log only when the carried edits
+    they were taken on are committed; verdicts on edits that were then left out describe a file
+    that never existed, and are not returned. A vacuous caller is re-verified so that its verdict
+    is not left stale, but is not protected: if the kept edits make it fail, its new verdict is
+    recorded.
+
+    The scratch directory is removed when this returns, however it returns.
 
     Args:
         session (_Session): The finished session.
@@ -1149,14 +1195,60 @@ def _merge_and_verify(
         call_graph (CallGraph | None): Call graph of the file, to find the callers a carried edit
             can affect; None finds none.
         state (_MergeState | None): The run's shared merge state; None carries nothing.
-        stray_files (list[str] | None): Files other than the source file that the session added
-            or changed (`_report_stray_edits`); any of them blocks the merge (edit rule 6).
+        stray_files (list[str] | None): Files other than the source file that the session added,
+            changed or deleted (`_report_stray_edits`); any of them blocks the merge (edit
+            rule 6).
+        recorded_order (dict[str, int] | None): When given, receives the ordinal
+            (`_MergeState.record`) of every verdict this records in `state`: the function's own
+            and each committed re-verification's.
 
     Returns:
         tuple[MergeReport, RunCbmcResult, dict[str, RunCbmcResult]]: What the merge did, the
             ground-truth verdict for the function on the canonical file as it is when this
-            returns, and the verdicts of the functions re-verified because of carried edits
-            (empty when there were none).
+            returns, and the verdicts of the functions re-verified because of carried edits that
+            were committed (empty when none were).
+    """
+    scratch_root = Path(tempfile.mkdtemp(prefix=_GROUND_TRUTH_DIR_PREFIX))
+    try:
+        return _merge_and_verify_in(
+            scratch_root,
+            session,
+            canonical_file,
+            include_dirs=include_dirs,
+            call_graph=call_graph,
+            state=state,
+            stray_files=stray_files,
+            recorded_order={} if recorded_order is None else recorded_order,
+        )
+    finally:
+        shutil.rmtree(scratch_root, ignore_errors=True)
+
+
+def _merge_and_verify_in(
+    scratch_root: Path,
+    session: _Session,
+    canonical_file: Path,
+    *,
+    include_dirs: list[str],
+    call_graph: CallGraph | None,
+    state: _MergeState | None,
+    stray_files: list[str] | None,
+    recorded_order: dict[str, int],
+) -> tuple[MergeReport, RunCbmcResult, dict[str, RunCbmcResult]]:
+    """Do the work of `_merge_and_verify` in `scratch_root`, which the caller creates and removes.
+
+    Args:
+        scratch_root (Path): An empty temporary directory for the ground-truth copy.
+        session (_Session): The finished session.
+        canonical_file (Path): Absolute path to the canonical source file.
+        include_dirs (list[str]): Include directories forwarded to `goto-cc` and CBMC.
+        call_graph (CallGraph | None): Call graph of the file; None finds no callers.
+        state (_MergeState | None): The run's shared merge state; None carries nothing.
+        stray_files (list[str] | None): Files the session added, changed or deleted.
+        recorded_order (dict[str, int]): Receives the ordinals of the verdicts recorded.
+
+    Returns:
+        tuple[MergeReport, RunCbmcResult, dict[str, RunCbmcResult]]: As for `_merge_and_verify`.
     """
     function = session.function
     absolute_include_dirs = [str(Path(directory).resolve()) for directory in include_dirs]
@@ -1194,7 +1286,6 @@ def _merge_and_verify(
                     if state is None
                     else frozen_functions_for(function, state.active),
                 )
-        scratch_root = Path(tempfile.mkdtemp(prefix=_GROUND_TRUTH_DIR_PREFIX))
         scratch_dir = scratch_root / canonical_file.parent.name
         shutil.copytree(canonical_file.parent, scratch_dir, ignore=_SNAPSHOT_IGNORE)
         scratch_file = scratch_dir / canonical_file.name
@@ -1253,9 +1344,11 @@ def _merge_and_verify(
                         f"{', '.join(regressed)} would no longer verify"
                     )
                     returncode = compiles(merged)
+                    # Those verdicts are on carried edits that are not committed.
+                    reverified = {}
                 else:
                     for other, result in reverified.items():
-                        state.record(other, result)
+                        recorded_order[other] = state.record(other, result)
             if returncode != 0:
                 report = replace(
                     report,
@@ -1264,9 +1357,10 @@ def _merge_and_verify(
                 )
                 scratch_file.write_bytes(canonical)
             else:
-                staged = canonical_file.with_name(f"{canonical_file.name}.avocado-merge")
+                staged = canonical_file.with_name(f"{canonical_file.name}{MERGE_STAGING_SUFFIX}")
                 staged.write_bytes(merged)
-                Path(staged).replace(canonical_file)
+                _copy_ownership_and_mode(canonical_file, staged)
+                staged.replace(canonical_file)
     if report.merged:
         if report.transplanted:
             logger.info(f"{function}: transplanted {', '.join(report.transplanted)}")
@@ -1287,39 +1381,65 @@ def _merge_and_verify(
         if call_graph is not None and function in call_graph
         else []
     )
-    try:
-        cbmc = verify_function(function, str(scratch_file), include_dirs=include_dirs)
-        with _CANONICAL_LOCK:
-            current = canonical_file.read_bytes()
-            moved = [
-                name
-                for name in functions_with_changed_contracts(verified_on, current)
-                if name in callees and name != function
-            ]
-            if moved:
-                logger.info(
-                    f"{function}: {', '.join(moved)} changed in the canonical file while "
-                    f"{function} was being verified; verifying it again on the file as it is now"
-                )
-                scratch_file.write_bytes(current)
-                cbmc = verify_function(function, str(scratch_file), include_dirs=include_dirs)
-                report = replace(
-                    report,
-                    changed_since_fork=[
-                        *report.changed_since_fork,
-                        *(name for name in moved if name not in report.changed_since_fork),
-                    ],
-                )
-            if state is not None:
-                state.active.discard(function)
-                state.record(function, cbmc)
-    finally:
-        shutil.rmtree(scratch_root, ignore_errors=True)
+    cbmc = verify_function(function, str(scratch_file), include_dirs=include_dirs)
+    with _CANONICAL_LOCK:
+        current = canonical_file.read_bytes()
+        moved = [
+            name
+            for name in functions_with_changed_contracts(verified_on, current)
+            if name in callees and name != function
+        ]
+        if moved:
+            logger.info(
+                f"{function}: {', '.join(moved)} changed in the canonical file while "
+                f"{function} was being verified; verifying it again on the file as it is now"
+            )
+            scratch_file.write_bytes(current)
+            cbmc = verify_function(function, str(scratch_file), include_dirs=include_dirs)
+            report = replace(
+                report,
+                changed_since_fork=[
+                    *report.changed_since_fork,
+                    *(name for name in moved if name not in report.changed_since_fork),
+                ],
+            )
+        if state is not None:
+            state.active.discard(function)
+            recorded_order[function] = state.record(function, cbmc)
     return report, cbmc, reverified
 
 
+def _copy_ownership_and_mode(source: Path, target: Path) -> None:
+    """Give `target` the owner, group and permission bits of `source`, as far as allowed.
+
+    A merge replaces the canonical file with a new file. Without this, the replacement would be
+    owned by whoever runs the harness (root, in a container, against a file the host owns) and
+    would get the default permissions, so the host could lose the right to write its own file.
+    A process that may not change the owner leaves it as it is; the permission bits are copied
+    after the owner, because changing the owner can clear some of them.
+
+    Args:
+        source (Path): The file whose owner and permissions to copy.
+        target (Path): The file to give them to.
+    """
+    try:
+        status = source.stat()
+    except OSError as error:
+        logger.warning(f"cannot read the owner and permissions of {source}: {error}")
+        return
+    if status.st_uid != os.getuid() or status.st_gid != os.getgid():
+        try:
+            os.chown(target, status.st_uid, status.st_gid)
+        except OSError as error:
+            logger.warning(f"cannot give {target} the owner of {source}: {error}")
+    try:
+        shutil.copymode(source, target)
+    except OSError as error:
+        logger.warning(f"cannot give {target} the permissions of {source}: {error}")
+
+
 def _report_stray_edits(session: _Session, canonical_dir: Path) -> list[str]:
-    """Return the files other than the source file that the agent added or changed in its copy.
+    """Return the files other than the source file that the agent added, changed or deleted.
 
     Headers, other sources and new files the agent created in the private copy are never merged;
     they are named here so the run log shows when a contract depended on one. A file is compared
@@ -1330,7 +1450,7 @@ def _report_stray_edits(session: _Session, canonical_dir: Path) -> list[str]:
         canonical_dir (Path): The canonical source directory.
 
     Returns:
-        list[str]: Relative paths tagged `added:` or `modified:`, in sorted order.
+        list[str]: Relative paths tagged `added:`, `modified:` or `deleted:`, in sorted order.
     """
     stray = find_stray_files(session.file, canonical_dir)
     if stray:
@@ -1751,9 +1871,11 @@ def _read_function_verdicts(log_path: Path) -> dict[str, tuple[str, str]]:
     """Return the last recorded outcome and ground-truth verdict of each function in the run log.
 
     Reads `<stem>-avocado-verify.jsonl`, ignoring blank/malformed lines and the terminal
-    run-summary record (identified by a `"type"` key). Later records win, so each entry reflects
-    the function's most recent attempt, including a later merge's re-verification of it
-    (`reverified`). Never raises; a missing log yields an empty map.
+    run-summary record (identified by a `"type"` key). Later verdicts win, so each entry reflects
+    the function's most recent attempt, including a later merge's committed re-verification of
+    it (`reverified`). Within one run of the harness, "later" is the order in which the merges
+    recorded the verdicts, which the records carry (`FunctionVerificationResult.recorded_order`);
+    otherwise it is the order of the records. Never raises; a missing log yields an empty map.
 
     Args:
         log_path (Path): Path to the `<stem>-avocado-verify.jsonl` run log.
@@ -1764,9 +1886,37 @@ def _read_function_verdicts(log_path: Path) -> dict[str, tuple[str, str]]:
             example `VACUOUS (end_unreachable)`), or the outcome when no verdict was recorded.
     """
     verdicts: dict[str, tuple[str, str]] = {}
+    # The run and ordinal of the verdict now in `verdicts`, for a verdict that has them.
+    stamps: dict[str, tuple[str, int]] = {}
+
+    def is_newer(name: str, run: object, order: object) -> bool:
+        """Return true if a verdict for `name` replaces the one in `verdicts`, and if so stamp it.
+
+        Records are written in the order sessions finish, which is not the order their merges
+        recorded verdicts in. Two verdicts recorded in the same run are put in the order of
+        their ordinals (`_MergeState.record`); otherwise the one later in the log wins.
+
+        Args:
+            name (str): A function's name.
+            run (object): The `merge_run` of the record that holds the verdict.
+            order (object): The ordinal of the verdict within its run.
+
+        Returns:
+            bool: True if the verdict replaces the one in `verdicts`.
+        """
+        if not isinstance(run, str) or not isinstance(order, int):
+            stamps.pop(name, None)
+            return True
+        previous = stamps.get(name)
+        if previous is not None and previous[0] == run and previous[1] > order:
+            return False
+        stamps[name] = (run, order)
+        return True
+
     for record in _read_jsonl_records(log_path):
         if "type" in record:  # terminal run-summary record, not a per-function result
             continue
+        run = record.get("merge_run")
         function = record.get("function")
         outcome = record.get("outcome")
         if isinstance(function, str) and isinstance(outcome, str):
@@ -1774,17 +1924,24 @@ def _read_function_verdicts(log_path: Path) -> dict[str, tuple[str, str]]:
             verdict = cbmc.get("verdict") or outcome
             if verdict == VACUOUS_VERDICT and cbmc.get("vacuity"):
                 verdict = vacuous_status(cbmc["vacuity"])
-            verdicts[function] = (outcome, verdict)
+            if is_newer(function, run, cbmc.get("order")):
+                verdicts[function] = (outcome, verdict)
+        # A record written before re-verifications were marked `committed` says only whether its
+        # last merge carried edits; that is the best available guess for such a record.
         kept = bool(_object_field(record, "merge").get("carried"))
         for other, result in _object_field(record, "reverified").items():
             if other not in verdicts or not isinstance(result, dict):
                 continue
+            if not result.get("committed", kept):
+                continue
+            if not is_newer(other, run, result.get("order")):
+                continue
             if result.get("is_function_verified"):
                 verdicts[other] = (str(GroundTruthVerificationResult.VERIFIED), "PASS")
-            elif kept and result.get("verdict") == VACUOUS_VERDICT:
+            elif result.get("verdict") == VACUOUS_VERDICT:
                 verdict = vacuous_status(result.get("vacuity"))
                 verdicts[other] = (str(GroundTruthVerificationResult.VERIFIED), verdict)
-            elif kept and result.get("verdict"):
+            elif result.get("verdict"):
                 verdicts[other] = (
                     str(GroundTruthVerificationResult.UNVERIFIED),
                     str(result["verdict"]),
@@ -2128,8 +2285,9 @@ def _run_claude(command: list[str], timeout: int) -> ClaudeRun:
     session_id = str(uuid.uuid4())
     command = [*command, "--session-id", session_id]
     logger.debug(f"running: {shlex.join(command)}")
-    completed = run_command(command, timeout)
-    if completed is None:
+    try:
+        returncode, stdout, stderr = _run_and_stop_descendants(command, timeout)
+    except TimeoutExpired:
         # It isn't possible to calculate some of the fields below when the timeout for a `claude -p`
         # command is reached.
         return ClaudeRun(
@@ -2143,7 +2301,91 @@ def _run_claude(command: list[str], timeout: int) -> ClaudeRun:
             duration_ms=None,
             subtype=None,
         )
-    return _parse_claude_output(completed.returncode, completed.stdout, completed.stderr)
+    return _parse_claude_output(returncode, stdout, stderr)
+
+
+# How long `_run_and_stop_descendants` waits for the processes it killed to be gone.
+_DESCENDANT_EXIT_WAIT_SEC = 10
+
+
+def _run_and_stop_descendants(command: list[str], timeout: int) -> tuple[int, str, str]:
+    """Run `command`, then stop everything it started that is still running.
+
+    A `claude -p` session can leave work running behind it, such as a verification it started in
+    the background, and when the session is stopped at the timeout only `claude` itself would be
+    killed. That work would then go on writing the verification-attempts log and reading the
+    session's copy while the harness mirrors the log and removes the copy. So the command runs in
+    a process group of its own, and when it exits or times out, the whole group is killed and
+    waited for (up to `_DESCENDANT_EXIT_WAIT_SEC` seconds) before this returns.
+
+    A descendant that puts itself in a new session (as `tools.run_cbmc` does for each CBMC
+    subprocess) is not in the group and is not stopped; the process that started it is.
+
+    Args:
+        command (list[str]): The argument vector.
+        timeout (int): Seconds the command may run before it is stopped.
+
+    Returns:
+        tuple[int, str, str]: The command's return code, standard output and standard error.
+
+    Raises:
+        TimeoutExpired: If the command did not finish within `timeout`. By then its process group
+            has been killed.
+    """
+    with subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        start_new_session=True,
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except TimeoutExpired:
+            _kill_process_group(process.pid)
+            # Reap `claude` itself, which would otherwise linger in the group as a zombie.
+            process.communicate()
+            _wait_for_process_group(process.pid)
+            raise
+        except BaseException:
+            # E.g. KeyboardInterrupt: do not leave the session running behind the harness.
+            _kill_process_group(process.pid)
+            raise
+        # `claude` has exited and been reaped; stop what it left running.
+        _kill_process_group(process.pid)
+        _wait_for_process_group(process.pid)
+    return process.returncode, stdout, stderr
+
+
+def _kill_process_group(pgid: int) -> None:
+    """SIGKILL every process in process group `pgid`, ignoring a group that is already empty.
+
+    Args:
+        pgid (int): The process group (its leader's pid).
+    """
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError as error:
+        logger.warning(f"cannot stop process group {pgid}: {error}")
+
+
+def _wait_for_process_group(pgid: int) -> None:
+    """Wait until process group `pgid` is empty, for at most `_DESCENDANT_EXIT_WAIT_SEC` seconds.
+
+    Args:
+        pgid (int): The process group (its leader's pid).
+    """
+    deadline = time.monotonic() + _DESCENDANT_EXIT_WAIT_SEC
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except OSError:
+            return
+        time.sleep(0.05)
+    logger.warning(f"processes of group {pgid} are still present after being killed")
 
 
 def _parse_claude_output(returncode: int, stdout: str, stderr: str) -> ClaudeRun:
