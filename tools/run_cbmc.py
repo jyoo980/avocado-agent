@@ -1309,6 +1309,7 @@ def compile_with_goto_cc(
     function: str,
     file_path: str,
     include_dirs: list[str] | None = None,
+    cwd: str | None = None,
 ) -> int:
     """Run only the goto-cc compile command on a C file and return its exit code.
 
@@ -1320,6 +1321,8 @@ def compile_with_goto_cc(
         function (str): The function used as the goto-binary entry point.
         file_path (str): Path to the C file to compile.
         include_dirs (list[str] | None): Directories forwarded as `-I` flags.
+        cwd (str | None): Working directory for the subprocess; the `<function>.goto` output
+            lands there. When None, it lands in the current working directory as before.
 
     Returns:
         int: the return code of the subprocess used to invoke `goto-cc`,
@@ -1328,7 +1331,7 @@ def compile_with_goto_cc(
     compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
     try:
         returncode, _, _ = _run_shell_command_killing_group_on_timeout(
-            compilation_command, timeout_sec=_GOTO_CC_TIMEOUT_SEC
+            compilation_command, timeout_sec=_GOTO_CC_TIMEOUT_SEC, cwd=cwd
         )
     except TimeoutExpired:
         return _TIMEOUT_RETURNCODE
