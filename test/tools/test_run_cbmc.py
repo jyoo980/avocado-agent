@@ -194,23 +194,6 @@ def test_run_cbmc_names_failed_step_for_uncompilable_source(tmp_path: Path) -> N
     assert result.returncode != 0
 
 
-def test_run_cbmc_leaves_no_goto_files_in_the_working_directory(tmp_path: Path) -> None:
-    src = tmp_path / "quicksort.c"
-    shutil.copy(Path("test/data/quicksort.c"), src)
-    work_dir = tmp_path / "cwd"
-    work_dir.mkdir()
-    original_cwd = Path.cwd()
-    try:
-        os.chdir(work_dir)
-        # A relative source path must keep working even though the pipeline runs elsewhere.
-        result = run_cbmc("swap", os.path.relpath(src, work_dir))
-    finally:
-        os.chdir(original_cwd)
-    assert result.is_function_verified, result.response
-    assert list(work_dir.iterdir()) == [], "pipeline intermediates leaked into the cwd"
-    assert not list(tmp_path.glob("*.goto")), "pipeline intermediates leaked next to the source"
-
-
 def _exclusive_command(busy_dir: Path) -> str:
     """Return a 0.3 s shell command that fails if another instance of it is running.
 
@@ -351,13 +334,6 @@ def test_max_concurrent_subprocesses_is_bounded_by_the_cpu_count(monkeypatch) ->
         max_concurrent_subprocesses.cache_clear()
 
 
-def test_run_command_honours_a_custom_timeout() -> None:
-    result = _run_command(CbmcStep.CBMC, "sleep 5", [], timeout_sec=1)
-    assert result.timed_out
-    assert result.timeout_sec == 1
-    assert not result.succeeded
-
-
 def test_run_command_timeout_kills_the_shells_children(tmp_path: Path) -> None:
     # The shell forks `sleep` (and here also backgrounds a second one); killing only the shell
     # on timeout would orphan them, leaving e.g. a CBMC solver running after its mutant timed out.
@@ -381,6 +357,29 @@ def test_run_command_timeout_kills_the_shells_children(tmp_path: Path) -> None:
             os.kill(background_pid, 9)
             raise AssertionError(f"child of the timed-out shell is still running (state {state})")
         time.sleep(0.01)
+
+def test_run_command_honours_a_custom_timeout() -> None:
+    result = _run_command(CbmcStep.CBMC, "sleep 5", [], timeout_sec=1)
+    assert result.timed_out
+    assert result.timeout_sec == 1
+    assert not result.succeeded
+
+
+def test_run_cbmc_leaves_no_goto_files_in_the_working_directory(tmp_path: Path) -> None:
+    src = tmp_path / "quicksort.c"
+    shutil.copy(Path("test/data/quicksort.c"), src)
+    work_dir = tmp_path / "cwd"
+    work_dir.mkdir()
+    original_cwd = Path.cwd()
+    try:
+        os.chdir(work_dir)
+        # A relative source path must keep working even though the pipeline runs elsewhere.
+        result = run_cbmc("swap", os.path.relpath(src, work_dir))
+    finally:
+        os.chdir(original_cwd)
+    assert result.is_function_verified, result.response
+    assert list(work_dir.iterdir()) == [], "pipeline intermediates leaked into the cwd"
+    assert not list(tmp_path.glob("*.goto")), "pipeline intermediates leaked next to the source"
 
 
 def test_a_result_records_the_pipeline_variant_that_produced_it(
