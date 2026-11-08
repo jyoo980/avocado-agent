@@ -29,7 +29,8 @@
 # Results land on the host (default ~/.local/share/avocado-experiments, outside the repository
 # and outside every container) under <results>/<tag>/<timestamp>/run-<i>/:
 #   subject/            the subject copy, with the agent's specs and any files it wrote; with
-#                       avocado-verify, also its <file>-avocado-verify.jsonl per-function log
+#                       avocado-verify, also its <stem>-avocado-verify.jsonl per-function log,
+#                       where <stem> is the --file path without its extension
 #   claude-output.json  (claude runner) the `claude -p --output-format json` result
 #   transcripts/        the Claude Code conversation transcript(s): <session-id>.jsonl per
 #                       session, and <session-id>/subagents/ for any subagents it started
@@ -53,7 +54,7 @@
 # --resume continues an avocado-verify run that stopped early (on a usage limit, --timeout, or
 # `kill`), as one new run in a new batch under the same tag. The run starts from <run-dir>'s
 # subject/ (the specs written so far and the driver's logs) rather than a pristine copy, and the
-# driver is given `--resume-from <file>-avocado-verify.jsonl`, so it skips the functions already
+# driver is given `--resume-from <stem>-avocado-verify.jsonl`, so it skips the functions already
 # processed and retries the one that was cut off. The subject, file, harness, runner and profile
 # default to those in <run-dir>'s batch-info.txt; --profile may name another account, as long as
 # it selects the same model. The resumed batch's batch-info.txt records resumed_from.
