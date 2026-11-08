@@ -14,6 +14,7 @@ from tools.run_cbmc import (
     RunCbmcResult,
     _MAX_RESPONSE_CHARS,
     _drop_missing_body_warnings,
+    _failure_lines_section,
     _format_failure_response,
     _get_cbmc_check_command,
     _get_goto_cc_command,
@@ -21,6 +22,7 @@ from tools.run_cbmc import (
     _get_goto_instrument_contract_command,
     _get_goto_instrument_unwind_command,
     _run_command,
+    _tail_section,
     compile_with_goto_cc,
     run_cbmc,
 )
@@ -276,6 +278,107 @@ def test_format_failure_response_omits_failure_section_for_compile_failure() -> 
     assert "--- FAILURE lines ---" not in response
     assert response.index("--- stderr ---") < response.index("--- stdout ---")
     assert "failed at goto-cc" in response
+
+
+def test_format_failure_response_keeps_end_of_stdout_when_streams_are_huge() -> None:
+    # Each dropped count has more digits than `_MAX_RESPONSE_CHARS`; the response must still
+    # fit the budget without clipping the end of the stdout tail.
+    stdout = "noise\n" * 400_000 + "VERIFICATION FAILED\n"
+    response = _format_failure_response("f", CbmcStep.CBMC, stdout=stdout, stderr="e\n" * 1_200_000)
+
+    assert len(response) <= _MAX_RESPONSE_CHARS
+    assert response.endswith("VERIFICATION FAILED\n\n")
+
+
+def test_format_failure_response_gives_stdout_the_budget_that_stderr_does_not_need() -> None:
+    stdout = "x" * 200_000 + "VERIFICATION FAILED\n"
+    response = _format_failure_response("f", CbmcStep.CBMC, stdout=stdout, stderr="short\n")
+
+    assert _MAX_RESPONSE_CHARS - 100 <= len(response) <= _MAX_RESPONSE_CHARS
+    assert response.endswith("VERIFICATION FAILED\n\n")
+
+
+def test_format_failure_response_gives_stderr_the_budget_that_stdout_does_not_need() -> None:
+    stderr = "e" * 200_000 + "END OF STDERR\n"
+    response = _format_failure_response("f", CbmcStep.CBMC, stdout="short\n", stderr=stderr)
+
+    assert _MAX_RESPONSE_CHARS - 100 <= len(response) <= _MAX_RESPONSE_CHARS
+    assert "END OF STDERR\n" in response
+    assert response.endswith("--- stdout (tail) ---\nshort\n\n")
+
+
+def test_tail_section_fits_budget_and_keeps_end_of_content() -> None:
+    section = _tail_section("stdout (tail)", "x" * 1000 + "END", 100)
+
+    assert len(section) <= 100
+    assert section.endswith("END\n")
+
+
+def test_tail_section_with_zero_budget_has_empty_tail() -> None:
+    assert (
+        _tail_section("stdout (tail)", "abc", 0)
+        == "--- stdout (tail) ---\n[... 3 characters truncated ...]\n\n"
+    )
+
+
+def _function_name_leaving_budget(stdout: str, budget: int) -> str:
+    """Return a function name that leaves `budget` chars for the stream sections of a CBMC failure.
+
+    Args:
+        stdout (str): The stdout of the failure, which determines the FAILURE section.
+        budget (int): The number of chars to leave after the header and the FAILURE section.
+
+    Returns:
+        str: A function name of the length that leaves exactly `budget` chars.
+    """
+    header_without_name = len(" failed to verify with the following errors:\n\n")
+    used = header_without_name + len(_failure_lines_section(stdout))
+    return "f" * (_MAX_RESPONSE_CHARS - used - budget)
+
+
+def test_format_failure_response_omits_stderr_when_both_sections_do_not_fit() -> None:
+    # A capped FAILURE section and a long function name leave room for stdout's shortest
+    # section but not for stderr's as well. The end of the stdout tail must survive.
+    stdout = "[f.assertion.1] line 3: FAILURE\n" * 5_000 + "VERIFICATION FAILED\n"
+    stderr = "e" * 200_000
+    stdout_minimum = len(_tail_section("stdout (tail)", stdout, 0))
+    function = _function_name_leaving_budget(stdout, stdout_minimum + 30)
+
+    response = _format_failure_response(function, CbmcStep.CBMC, stdout=stdout, stderr=stderr)
+
+    assert len(response) <= _MAX_RESPONSE_CHARS
+    assert "--- stderr (tail) ---" not in response
+    assert "--- stdout (tail) ---" in response
+    assert response.endswith("FAILED\n\n")
+
+
+def test_format_failure_response_omits_both_streams_when_neither_section_fits() -> None:
+    stdout = "[f.assertion.1] line 3: FAILURE\n" * 5_000 + "VERIFICATION FAILED\n"
+    function = _function_name_leaving_budget(stdout, 10)
+
+    response = _format_failure_response(function, CbmcStep.CBMC, stdout=stdout, stderr="e" * 10)
+
+    assert len(response) <= _MAX_RESPONSE_CHARS
+    assert "--- stderr" not in response
+    assert "--- stdout" not in response
+    assert response.endswith("line 3: FAILURE\n")
+
+
+def test_format_failure_response_keeps_both_sections_when_both_shortest_fit() -> None:
+    stdout = "[f.assertion.1] line 3: FAILURE\n" * 5_000 + "VERIFICATION FAILED\n"
+    stderr = "e" * 200_000
+    minimums = len(_tail_section("stdout (tail)", stdout, 0)) + len(
+        _tail_section("stderr (tail)", stderr, 0)
+    )
+    function = _function_name_leaving_budget(stdout, minimums)
+
+    response = _format_failure_response(function, CbmcStep.CBMC, stdout=stdout, stderr=stderr)
+
+    assert len(response) <= _MAX_RESPONSE_CHARS
+    assert "--- stderr (tail) ---" in response
+    assert response.endswith(
+        f"--- stdout (tail) ---\n[... {len(stdout)} characters truncated ...]\n\n"
+    )
 
 
 def test_format_failure_response_truncates_but_keeps_failures_leading() -> None:
