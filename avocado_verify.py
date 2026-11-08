@@ -1106,9 +1106,9 @@ def _merge_and_verify(
     (`tools.util.edit_rules.merge_copy`), copy the canonical directory to a scratch
     directory, write the merged bytes into that copy and check that `goto-cc` still accepts the
     file. Only then is the canonical file (or, if it is a symlink, its target) replaced
-    (atomically, via `os.replace`); a merge that
-    does not compile is rejected and the canonical file left untouched. The lock is released
-    before the function's own CBMC run, on the scratch copy, so other sessions can merge meanwhile.
+    (atomically, via `os.replace`); a merge that does not compile is rejected and the canonical
+    file left untouched. The lock is released before the function's own CBMC run, on the
+    scratch copy, so other sessions can merge meanwhile.
 
     One of those merges may change the contract of a function this one calls: only the functions
     live sessions work on are frozen, not their callees, and this function is not yet in
