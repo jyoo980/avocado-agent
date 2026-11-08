@@ -1358,7 +1358,7 @@ def _list_goto_functions(
         )
         listing = ""
         for command in commands:
-            completed = run_shell_command(command, _GOTO_CC_TIMEOUT_SEC, cwd=scratch_dir)
+            completed = run_shell_command(command, _GOTO_CC_TIMEOUT_SEC, cwd=scratch_dir).completed
             if completed is None or completed.returncode != 0:
                 return None
             listing = completed.stdout
