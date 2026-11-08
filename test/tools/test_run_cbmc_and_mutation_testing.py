@@ -12,6 +12,7 @@ import tools.util.vacuity
 from tools.run_cbmc import _DEFAULT_RUN_CBMC_TIMEOUT_SEC, CbmcStep, RunCbmcResult
 from tools.run_cbmc_and_mutation_testing import (
     _AGENT_MUTANT_TIMEOUT_SEC,
+    _log_mutation_feedback,
     _log_verification_attempt,
     main,
     verify_function,
@@ -19,6 +20,7 @@ from tools.run_cbmc_and_mutation_testing import (
 from tools.util.mutation import (
     DEFAULT_MUTANT_TIMEOUT_SEC,
     MutationScore,
+    NoMutantsGenerated,
     generate_mutants_and_compute_score,
 )
 
@@ -80,6 +82,49 @@ def test_a_depth_below_the_floor_is_rejected_before_anything_runs(tmp_path: Path
     assert stop.value.code == 2
     assert not (tmp_path / "quicksort-verification-attempts.jsonl").exists()
     assert not (tmp_path / "quicksort-cbmc-runs.jsonl").exists()
+
+
+def test_mutation_feedback_of_each_passing_run_is_logged_beside_the_file(tmp_path: Path) -> None:
+    src = tmp_path / "quicksort.c"
+    src.write_text("int f(void) { return 0; }\n")
+    scores = [(1, 3, 0.25), (2, 2, 0.5)]
+    for i, (killed, survived, kill_score) in enumerate(scores):
+        score = MutationScore(
+            file=str(src),
+            target_function="partition",
+            num_mutants=6,
+            num_killed=killed,
+            num_survived=survived,
+            num_timed_out=1,
+            num_compile_failed=1,
+            num_instrumentation_failed=0,
+            kill_score=kill_score,
+        )
+        _log_mutation_feedback(
+            str(src), "partition", score, attempt_id=f"attempt{i}", seconds=12.34
+        )
+    _log_mutation_feedback(
+        str(src),
+        "swap",
+        NoMutantsGenerated(str(src), "swap"),
+        attempt_id="attempt2",
+        seconds=0.01,
+    )
+    log = tmp_path / "quicksort-mutation-feedback.jsonl"
+    records = [json.loads(line) for line in log.read_text().splitlines()]
+    # One record per passing run, in order, so successive scores can be compared.
+    assert [record["kill_score"] for record in records] == [0.25, 0.5, None]
+    # Each record names its attempt, so it can be joined to the verification-attempts log.
+    assert [record["attempt_id"] for record in records] == ["attempt0", "attempt1", "attempt2"]
+    first = records[0]
+    assert first["function"] == "partition" and first["was_mutation_tested"] is True
+    assert (first["total"], first["killed"], first["survived"]) == (6, 1, 3)
+    assert (first["timed_out"], first["compile_failed"]) == (1, 1)
+    assert first["instrumentation_failed"] == 0 and first["seconds"] == 12.3
+    assert records[2]["was_mutation_tested"] is False
+    assert "no mutable operators" in records[2]["reason"]
+    # The attempts log, which `avocado-verify` counts records of, is a different file.
+    assert not (tmp_path / "quicksort-verification-attempts.jsonl").exists()
 
 
 def test_agent_tool_uses_a_shorter_mutant_budget_than_the_metric() -> None:
