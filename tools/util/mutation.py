@@ -23,10 +23,8 @@ from eval.mutants.mutate_function import Mutant, get_mutants
 from eval.mutants.util import (
     check_expected_cbmc_return_code,
     get_bounded_mutant_file_name,
-    get_existing_run_logs,
     get_mutant_paths,
     is_valid_mutation_candidate,
-    remove_mutants_and_run_logs,
 )
 from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import _DEFAULT_RUN_CBMC_TIMEOUT_SEC, CbmcStep, run_cbmc
@@ -352,7 +350,6 @@ def generate_mutants_and_compute_score(
     # mutant order so survivor diffs render deterministically downstream. stderr (not stdout) is
     # used so progress never contaminates the kill-score result.
     mutant_vresults: list[MutantVerificationResult | None] = [None] * total
-    preexisting_run_logs = get_existing_run_logs(paths_to_mutants)
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_index = {
@@ -374,7 +371,8 @@ def generate_mutants_and_compute_score(
                 executor.shutdown(cancel_futures=True)
     finally:
         if not keep_artifacts:
-            remove_mutants_and_run_logs(paths_to_mutants, preexisting_run_logs)
+            for path in paths_to_mutants:
+                path.unlink(missing_ok=True)
 
     # Every future either stored a result above or raised (which would have propagated), so no
     # None slots remain; the filter just refines the type for the aggregator.

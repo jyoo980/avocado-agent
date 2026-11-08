@@ -38,4 +38,3 @@ clean:
 clean-mutants:
 	find . \( -name '*.goto' -o -name '*__mutant_*.c' \) -delete
 	find . \( -name '*.goto' -o -name '*__clause_drop_*.c' \) -delete
-	find . \( -name '*__mutant_*-cbmc-runs.jsonl' -o -name '*__clause_drop_*-cbmc-runs.jsonl' \) -delete

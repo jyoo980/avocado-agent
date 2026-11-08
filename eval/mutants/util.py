@@ -2,10 +2,10 @@
 
 import hashlib
 import os
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from pathlib import Path
 
-from tools.run_cbmc import RunCbmcResult, get_run_log_path
+from tools.run_cbmc import RunCbmcResult
 
 # 0 indicates success, 10 indicates failure, 124 indicates timeout.
 _CBMC_RETURN_CODES_SUCCESS_FAILURE_TIMEOUT = frozenset({0, 10, 124})
@@ -88,40 +88,6 @@ def get_mutant_paths(
             continue
         paths.append(path)
     return paths
-
-
-def get_existing_run_logs(mutant_paths: Iterable[Path]) -> set[Path]:
-    """Return the `run_cbmc` run logs of the given mutant paths that already exist.
-
-    Call this before verifying the mutants, and pass the result to `remove_mutants_and_run_logs`,
-    so that cleanup removes only the run logs that the verification created.
-
-    Args:
-        mutant_paths (Iterable[Path]): The paths to which mutants will be written.
-
-    Returns:
-        set[Path]: The run logs of those paths that already exist.
-    """
-    return {log for log in map(get_run_log_path, mutant_paths) if log.exists()}
-
-
-def remove_mutants_and_run_logs(
-    mutant_paths: Iterable[Path], preexisting_run_logs: set[Path]
-) -> None:
-    """Delete the given mutant files and the `run_cbmc` run logs written next to them.
-
-    A run log in `preexisting_run_logs` is kept, because it was not created by this run.
-
-    Args:
-        mutant_paths (Iterable[Path]): The mutant files to delete.
-        preexisting_run_logs (set[Path]): Run logs that existed before the mutants were verified;
-            see `get_existing_run_logs`.
-    """
-    for path in mutant_paths:
-        path.unlink(missing_ok=True)
-        log = get_run_log_path(path)
-        if log not in preexisting_run_logs:
-            log.unlink(missing_ok=True)
 
 
 def is_valid_mutation_candidate(run_cbmc_result: RunCbmcResult) -> bool:

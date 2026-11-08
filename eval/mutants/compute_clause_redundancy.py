@@ -44,10 +44,8 @@ from eval.mutants.mutate_specification import ClauseMutant, get_clause_mutants
 from eval.mutants.util import (
     check_expected_cbmc_return_code,
     get_bounded_mutant_file_name,
-    get_existing_run_logs,
     get_mutant_paths,
     is_valid_mutation_candidate,
-    remove_mutants_and_run_logs,
 )
 from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import run_cbmc
@@ -364,7 +362,6 @@ def compute_clause_redundancy_score(
         _get_baseline_verification_results_for_callers(in_file_callers, source_path, include_dirs)
     )
 
-    preexisting_run_logs = get_existing_run_logs(paths_to_removed_clauses)
     try:
         in_isolation_results = [
             _verify_removed_clause_source(mutant_path, mutant, include_dirs)
@@ -382,7 +379,8 @@ def compute_clause_redundancy_score(
         ]
     finally:
         if not keep_artifacts:
-            remove_mutants_and_run_logs(paths_to_removed_clauses, preexisting_run_logs)
+            for path in paths_to_removed_clauses:
+                path.unlink(missing_ok=True)
 
     return _aggregate_clause_redundancy_score(
         in_isolation_results,
