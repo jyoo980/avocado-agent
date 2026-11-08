@@ -62,6 +62,7 @@ from tools.run_cbmc_and_mutation_testing import (
     verify_function,
 )
 from tools.util import (
+    AUTO_INCLUDE_ENV_VAR,
     AUTO_INCLUDE_HELP,
     get_in_file_callees_for,
     get_in_file_callers_of,
@@ -78,7 +79,6 @@ from tools.util.edit_rules import (
     merge_copy,
     stray_file_violations,
 )
-from tools.util.include_dirs import autodetect_include_dirs
 from tools.util.session_state import (
     SNAPSHOT_IGNORE,
     TRANSCRIPTS_DIR_SUFFIX,
@@ -406,6 +406,10 @@ def main() -> None:
 
     if include_dirs := get_include_dirs(str(file_path), [], auto_include=args.auto_include):
         logger.info(f"[auto-include] using {include_dirs}")
+    if not args.auto_include:
+        # The agent's sessions inherit this, so that its `avocado-run-cbmc` runs do not auto-detect
+        # an include directory either.
+        os.environ[AUTO_INCLUDE_ENV_VAR] = "0"
 
     path_to_call_graph = construct_call_graph(str(file_path))
     call_graph = CallGraph(json.loads(Path(path_to_call_graph).read_text(encoding="utf-8")))

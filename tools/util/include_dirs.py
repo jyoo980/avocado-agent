@@ -17,6 +17,14 @@ The text does not state the option's default, nor how the auto-detected director
 relative to other include directories; each client describes those.
 """
 
+AUTO_INCLUDE_ENV_VAR = "AVOCADO_AUTO_INCLUDE"
+"""The name of an environment variable that turns off auto-detection in `avocado-run-cbmc`.
+
+`avocado-run-cbmc` passes `auto_include=False` to `get_include_dirs` if the variable's value is
+`0`. `avocado-verify --no-auto-include` sets it to `0` for the agent's sessions, so that the
+agent's runs use the same include directories as the harness's own runs.
+"""
+
 
 def resolve_include_dirs(include_dirs: list[str]) -> list[str]:
     """Return `include_dirs`, made absolute with symlinks resolved, without duplicates.

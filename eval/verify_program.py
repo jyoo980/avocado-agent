@@ -32,7 +32,6 @@ from tools.util import (
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tools.run_cbmc import RunCbmcResult, verify_function
-from tools.util.include_dirs import autodetect_include_dirs
 
 
 @dataclass(frozen=True)

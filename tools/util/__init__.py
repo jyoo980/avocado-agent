@@ -7,7 +7,12 @@ time. Consumers should `from tools.util.mutation import ...` directly.
 """
 
 from .callgraph import CallGraph, CallGraphCallees
-from .include_dirs import AUTO_INCLUDE_HELP, get_include_dirs, resolve_include_dirs
+from .include_dirs import (
+    AUTO_INCLUDE_ENV_VAR,
+    AUTO_INCLUDE_HELP,
+    get_include_dirs,
+    resolve_include_dirs,
+)
 from .paths import resolve_parent
 from .stubs import (
     build_stub_index,
@@ -25,6 +30,7 @@ from .tree_sitter_utils import (
 )
 
 __all__ = [
+    "AUTO_INCLUDE_ENV_VAR",
     "AUTO_INCLUDE_HELP",
     "CallGraph",
     "CallGraphCallees",

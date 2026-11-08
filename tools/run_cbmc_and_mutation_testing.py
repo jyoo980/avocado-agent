@@ -13,6 +13,7 @@ function verifies, and not vacuously).
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -22,7 +23,7 @@ from loguru import logger
 
 from tools.run_cbmc import RunCbmcResult
 from tools.run_cbmc import verify_function as verify_function_and_contract
-from tools.util.include_dirs import autodetect_include_dirs
+from tools.util import AUTO_INCLUDE_ENV_VAR, get_include_dirs
 from tools.util.mutation import (
     generate_mutants_and_compute_score,
     get_mutation_testing_results_for_client,
@@ -77,15 +78,13 @@ def main() -> None:
         dest="include_dirs",
         metavar="DIR",
         help=(
-            "Directory to add to the include search path. May be repeated. The search path "
-            "always starts with the include/ directory beside the file's directory, if it "
-            "exists (for example, <project>/include for <project>/src/foo.c)."
+            "Directory to add to the include search path. May be repeated. For a file "
+            "<project>/src/<name>.c, the search path ends with <project>/include, if that "
+            f"directory exists, unless the environment variable {AUTO_INCLUDE_ENV_VAR} is 0."
         ),
     )
     args = parser.parse_args()
-    # Autodetect include directories here, rather than relying on every caller to pass them, so
-    # that every run uses the same include search path whether or not the caller passes `-I`.
-    include_dirs = list(dict.fromkeys([*autodetect_include_dirs(args.file), *args.include_dirs]))
+    include_dirs = _get_include_dirs_for_run(args.file, args.include_dirs)
 
     # Tee mutation-testing compile failures into a file. Leaves loguru's default stderr sink
     # untouched; the filter keys on the warning emitted by `_verify_mutant` in
@@ -172,6 +171,31 @@ def verify_function(
         vacuity_check_result=vacuity_check_result,
         response=describe_vacuous_result(function, vacuity_check_result),
     )
+
+
+def _get_include_dirs_for_run(file_path: str, include_dirs: list[str]) -> list[str]:
+    """Return the include directories for an `avocado-run-cbmc` run on the given file.
+
+    The include directories are auto-detected here (see `get_include_dirs`), rather than relying
+    on every caller to pass them, so that every run uses the same include search path as
+    `avocado-verify`'s own runs, whether or not the caller passes `-I`. Auto-detection is off if
+    the environment variable named by `AUTO_INCLUDE_ENV_VAR` is `0`, as `avocado-verify
+    --no-auto-include` sets it.
+
+    Args:
+        file_path (str): The C file to verify.
+        include_dirs (list[str]): Include directories given on the command line, such as
+            `["stubs"]`.
+
+    Returns:
+        list[str]: `include_dirs`, made absolute and without duplicates, followed by the
+            auto-detected include directory, if any.
+    """
+    # Unlike `resolve_include_dirs`, this does not reject a directory that does not exist, which
+    # the agent's runs have always been allowed to pass.
+    absolute_include_dirs = list(dict.fromkeys(str(Path(d).resolve()) for d in include_dirs))
+    auto_include = os.environ.get(AUTO_INCLUDE_ENV_VAR) != "0"
+    return get_include_dirs(file_path, absolute_include_dirs, auto_include=auto_include)
 
 
 def _log_verification_attempt(
