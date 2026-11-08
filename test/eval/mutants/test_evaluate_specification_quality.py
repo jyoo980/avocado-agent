@@ -10,7 +10,12 @@ from pathlib import Path
 import pytest
 
 from eval.mutants import evaluate_specification_quality as driver
-from tools.util.mutation import MutationScore, NoMutantsGenerated
+from eval.mutants.mutate_function import Mutant
+from tools.util.mutation import (
+    MutantVerificationResult,
+    NoMutantsGenerated,
+    _aggregate_mutation_score,
+)
 
 
 def _fake_scorer(file_path: str, function: str, *, keep_artifacts: bool, include_dirs: list[str]):
@@ -20,17 +25,25 @@ def _fake_scorer(file_path: str, function: str, *, keep_artifacts: bool, include
     time.sleep({"partition": 0.05, "quickSort": 0.1, "swap": 0.2}[function])
     if function == "swap":
         return NoMutantsGenerated(file_path, function)
-    return MutationScore(
-        file=file_path,
-        target_function=function,
-        num_mutants=2,
-        num_killed=1,
-        num_survived=1,
-        num_timed_out=0,
-        num_compile_failed=0,
-        num_instrumentation_failed=0,
-        kill_score=0.5,
+    # One killed and one surviving mutant, so the kill score is 0.5.
+    mutant = Mutant(
+        function=function,
+        operator_class="RELATIONAL",
+        original_operator="<",
+        replacement_operator="<=",
+        start_byte=0,
+        end_byte=2,
+        line=1,
+        column=0,
+        mutant_source="",
     )
+    vresults = [
+        MutantVerificationResult(
+            mutant=mutant, path_to_mutant="m.c", killed=killed, returncode=10 if killed else 0
+        )
+        for killed in (True, False)
+    ]
+    return _aggregate_mutation_score(vresults, file_path, function)
 
 
 class _FakeRedundancyScore:
@@ -80,7 +93,7 @@ def test_records_are_written_in_function_order_regardless_of_completion_order(
     records = _score_and_write(run_mutation=True, run_redundancy=False)
     assert [record["function"] for record in records] == ["partition", "quickSort", "swap"]
     assert [record["was_mutation_tested"] for record in records] == [True, True, False]
-    assert records[0]["kill_score"] == "0.5000"
+    assert float(records[0]["kill_score"]) == pytest.approx(0.5)
     assert records[2]["metadata"].endswith("no mutable operators")
 
 
