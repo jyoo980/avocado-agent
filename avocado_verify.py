@@ -589,8 +589,7 @@ def _read_call_graph(file_path: str, *, not_in_build: list[str]) -> CallGraph:
     Returns:
         CallGraph: The call graph, without the functions in `not_in_build`.
     """
-    path_to_call_graph = construct_call_graph(file_path)
-    call_graph = CallGraph(json.loads(Path(path_to_call_graph).read_text(encoding="utf-8")))
+    call_graph = load_call_graph(file_path)
     return _without_functions(call_graph, not_in_build) if not_in_build else call_graph
 
 
