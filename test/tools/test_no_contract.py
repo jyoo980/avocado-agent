@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 import tools.run_cbmc
-from avocado_verify import ClaudeRun, GroundTruthVerificationResult, _outcome_for
 from eval.verify_program import _verify_function
 from tools.run_cbmc import RunCbmcResult, has_contract, verify_function
 
@@ -65,14 +64,6 @@ def test_no_contract_outranks_the_other_verdicts_of_a_pass() -> None:
     assert str(result) == "NO_CONTRACT" and not result.is_function_verified
 
 
-def test_the_ground_truth_verdict_of_a_function_without_a_contract_is_not_verified() -> None:
-    claude = ClaudeRun(0, False, False, None, "done", None, None, None, "success")
-    no_contract = RunCbmcResult("f", None, False, 0, "ok", no_contract=True)
-    assert _outcome_for(claude, no_contract) == GroundTruthVerificationResult.UNVERIFIED
-    verified = RunCbmcResult("f", None, False, 0, "ok")
-    assert _outcome_for(claude, verified) == GroundTruthVerificationResult.VERIFIED
-
-
 def test_the_evaluation_does_not_count_a_function_without_a_contract(tmp_path: Path) -> None:
     source = str(_source(tmp_path))
     assert str(_verify_function("answer", source).run_cbmc_result) == "NO_CONTRACT"
@@ -116,9 +107,3 @@ def test_only_a_probe_that_finds_no_contract_sets_no_contract(
     present = _verify_with_probe(monkeypatch, True)
     assert str(present) == "PASS" and present.is_function_verified
     assert not present.no_contract and not present.contract_probe_failed
-
-
-def test_the_ground_truth_verdict_of_a_failed_contract_probe_is_not_verified() -> None:
-    claude = ClaudeRun(0, False, False, None, "done", None, None, None, "success")
-    probe_failed = RunCbmcResult("f", None, False, 0, "ok", contract_probe_failed=True)
-    assert _outcome_for(claude, probe_failed) == GroundTruthVerificationResult.UNVERIFIED

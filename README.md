@@ -46,21 +46,12 @@ either activating the venv or prefixing tool calls with `uv run`.
 
 ### Generating Specifications with Avocado Agent
 
-Once the Avocado Agent container is running, use the following command (from inside the
-    running container) to generate specifications for functions in a C file:
+Once the Avocado Agent container is running, start Claude Code from the directory that holds the
+    C files (from inside the running container) and point it at `AGENTS.md`:
 
 ```sh
-% avocado-verify --file <PATH_TO_C_FILE>
+% claude "Carefully read @../AGENTS.md. Then, verify the C source files in this directory"
 ```
-
-For example, to generate and verify specifications for a file `test.c` located in
-    eval/benchmarks/ (this is an example), you would run:
-
-```sh
-% avocado-verify --file eval/benchmarks/test.c
-```
-
-from the application root of the container (i.e., `/app`)
 
 ### Container Configuration
 

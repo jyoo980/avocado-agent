@@ -4,7 +4,7 @@ A contract is checked by assuming its preconditions, running the body, and asser
 postconditions wherever the function returns. If no execution CBMC explores gets that far, there
 is nothing to assert and the run passes whatever the postconditions say. That happens when the
 preconditions contradict one another, when a callee's contract promises something impossible, or
-when the harness's loop and depth bounds cut every path short. Such a pass proves nothing, and
+when the tool's loop and depth bounds cut every path short. Such a pass proves nothing, and
 every mutant of the function survives it.
 
 The check is one extra run of the pipeline on a copy of the file with two probes added to the
@@ -24,7 +24,7 @@ fails, the preconditions can hold and the depth bound was what kept executions o
 Only a pass of this second run shows that the preconditions cannot all hold; when it gives no
 answer (it times out, say), the result is `UNKNOWN`.
 
-The copies live in a temporary directory and are never seen by a session or by a merge.
+The copies live in a temporary directory and are never seen by the agent.
 """
 
 from __future__ import annotations
@@ -336,7 +336,7 @@ def describe_vacuous_result(function: str, vacuity_check_result: VacuityCheckRes
         "- The contract of a function this one calls promises something impossible, so nothing "
         "continues past the call. Check the __CPROVER_ensures clauses of its in-file callees; "
         "you may fix a callee's contract.\n"
-        "- The preconditions allow only inputs whose executions are longer than the harness's "
+        "- The preconditions allow only inputs whose executions are longer than the tool's "
         "loop and depth bounds, so every path is cut off. Bound sizes and counts by smaller "
         "constants so that a complete execution fits.\n"
         "- The function never returns for the inputs the preconditions allow."

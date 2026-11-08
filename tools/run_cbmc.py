@@ -34,7 +34,7 @@ from tools.util import (
 from tools.util.callgraph import CallGraph
 from tools.util.vacuity_check_result import VacuityCheckResult
 
-# Character budget for failure responses. The harness persists full tool output to a file but
+# Character budget for failure responses. Claude Code persists full tool output to a file but
 # previews only the head inline, so we keep responses bounded (a pathological CBMC run can
 # emit hundreds of MB) and lead with the FAILURE lines (see `_format_failure_response`) so
 # the verdict survives that head-only preview rather than being buried in the stdout tail.
@@ -835,7 +835,7 @@ def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, 
     """Format a CBMC failure response, leading with the FAILURE lines, possibly truncated.
 
     After the header, the response always begins with the FAILURE lines extracted from
-    stdout, so the verdict survives the harness's head-only inline preview: CBMC prints its
+    stdout, so the verdict survives Claude Code's head-only inline preview: CBMC prints its
     FAILURE lines and verdict at the *tail* of stdout, which a positional truncation would
     otherwise bury. The full stderr and stdout follow; when the combined output exceeds
     `_MAX_RESPONSE_CHARS`, each stream is replaced by its tail behind a truncation marker.
@@ -1103,7 +1103,7 @@ def list_compiled_functions(
 ) -> set[str] | None:
     """Return the names of the functions that are compiled when `file_path` is built.
 
-    The harness finds a file's functions by reading its text, without running the preprocessor,
+    The call graph finds a file's functions by reading its text, without running the preprocessor,
     so it also finds the ones inside conditional blocks that this build leaves out. Such a
     function does not exist as far as CBMC is concerned: it cannot be verified, and its contract
     cannot be substituted at a call site. This asks the compiler, once, which functions do exist.

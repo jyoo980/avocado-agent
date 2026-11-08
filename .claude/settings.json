@@ -11,6 +11,8 @@
         ],
         "deny": [
             "Bash(avocado-count-sloc)",
+            "Read(/tools/**)",
+            "Bash(*tools/*)",
             "Bash(*git*)",
             "Bash(*.git*)",
             "Read(*.git*)",

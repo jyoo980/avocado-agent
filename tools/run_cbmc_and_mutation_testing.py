@@ -42,8 +42,8 @@ _AGENT_MUTANT_TIMEOUT_SEC = 120
 _EXIT_NOT_VERIFIED = 1
 
 # Suffix of the sibling JSONL log in which `main` records one entry per top-level verification
-# attempt (i.e., per `avocado-run-cbmc` invocation). Public because `avocado-verify` reads this
-# log to count how many times the agent attempted to verify a function. Keep the two in sync.
+# attempt (i.e., per `avocado-run-cbmc` invocation), so that a run's analysis can count how many
+# times the agent attempted to verify a function.
 VERIFICATION_ATTEMPTS_LOG_SUFFIX = "-verification-attempts.jsonl"
 
 
@@ -89,8 +89,7 @@ def main() -> None:
     )
 
     result = verify_function(args.function, args.file, include_dirs=args.include_dirs)
-    # Record this top-level verification attempt (pass or fail) so `avocado-verify` can gate its
-    # per-function loop on the agent having actually attempted verification often enough.
+    # Record this top-level verification attempt (pass or fail).
     _log_verification_attempt(args.file, args.function, result)
     if result.is_function_verified:
         # The function verified, so run mutation testing to assess the strength of its
@@ -173,8 +172,8 @@ def _log_verification_attempt(
 
     Exactly one record is written per `avocado-run-cbmc` invocation, regardless of whether
     verification succeeded, so a consumer can count how many times verification was *attempted*
-    for a given function (not how many times it passed). `avocado-verify` reads this log to gate
-    its per-function loop. Failures to write are swallowed so attempt logging never breaks a run.
+    for a given function (not how many times it passed). Failures to write are swallowed so attempt
+    logging never breaks a run.
 
     Args:
         file_under_verification (str): The file that contains the function under verification.
