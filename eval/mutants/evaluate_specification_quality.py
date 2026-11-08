@@ -43,7 +43,7 @@ from concurrent.futures import (
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
 from loguru import logger
 
@@ -275,7 +275,8 @@ def _write_file_records(submitted: _SubmittedFile, out: IO[str], failure: Future
             if not futures:
                 continue
             future = futures[index]
-            wait([future, failure], return_when=FIRST_COMPLETED)
+            awaited: list[Future[Any]] = [future, failure]
+            wait(awaited, return_when=FIRST_COMPLETED)
             if failure.done():
                 failure.result()
             # A redundancy record is None for a function that could not be scored.
