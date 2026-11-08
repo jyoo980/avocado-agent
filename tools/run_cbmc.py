@@ -62,8 +62,10 @@ _TIMEOUT_RETURNCODE = 124
 # `--unwind` argument to CBMC.
 _CBMC_UNWIND = 5
 
-# `--depth` argument to CBMC.
-_CBMC_DEPTH = 200
+# Default `--depth` argument to CBMC, and the lowest value `avocado-run-cbmc` accepts. Public
+# because the harness and the agent-side tools verify at this depth unless a function has one of
+# its own.
+DEFAULT_CBMC_DEPTH = 200
 
 # What goto-instrument prints when `--replace-call-with-contract` names a function the compiled
 # program does not contain. The call graph is read from the source text without preprocessing, so
@@ -132,6 +134,8 @@ class RunCbmcResult:
         no_contract (bool): True iff the pipeline passed but the function has no contract in the
             compiled program. CBMC then checks an empty contract, which nothing can violate, so
             such a pass proves nothing about the function and does not count as verified.
+        depth (int): The `--depth` CBMC was run with. A later run that must be comparable with
+            this one (the vacuity check, every mutant, a re-verification) is made at this depth.
         contract_probe_failed (bool): True iff the pipeline passed but whether the function has a
             contract could not be determined, because `has_contract` could not compile or list the
             program. Unknown is not proof of a contract, so such a pass does not count as verified.
@@ -145,6 +149,7 @@ class RunCbmcResult:
     vacuity_check_result: VacuityCheckResult | None = None
     variant: PipelineVariant | None = None
     no_contract: bool = False
+    depth: int = DEFAULT_CBMC_DEPTH
     contract_probe_failed: bool = False
 
     @property
@@ -279,8 +284,9 @@ def run_cbmc(
     call_graph: CallGraph | None = None,
     timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
     variant: PipelineVariant | None = None,
+    depth: int = DEFAULT_CBMC_DEPTH,
 ) -> RunCbmcResult:
-    """Run CBMC on the given function with loop unwinding = `_CBMC_UNWIND`, depth = `_CBMC_DEPTH`.
+    """Run CBMC on the given function with loop unwinding = `_CBMC_UNWIND` and `--depth depth`.
 
     The pipeline is split into three logical steps — `goto-cc`, `goto-instrument`, and
     `cbmc` — each run as its own subprocess so that failures can be attributed to a
@@ -315,6 +321,9 @@ def run_cbmc(
             variant, and nothing is retried. The vacuity check passes the variant of the run it
             is checking: its own run fails by design, and a failure must not be allowed to
             trigger a retry that would judge a different pipeline from the one that passed.
+        depth (int): The `--depth` passed to CBMC. The default is the harness's floor; the
+            agent's tool, the vacuity check, mutation testing and the harness pass the depth the
+            function is verified at, which may be higher. Recorded on the result.
 
     Returns:
         RunCbmcResult: The outcome of the run, naming the failed step (if any) and carrying
@@ -329,6 +338,7 @@ def run_cbmc(
             scratch_dir,
             timeout_sec,
             variant,
+            depth,
         )
 
 
@@ -340,6 +350,7 @@ def _run_cbmc_in_directory(
     cwd: str,
     timeout_sec: int,
     variant: PipelineVariant | None,
+    depth: int,
 ) -> RunCbmcResult:
     """Run CBMC on the given function as `run_cbmc` does, but run every subprocess in `cwd`.
 
@@ -351,6 +362,7 @@ def _run_cbmc_in_directory(
         cwd (str): Working directory for every subprocess in the pipeline.
         timeout_sec (int): Per-subprocess timeout in seconds.
         variant (PipelineVariant | None): When given, the only variant of the pipeline to run.
+        depth (int): The `--depth` passed to CBMC.
 
     Returns:
         RunCbmcResult: The outcome of the run.
@@ -384,6 +396,7 @@ def _run_cbmc_in_directory(
             function_to_verify,
             callees,
             resolved_file,
+            depth=depth,
             stub_paths=stub_paths,
             include_dirs=include_dirs,
             prevent_macro_expansion=variant.prevent_macro_expansion,
@@ -391,7 +404,7 @@ def _run_cbmc_in_directory(
             cwd=cwd,
             timeout_sec=timeout_sec,
         )
-        result = replace(result, variant=variant)
+        result = replace(result, variant=variant, depth=depth)
         _log_invocation(
             file_containing_function_to_verify, result, subprocess_results, nondet_callees
         )
@@ -403,6 +416,7 @@ def _run_cbmc_in_directory(
         function_to_verify,
         callees,
         resolved_file,
+        depth=depth,
         stub_paths=stub_paths,
         include_dirs=include_dirs,
         prevent_macro_expansion=False,
@@ -412,7 +426,7 @@ def _run_cbmc_in_directory(
     )
     # First, check if the run was successful or if it timed out.
     if result.cbmc_ran_successfully or result.timed_out:
-        result = replace(result, variant=used)
+        result = replace(result, variant=used, depth=depth)
         _log_invocation(
             file_containing_function_to_verify,
             result,
@@ -433,6 +447,7 @@ def _run_cbmc_in_directory(
             function_to_verify,
             callees,
             resolved_file,
+            depth=depth,
             stub_paths=stub_paths,
             include_dirs=include_dirs,
             prevent_macro_expansion=False,
@@ -452,6 +467,7 @@ def _run_cbmc_in_directory(
             function_to_verify,
             callees,
             resolved_file,
+            depth=depth,
             stub_paths=stub_paths,
             include_dirs=include_dirs,
             prevent_macro_expansion=True,
@@ -460,7 +476,7 @@ def _run_cbmc_in_directory(
             timeout_sec=timeout_sec,
         )
 
-    result = replace(result, variant=used)
+    result = replace(result, variant=used, depth=depth)
     _log_invocation(file_containing_function_to_verify, result, subprocess_results, nondet_callees)
     return result
 
@@ -469,6 +485,7 @@ def _run_pipeline(
     function_to_verify: str,
     callees: list[str],
     file_containing_function: str,
+    depth: int,
     stub_paths: list[str] | None,
     include_dirs: list[str] | None,
     prevent_macro_expansion: bool,
@@ -485,6 +502,7 @@ def _run_pipeline(
         function_to_verify (str): The function under verification.
         callees (list[str]): Callees of the function, used by `--replace-call-with-contract`.
         file_containing_function (str): The C source file containing the function.
+        depth (int): The `--depth` passed to the final `cbmc` step.
         stub_paths (list[str] | None): Extra `.c` stub files compiled in alongside the source.
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
         prevent_macro_expansion (bool): When True, disable macros CBMC can't model and inject
@@ -550,7 +568,7 @@ def _run_pipeline(
                 ),
             ]
         )
-    commands.append((CbmcStep.CBMC, _get_cbmc_check_command(function_to_verify), False))
+    commands.append((CbmcStep.CBMC, _get_cbmc_check_command(function_to_verify, depth), False))
 
     per_step_stdout = []
     per_step_stderr = []
@@ -957,6 +975,7 @@ def _log_invocation(
         "failed_step": result.failed_step.value if result.failed_step is not None else None,
         "returncode": result.returncode,
         "timed_out": result.timed_out,
+        "depth": result.depth,
         "subprocess_results": subprocess_results,
         "nondet_callees": nondet_callees,
     }
@@ -1083,19 +1102,18 @@ def _get_goto_instrument_contract_command(function: str, callees: list[str]) -> 
     )
 
 
-def _get_cbmc_check_command(function: str) -> str:
+def _get_cbmc_check_command(function: str, depth: int) -> str:
     """Return the final `cbmc` command that checks `function`'s instrumented goto-binary.
 
     Args:
         function (str): The function under verification.
+        depth (int): The `--depth` bound for the check.
 
     Returns:
         str: A single shell command.
     """
     quoted_function = shlex.quote(function)
-    return (
-        f"cbmc {_checking_goto_file(function)} --function {quoted_function} --depth {_CBMC_DEPTH}"
-    )
+    return f"cbmc {_checking_goto_file(function)} --function {quoted_function} --depth {depth}"
 
 
 def list_compiled_functions(
@@ -1128,11 +1146,12 @@ def _run_cbmc_without_depth_bound(
     cwd: str,
     timeout_sec: int,
     variant: PipelineVariant,
+    depth: int,
 ) -> RunCbmcResult:
     """Run the pipeline once, in `variant`, then check its instrumented binary without `--depth`.
 
     Only the vacuity check uses this, to learn whether the depth bound is what keeps executions
-    out of a function's body; everything else verifies at the fixed depth. The pipeline is
+    out of a function's body; everything else verifies with the depth bound. The pipeline is
     `run_cbmc`'s, unchanged. When it passes, the binary its last step checked is checked again by
     CBMC with no depth bound.
 
@@ -1143,10 +1162,11 @@ def _run_cbmc_without_depth_bound(
         cwd (str): Working directory of the pipeline, where its goto-binaries are written.
         timeout_sec (int): Per-subprocess timeout in seconds.
         variant (PipelineVariant): The variant of the pipeline to run, exactly once.
+        depth (int): The `--depth` of the pipeline's own run, before the check without it.
 
     Returns:
         RunCbmcResult: The outcome of the run without the depth bound, or of the pipeline when it
-            did not pass at the fixed depth.
+            did not pass at `depth`.
     """
     bounded = _run_cbmc_in_directory(
         function_to_verify,
@@ -1156,6 +1176,7 @@ def _run_cbmc_without_depth_bound(
         cwd,
         timeout_sec,
         variant,
+        depth,
     )
     if not bounded.cbmc_ran_successfully:
         return bounded
@@ -1252,7 +1273,11 @@ def _list_goto_functions(
 
 
 def verify_function(
-    function: str, file_path: str, include_dirs: list[str] | None = None
+    function: str,
+    file_path: str,
+    include_dirs: list[str] | None = None,
+    *,
+    depth: int = DEFAULT_CBMC_DEPTH,
 ) -> RunCbmcResult:
     """Run the CBMC pipeline on `function`, then check that a passing function has a contract.
 
@@ -1266,6 +1291,7 @@ def verify_function(
         function (str): Name of the function to verify.
         file_path (str): Path to the C file defining the function.
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+        depth (int): The `--depth` CBMC is run with.
 
     Returns:
         RunCbmcResult: The outcome of the run.
@@ -1274,6 +1300,7 @@ def verify_function(
         function_to_verify=function,
         file_containing_function_to_verify=file_path,
         include_dirs=include_dirs,
+        depth=depth,
     )
     if not result.is_function_verified:
         return result

@@ -25,7 +25,7 @@ from eval.mutants.util import (
     is_valid_mutation_candidate,
 )
 from tools.construct_call_graph import construct_call_graph
-from tools.run_cbmc import _DEFAULT_RUN_CBMC_TIMEOUT_SEC, CbmcStep, run_cbmc
+from tools.run_cbmc import _DEFAULT_RUN_CBMC_TIMEOUT_SEC, DEFAULT_CBMC_DEPTH, CbmcStep, run_cbmc
 from tools.util.callgraph import CallGraph
 
 # Per-subprocess CBMC timeout applied to each mutant unless a caller overrides it. This is the
@@ -267,6 +267,7 @@ def generate_mutants_and_compute_score(
     keep_artifacts: bool = False,
     is_function_already_verified: bool = False,
     mutant_timeout_sec: int = DEFAULT_MUTANT_TIMEOUT_SEC,
+    depth: int = DEFAULT_CBMC_DEPTH,
 ) -> MutationTestingResult:
     """Return the mutation testing result for `target_function` in `file_path`.
 
@@ -288,6 +289,9 @@ def generate_mutants_and_compute_score(
             uses; the agent-facing tool passes a smaller budget so that a single hard mutant does
             not stall the agent for the full timeout. A timed-out mutant is undecided (never
             killed) regardless of the budget.
+        depth (int): The `--depth` at which the function was verified. Every mutant is judged
+            under the same bound, or the score and the verdict would be about different
+            analyses. Defaults to the harness's floor, which is what the evaluation metric uses.
 
     Returns:
         MutationTestingResult: The result of running mutation testing on the target function.
@@ -301,7 +305,7 @@ def generate_mutants_and_compute_score(
     workspace.mkdir(parents=True, exist_ok=True)
 
     if not is_function_already_verified:
-        cbmc_result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
+        cbmc_result = run_cbmc(target_function, file_path, include_dirs=include_dirs, depth=depth)
         if not is_valid_mutation_candidate(cbmc_result):
             # No usable baseline if CBMC can't verify the unmutated function.
             return BaselineFailsVerification(file_path, target_function)
@@ -346,7 +350,13 @@ def generate_mutants_and_compute_score(
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_index = {
                 executor.submit(
-                    _verify_mutant, path, mutant, include_dirs, call_graph, mutant_timeout_sec
+                    _verify_mutant,
+                    path,
+                    mutant,
+                    include_dirs,
+                    call_graph,
+                    mutant_timeout_sec,
+                    depth,
                 ): index
                 for index, (path, mutant) in enumerate(paths_to_mutants.items())
             }
@@ -461,7 +471,8 @@ def _verify_mutant(
     mutant: Mutant,
     include_dirs: list[str] | None,
     call_graph: CallGraph,
-    timeout_sec: int = DEFAULT_MUTANT_TIMEOUT_SEC,
+    timeout_sec: int,
+    depth: int,
 ) -> MutantVerificationResult:
     """Return the result of verifying a mutant.
 
@@ -481,6 +492,8 @@ def _verify_mutant(
             mutant (operator-swap mutants share the original's call graph) and passed to
             `run_cbmc()` so it skips re-parsing the mutant source.
         timeout_sec (int): Per-subprocess CBMC timeout for this mutant's pipeline.
+        depth (int): The `--depth` the original function was verified at; the mutant is judged
+            under the same bound.
 
     Returns:
         MutantVerificationResult: The result of verifying a mutant. The returned result's
@@ -494,6 +507,7 @@ def _verify_mutant(
         include_dirs=include_dirs,
         call_graph=call_graph,
         timeout_sec=timeout_sec,
+        depth=depth,
     )
     if cbmc_result.timed_out:
         return MutantVerificationResult(
