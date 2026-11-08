@@ -416,8 +416,12 @@ def main() -> None:
             f"and are recorded as unverified without a session: {', '.join(not_in_build)}"
         )
         call_graph = _without_functions(call_graph, not_in_build)
+        # On resume, an earlier run might have recorded a function as verified when that build
+        # still contained it. Its last outcome must be superseded, or the final tally would count
+        # it as verified.
+        last_outcomes = _read_function_outcomes(log_path) if args.resume_from else {}
         for function in not_in_build:
-            if function not in already_done:
+            if last_outcomes.get(function) != GroundTruthVerificationResult.UNVERIFIED:
                 _append_jsonl(log_path, _not_in_build_result(function).to_record())
                 already_done.add(function)
 
