@@ -14,6 +14,7 @@ from .stubs import (
     get_stub_paths_for,
     get_unstubbed_external_callees_for,
 )
+from .subprocesses import run_command
 from .tree_sitter_utils import (
     FunctionSloc,
     get_call_graph,
@@ -35,4 +36,5 @@ __all__ = [
     "get_in_file_callers_of",
     "get_stub_paths_for",
     "get_unstubbed_external_callees_for",
+    "run_command",
 ]
