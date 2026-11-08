@@ -876,9 +876,7 @@ def _format_failure_response(function: str, failed_step: CbmcStep, stdout: str, 
         # the end of stdout; omit stdout too if even its shortest section does not fit.
         stderr_section = ""
         stdout_section = (
-            _tail_section("stdout (tail)", stdout, remaining)
-            if remaining >= stdout_minimum
-            else ""
+            _tail_section("stdout (tail)", stdout, remaining) if remaining >= stdout_minimum else ""
         )
     else:
         stdout_budget = int(remaining * _STDOUT_TAIL_SHARE)
