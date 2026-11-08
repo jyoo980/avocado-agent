@@ -25,7 +25,6 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
-from subprocess import TimeoutExpired
 
 from loguru import logger
 
@@ -55,7 +54,7 @@ _DISABLE_MACRO_FLAGS = [
 ]
 
 # 10-minute timeout.
-DEFAULT_RUN_CBMC_TIMEOUT_SEC = 600
+_DEFAULT_RUN_CBMC_TIMEOUT_SEC = 600
 
 # goto-cc is fast; if it hasn't finished in this many seconds, the input is almost
 # certainly pathological and should be treated as uncompilable.
@@ -283,7 +282,7 @@ class _SubprocessResult:
     stdout: str
     stderr: str
     timed_out: bool
-    timeout_sec: int = DEFAULT_RUN_CBMC_TIMEOUT_SEC
+    timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC
 
     @property
     def succeeded(self) -> bool:
@@ -356,12 +355,13 @@ def _subprocess_slot() -> Generator[int]:
         while True:
             for slot_path in slot_paths:
                 fd = os.open(slot_path, os.O_RDWR | os.O_CREAT, 0o600)
+                # The descriptor is closed on every path: when the slot is busy, when `flock`
+                # fails some other way, and when the `with` body finishes.
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    os.close(fd)
-                    continue
-                try:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
                     yield fd
                 finally:
                     os.close(fd)
@@ -418,7 +418,7 @@ def run_cbmc(
     file_containing_function_to_verify: str,
     include_dirs: list[str] | None = None,
     call_graph: CallGraph | None = None,
-    timeout_sec: int = DEFAULT_RUN_CBMC_TIMEOUT_SEC,
+    timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
     variant: PipelineVariant | None = None,
 ) -> RunCbmcResult:
     """Run CBMC on the given function with loop unwinding = `_UNWIND`, depth = `_DEPTH`.
@@ -449,7 +449,7 @@ def run_cbmc(
             the non-thread-safe tree-sitter parser out of concurrent code paths. When None, the
             call graph is constructed from the source file as usual.
         timeout_sec (int): Per-subprocess timeout in seconds. Defaults to
-            `DEFAULT_RUN_CBMC_TIMEOUT_SEC`; callers that only need a quick verdict (e.g. mutation
+            `_DEFAULT_RUN_CBMC_TIMEOUT_SEC`; callers that only need a quick verdict (e.g. mutation
             feedback for the agent) can pass a smaller budget. A timed-out run is reported as such
             and is never mistaken for a verification result.
         variant (PipelineVariant | None): When given, the pipeline is run exactly once, in this
@@ -617,7 +617,7 @@ def _run_pipeline(
     prevent_macro_expansion: bool,
     subprocess_results: list[dict],
     cwd: str | None = None,
-    timeout_sec: int = DEFAULT_RUN_CBMC_TIMEOUT_SEC,
+    timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
 ) -> tuple[RunCbmcResult, str, str]:
     """Run the goto-cc → goto-instrument → cbmc pipeline once.
 
@@ -769,7 +769,7 @@ def _run_command(
     command: str,
     subprocess_results,
     cwd: str | None = None,
-    timeout_sec: int = DEFAULT_RUN_CBMC_TIMEOUT_SEC,
+    timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
 ) -> _SubprocessResult:
     """Run one pipeline step as a subprocess with the per-step timeout.
 
@@ -1301,20 +1301,17 @@ def _list_goto_functions(
         f"-I {shlex.quote(str(Path(d).resolve()))}" for d in include_dirs or []
     )
     source = shlex.quote(str(Path(file_path).resolve()))
-    try:
-        with tempfile.TemporaryDirectory(prefix="avocado-compiled-") as scratch_dir:
-            commands = (
-                f"goto-cc -o compiled.goto {include_flags} {source}",
-                "goto-instrument --list-goto-functions compiled.goto",
-            )
-            listing = ""
-            for command in commands:
-                completed = run_command(command, _GOTO_CC_TIMEOUT_SEC, cwd=scratch_dir)
-                if completed is None or completed.returncode != 0:
-                    return None
-                listing = completed.stdout
-    except OSError:
-        return None
+    with tempfile.TemporaryDirectory(prefix="avocado-compiled-") as scratch_dir:
+        commands = (
+            f"goto-cc -o compiled.goto {include_flags} {source}",
+            "goto-instrument --list-goto-functions compiled.goto",
+        )
+        listing = ""
+        for command in commands:
+            completed = run_shell_command(command, _GOTO_CC_TIMEOUT_SEC, cwd=scratch_dir)
+            if completed is None or completed.returncode != 0:
+                return None
+            listing = completed.stdout
     compiled: set[str] = set()
     contracted: set[str] = set()
     for line in listing.splitlines():

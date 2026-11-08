@@ -29,7 +29,7 @@ from eval.mutants.util import (
 )
 from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import (
-    DEFAULT_RUN_CBMC_TIMEOUT_SEC,
+    _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
     CbmcStep,
     max_concurrent_subprocesses,
     run_cbmc,
@@ -41,7 +41,7 @@ from tools.util.callgraph import CallGraph
 # spent waiting for a subprocess slot is not counted. It equals `run_cbmc`'s default
 # per-subprocess timeout, so the evaluation metric (`evaluate_specification_quality.py`) decides
 # each mutant under the same budget as `run_cbmc` gives the original function.
-DEFAULT_MUTANT_TIMEOUT_SEC = DEFAULT_RUN_CBMC_TIMEOUT_SEC
+DEFAULT_MUTANT_TIMEOUT_SEC = _DEFAULT_RUN_CBMC_TIMEOUT_SEC
 
 # Matches the GNU `timeout(1)` convention used elsewhere in the codebase; surfaces in
 # MutantVerificationResult.returncode so consumers can distinguish a timed-out run from a

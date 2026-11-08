@@ -27,9 +27,6 @@ from tools.util import get_call_graph
 # partially written file.
 _CALL_GRAPH_LOCK = threading.Lock()
 
-# The call-graph cache for `<dir>/<stem>.<ext>` is written to `<dir>/<stem><CALL_GRAPH_SUFFIX>`.
-CALL_GRAPH_SUFFIX = "-callgraph.json"
-
 
 def main() -> None:
     """Construct a call graph comprising functions in a given file."""
@@ -61,7 +58,7 @@ def construct_call_graph(
         str: The path to the file to which the call graph is written.
     """
     source_path = Path(path_to_file_to_verify)
-    path_to_call_graph = source_path.with_name(f"{source_path.stem}{CALL_GRAPH_SUFFIX}")
+    path_to_call_graph = source_path.with_name(f"{source_path.stem}-callgraph.json")
     with _CALL_GRAPH_LOCK:
         if path_to_call_graph.exists() and _is_cache_fresh(path_to_call_graph, source_path):
             return str(path_to_call_graph)
