@@ -27,6 +27,7 @@ import json
 import re
 from collections import Counter
 from datetime import datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 
 _VERIFY = re.compile(r"avocado-run-cbmc")
@@ -36,7 +37,7 @@ _CBMC_BY_HAND = re.compile(r"\b(cbmc|goto-cc|goto-instrument)\b")
 
 
 def _ts(value: str) -> datetime:
-    """Parse a transcript timestamp.
+    """Return the given transcript timestamp, parsed.
 
     Args:
         value (str): An ISO-8601 timestamp as written by Claude Code.
@@ -48,7 +49,7 @@ def _ts(value: str) -> datetime:
 
 
 def _tool_kind(name: str, inp: dict) -> str:
-    """Classify a tool call into the buckets the report uses.
+    """Return the bucket of the report that the given tool call belongs to.
 
     Args:
         name (str): The tool's name as recorded in the transcript.
@@ -81,7 +82,9 @@ def _tool_kind(name: str, inp: dict) -> str:
 def _attribute(
     model_iv: list[tuple[datetime, datetime]], tool_iv: list[tuple[datetime, datetime, str]]
 ) -> tuple[float, Counter[str]]:
-    """Attribute each second of the given intervals once, so the totals never exceed the span.
+    """Return the model seconds and per-kind tool seconds of the given intervals.
+
+    Each second is attributed once, so the totals never exceed the span.
 
     A second inside a model turn is model time. A second outside every model turn but inside one or
     more tool calls (which overlap when the model issues parallel tool calls) is tool time, split
@@ -101,7 +104,7 @@ def _attribute(
     )
     model = 0.0
     tools: Counter[str] = Counter()
-    for a, b in zip(points, points[1:]):
+    for a, b in pairwise(points):
         secs = (b - a).total_seconds()
         if any(s <= a and b <= e for s, e in model_iv):
             model += secs
@@ -118,7 +121,7 @@ def analyse(path: Path, timeout: float, killed: bool) -> dict | None:
     Args:
         path (Path): The transcript.
         timeout (float): The harness per-session timeout, charged to a killed session.
-        killed (bool): Whether the harness killed this session on timeout (from the run log). A
+        killed (bool): True if the harness killed this session on timeout (from the run log). A
             transcript cannot tell on its own: a normal session also ends on an assistant message.
 
     Returns:
@@ -213,7 +216,7 @@ def analyse(path: Path, timeout: float, killed: bool) -> dict | None:
 
 
 def main() -> None:
-    """Attribute session time for the sessions named in the given run logs."""
+    """Print the time attribution for the sessions named in the given run logs."""
     parser = argparse.ArgumentParser(description="Attribute agent session time to model vs tools.")
     parser.add_argument("run_logs", nargs="+", help="`<stem>-avocado-verify.jsonl` run logs.")
     parser.add_argument(
