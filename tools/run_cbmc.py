@@ -71,15 +71,6 @@ _CBMC_UNWIND = 5
 # `--depth` argument to CBMC.
 _CBMC_DEPTH = 200
 
-# What goto-instrument prints when `--replace-call-with-contract` names a function the compiled
-# program does not contain. The call graph is read from the source text without preprocessing, so
-# it also lists callees that the preprocessor removes (a call inside an `#ifdef` that is off).
-_CALLEE_NOT_COMPILED = re.compile(r"Function '([^']+)' was not found in the GOTO program")
-
-# One line of `goto-instrument --list-goto-functions`: `<name> /* <identifier>[, body not
-# available] */`. A contract is listed under the function's name with a `contract::` identifier.
-_LISTED_FUNCTION = re.compile(r"^(\S+) /\* (\S+?)(, body not available)? \*/$")
-
 # Cap on how many pipeline subprocesses (`goto-cc`, `goto-instrument`, `cbmc`) may run at once,
 # shared by all processes of one user that have the same temporary directory (see `_SLOT_DIR`).
 # It is not host-wide: separate containers, or process trees with different `TMPDIR` values, each
@@ -135,6 +126,16 @@ def max_concurrent_subprocesses() -> int:
             message = f"{env_var} must be a positive integer, not {setting!r}"
             raise ValueError(message)
     return min(os.process_cpu_count() or 1, limit)
+
+
+# What goto-instrument prints when `--replace-call-with-contract` names a function the compiled
+# program does not contain. The call graph is read from the source text without preprocessing, so
+# it also lists callees that the preprocessor removes (a call inside an `#ifdef` that is off).
+_CALLEE_NOT_COMPILED = re.compile(r"Function '([^']+)' was not found in the GOTO program")
+
+# One line of `goto-instrument --list-goto-functions`: `<name> /* <identifier>[, body not
+# available] */`. A contract is listed under the function's name with a `contract::` identifier.
+_LISTED_FUNCTION = re.compile(r"^(\S+) /\* (\S+?)(, body not available)? \*/$")
 
 
 class CbmcStep(StrEnum):
