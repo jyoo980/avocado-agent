@@ -321,10 +321,12 @@ class _FakeClaude:
         match = re.search(r"Verify (\w+) in (\S+?)\.\n", command[2])
         assert match, command[2][:80]
         function, path = match.group(1), Path(match.group(2))
+        if function in self.fail:
+            # Return without sleeping, so the usage limit is recorded before any other session
+            # finishes and frees a slot for a new submission.
+            return _session(is_error=True, text="Usage limit reached; resets at 3pm")
         start = time.monotonic()
         time.sleep(self.sleep)
-        if function in self.fail:
-            return _session(is_error=True, text="Usage limit reached; resets at 3pm")
         if function in self.rename:
             renamed = path.read_bytes().replace(
                 function.encode(), b"renamed_" + function.encode(), 1
