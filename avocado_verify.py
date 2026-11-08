@@ -24,7 +24,8 @@ Usage:
         [--claude-timeout <TIMEOUT>] \
         [--jobs <N>] \
         [--keep-sessions] \
-        [--resume-from <PATH_TO_JSONL_LOG>]
+        [--resume-from <PATH_TO_JSONL_LOG>] \
+        [--no-auto-include]
 """
 
 import argparse
@@ -61,6 +62,7 @@ from tools.run_cbmc_and_mutation_testing import (
     verify_function,
 )
 from tools.util import (
+    AUTO_INCLUDE_HELP,
     get_in_file_callees_for,
     get_in_file_callers_of,
     get_include_dirs,
@@ -364,6 +366,17 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--auto-include",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            AUTO_INCLUDE_HELP
+            + " The directory is also made accessible to the agent via `claude --add-dir`."
+            + " Use --no-auto-include if that directory is unrelated to the C file."
+            + " (default: %(default)s)"
+        ),
+    )
+    parser.add_argument(
         "--jobs",
         type=int,
         default=_DEFAULT_JOBS,
@@ -390,7 +403,7 @@ def main() -> None:
         logger.error(f"No such file: {file_path}")
         sys.exit(1)
 
-    if include_dirs := get_include_dirs(str(file_path), [], auto_include=True):
+    if include_dirs := get_include_dirs(str(file_path), [], auto_include=args.auto_include):
         logger.info(f"[auto-include] using {include_dirs}")
 
     path_to_call_graph = construct_call_graph(str(file_path))
