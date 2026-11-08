@@ -36,5 +36,5 @@ clean:
 
 # Delete artifacts from mutation testing runs.
 clean-mutants:
-	find . \( -name '*.goto' -o -name '*__mutant_*.c' -o -name '*__mutant_*-callgraph.json' \) -delete
-	find . \( -name '*__clause_drop_*.c' -o -name '*__clause_drop_*-callgraph.json' \) -delete
+	find . \( -name '*.goto' -o -name '*__mutant_*.c' \) -delete
+	find . \( -name '*.goto' -o -name '*__clause_drop_*.c' \) -delete
