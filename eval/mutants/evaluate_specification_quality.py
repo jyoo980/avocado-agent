@@ -19,7 +19,7 @@ promptly, even while earlier functions are still being scored.
 
 Usage:
     % ./eval/mutants/evaluate_specification_quality.py <PATH_TO_C_FILE_OR_DIR> \
-            [--auto-include] \
+            [--no-auto-include] \
             [--include-dirs <PATH_TO_INCLUDE_DIR>]... \
             [--mutation] \
             [--redundancy] \
@@ -70,8 +70,12 @@ def main() -> None:
     parser.add_argument("path", help="Path to a C file or directory of C files.")
     parser.add_argument(
         "--auto-include",
-        help=AUTO_INCLUDE_HELP,
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            AUTO_INCLUDE_HELP
+            + " It is searched after the --include-dirs directories. (default: %(default)s)"
+        ),
     )
     parser.add_argument(
         "--include-dirs", action="append", help="Path(s) to stubs to use in verification."

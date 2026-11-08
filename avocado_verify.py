@@ -24,7 +24,8 @@ Usage:
         [--claude-timeout <TIMEOUT>] \
         [--jobs <N>] \
         [--keep-sessions] \
-        [--resume-from <PATH_TO_JSONL_LOG>]
+        [--resume-from <PATH_TO_JSONL_LOG>] \
+        [--no-auto-include]
 """
 
 import argparse
@@ -59,6 +60,7 @@ from tools.run_cbmc_and_mutation_testing import (
     verify_function,
 )
 from tools.util import (
+    AUTO_INCLUDE_HELP,
     get_in_file_callees_for,
     get_in_file_callers_of,
     get_include_dirs,
@@ -365,6 +367,17 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--auto-include",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            AUTO_INCLUDE_HELP
+            + " The directory is also made accessible to the agent via `claude --add-dir`."
+            + " Use --no-auto-include if that directory is unrelated to the C file."
+            + " (default: %(default)s)"
+        ),
+    )
+    parser.add_argument(
         "--jobs",
         type=int,
         default=_DEFAULT_JOBS,
@@ -391,7 +404,7 @@ def main() -> None:
         logger.error(f"No such file: {file_path}")
         sys.exit(1)
 
-    if include_dirs := get_include_dirs(str(file_path), [], auto_include=True):
+    if include_dirs := get_include_dirs(str(file_path), [], auto_include=args.auto_include):
         logger.info(f"[auto-include] using {include_dirs}")
 
     path_to_call_graph = construct_call_graph(str(file_path))
@@ -1111,9 +1124,10 @@ def _merge_and_verify(
     Under `_CANONICAL_LOCK`: read the canonical file, compute the merge
     (`tools.util.edit_rules.merge_copy`), copy the canonical directory to a scratch
     directory, write the merged bytes into that copy and check that `goto-cc` still accepts the
-    file. Only then is the canonical file replaced (atomically, via `os.replace`); a merge that
-    does not compile is rejected and the canonical file left untouched. The lock is released
-    before the function's own CBMC run, on the scratch copy, so other sessions can merge meanwhile.
+    file. Only then is the canonical file (or, if it is a symlink, its target) replaced
+    (atomically, via `os.replace`); a merge that does not compile is rejected and the canonical
+    file left untouched. The lock is released before the function's own CBMC run, on the
+    scratch copy, so other sessions can merge meanwhile.
 
     One of those merges may change the contract of a function this one calls: only the functions
     live sessions work on are frozen, not their callees, and this function is not yet in
@@ -1258,9 +1272,12 @@ def _merge_and_verify(
                 )
                 scratch_file.write_bytes(canonical)
             else:
-                staged = canonical_file.with_name(f"{canonical_file.name}.avocado-merge")
+                # If the canonical file is a symlink, replace its target rather than the link
+                # itself, so that the link keeps pointing to the file that has the merged edits.
+                destination = canonical_file.resolve()
+                staged = destination.with_name(f"{destination.name}.avocado-merge")
                 staged.write_bytes(merged)
-                Path(staged).replace(canonical_file)
+                staged.replace(destination)
     if report.merged:
         if report.transplanted:
             logger.info(f"{function}: transplanted {', '.join(report.transplanted)}")

@@ -4,7 +4,7 @@
 
 Usage: ./eval/verify_program.py <PATH_TO_C_FILE_OR_DIRECTORY> \
                                 [--include-dirs <PATH_TO_INCLUDE_DIR>]... \
-                                [--auto-include] \
+                                [--no-auto-include] \
                                 [--v] \
                                 [--skip-unannotated-functions]
 
@@ -94,8 +94,12 @@ def main() -> int:
     )
     parser.add_argument(
         "--auto-include",
-        help=AUTO_INCLUDE_HELP,
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            AUTO_INCLUDE_HELP
+            + " It is searched after the --include-dirs directories. (default: %(default)s)"
+        ),
     )
     parser.add_argument(
         "--include-dirs", action="append", help="Path(s) to stubs to use in verification."
@@ -157,7 +161,7 @@ def _verify_program(
     file: str,
     skip_unannotated_functions: bool,
     include_dirs: list[str],
-    auto_include: bool = False,
+    auto_include: bool,
 ) -> ProgramVerificationResult:
     """Return the verification result for the given file.
 
@@ -168,7 +172,7 @@ def _verify_program(
         include_dirs (list[str]): List of directories containing files (e.g., headers) that should
             be included in verification, as returned by `resolve_include_dirs()`.
         auto_include (bool): True iff the auto-detected include directory (see
-            `get_include_dirs()`) should be added to CBMC's include search path. Defaults to False.
+            `get_include_dirs()`) should be added to CBMC's include search path.
 
     Returns:
         ProgramVerificationResult: The verification result for the given file.

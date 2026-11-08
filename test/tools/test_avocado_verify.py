@@ -492,6 +492,28 @@ def test_merge_and_verify_rejects_a_merge_that_does_not_compile(tmp_path: Path) 
     assert cbmc.function == "swap"
 
 
+def test_merge_and_verify_writes_through_a_symlinked_canonical_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    target = _stripped_quicksort(tmp_path)
+    link = target.with_name(f"link-{target.name}")
+    try:
+        link.symlink_to(target.name)
+    except OSError as e:
+        pytest.skip(f"cannot create symlinks: {e}")
+    monkeypatch.setattr(avocado_verify, "verify_function", _FakeVerify())
+    session = _fork_session("swap", link)
+    try:
+        _write_contract(session.file, "swap", _CONTRACTS["swap"])
+        report, _cbmc, _reverified = _merge_and_verify(session, link, include_dirs=[])
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    assert report.merged, report
+    # The link is kept, and its target has the merged edits.
+    assert link.is_symlink() and link.readlink() == Path(target.name)
+    assert _CONTRACTS["swap"] in target.read_bytes()
+
+
 class _FakeVerify:
     """A `verify_function` stand-in that fails the functions named in `failing` and records calls."""
 
