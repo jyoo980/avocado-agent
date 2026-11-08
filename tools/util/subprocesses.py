@@ -28,7 +28,8 @@ def run_command(
     killed: those still running after the command exits normally, and those already orphaned
     (i.e., whose parent exited, so that they are no longer descendants). After killing the
     command and its descendants, this function waits up to `_KILLED_PROCESS_EXIT_TIMEOUT_SEC`
-    seconds for them to exit, so that they no longer use CPU or memory when it returns.
+    seconds for them to exit, so that they no longer use CPU or memory when it returns. It does
+    not wait longer, even if some killed process (possibly the command itself) has not exited.
 
     Args:
         command (str | list[str]): The command to run. A string is run by the shell; a list is
@@ -41,7 +42,9 @@ def run_command(
         subprocess.CompletedProcess[str] | None: The finished subprocess, with its captured stdout
             and stderr, or None if it hit the timeout.
     """
-    with subprocess.Popen(
+    # `Popen` is not used as a context manager, because on exit that waits for the command without
+    # a timeout, which would never return if the command survived SIGKILL.
+    process = subprocess.Popen(
         command,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -49,18 +52,25 @@ def run_command(
         text=True,
         shell=isinstance(command, str),
         cwd=cwd,
-    ) as process:
-        try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except TimeoutExpired:
-            _kill_process_tree(process.pid)
-            # Wait for the command to exit, not for end-of-file on its output pipes, which an
-            # orphaned descendant can hold open indefinitely.
-            process.wait()
-            return None
-        except BaseException:
-            _kill_process_tree(process.pid)
-            raise
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except TimeoutExpired:
+        _kill_process_tree(process.pid)
+        return None
+    except BaseException:
+        _kill_process_tree(process.pid)
+        raise
+    finally:
+        # Do not read the output pipes to end-of-file: an orphaned descendant can hold them open
+        # indefinitely.
+        for pipe in (process.stdout, process.stderr):
+            if pipe is not None:
+                pipe.close()
+        # Collect the command's exit status if it has exited, so that it does not remain a zombie.
+        # `_kill_process_tree` has already waited for it to exit. If it still has not exited,
+        # `subprocess` collects its exit status later.
+        process.poll()
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
@@ -69,7 +79,8 @@ def _kill_process_tree(pid: int) -> None:
 
     Each process is stopped before its children are listed, so that no process can start a child
     that escapes the kill. A process that cannot be stopped still has its children listed and is
-    still sent SIGKILL. This function returns once every process that was sent SIGKILL has
+    still sent SIGKILL. If an exception interrupts the search for descendants, the processes
+    found so far are sent SIGKILL before the exception propagates. This function returns once every process that was sent SIGKILL has
     exited (a zombie counts as exited), or after `_KILLED_PROCESS_EXIT_TIMEOUT_SEC` seconds, in
     which case it logs a warning that lists the processes that have not exited.
 
@@ -81,18 +92,22 @@ def _kill_process_tree(pid: int) -> None:
     except psutil.Error:
         return
     found: list[psutil.Process] = []
-    while frontier:
-        process = frontier.pop()
-        found.append(process)
-        with suppress(psutil.Error):
-            process.suspend()
-        with suppress(psutil.Error):
-            frontier.extend(process.children())
     killed: list[psutil.Process] = []
-    for process in found:
-        with suppress(psutil.Error):
-            process.kill()
-            killed.append(process)
+    try:
+        while frontier:
+            process = frontier.pop()
+            found.append(process)
+            with suppress(psutil.Error):
+                process.suspend()
+            with suppress(psutil.Error):
+                frontier.extend(process.children())
+    finally:
+        # Even if an exception (such as `KeyboardInterrupt`) interrupts the traversal, kill every
+        # process found so far, so that none is left stopped, holding its memory.
+        for process in found + frontier:
+            with suppress(psutil.Error):
+                process.kill()
+                killed.append(process)
     deadline = time.monotonic() + _KILLED_PROCESS_EXIT_TIMEOUT_SEC
     while killed := [process for process in killed if not _has_exited(process)]:
         if time.monotonic() >= deadline:
