@@ -19,6 +19,9 @@
 # JSON files.
 *.json
 
+# The agent's Claude Code settings.
+!docker/claude.settings.json
+
 # Other
 avocado-experimental-data
 *.egg-info/

@@ -127,6 +127,12 @@ _MAX_AGENT_SESSIONS_PER_FUNCTION = 3
 # per wall-clock hour; pass `--jobs 1` for a sequential run.
 _DEFAULT_JOBS = 4
 
+# The agent's Claude Code settings, which every `claude -p` session gets with `--settings`.  The
+# checkout's own `.claude/settings.json` holds the settings for developers working on the harness.
+# The harness snapshot that `eval/experiments/run.sh` installs has no `docker/` directory; there, a
+# `claude` wrapper passes the agent's settings instead.
+_AGENT_SETTINGS_FILE = Path(__file__).parent / "docker" / "claude.settings.json"
+
 # Prefixes of the temporary directories that hold a session's private copy of the source directory
 # and the consistent copy the ground-truth verification runs on.
 _SESSION_DIR_PREFIX = "avocado-session-"
@@ -2055,7 +2061,8 @@ def _build_claude_command(prompt: str, *, file_path: str, include_dirs: list[str
     `--dangerously-skip-permissions` is the documented sandbox modality (see README). The
     C file's directory is granted with `--add-dir` so the file is reachable regardless of
     where the harness is invoked from; each include directory is granted the same way so the
-    agent can read headers it needs.
+    agent can read headers it needs. The agent's settings, `_AGENT_SETTINGS_FILE`, are passed
+    with `--settings` if that file exists.
 
     Claude Code's auto-memory is deliberately left enabled: each session is given a persistent
     notes directory (keyed by the repository's main worktree, so shared by every worktree of it)
@@ -2082,6 +2089,8 @@ def _build_claude_command(prompt: str, *, file_path: str, include_dirs: list[str
     ]
     for include_dir in include_dirs:
         command += ["--add-dir", include_dir]
+    if _AGENT_SETTINGS_FILE.is_file():
+        command += ["--settings", str(_AGENT_SETTINGS_FILE)]
     return command
 
 
