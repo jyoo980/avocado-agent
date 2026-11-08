@@ -356,12 +356,13 @@ def _subprocess_slot() -> Generator[int]:
         while True:
             for slot_path in slot_paths:
                 fd = os.open(slot_path, os.O_RDWR | os.O_CREAT, 0o600)
+                # The descriptor is closed on every path: when the slot is busy, when `flock`
+                # fails some other way, and when the `with` body finishes.
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    os.close(fd)
-                    continue
-                try:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
                     yield fd
                 finally:
                     os.close(fd)
@@ -1299,20 +1300,17 @@ def _list_goto_functions(
         f"-I {shlex.quote(str(Path(d).resolve()))}" for d in include_dirs or []
     )
     source = shlex.quote(str(Path(file_path).resolve()))
-    try:
-        with tempfile.TemporaryDirectory(prefix="avocado-compiled-") as scratch_dir:
-            commands = (
-                f"goto-cc -o compiled.goto {include_flags} {source}",
-                "goto-instrument --list-goto-functions compiled.goto",
-            )
-            listing = ""
-            for command in commands:
-                completed = run_command(command, _GOTO_CC_TIMEOUT_SEC, cwd=scratch_dir)
-                if completed is None or completed.returncode != 0:
-                    return None
-                listing = completed.stdout
-    except OSError:
-        return None
+    with tempfile.TemporaryDirectory(prefix="avocado-compiled-") as scratch_dir:
+        commands = (
+            f"goto-cc -o compiled.goto {include_flags} {source}",
+            "goto-instrument --list-goto-functions compiled.goto",
+        )
+        listing = ""
+        for command in commands:
+            completed = run_shell_command(command, _GOTO_CC_TIMEOUT_SEC, cwd=scratch_dir)
+            if completed is None or completed.returncode != 0:
+                return None
+            listing = completed.stdout
     compiled: set[str] = set()
     contracted: set[str] = set()
     for line in listing.splitlines():
