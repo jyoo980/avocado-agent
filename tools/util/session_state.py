@@ -262,7 +262,9 @@ def write_run_state(
             each with why.
     """
     target = run_state_path(canonical_file)
-    staged = target.with_name(f"{target.name}.tmp")
+    # The staged file's name, like the target's, ends with RUN_STATE_SUFFIX, so SNAPSHOT_IGNORE
+    # leaves it out of session copies and the edit rules never see it as a file the agent deleted.
+    staged = target.with_name(f".staged-{target.name}")
     record = {
         "verified": sorted(verified),
         "active": sorted(active),
