@@ -80,9 +80,10 @@ def _kill_process_tree(pid: int) -> None:
     Each process is stopped before its children are listed, so that no process can start a child
     that escapes the kill. A process that cannot be stopped still has its children listed and is
     still sent SIGKILL. If an exception interrupts the search for descendants, the processes
-    found so far are sent SIGKILL before the exception propagates. This function returns once every process that was sent SIGKILL has
-    exited (a zombie counts as exited), or after `_KILLED_PROCESS_EXIT_TIMEOUT_SEC` seconds, in
-    which case it logs a warning that lists the processes that have not exited.
+    found so far are sent SIGKILL before the exception propagates. This function returns once
+    every process that was sent SIGKILL has exited (a zombie counts as exited), or after
+    `_KILLED_PROCESS_EXIT_TIMEOUT_SEC` seconds, in which case it logs a warning that lists the
+    processes that have not exited.
 
     Args:
         pid (int): The id of the root process.
