@@ -9,12 +9,12 @@ that perturbation.
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
@@ -24,9 +24,11 @@ from eval.mutants.util import (
     get_bounded_mutant_file_name,
     is_valid_mutation_candidate,
 )
-from tools.construct_call_graph import construct_call_graph
+from tools.construct_call_graph import load_call_graph
 from tools.run_cbmc import _DEFAULT_RUN_CBMC_TIMEOUT_SEC, CbmcStep, run_cbmc
-from tools.util.callgraph import CallGraph
+
+if TYPE_CHECKING:
+    from tools.util.callgraph import CallGraph
 
 # Per-subprocess CBMC timeout applied to each mutant unless a caller overrides it. This is the
 # full pipeline timeout, so the evaluation metric (`evaluate_specification_quality.py`) decides
@@ -263,6 +265,7 @@ def generate_mutants_and_compute_score(
     target_function: str,
     *,
     include_dirs: list[str] | None = None,
+    call_graph: CallGraph | None = None,
     workspace: Path | None = None,
     keep_artifacts: bool = False,
     is_function_already_verified: bool = False,
@@ -278,6 +281,8 @@ def generate_mutants_and_compute_score(
         target_function (str): The function for which to generate mutants.
         include_dirs (list[str] | None): Directories forwarded to `run_cbmc()` as `-I` flags
             for both the original-function verification and every mutant run.
+        call_graph (CallGraph | None): The call graph of `file_path`. When None, it is
+            constructed from `file_path`.
         workspace (Path | None): Directory to write mutant files into. Defaults to the
             source file's directory.
         keep_artifacts (bool): When True, mutant `.c` files are kept for inspection.
@@ -300,20 +305,21 @@ def generate_mutants_and_compute_score(
     workspace = workspace or source_path.parent
     workspace.mkdir(parents=True, exist_ok=True)
 
+    # Operator-swap mutations never add or remove calls (or rename functions), so the call graph
+    # is identical for the original and every mutant. Use one call graph for the baseline run and
+    # every mutant's run_cbmc below. Besides avoiding redundant parsing, this keeps the
+    # non-thread-safe tree-sitter parser out of the concurrent section: no call graph is
+    # constructed inside the worker threads.
+    if call_graph is None:
+        call_graph = load_call_graph(file_path)
+
     if not is_function_already_verified:
-        cbmc_result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
+        cbmc_result = run_cbmc(
+            target_function, file_path, include_dirs=include_dirs, call_graph=call_graph
+        )
         if not is_valid_mutation_candidate(cbmc_result):
             # No usable baseline if CBMC can't verify the unmutated function.
             return BaselineFailsVerification(file_path, target_function)
-
-    # Operator-swap mutations never add or remove calls (or rename functions), so the call graph
-    # is identical for the original and every mutant. Build it once and pass it into each
-    # mutant's run_cbmc below. Besides avoiding redundant parsing, this keeps the
-    # non-thread-safe tree-sitter parser out of the concurrent section: no call graph is
-    # constructed inside the worker threads.
-    call_graph = CallGraph(
-        json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
-    )
 
     paths_to_mutants = {
         _get_path_for_mutated_source(workspace, source_path, target_function, i): mutant

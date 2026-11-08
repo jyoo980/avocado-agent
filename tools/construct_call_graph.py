@@ -17,7 +17,7 @@ import json
 import uuid
 from pathlib import Path
 
-from tools.util import get_call_graph
+from tools.util import CallGraph, get_call_graph
 
 
 def main() -> None:
@@ -69,6 +69,19 @@ def construct_call_graph(
         # this removes the abandoned temporary file.
         tmp_path.unlink(missing_ok=True)
     return str(path_to_call_graph)
+
+
+def load_call_graph(path_to_file_to_verify: str) -> CallGraph:
+    """Return the call graph for the given C file, constructing it if necessary.
+
+    Args:
+        path_to_file_to_verify (str): The path to the file whose call graph to return.
+
+    Returns:
+        CallGraph: The call graph of the given file.
+    """
+    path_to_call_graph = construct_call_graph(path_to_file_to_verify)
+    return CallGraph(json.loads(Path(path_to_call_graph).read_text(encoding="utf-8")))
 
 
 if __name__ == "__main__":
