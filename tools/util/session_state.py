@@ -8,6 +8,7 @@ rechecks.
 
 from __future__ import annotations
 
+import filecmp
 import shutil
 from typing import TYPE_CHECKING
 
@@ -21,12 +22,17 @@ if TYPE_CHECKING:
 # the sessions it had to stop at the session timeout.
 TRANSCRIPTS_DIR_SUFFIX = "-avocado-transcripts"
 
+# Suffix of the file beside the canonical file into which a merge writes the merged source before
+# it atomically replaces the canonical file with it. The file exists only while a merge commits.
+MERGE_STAGING_SUFFIX = ".avocado-merge"
+
 # What is left out when the source directory is copied for a session or a ground-truth run, and
 # what is not counted as an edit by the agent: the harness's and the tool's own logs, state and
 # caches (including the compile-failure log the tool writes into whatever directory the agent runs
-# it from), kept session transcripts, CBMC intermediates, mutant sources, and the folder metadata
-# macOS writes whenever a directory is opened in Finder. Each copy then starts clean and, in
-# particular, gets its own `<stem>-verification-attempts.jsonl`.
+# it from), kept session transcripts, CBMC intermediates, mutant sources, the staging file of a
+# merge that is committing, and the folder metadata macOS writes whenever a directory is opened in
+# Finder. Each copy then starts clean and, in particular, gets its own
+# `<stem>-verification-attempts.jsonl`.
 SNAPSHOT_IGNORE = shutil.ignore_patterns(
     ".git",
     ".DS_Store",
@@ -37,6 +43,7 @@ SNAPSHOT_IGNORE = shutil.ignore_patterns(
     "*__mutant_*.c",
     "*__clause_drop_*.c",
     "mutation_compile_failures.log",
+    f"*{MERGE_STAGING_SUFFIX}",
 )
 
 
@@ -88,30 +95,64 @@ def rechecked_on_change(verified: Iterable[str], unverified: Mapping[str, str]) 
 
 
 def find_stray_files(session_file: Path, canonical_dir: Path) -> list[str]:
-    """Return the files other than the source file that were added or changed in a session copy.
+    """Return the files other than the source file that were added, changed or deleted in a copy.
 
     Headers, other sources and new files in the private copy are never merged. A file is compared
     to the canonical directory's copy of it, which no session ever writes; logs, caches, CBMC
-    intermediates and mutant sources (`SNAPSHOT_IGNORE`) do not count.
+    intermediates and mutant sources (`SNAPSHOT_IGNORE`), and everything inside a directory that
+    `SNAPSHOT_IGNORE` leaves out, do not count. A file of the canonical directory that the copy
+    no longer has was deleted from the copy, so the session might have verified code that ground
+    truth will not see.
 
     Args:
         session_file (Path): The session's private copy of the source file.
         canonical_dir (Path): The canonical source directory.
 
     Returns:
-        list[str]: Relative paths tagged `added:` or `modified:`, in sorted order.
+        list[str]: Relative paths tagged `added:`, `modified:` or `deleted:`, in sorted order.
     """
     stray: list[str] = []
     session_dir = session_file.parent
-    for path in sorted(session_dir.rglob("*")):
-        if not path.is_file() or path == session_file:
+    session_relative = session_file.relative_to(session_dir)
+    for relative in sorted(_snapshot_files(session_dir)):
+        if relative == session_relative:
             continue
-        if SNAPSHOT_IGNORE(str(path.parent), [path.name]):
-            continue
-        relative = path.relative_to(session_dir)
+        path = session_dir / relative
         original = canonical_dir / relative
         if not original.is_file():
             stray.append(f"added:{relative}")
-        elif original.read_bytes() != path.read_bytes():
+        elif not filecmp.cmp(original, path, shallow=False):
             stray.append(f"modified:{relative}")
-    return stray
+    stray.extend(
+        f"deleted:{relative}"
+        for relative in sorted(_snapshot_files(canonical_dir))
+        if relative != session_relative and not (session_dir / relative).is_file()
+    )
+    return sorted(stray, key=lambda entry: entry.partition(":")[2])
+
+
+def _snapshot_files(directory: Path) -> list[Path]:
+    """Return the files under `directory` that a snapshot copies, relative to `directory`.
+
+    A file is left out when `SNAPSHOT_IGNORE` leaves out its name or the name of any directory
+    between `directory` and it, as `shutil.copytree` does when it copies a snapshot.
+
+    Args:
+        directory (Path): A source directory or a session's copy of one.
+
+    Returns:
+        list[Path]: Relative paths, in no particular order.
+    """
+    files: list[Path] = []
+    for path in directory.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(directory)
+        parent = directory
+        for part in relative.parts:
+            if SNAPSHOT_IGNORE(str(parent), [part]):
+                break
+            parent = parent / part
+        else:
+            files.append(relative)
+    return files
