@@ -9,7 +9,8 @@ easier functions. This script restricts both arms to the intersection of the fun
 in both score files, so the remaining comparison is like-for-like.
 
 A function that carries a contract which does not verify contributes a kill score of 0, exactly as
-in `compare_arms.py`; a function with no mutants is excluded from both arms.
+in `compare_arms.py`; a function with no mutants, or with no decided mutant (each timed out or
+failed to compile or instrument), is excluded from both arms.
 
 Usage:
     % eval/experiments/compare_on_intersection.py <BASELINE_JSONL> <TREATMENT_JSONL>
@@ -57,7 +58,7 @@ def main() -> None:
                 (treatment_score, treatment_killed, treatment_decided),
             )
         )
-    print(f"  scorable in both (has mutants in both): {len(scored)}")
+    print(f"  scorable in both (has a decided mutant in both): {len(scored)}")
     if not scored:
         return
     baseline_scores = [b[0] for _, b, _ in scored]
@@ -87,7 +88,7 @@ def _records(path: Path) -> dict[str, tuple[float | None, int, int]]:
     """Return each function's (kill score, killed, decided) from a score file.
 
     A function whose contract did not verify scores 0 over 0 decided mutants; a function with no
-    mutants has `None` as its score so callers can exclude it.
+    mutants, or with no decided mutant, has `None` as its score so callers can exclude it.
 
     Args:
         path (Path): The JSONL file to read.
@@ -106,7 +107,10 @@ def _records(path: Path) -> dict[str, tuple[float | None, int, int]]:
         if record.get("was_mutation_tested"):
             killed = int(record["killed"])
             decided = killed + int(record["survived"])
-            out[name] = (float(record["kill_score"]), killed, decided)
+            if record.get("kill_score") is None or not decided:
+                out[name] = (None, 0, 0)
+            else:
+                out[name] = (float(record["kill_score"]), killed, decided)
         elif "did not verify" in record.get("metadata", ""):
             out[name] = (0.0, 0, 0)
         else:
