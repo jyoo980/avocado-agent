@@ -21,14 +21,10 @@ from loguru import logger
 
 from eval.mutants.mutate_function import Mutant, get_mutants
 from eval.mutants.util import (
-    MUTANT_INFIX,
-    absolute_path_without_resolving,
     check_expected_cbmc_return_code,
     get_bounded_mutant_file_name,
     get_mutant_paths,
     is_valid_mutation_candidate,
-    write_mutant_sources,
-    write_new_file,
 )
 from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import _DEFAULT_RUN_CBMC_TIMEOUT_SEC, CbmcStep, run_cbmc
@@ -277,10 +273,8 @@ def generate_mutants_and_compute_score(
     """Return the mutation testing result for `target_function` in `file_path`.
 
     Mutant `.c` files are written next to the original source, so that a quoted `#include` finds
-    the same header for a mutant as for the original source. Their names are unique to this run
-    (see `write_mutant_sources()`). An existing file is never overwritten or removed; if a mutant
-    path already exists, `FileExistsError` is raised. Mutants are removed unless keep_artifacts is
-    set to `True`.
+    the same header for a mutant as for the original source. Mutants are removed unless
+    keep_artifacts is set to `True`.
 
     Args:
         file_path (str): Path to the C source defining the function.
@@ -328,9 +322,7 @@ def generate_mutants_and_compute_score(
         zip(
             get_mutant_paths(
                 source_path,
-                partial(
-                    _get_path_for_mutated_source, source_path.parent, source_path, target_function
-                ),
+                partial(_get_path_for_mutated_source, source_path, target_function),
                 len(mutants),
             ),
             mutants,
@@ -358,13 +350,7 @@ def generate_mutants_and_compute_score(
     # mutant order so survivor diffs render deterministically downstream. stderr (not stdout) is
     # used so progress never contaminates the kill-score result.
     mutant_vresults: list[MutantVerificationResult | None] = [None] * total
-    # Only files created by this call are deleted, so a pre-existing sibling file is never
-    # clobbered: `write_new_file` raises rather than overwrite it.
-    created_paths: list[Path] = []
     try:
-        for path, mutant in paths_to_mutants.items():
-            write_new_file(path, mutant.mutant_source)
-            created_paths.append(path)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_index = {
                 executor.submit(
@@ -385,7 +371,7 @@ def generate_mutants_and_compute_score(
                 executor.shutdown(cancel_futures=True)
     finally:
         if not keep_artifacts:
-            for path in created_paths:
+            for path in paths_to_mutants:
                 path.unlink(missing_ok=True)
 
     # Every future either stored a result above or raised (which would have propagated), so no
@@ -480,7 +466,7 @@ def _aggregate_mutation_score(
 
 
 def _verify_mutant(
-    path_to_mutant: Path,
+    path_to_write_mutant: Path,
     mutant: Mutant,
     include_dirs: list[str] | None,
     call_graph: CallGraph,
@@ -497,7 +483,7 @@ def _verify_mutant(
     and the shared `call_graph` is read-only.
 
     Args:
-        path_to_mutant (Path): The path to the already-written mutated source.
+        path_to_write_mutant (Path): The path to which the mutated source is written.
         mutant (Mutant): The mutant.
         include_dirs (list[str] | None): Include directories, which are forwarded to `run_cbmc()`.
         call_graph (CallGraph): The original function's call graph, reused verbatim for this
@@ -510,9 +496,10 @@ def _verify_mutant(
             `compile_failed` is True iff goto-cc rejected the source, in which case CBMC was
             not run.
     """
+    path_to_write_mutant.write_text(mutant.mutant_source, encoding="utf-8")
     cbmc_result = run_cbmc(
         function_to_verify=mutant.function,
-        file_containing_function_to_verify=str(path_to_mutant),
+        file_containing_function_to_verify=str(path_to_write_mutant),
         include_dirs=include_dirs,
         call_graph=call_graph,
         timeout_sec=timeout_sec,
@@ -520,7 +507,7 @@ def _verify_mutant(
     if cbmc_result.timed_out:
         return MutantVerificationResult(
             mutant,
-            path_to_mutant=str(path_to_mutant),
+            path_to_mutant=str(path_to_write_mutant),
             killed=False,
             returncode=cbmc_result.returncode,
             timed_out=True,
@@ -532,7 +519,7 @@ def _verify_mutant(
             check_expected_cbmc_return_code(cbmc_result.returncode)
             return MutantVerificationResult(
                 mutant,
-                path_to_mutant=str(path_to_mutant),
+                path_to_mutant=str(path_to_write_mutant),
                 killed=cbmc_result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
                 returncode=cbmc_result.returncode,
             )
@@ -540,13 +527,13 @@ def _verify_mutant(
         if compile_failed:
             logger.warning(
                 f"mutant failed to compile: {mutant.function} at "
-                f"{path_to_mutant}:{mutant.line}:{mutant.column} "
+                f"{path_to_write_mutant}:{mutant.line}:{mutant.column} "
                 f"({mutant.operator_class}: {mutant.original_operator} -> "
                 f"{mutant.replacement_operator}); goto-cc returncode={cbmc_result.returncode}"
             )
         return MutantVerificationResult(
             mutant,
-            path_to_mutant=str(path_to_mutant),
+            path_to_mutant=str(path_to_write_mutant),
             killed=False,
             returncode=cbmc_result.returncode,
             compile_failed=compile_failed,
@@ -556,7 +543,7 @@ def _verify_mutant(
     check_expected_cbmc_return_code(cbmc_result.returncode)
     return MutantVerificationResult(
         mutant,
-        path_to_mutant=str(path_to_mutant),
+        path_to_mutant=str(path_to_write_mutant),
         killed=cbmc_result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
         returncode=cbmc_result.returncode,
     )
