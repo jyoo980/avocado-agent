@@ -67,7 +67,8 @@ def main() -> None:
     # agent: docs/running-cbmc-directly.md states them, because its commands must be runnable.
     parser = argparse.ArgumentParser(
         description=(
-            "Run CBMC on a function, with bounded loop unwinding and bounded depth (--depth). "
+            "Run CBMC on a function, with bounded loop unwinding and with the given --depth "
+            f"(default {DEFAULT_CBMC_DEPTH}, which is also the lowest value accepted). "
             "Exits with status 0 on verification success. A run that passes is checked for "
             "vacuity with one more CBMC run; a vacuous pass is reported as VACUOUS and exits "
             "with a non-zero status. "
@@ -86,8 +87,9 @@ def main() -> None:
         type=int,
         default=DEFAULT_CBMC_DEPTH,
         help=(
-            f"The '--depth' value passed to CBMC; defaults to {DEFAULT_CBMC_DEPTH}, which is also "
-            "the lowest value accepted. The vacuity check and every mutant run use the same value."
+            f"The '--depth' value passed to CBMC; defaults to {DEFAULT_CBMC_DEPTH}. It may be "
+            f"raised, never lowered below {DEFAULT_CBMC_DEPTH}. The vacuity check and every "
+            "mutant run use the same value."
         ),
     )
     parser.add_argument(
@@ -104,7 +106,8 @@ def main() -> None:
         # The floor is the harness's bound; a shallower analysis would be less sound than the
         # one every other function is held to. Rejected before anything is run or logged.
         parser.error(
-            f"--depth {args.depth} is below the lowest value accepted, {DEFAULT_CBMC_DEPTH}"
+            f"--depth {args.depth} is below the floor of {DEFAULT_CBMC_DEPTH}; the depth may be "
+            f"raised, never lowered below {DEFAULT_CBMC_DEPTH}"
         )
 
     # Tee mutation-testing compile failures into a file. Leaves loguru's default stderr sink
