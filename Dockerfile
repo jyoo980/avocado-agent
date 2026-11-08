@@ -51,7 +51,6 @@ ENV PATH="/app/.venv/bin:$PATH"
 VOLUME ["/app"]
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
-COPY docker/claude.settings.json /app/.claude/settings.json
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Quality-of-life
