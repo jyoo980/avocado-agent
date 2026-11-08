@@ -16,8 +16,7 @@ reasons.  First, if a program is incorrect, CBMC will issue a warning.  Second,
 CBMC cannot verify all correct C code.  Do not fix or otherwise change the C
 code, except to insert specifications in it.
 
-This `AGENTS.md` file and directory `docs/` contain basic information about using CBMC.
-The main documentation can be found at https://diffblue.github.io/cbmc/index.html,
+The main documentation for CBMC can be found at https://diffblue.github.io/cbmc/index.html,
 which includes a [User Guide](https://diffblue.github.io/cbmc/user_guide.html)
 and [The CPROVER Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 You can also search the web for more CBMC documentation.
@@ -40,6 +39,9 @@ You can also search the web for more CBMC documentation.
   CBMC would check an empty contract, which nothing can violate.
 
   You should always prefer `avocado-run-cbmc` over invoking CBMC directly.
+
+  If you *need* to run CBMC directly (i.e., when `avocado-run-cbmc` fails unexpectedly), there is a
+  [document](./docs/running-cbmc-directly.md) you can read for the command.
 
   **This tool can run for a long time, and that is expected — not a hang.**
 
