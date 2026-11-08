@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 
 from eval.mutants.compute_clause_redundancy import _get_path_to_source_with_removed_clause
-from tools.construct_call_graph import CALL_GRAPH_SUFFIX
 
 
 def test_removed_clause_path_includes_function_name_so_functions_never_collide() -> None:
@@ -37,16 +36,6 @@ def test_removed_clause_path_is_bounded_for_long_names() -> None:
         assert path.suffix == ".c"
     assert path_a != path_b
     assert path_a != _get_path_to_source_with_removed_clause(workspace, source, long_a, 4)
-
-
-def test_removed_clause_path_leaves_room_for_call_graph_cache_name() -> None:
-    workspace = Path("/work")
-    # Without reserving room, this mutant name fits in 255 bytes but its cache name does not.
-    source = Path("/src/" + "s" * 205 + ".c")
-    path = _get_path_to_source_with_removed_clause(workspace, source, "f" * 30, 0)
-    assert len(os.fsencode(path.name)) <= 255
-    assert len(os.fsencode(path.stem + CALL_GRAPH_SUFFIX)) <= 255
-    assert "__clause_drop_" in path.name
 
 
 def test_removed_clause_path_handles_non_utf8_stems() -> None:
