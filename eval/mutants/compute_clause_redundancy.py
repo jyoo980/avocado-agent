@@ -46,12 +46,13 @@ from eval.mutants.util import (
     absolute_path_without_resolving,
     check_expected_cbmc_return_code,
     get_bounded_mutant_file_name,
+    get_mutant_paths,
     is_valid_mutation_candidate,
     write_mutant_sources,
 )
 from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import RunCbmcResult, run_cbmc
-from tools.util import get_in_file_callers_of, get_include_dirs
+from tools.util import get_in_file_callers_of, get_include_dirs, resolve_parent
 from tools.util.callgraph import CallGraph
 
 # Matches the GNU `timeout(1)` convention used elsewhere; surfaces in `returncode` for
@@ -329,9 +330,10 @@ def compute_clause_redundancy_score(
     Returns:
         ClauseRedundancyScore: Aggregated counts plus the per-clause results.
     """
-    # Neither follows symlinks nor collapses `..`, so `source_path` names the same file as
-    # `file_path` and the mutants of a symlinked file see the same quoted `#include`s.
-    source_path = absolute_path_without_resolving(file_path)
+    # A symlinked file is not followed, so the removed-clause sources are written next to the
+    # symlink and see the same quoted `#include`s as the file itself, which `run_cbmc` also
+    # compiles through the symlink.
+    source_path = resolve_parent(file_path)
 
     # Check that the original function verifies in the first place.
     result = _run_cbmc_with_include_dirs_in_scratch_dir(function_name, file_path, include_dirs)
@@ -386,7 +388,8 @@ def compute_clause_redundancy_score(
         in_isolation_results,
         caller_side_results,
         in_file_callers_to_baseline_verification_results,
-        file=str(source_path),
+        # Results are reported under the fully resolved path, as are mutation-testing results.
+        file=str(source_path.resolve()),
         function=function_name,
     )
 
@@ -475,16 +478,14 @@ def _run_cbmc_in_scratch_dir(function_to_verify: str, file_path: Path | str) -> 
 
     Args:
         function_to_verify (str): The function to verify.
-        file_path (Path | str): The C source file containing the function. It is made absolute
-            without following symlinks, since CBMC runs in a different working directory and the
-            source's quoted `#include`s are looked up relative to the source's directory.
+        file_path (Path | str): The C source file containing the function.
 
     Returns:
         RunCbmcResult: The result of running CBMC.
     """
     return run_cbmc(
         function_to_verify=function_to_verify,
-        file_containing_function_to_verify=str(absolute_path_without_resolving(str(file_path))),
+        file_containing_function_to_verify=str(file_path),
     )
 
 

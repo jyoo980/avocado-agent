@@ -4,7 +4,7 @@ import hashlib
 import os
 import re
 import secrets
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from tools.run_cbmc import RunCbmcResult
@@ -122,6 +122,37 @@ def get_bounded_mutant_file_name(
         truncated_stem += char
         used += char_bytes
     return truncated_stem + tail
+
+
+def get_mutant_paths(
+    path_to_original_source: Path, get_path_for_index: Callable[[int], Path], count: int
+) -> list[Path]:
+    """Return `count` distinct paths to which to write the mutants of the given source file.
+
+    The paths are those of `get_path_for_index` for increasing indices, except that an index is
+    skipped if its path already exists and is the original source file or (if the original source
+    file is a symlink) its target. Writing a mutant there would overwrite the source, and cleanup
+    would delete it. For example, if `foo.c` is a symlink to `foo__mutant_bar_0.c` in the same
+    directory, then the index 0 is skipped for the mutants of `bar`.
+
+    Args:
+        path_to_original_source (Path): A path to an original source file.
+        get_path_for_index (Callable[[int], Path]): Maps a mutant index, such as 0, to the path for
+            the mutant with that index, such as `/src/foo__mutant_bar_0.c`.
+        count (int): The number of paths to return.
+
+    Returns:
+        list[Path]: The paths to which to write the mutants, in index order.
+    """
+    paths: list[Path] = []
+    index = 0
+    while len(paths) < count:
+        path = get_path_for_index(index)
+        index += 1
+        if path.exists() and path.samefile(path_to_original_source):
+            continue
+        paths.append(path)
+    return paths
 
 
 def is_valid_mutation_candidate(run_cbmc_result: RunCbmcResult) -> bool:
