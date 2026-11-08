@@ -10,10 +10,10 @@ from subprocess import CompletedProcess
 from eval.mutants.mutate_function import Mutant
 from tools import run_cbmc as run_cbmc_module
 from tools.run_cbmc import (
-    _MAX_RESPONSE_CHARS,
     CbmcStep,
     PipelineVariant,
     RunCbmcResult,
+    _MAX_RESPONSE_CHARS,
     _drop_missing_body_warnings,
     _format_failure_response,
     _get_cbmc_check_command,
