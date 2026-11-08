@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from eval.mutants.compute_clause_redundancy import compute_clause_redundancy_score
 from eval.mutants.generate_mutants_and_compute_score import generate_mutants_and_compute_score
 from eval.mutants.util import get_files_with_extension
-from tools.util import get_functions_with_cprover_annotations
+from tools.util import get_functions_with_cprover_annotations, resolve_parent
 from tools.util.mutation import MutationScore
 
 
@@ -176,13 +176,17 @@ def _autodetect_include_dirs(source_file: str) -> list[str]:
     `<project>/src/`. When that layout holds, returning the sibling `include/` directory lets
     CBMC resolve `#include "foo.h"` without the caller having to configure paths by hand.
 
+    `<source>` is the directory that contains `source_file`, without following `source_file`
+    itself if it is a symlink, so a symlinked source file uses the `include/` directory of the
+    project that contains the symlink.
+
     Args:
         source_file (str): Path to a `.c` file.
 
     Returns:
         list[str]: `[<resolved include dir>]` when present, else `[]`.
     """
-    candidate = Path(source_file).resolve().parent.parent / "include"
+    candidate = resolve_parent(source_file).parent.parent / "include"
     return [str(candidate)] if candidate.is_dir() else []
 
 
