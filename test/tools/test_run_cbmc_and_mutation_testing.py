@@ -86,7 +86,7 @@ def test_the_depth_of_a_run_reaches_the_record_the_probe_and_the_mutants(
     assert result.is_function_verified and result.depth == 300, result.response
     # The vacuity probe was made at the same depth as the run it checked.
     assert probe_depths == [300]
-    _log_verification_attempt(str(src), "swap", result)
+    _log_verification_attempt(str(src), "swap", result, attempt_id="attempt0")
     records = (tmp_path / "quicksort-verification-attempts.jsonl").read_text().splitlines()
     record = json.loads(records[-1])
     assert record["depth"] == 300
