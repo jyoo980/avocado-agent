@@ -1776,6 +1776,7 @@ def _read_jsonl_records(log_path: Path) -> list[dict[str, object]]:
 
     Returns:
         list[dict[str, object]]: The records, each parsed from one line of the log.
+
     """
     try:
         lines = log_path.read_bytes().splitlines()

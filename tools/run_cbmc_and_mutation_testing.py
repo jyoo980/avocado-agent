@@ -32,8 +32,7 @@ from tools.util.mutation import (
     generate_mutants_and_compute_score,
     get_mutation_testing_results_for_client,
 )
-from tools.util.vacuity import check_vacuity, describe_vacuous_result
-from tools.util.vacuity_check_result import Vacuity
+from tools.util.vacuity import Vacuity, check_vacuity, describe_vacuous_result
 
 # Per-subprocess CBMC timeout for each *mutant* when this tool reports mutation feedback to the
 # agent. The function itself is still verified under the full `tools.run_cbmc` timeout, and the
@@ -238,8 +237,6 @@ def _log_verification_attempt(
     is the depth it then holds the function to; the agent may change the contract, or the
     depth, between attempts, so neither the last attempt nor the last passing one is that on
     its own.
-
-    The record also carries the `--depth` of the attempt.
 
     Args:
         file_under_verification (str): The file that contains the function under verification.
