@@ -68,6 +68,7 @@ class MutantVerificationResult:
             mutant is undecided: CBMC never ran, so the spec's strength is not evidenced.
         instrumentation_failed (bool): True iff any of the goto-instrument steps failed.
             These failures are not necessarily indicative of errors with the specification.
+            Like `timed_out`, an instrumentation-failed mutant is undecided: CBMC never ran.
     """
 
     mutant: Mutant
@@ -92,10 +93,11 @@ class MutationScore(MutationTestingResult):
     """Mutation-testing related statistics for one function.
 
     `num_survived` and `kill_score` are reported over *decided* mutants only —
-    timed-out and compile-failed mutants are excluded from both the survivor count
-    and the kill-rate denominator. `num_timed_out` and `num_compile_failed` are
-    reported separately so consumers can see how much of the mutant space was
-    undecidable and how much produced invalid C in the first place.
+    timed-out, compile-failed, and instrumentation-failed mutants are excluded from both the
+    survivor count and the kill-rate denominator. `num_timed_out`, `num_compile_failed`, and
+    `num_instrumentation_failed` are reported separately so consumers can see how much of the
+    mutant space was undecidable, how much produced invalid C in the first place, and how much
+    goto-instrument could not process.
 
     Note: A function can have 0 mutants (e.g., a function that solely calls another function
     will not have any mutants generated).
@@ -137,7 +139,7 @@ class MutationScore(MutationTestingResult):
             "survived": self.num_survived,
             "timed_out": self.num_timed_out,
             "compile_failed": self.num_compile_failed,
-            "instrumentation_failed": self.num_compile_failed,
+            "instrumentation_failed": self.num_instrumentation_failed,
             "kill_score": f"{self.kill_score:.4f}",
         }
 
@@ -204,14 +206,15 @@ def get_mutation_testing_results_for_client(mutation_testing_result: MutationTes
                 f"Mutation kill score: {kill_score:.4f} "
                 f"(killed {num_killed}/{num_mutants}; "
                 f"{num_survived} survived, "
-                # The values for the number of timed-out/compile/instrumentation-failed mutants are
-                # also reported since the denominator for the kill score includes them.
+                # The kill score's denominator excludes timed-out, compile-failed, and
+                # instrumentation-failed mutants, so report their counts to show how many mutants
+                # went undecided.
                 f"{num_timed_out} timed out, "
                 f"{num_compile_failed} compile-failed, "
                 f"{num_instrumentation_failed} instrumentation-failed)"
             )
-            # A surviving mutant is one that compiled and was decided (not timed out),
-            # yet the spec did not kill.
+            # A surviving mutant is one that was decided (it compiled, was instrumented, and did
+            # not time out), yet the spec did not kill.
             survivors = [
                 vresult
                 for vresult in results
