@@ -34,7 +34,6 @@ from collections import Counter
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import partial
-from itertools import starmap
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -326,21 +325,27 @@ def compute_clause_redundancy_score(
         )
     )
 
-    in_file_callers = _get_in_file_callers(source_path, function_name)
+    # Removing a contract clause does not change the call graph, so every removed-clause source
+    # shares the original's call graph. Passing it to `run_cbmc` avoids re-parsing each mutant and
+    # keeps `run_cbmc` from writing a `*-callgraph.json` file next to each mutant.
+    call_graph = _get_call_graph(source_path)
+    in_file_callers = _get_in_file_callers(call_graph, function_name)
     in_file_callers_to_baseline_verification_results = (
         _get_baseline_verification_results_for_callers(in_file_callers, source_path)
     )
 
     try:
-        in_isolation_results = list(
-            starmap(_verify_removed_clause_source, paths_to_removed_clauses.items())
-        )
+        in_isolation_results = [
+            _verify_removed_clause_source(mutant_path, mutant, call_graph)
+            for mutant_path, mutant in paths_to_removed_clauses.items()
+        ]
         caller_side_results = [
             _verify_callers(
                 mutant_path,
                 mutant,
                 in_file_callers,
                 in_file_callers_to_baseline_verification_results,
+                call_graph,
             )
             for mutant_path, mutant in paths_to_removed_clauses.items()
         ]
@@ -433,7 +438,9 @@ def _aggregate_clause_redundancy_score(
     )
 
 
-def _run_cbmc_in_scratch_dir(function_to_verify: str, file_path: Path | str) -> RunCbmcResult:
+def _run_cbmc_in_scratch_dir(
+    function_to_verify: str, file_path: Path | str, call_graph: CallGraph | None = None
+) -> RunCbmcResult:
     """Run CBMC on a function in a private scratch working directory.
 
     The CBMC pipeline writes intermediate `<function>.goto` / `checking-<function>-contracts.goto`
@@ -444,6 +451,8 @@ def _run_cbmc_in_scratch_dir(function_to_verify: str, file_path: Path | str) -> 
     Args:
         function_to_verify (str): The function to verify.
         file_path (Path | str): The C source file containing the function.
+        call_graph (CallGraph | None): A pre-built call graph for `file_path`, or None to have
+            `run_cbmc` construct (and cache next to `file_path`) one.
 
     Returns:
         RunCbmcResult: The result of running CBMC.
@@ -451,21 +460,33 @@ def _run_cbmc_in_scratch_dir(function_to_verify: str, file_path: Path | str) -> 
     return run_cbmc(
         function_to_verify=function_to_verify,
         file_containing_function_to_verify=str(file_path),
+        call_graph=call_graph,
     )
 
 
-def _get_in_file_callers(source_path: Path, function_name: str) -> list[str]:
+def _get_call_graph(source_path: Path) -> CallGraph:
+    """Return the call graph for a source file.
+
+    Args:
+        source_path (Path): The source file.
+
+    Returns:
+        CallGraph: The call graph for the source file.
+    """
+    call_graph_path = construct_call_graph(str(source_path))
+    return CallGraph(json.loads(Path(call_graph_path).read_text(encoding="utf-8")))
+
+
+def _get_in_file_callers(call_graph: CallGraph, function_name: str) -> list[str]:
     """Return functions in a file that directly call the function with the given name.
 
     Args:
-        source_path (Path): The file in which to look up callers.
+        call_graph (CallGraph): The call graph of the file in which to look up callers.
         function_name (str): The function for which to look up callers.
 
     Returns:
         list[str]: The names of the in-file callers of the given name.
     """
-    call_graph_path = construct_call_graph(str(source_path))
-    call_graph = CallGraph(json.loads(Path(call_graph_path).read_text(encoding="utf-8")))
     if function_name not in call_graph:
         msg = f"'{function_name}' was missing from the call graph"
         raise ValueError(msg)
@@ -507,7 +528,7 @@ def _get_path_to_source_with_removed_clause(
 
 
 def _verify_removed_clause_source(
-    path_to_write_removed_clause_mutant: Path, clause_mutant: ClauseMutant
+    path_to_write_removed_clause_mutant: Path, clause_mutant: ClauseMutant, call_graph: CallGraph
 ) -> ClauseRemovalVerificationResult:
     """Return the result of verifying a removed-clause mutant in isolation.
 
@@ -515,13 +536,16 @@ def _verify_removed_clause_source(
         path_to_write_removed_clause_mutant (Path): The path to which to write the source with the
             mutated specification.
         clause_mutant (ClauseMutant): The clause mutant.
+        call_graph (CallGraph): The call graph of the original source, which the mutant shares.
 
     Returns:
         ClauseRemovalVerificationResult: The result of verifying a removed-clause mutant.
     """
     path_to_write_removed_clause_mutant.write_text(clause_mutant.mutant_source, encoding="utf-8")
 
-    result = _run_cbmc_in_scratch_dir(clause_mutant.function, path_to_write_removed_clause_mutant)
+    result = _run_cbmc_in_scratch_dir(
+        clause_mutant.function, path_to_write_removed_clause_mutant, call_graph
+    )
     if result.timed_out:
         return ClauseRemovalVerificationResult(
             clause_mutant,
@@ -566,6 +590,7 @@ def _verify_callers(
     clause_mutant: ClauseMutant,
     in_file_callers: list[str],
     caller_baselines: dict[str, bool],
+    call_graph: CallGraph,
 ) -> ClauseCallerSideResult:
     """Return the caller-side verdict for one mutant.
 
@@ -581,6 +606,7 @@ def _verify_callers(
         in_file_callers (list[str]): The names of the in-file callers.
         caller_baselines (dict[str, bool]): Map from caller name to baseline verification result
             on the unmutated source.
+        call_graph (CallGraph): The call graph of the original source, which the mutant shares.
 
     Returns:
         ClauseCallerSideResult: The caller-side verification result for a mutated specification.
@@ -600,7 +626,7 @@ def _verify_callers(
 
     caller_vresults: list[CallerVerificationResult] = []
     for caller in verifying_callers:
-        result = _run_cbmc_in_scratch_dir(caller, mutant_path)
+        result = _run_cbmc_in_scratch_dir(caller, mutant_path, call_graph)
         if result.timed_out:
             caller_vresults.append(
                 CallerVerificationResult(
