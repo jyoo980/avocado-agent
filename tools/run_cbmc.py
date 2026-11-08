@@ -233,6 +233,23 @@ class _SubprocessResult:
         return self.returncode == 0 and not self.timed_out
 
 
+@dataclass(frozen=True)
+class _PipelineCommand:
+    """One command of the CBMC pipeline, which runs as one subprocess.
+
+    Attributes:
+        step (CbmcStep): The logical pipeline step that the command belongs to.
+        command (str): The shell command, such as
+            `goto-cc -o swap.goto quicksort.c --function swap`.
+        drop_missing_body_warnings (bool): True if the command's missing-body warnings are left
+            out of the output that `_run_pipeline` returns.
+    """
+
+    step: CbmcStep
+    command: str
+    drop_missing_body_warnings: bool = False
+
+
 def main() -> None:
     """Run CBMC on a function."""
     parser = argparse.ArgumentParser(
@@ -367,10 +384,8 @@ def _run_cbmc_in_directory(
     include_dirs = [str(Path(d).resolve()) for d in include_dirs or []]
 
     if call_graph is None:
-        path_to_call_graph_json = construct_call_graph(file_containing_function_to_verify)
-        call_graph = CallGraph(
-            json.loads(Path(path_to_call_graph_json).read_text(encoding="utf-8"))
-        )
+        path_to_raw_call_graph = construct_call_graph(file_containing_function_to_verify)
+        call_graph = CallGraph(json.loads(Path(path_to_raw_call_graph).read_text(encoding="utf-8")))
     callees = get_in_file_callees_for(function_to_verify, call_graph)
     # Building the stub index is inexpensive for now (there is a single file).
     # Re-visit this if/when we have more stub files to parse.
@@ -469,7 +484,7 @@ def _get_pipeline(
     prevent_macro_expansion: bool,
     stub_paths: list[str] | None,
     include_dirs: list[str] | None,
-) -> list[tuple[CbmcStep, str, bool]]:
+) -> list[_PipelineCommand]:
     """Return the pipeline of CBMC commands to execute to verify a function.
 
     Args:
@@ -477,16 +492,15 @@ def _get_pipeline(
         callees (list[str]): Callees of the function, used by `--replace-call-with-contract`.
         file_containing_function (str): The C source file containing the function.
         prevent_macro_expansion (bool): When True, disable macros CBMC can't model and inject the
-            bundled C-library models before contract enforcement.
+            bundled C-library models after contract enforcement.
         stub_paths (list[str] | None): Extra `.c` stub files compiled in alongside the source.
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
 
     Returns:
-        list[tuple[CbmcStep, str]]: The sequence of CBMC commands used to verify a function.
+        list[_PipelineCommand]: The sequence of CBMC commands used to verify a function.
     """
-    # Each entry is (step, command, whether to drop the command's missing-body warnings).
-    commands: list[tuple[CbmcStep, str, bool]] = [
-        (
+    commands = [
+        _PipelineCommand(
             CbmcStep.GOTO_CC,
             _get_goto_cc_command(
                 function_to_verify,
@@ -495,21 +509,19 @@ def _get_pipeline(
                 include_dirs=include_dirs,
                 prevent_macro_expansion=prevent_macro_expansion,
             ),
-            False,
         ),
-        (
+        _PipelineCommand(
             CbmcStep.GOTO_INSTRUMENT,
             _get_goto_instrument_unwind_command(_compiled_goto_file(function_to_verify)),
-            False,
         ),
         # When the library is added later, contract enforcement warns about every library
         # function, such as `malloc`. Those warnings would lead the agent to write stubs that hide
         # CBMC's models. `cbmc` itself reports each callee that still lacks a body ("no body for
         # callee").
-        (
+        _PipelineCommand(
             CbmcStep.GOTO_INSTRUMENT,
             _get_goto_instrument_contract_command(function_to_verify, callees),
-            prevent_macro_expansion,
+            drop_missing_body_warnings=prevent_macro_expansion,
         ),
     ]
     if prevent_macro_expansion:
@@ -521,26 +533,23 @@ def _get_pipeline(
         checking_goto = _checking_goto_file(function_to_verify)
         commands.extend(
             [
-                (
+                _PipelineCommand(
                     CbmcStep.GOTO_INSTRUMENT,
                     _get_goto_instrument_add_library_command(checking_goto),
-                    False,
                 ),
-                (
-                    CbmcStep.GOTO_INSTRUMENT,
-                    _get_goto_instrument_unwind_command(checking_goto),
-                    False,
+                _PipelineCommand(
+                    CbmcStep.GOTO_INSTRUMENT, _get_goto_instrument_unwind_command(checking_goto)
                 ),
             ]
         )
-    commands.append((CbmcStep.CBMC, _get_cbmc_check_command(function_to_verify), False))
+    commands.append(_PipelineCommand(CbmcStep.CBMC, _get_cbmc_check_command(function_to_verify)))
     return commands
 
 
 def _run_pipeline(
     function_to_verify: str,
     callees: list[str],
-    cbmc_commands: list[tuple[CbmcStep, str, bool]],
+    cbmc_commands: list[_PipelineCommand],
     subprocess_results: list[dict],
     cwd: str | None,
     timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
@@ -554,8 +563,7 @@ def _run_pipeline(
         function_to_verify (str): The name of the function to verify.
         callees (list[str]): The callees whose calls the pipeline's contract command replaces by
             their contracts.
-        cbmc_commands (list[tuple[CbmcStep, str, bool]]): The CBMC commands used to verify the
-            function, as `_get_pipeline` returns them.
+        cbmc_commands (list[_PipelineCommand]): The CBMC commands used to verify the function.
         subprocess_results (list[dict]): Subprocess result(s) collected from running each CBMC
             command, mutated in-place by `_run_command`.
         cwd (str | None): The working directory for every subprocess. The pipeline's intermediate
@@ -569,25 +577,27 @@ def _run_pipeline(
     per_command_stdout = []
     per_command_stderr = []
 
-    def record_output(
-        subprocess_result: _SubprocessResult, drop_missing_body_warnings: bool
-    ) -> None:
+    def record_output(subprocess_result: _SubprocessResult, cbmc_command: _PipelineCommand) -> None:
         """Append `subprocess_result`'s output, possibly without missing-body warnings."""
         stdout = subprocess_result.stdout
         stderr = subprocess_result.stderr
-        if drop_missing_body_warnings:
+        if cbmc_command.drop_missing_body_warnings:
             stdout = _drop_missing_body_warnings(stdout)
             stderr = _drop_missing_body_warnings(stderr)
         per_command_stdout.append(stdout)
         per_command_stderr.append(stderr)
 
     contract_command = _get_goto_instrument_contract_command(function_to_verify, callees)
-    for cbmc_step, command, drop_missing_body_warnings in cbmc_commands:
+    for cbmc_command in cbmc_commands:
         subprocess_result = _run_command(
-            cbmc_step, command, subprocess_results, cwd=cwd, timeout_sec=timeout_sec
+            cbmc_command.step,
+            cbmc_command.command,
+            subprocess_results,
+            cwd=cwd,
+            timeout_sec=timeout_sec,
         )
-        record_output(subprocess_result, drop_missing_body_warnings)
-        if command == contract_command:
+        record_output(subprocess_result, cbmc_command)
+        if cbmc_command.command == contract_command:
             # A callee that the preprocessor removed is not in the compiled program, so its
             # contract cannot be substituted, and need not be: the function does not call it in
             # this build. Leave such callees out and run the step again.
@@ -600,13 +610,13 @@ def _run_pipeline(
                     break
                 compiled_callees.remove(missing.group(1))
                 subprocess_result = _run_command(
-                    cbmc_step,
+                    cbmc_command.step,
                     _get_goto_instrument_contract_command(function_to_verify, compiled_callees),
                     subprocess_results,
                     cwd=cwd,
                     timeout_sec=timeout_sec,
                 )
-                record_output(subprocess_result, drop_missing_body_warnings)
+                record_output(subprocess_result, cbmc_command)
 
         if not subprocess_result.succeeded:
             combined_stdout = "".join(per_command_stdout)
