@@ -17,7 +17,7 @@ CBMC cannot verify all correct C code.  Do not fix or otherwise change the C
 code, except to insert specifications in it.
 
 This `AGENTS.md` file and directory `docs/` contain basic information about using CBMC.
-The main documentation can be found at <https://diffblue.github.io/cbmc/index.html>,
+The main documentation can be found at https://diffblue.github.io/cbmc/index.html,
 which includes a [User Guide](https://diffblue.github.io/cbmc/user_guide.html)
 and [The CPROVER Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 You can also search the web for more CBMC documentation.
@@ -261,7 +261,7 @@ Rules checked by `avocado-validate edits` (fast; run it before each `avocado-run
 
 Rule checked by `avocado-validate reverify` (slow; run it as the workflow says):
 
-1. **No broken verified specs.** Every function that verified before your session must still
+9. **No broken verified specs.** Every function that verified before your session must still
    verify with your edits, and not vacuously. If one does not, your edits to other functions'
    contracts are discarded and only the rest of your work is merged.
    *Why:* a merge must never turn a verified function into an unverified one. Changing a
@@ -269,7 +269,7 @@ Rule checked by `avocado-validate reverify` (slow; run it as the workflow says):
 
 Rule checked by `avocado-validate conflicts` (fast; run it before each `avocado-run-cbmc` run):
 
-1. **No merge conflict.** Your edit to another function's contract is left out of the merge if
+10. **No merge conflict.** Your edit to another function's contract is left out of the merge if
     another live session is working on that function, or if someone else has changed that
     contract since your copy was taken; the rest of your work still merges, so your function
     must verify without that edit. You may change the contract of a function that other sessions
