@@ -193,14 +193,17 @@ def test_run_command_timeout_kills_the_shells_children(tmp_path: Path) -> None:
     assert result.timed_out
     background_pid = int(pid_file.read_text().strip())
     # A killed orphan may linger briefly as an unreaped zombie ("Z"); that counts as dead.
+    # If the zombie is reaped between opening and reading the file, the read raises
+    # ProcessLookupError.
     try:
         stat = Path(f"/proc/{background_pid}/stat").read_text()
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return
     state = stat.rsplit(")", 1)[1].split()[0]
     if state != "Z":
         os.kill(background_pid, 9)
         raise AssertionError(f"child of the timed-out shell is still running (state {state})")
+
 
 def test_run_command_honours_a_custom_timeout() -> None:
     result = _run_command(CbmcStep.CBMC, "sleep 5", [], timeout_sec=1)
