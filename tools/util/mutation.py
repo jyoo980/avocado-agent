@@ -363,9 +363,7 @@ def generate_mutants_and_compute_score(
         try:
             for done, future in enumerate(as_completed(future_to_index), start=1):
                 mutant_vresults[future_to_index[future]] = future.result()
-                _print_mutation_progress(
-                    done, total, [r for r in mutant_vresults if r is not None]
-                )
+                _print_mutation_progress(done, total, [r for r in mutant_vresults if r is not None])
         finally:
             # If we exit early (an unexpected error or a Ctrl-C), stop launching this function's
             # mutants that haven't started yet rather than kicking off more 10-minute CBMC runs,

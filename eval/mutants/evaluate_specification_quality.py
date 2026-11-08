@@ -44,7 +44,7 @@ from concurrent.futures import (
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
 from loguru import logger
 
@@ -274,7 +274,8 @@ def _write_file_records(
     for index, function in enumerate(submitted.functions):
         if submitted.mutation_futures:
             future = submitted.mutation_futures[index]
-            wait([future, failure], return_when=FIRST_COMPLETED)
+            awaited: list[Future[Any]] = [future, failure]
+            wait(awaited, return_when=FIRST_COMPLETED)
             if failure.done():
                 failure.result()
             out.write(json.dumps(future.result()) + "\n")
