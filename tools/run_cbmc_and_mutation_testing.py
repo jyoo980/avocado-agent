@@ -256,7 +256,8 @@ def _log_mutation_feedback(
     if isinstance(result, MutationScore):
         record |= {
             "was_mutation_tested": True,
-            "kill_score": result.kill_score,
+            # None if no mutant was decided, as in the mutation summary.
+            "kill_score": result.summary()["kill_score"],
             "total": result.num_mutants,
             **{outcome.value: result.outcome_counts[outcome] for outcome in MutantOutcome},
         }
