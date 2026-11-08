@@ -17,7 +17,7 @@ CBMC cannot verify all correct C code.  Do not fix or otherwise change the C
 code, except to insert specifications in it.
 
 This `AGENTS.md` file and directory `docs/` contain basic information about using CBMC.
-The main documentation can be found at https://diffblue.github.io/cbmc/index.html,
+The main documentation can be found at <https://diffblue.github.io/cbmc/index.html>,
 which includes a [User Guide](https://diffblue.github.io/cbmc/user_guide.html)
 and [The CPROVER Manual](https://diffblue.github.io/cbmc/cprover-manual/index.html).
 You can also search the web for more CBMC documentation.
@@ -214,14 +214,16 @@ your copy of the source file into the shared file that every later session build
 specifications only: the program must behave exactly as it did before you touched it, and a
 function that already verified must stay verified. A copy that breaks any of rules 1-8 is not
 merged at all: none of the session's work is kept. The harness checks every rule below when it
-merges your copy. Before then, the `avocado-validate` command named above each group of rules
-checks those rules, so that none of them comes as a surprise.
+merges your copy. Before then, `avocado-validate` checks the same rules, so that none of them
+comes as a surprise:
+
+- `avocado-validate edits` checks rules 1-8, and `avocado-validate conflicts` checks rule 10.
+  Both are fast; run them before each `avocado-run-cbmc` run.
+- `avocado-validate reverify` checks rule 9. It is slow; run it as the workflow says.
 
 In these rules, *original* means everything that was in the file when your session started,
 including helpers that earlier sessions added. *New* means what you add in this
 session.
-
-Rules checked by `avocado-validate edits` (fast; run it before each `avocado-run-cbmc` run):
 
 1. **Original code is unchanged.** Every original top-level item -- function signatures and
    bodies, macros, typedefs, structs, globals, includes, declarations -- must still be present, in
@@ -258,17 +260,11 @@ Rules checked by `avocado-validate edits` (fast; run it before each `avocado-run
    *Why:* a false precondition makes any contract verify while proving nothing. Subtler vacuous
    contracts are caught by `avocado-run-cbmc`, which reports them as `VACUOUS` (see
    [Vacuous proofs](#vacuous-proofs)).
-
-Rule checked by `avocado-validate reverify` (slow; run it as the workflow says):
-
 9. **No broken verified specs.** Every function that verified before your session must still
    verify with your edits, and not vacuously. If one does not, your edits to other functions'
    contracts are discarded and only the rest of your work is merged.
    *Why:* a merge must never turn a verified function into an unverified one. Changing a
    function's contract changes what each of its callers was verified against.
-
-Rule checked by `avocado-validate conflicts` (fast; run it before each `avocado-run-cbmc` run):
-
 10. **No merge conflict.** Your edit to another function's contract is left out of the merge if
     another live session is working on that function, or if someone else has changed that
     contract since your copy was taken; the rest of your work still merges, so your function
