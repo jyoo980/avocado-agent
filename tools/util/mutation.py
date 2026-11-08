@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import json
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass, field
+from functools import cache
 from pathlib import Path
 
 from loguru import logger
@@ -49,10 +51,13 @@ _VERIFICATION_FAILURE_RETURNCODE = 10
 # output is capped, dropping trailing survivors behind an explicit omission marker.
 _MAX_MUTATION_SECTION_CHARS = 50_000
 
-# Mutants are verified concurrently by worker threads (see `_mutation_worker_count`). Each worker
-# drives a full CBMC pipeline; the shared subprocess cap in `tools.run_cbmc`
+# Mutants are verified concurrently by the worker threads of one process-wide pool (see
+# `_shared_mutant_executor`), which is shared by every function whose mutants are being verified,
+# so scoring several functions at once never creates more mutant threads than the subprocess cap.
+# Each worker drives a full CBMC pipeline; the shared subprocess cap in `tools.run_cbmc`
 # (`AVOCADO_MAX_CONCURRENT_CBMC`) bounds how many of those pipelines can actually be running at
 # once, so lower that if mutation runs exhaust RAM.
+_mutant_executor_lock = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -348,24 +353,27 @@ def generate_mutants_and_compute_score(
     # used so progress never contaminates the kill-score result.
     mutant_vresults: list[MutantVerificationResult | None] = [None] * total
     try:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_index = {
-                executor.submit(
-                    _verify_mutant, path, mutant, include_dirs, call_graph, mutant_timeout_sec
-                ): index
-                for index, (path, mutant) in enumerate(paths_to_mutants.items())
-            }
-            try:
-                for done, future in enumerate(as_completed(future_to_index), start=1):
-                    mutant_vresults[future_to_index[future]] = future.result()
-                    _print_mutation_progress(
-                        done, total, [r for r in mutant_vresults if r is not None]
-                    )
-            finally:
-                # If we exit early (an unexpected error or a Ctrl-C), stop launching mutants that
-                # haven't started yet rather than kicking off more 10-minute CBMC runs; the `with`
-                # block still waits for any in-flight runs to drain.
-                executor.shutdown(cancel_futures=True)
+        executor = _shared_mutant_executor()
+        future_to_index = {
+            executor.submit(
+                _verify_mutant, path, mutant, include_dirs, call_graph, mutant_timeout_sec
+            ): index
+            for index, (path, mutant) in enumerate(paths_to_mutants.items())
+        }
+        try:
+            for done, future in enumerate(as_completed(future_to_index), start=1):
+                mutant_vresults[future_to_index[future]] = future.result()
+                _print_mutation_progress(
+                    done, total, [r for r in mutant_vresults if r is not None]
+                )
+        finally:
+            # If we exit early (an unexpected error or a Ctrl-C), stop launching this function's
+            # mutants that haven't started yet rather than kicking off more 10-minute CBMC runs,
+            # then wait for its in-flight runs to drain before their mutant files are removed.
+            # The pool is shared with other functions, so it is not shut down.
+            for future in future_to_index:
+                future.cancel()
+            wait(future_to_index)
     finally:
         if not keep_artifacts:
             for path in paths_to_mutants:
@@ -377,13 +385,40 @@ def generate_mutants_and_compute_score(
     return _aggregate_mutation_score(results, str(source_path), target_function)
 
 
-def _mutation_worker_count(num_mutants: int) -> int:
-    """Return how many mutants to verify concurrently.
+def _shared_mutant_executor() -> ThreadPoolExecutor:
+    """Return the process-wide pool in which mutants are verified, creating it on first use.
 
-    Bounded by the shared subprocess cap in `tools.run_cbmc` (more workers than that could
-    only wait for a subprocess slot, while each holds its own mutant file) and by the number of
-    mutants, and never below 1 (a `ThreadPoolExecutor` requires a positive worker count, even when
-    there are no mutants to run).
+    The pool has `max_concurrent_subprocesses()` workers: more could only wait for a subprocess
+    slot, while each holds its own mutant file. Sharing one pool bounds the total number of mutant
+    threads even when several functions are mutation tested at once.
+
+    Returns:
+        ThreadPoolExecutor: The shared pool. It is never shut down; its idle workers are joined at
+            interpreter exit.
+    """
+    # `cache` alone could run its function twice in concurrent first calls, creating two pools.
+    with _mutant_executor_lock:
+        return _create_mutant_executor()
+
+
+@cache
+def _create_mutant_executor() -> ThreadPoolExecutor:
+    """Create the pool returned by `_shared_mutant_executor`, which serializes calls to this.
+
+    Returns:
+        ThreadPoolExecutor: A pool with `max_concurrent_subprocesses()` workers.
+    """
+    return ThreadPoolExecutor(
+        max_workers=max_concurrent_subprocesses(), thread_name_prefix="mutant"
+    )
+
+
+def _mutation_worker_count(num_mutants: int) -> int:
+    """Return how many of a function's mutants can be verified concurrently.
+
+    Bounded by the size of the shared mutant pool, which is the subprocess cap in `tools.run_cbmc`
+    (more workers than that could only wait for a subprocess slot, while each holds its own mutant
+    file), and by the number of mutants, and never below 1.
 
     Args:
         num_mutants (int): The total number of mutants to verify.
