@@ -46,7 +46,7 @@ from eval.mutants.util import (
     remove_files,
 )
 from tools.construct_call_graph import load_call_graph
-from tools.run_cbmc import RunCbmcResult, run_cbmc
+from tools.run_cbmc import RunCbmcResult, get_run_log_path, run_cbmc
 from tools.util import CallGraph, get_in_file_callers_of
 
 # Matches the GNU `timeout(1)` convention used elsewhere; surfaces in `returncode` for
@@ -296,7 +296,7 @@ def compute_clause_redundancy_score(
     Mutant `.c` files are written next to the original source by default to simplify compilation
     and instrumentation with CBMC. Mutants are removed unless keep_artifacts is set to `True`.
     The CBMC run log (`<stem>-cbmc-runs.jsonl`) of each mutant is written only when keep_artifacts
-    is `True`.
+    is `True`; otherwise any existing run log for a mutant is removed along with the mutant.
 
     If the unmutated function does not verify, return None.
 
@@ -357,7 +357,14 @@ def compute_clause_redundancy_score(
         ]
     finally:
         if not keep_artifacts:
-            remove_files(paths_to_removed_clauses)
+            # Also remove any run log left by an earlier run that kept its artifacts; this run
+            # wrote none, so a log at that path would be stale and would outlive its mutant.
+            remove_files(
+                [
+                    *paths_to_removed_clauses,
+                    *(get_run_log_path(path) for path in paths_to_removed_clauses),
+                ]
+            )
 
     return _aggregate_clause_redundancy_score(
         in_isolation_results,

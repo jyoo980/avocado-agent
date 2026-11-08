@@ -26,7 +26,12 @@ from eval.mutants.util import (
     remove_files,
 )
 from tools.construct_call_graph import load_call_graph
-from tools.run_cbmc import _DEFAULT_RUN_CBMC_TIMEOUT_SEC, CbmcStep, run_cbmc
+from tools.run_cbmc import (
+    _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
+    CbmcStep,
+    get_run_log_path,
+    run_cbmc,
+)
 
 if TYPE_CHECKING:
     from tools.util.callgraph import CallGraph
@@ -277,7 +282,7 @@ def generate_mutants_and_compute_score(
     Mutant `.c` files are written next to the original source by default to simplify compilation
     and instrumentation with CBMC. Mutants are removed unless keep_artifacts is set to `True`.
     The CBMC run log (`<stem>-cbmc-runs.jsonl`) of each mutant is written only when keep_artifacts
-    is `True`.
+    is `True`; otherwise any existing run log for a mutant is removed along with the mutant.
 
     Args:
         file_path (str): Path to the C source defining the function.
@@ -377,7 +382,11 @@ def generate_mutants_and_compute_score(
                 executor.shutdown(cancel_futures=True)
     finally:
         if not keep_artifacts:
-            remove_files(paths_to_mutants)
+            # Also remove any run log left by an earlier run that kept its artifacts; this run
+            # wrote none, so a log at that path would be stale and would outlive its mutant.
+            remove_files(
+                [*paths_to_mutants, *(get_run_log_path(path) for path in paths_to_mutants)]
+            )
 
     # Every future either stored a result above or raised (which would have propagated), so no
     # None slots remain; the filter just refines the type for the aggregator.
