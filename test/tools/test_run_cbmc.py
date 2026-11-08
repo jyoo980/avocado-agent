@@ -364,21 +364,16 @@ def test_run_command_timeout_kills_the_shells_children(tmp_path: Path) -> None:
     result = _run_command(CbmcStep.CBMC, command, [], timeout_sec=1)
     assert result.timed_out
     background_pid = int(pid_file.read_text().strip())
-    # `_run_command` waits for the shell, not for the orphan, so a killed orphan can briefly
-    # still be running (state "R") while it exits. An unreaped zombie ("Z") counts as dead.
-    deadline = time.monotonic() + 5
-    while True:
-        try:
-            stat = Path(f"/proc/{background_pid}/stat").read_text()
-        except FileNotFoundError:
-            return
-        state = stat.rsplit(")", 1)[1].split()[0]
-        if state == "Z":
-            return
-        if time.monotonic() > deadline:
-            os.kill(background_pid, 9)
-            raise AssertionError(f"child of the timed-out shell is still running (state {state})")
-        time.sleep(0.01)
+    # `_run_command` returns only after every killed process has exited. A killed orphan can
+    # linger as an unreaped zombie ("Z"); that counts as exited.
+    try:
+        stat = Path(f"/proc/{background_pid}/stat").read_text()
+    except FileNotFoundError:
+        return
+    state = stat.rsplit(")", 1)[1].split()[0]
+    if state != "Z":
+        os.kill(background_pid, 9)
+        raise AssertionError(f"child of the timed-out shell is still running (state {state})")
 
 def test_run_command_honours_a_custom_timeout() -> None:
     result = _run_command(CbmcStep.CBMC, "sleep 5", [], timeout_sec=1)
