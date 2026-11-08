@@ -239,6 +239,8 @@ def _log_verification_attempt(
     depth, between attempts, so neither the last attempt nor the last passing one is that on
     its own.
 
+    The record also carries the `--depth` of the attempt.
+
     Args:
         file_under_verification (str): The file that contains the function under verification.
         function (str): The function whose verification was attempted.
