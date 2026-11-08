@@ -127,7 +127,7 @@ from inside the subject copy.
 
 - `-n`: is the number of runs.
 - `-j N`: (`--jobs`) is the number of concurrent runs that each run in their own container with its
-  own `--memory`/`--cpus` cap (default 1, i.e. sequential; budget memory as `-j` × `--memory`).
+  own `--memory`/`--cpus` cap.
 - `--tag` (optional): names the batch (default: harness directory name, subject name
   and profile name).
 

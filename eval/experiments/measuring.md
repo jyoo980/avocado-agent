@@ -18,7 +18,11 @@ Two kinds of script in this directory start agent runs:
   `compare_arms.py` and `rescore_run.sh` read, so only they support the paired
   comparison that decides a treatment. Their runs are not isolated: runs from
   one checkout, or from worktrees of one repository, share Claude Code's
-  auto-memory (see the last item under [Traps](#traps)).
+  auto-memory (see the last item under [Traps](#traps)). The agent gets the
+  Claude Code settings of the checkout that `AVOCADO_REPO_ROOT` names: Claude
+  Code reads its `.claude/settings.json`, and if it has the agent's settings
+  file `docker/claude.settings.json`, `avocado-verify` passes that file with
+  `--settings`.
 
 ### Scoring `run.sh` output
 
