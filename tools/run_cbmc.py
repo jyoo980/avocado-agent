@@ -237,8 +237,8 @@ def main() -> None:
     """Run CBMC on a function."""
     parser = argparse.ArgumentParser(
         description=(
-            f"Run CBMC on a function with loop unwinding = {_CBMC_UNWIND} and the given "
-            f"--depth (default {DEFAULT_CBMC_DEPTH}). Exits with status 0 on verification success. "
+            "Run CBMC on a function with loop unwinding = _CBMC_UNWIND, depth = _CBMC_DEPTH. "
+            "Exits with status 0 on verification success. "
             "On success, additionally runs mutation testing, which re-runs the full CBMC "
             "pipeline once per mutant (sequentially, up to a 10-minute timeout each); this can "
             "take several minutes, during which the tool is mostly silent. This is expected, "
@@ -248,12 +248,6 @@ def main() -> None:
     )
     parser.add_argument("--function", required=True, help="Name of the function to verify.")
     parser.add_argument("--file", required=True, help="Path to the C file defining the function.")
-    parser.add_argument(
-        "--depth",
-        type=int,
-        default=DEFAULT_CBMC_DEPTH,
-        help=f"The '--depth' value passed to CBMC. Defaults to {DEFAULT_CBMC_DEPTH}.",
-    )
     parser.add_argument(
         "-I",
         "--include-dir",
@@ -278,7 +272,6 @@ def main() -> None:
         function_to_verify=args.function,
         file_containing_function_to_verify=args.file,
         include_dirs=args.include_dirs,
-        depth=args.depth,
     )
     print(result.response)
     sys.exit(result.returncode)
