@@ -7,13 +7,15 @@ Usage:
 
 The CBMC pipeline itself, and the check that a passing function has a contract, live in
 `tools.run_cbmc`; this module adds the command-line interface, the check that the run is not
-vacuous (`tools.util.vacuity`), the verification-attempt log, and mutation testing (only when the
-function verifies, and not vacuously).
+vacuous (`tools.util.vacuity`), the verification-attempt log, mutation testing (only when the
+function verifies, and not vacuously), and the mutation-feedback log.
 """
 
 import argparse
 import json
 import sys
+import time
+import uuid
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +25,9 @@ from loguru import logger
 from tools.run_cbmc import RunCbmcResult
 from tools.run_cbmc import verify_function as verify_function_and_contract
 from tools.util.mutation import (
+    MutantOutcome,
+    MutationScore,
+    MutationTestingResult,
     generate_mutants_and_compute_score,
     get_mutation_testing_results_for_client,
 )
@@ -45,6 +50,13 @@ _EXIT_NOT_VERIFIED = 1
 # attempt (i.e., per `avocado-run-cbmc` invocation). Public because `avocado-verify` reads this
 # log to count how many times the agent attempted to verify a function. Keep the two in sync.
 VERIFICATION_ATTEMPTS_LOG_SUFFIX = "-verification-attempts.jsonl"
+
+# Suffix of the sibling JSONL log in which `main` records the mutation-testing result of each
+# passing verification attempt. It is a separate log because the attempt itself is recorded before
+# mutation testing starts: a passing attempt with no record here is one whose mutation testing
+# never finished (the session was stopped while it ran). Public because `avocado-verify` copies
+# the log out of the session's private copy.
+MUTATION_FEEDBACK_LOG_SUFFIX = "-mutation-feedback.jsonl"
 
 
 def main() -> None:
@@ -89,18 +101,29 @@ def main() -> None:
     )
 
     result = verify_function(args.function, args.file, include_dirs=args.include_dirs)
+    # Identifies this invocation in both logs, so a mutation-feedback record can be joined to its
+    # attempt even when overlapping invocations finish mutation testing out of order.
+    attempt_id = uuid.uuid4().hex
     # Record this top-level verification attempt (pass or fail) so `avocado-verify` can gate its
     # per-function loop on the agent having actually attempted verification often enough.
-    _log_verification_attempt(args.file, args.function, result)
+    _log_verification_attempt(args.file, args.function, result, attempt_id=attempt_id)
     if result.is_function_verified:
         # The function verified, so run mutation testing to assess the strength of its
         # specification and report the kill score (plus any surviving mutants) to the client.
+        started = time.monotonic()
         score = generate_mutants_and_compute_score(
             file_path=args.file,
             target_function=args.function,
             include_dirs=args.include_dirs,
             is_function_already_verified=result.is_function_verified,
             mutant_timeout_sec=_AGENT_MUTANT_TIMEOUT_SEC,
+        )
+        _log_mutation_feedback(
+            args.file,
+            args.function,
+            score,
+            attempt_id=attempt_id,
+            seconds=time.monotonic() - started,
         )
         print(result.response)
         print(get_mutation_testing_results_for_client(score))
@@ -167,24 +190,26 @@ def verify_function(
 
 
 def _log_verification_attempt(
-    file_under_verification: str, function: str, result: RunCbmcResult
+    file_under_verification: str, function: str, result: RunCbmcResult, *, attempt_id: str
 ) -> None:
     """Append a record of one top-level verification attempt to a sibling JSONL log.
 
     Exactly one record is written per `avocado-run-cbmc` invocation, regardless of whether
     verification succeeded, so a consumer can count how many times verification was *attempted*
     for a given function (not how many times it passed). `avocado-verify` reads this log to gate
-    its per-function loop. Failures to write are swallowed so attempt logging never breaks a run.
+    its per-function loop. Records appear in the order of the attempts. Failures to write are
+    swallowed so attempt logging never breaks a run.
 
     Args:
         file_under_verification (str): The file that contains the function under verification.
         function (str): The function whose verification was attempted.
         result (RunCbmcResult): The outcome of the verification attempt.
+        attempt_id (str): Unique identifier of this attempt, also written to its mutation-feedback
+            record, if any.
     """
-    source_path = Path(file_under_verification)
-    log_path = source_path.with_name(f"{source_path.stem}{VERIFICATION_ATTEMPTS_LOG_SUFFIX}")
     record = {
         "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "attempt_id": attempt_id,
         "function": function,
         "file": file_under_verification,
         "verified": result.is_function_verified,
@@ -193,11 +218,69 @@ def _log_verification_attempt(
         if result.vacuity_check_result is None
         else str(result.vacuity_check_result.vacuity),
     }
+    _append_to_sibling_log(file_under_verification, VERIFICATION_ATTEMPTS_LOG_SUFFIX, record)
+
+
+def _log_mutation_feedback(
+    file_under_verification: str,
+    function: str,
+    result: MutationTestingResult,
+    *,
+    attempt_id: str,
+    seconds: float,
+) -> None:
+    """Append the mutation-testing result of one passing verification attempt to a sibling log.
+
+    One record is written per passing `avocado-run-cbmc` invocation whose mutation testing ran to
+    completion, so the kill scores of successive attempts on a function can be compared. Records
+    are written in the order in which mutation testing finishes, which differs from the order of
+    the attempts when invocations overlap. `attempt_id` joins each record to the attempt's record
+    in the verification-attempts log, which is in attempt order; a passing attempt with no record
+    here is one whose mutation testing never finished. Failures to write are swallowed, as for the
+    attempts log.
+
+    Args:
+        file_under_verification (str): The file that contains the function under verification.
+        function (str): The function that verified.
+        result (MutationTestingResult): The outcome of mutation testing.
+        attempt_id (str): Unique identifier of the attempt, as in its verification-attempts record.
+        seconds (float): How long mutation testing took.
+    """
+    record: dict[str, str | int | float | bool | None] = {
+        "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "attempt_id": attempt_id,
+        "function": function,
+        "file": file_under_verification,
+        "seconds": round(seconds, 1),
+    }
+    if isinstance(result, MutationScore):
+        record |= {
+            "was_mutation_tested": True,
+            "kill_score": result.kill_score,
+            "total": result.num_mutants,
+            **{outcome.value: result.outcome_counts[outcome] for outcome in MutantOutcome},
+        }
+    else:
+        # No mutants could be generated, so there is no score to raise.
+        record |= {"was_mutation_tested": False, "kill_score": None, "reason": str(result)}
+    _append_to_sibling_log(file_under_verification, MUTATION_FEEDBACK_LOG_SUFFIX, record)
+
+
+def _append_to_sibling_log(file_under_verification: str, suffix: str, record: dict) -> None:
+    """Append one record to the JSONL log `<stem><suffix>` beside the file under verification.
+
+    Args:
+        file_under_verification (str): The file that contains the function under verification.
+        suffix (str): The log's suffix, appended to the file's stem.
+        record (dict): The JSON-serializable record to write.
+    """
+    source_path = Path(file_under_verification)
+    log_path = source_path.with_name(f"{source_path.stem}{suffix}")
     try:
         with log_path.open("a") as f:
             f.write(json.dumps(record) + "\n")
     except OSError:
-        # Best-effort: never let attempt logging stop the tool from making progress.
+        # Best-effort: never let logging stop the tool from making progress.
         pass
 
 
