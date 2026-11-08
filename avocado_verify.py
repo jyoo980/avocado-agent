@@ -751,7 +751,11 @@ def _fork_session(function: str, canonical_file: Path) -> _Session:
         fork_base = canonical_file.read_bytes()
         root = Path(tempfile.mkdtemp(prefix=_SESSION_DIR_PREFIX))
         directory = root / canonical_file.parent.name
-        shutil.copytree(canonical_file.parent, directory, ignore=_SNAPSHOT_IGNORE)
+        try:
+            shutil.copytree(canonical_file.parent, directory, ignore=_SNAPSHOT_IGNORE)
+        except BaseException:
+            shutil.rmtree(root, ignore_errors=True)
+            raise
     return _Session(
         function=function,
         directory=root,
@@ -1126,6 +1130,8 @@ def _merge_and_verify(
     re-verified so that its verdict is not left stale, but is not protected: if the kept edits
     make it fail, its new verdict is recorded.
 
+    The scratch directory is removed when this returns, however it returns.
+
     Args:
         session (_Session): The finished session.
         canonical_file (Path): Absolute path to the canonical source file.
@@ -1141,6 +1147,45 @@ def _merge_and_verify(
             ground-truth verdict for the function on the canonical file as it is when this
             returns, and the verdicts of the functions re-verified because of carried edits
             (empty when there were none).
+    """
+    scratch_root = Path(tempfile.mkdtemp(prefix=_GROUND_TRUTH_DIR_PREFIX))
+    try:
+        return _merge_and_verify_in(
+            scratch_root,
+            session,
+            canonical_file,
+            include_dirs=include_dirs,
+            call_graph=call_graph,
+            state=state,
+            stray_files=stray_files,
+        )
+    finally:
+        shutil.rmtree(scratch_root, ignore_errors=True)
+
+
+def _merge_and_verify_in(
+    scratch_root: Path,
+    session: _Session,
+    canonical_file: Path,
+    *,
+    include_dirs: list[str],
+    call_graph: CallGraph | None,
+    state: _MergeState | None,
+    stray_files: list[str] | None,
+) -> tuple[MergeReport, RunCbmcResult, dict[str, RunCbmcResult]]:
+    """Do the work of `_merge_and_verify` in `scratch_root`, which the caller creates and removes.
+
+    Args:
+        scratch_root (Path): An empty temporary directory for the ground-truth copy.
+        session (_Session): The finished session.
+        canonical_file (Path): Absolute path to the canonical source file.
+        include_dirs (list[str]): Include directories forwarded to `goto-cc` and CBMC.
+        call_graph (CallGraph | None): Call graph of the file; None finds no callers.
+        state (_MergeState | None): The run's shared merge state; None carries nothing.
+        stray_files (list[str] | None): Files the session added or changed.
+
+    Returns:
+        tuple[MergeReport, RunCbmcResult, dict[str, RunCbmcResult]]: As for `_merge_and_verify`.
     """
     function = session.function
     absolute_include_dirs = [str(Path(directory).resolve()) for directory in include_dirs]
@@ -1179,7 +1224,6 @@ def _merge_and_verify(
                     if state is None
                     else frozen_functions_for(function, state.active),
                 )
-        scratch_root = Path(tempfile.mkdtemp(prefix=_GROUND_TRUTH_DIR_PREFIX))
         scratch_dir = scratch_root / canonical_file.parent.name
         shutil.copytree(canonical_file.parent, scratch_dir, ignore=_SNAPSHOT_IGNORE)
         scratch_file = scratch_dir / canonical_file.name
@@ -1251,7 +1295,8 @@ def _merge_and_verify(
             else:
                 staged = canonical_file.with_name(f"{canonical_file.name}.avocado-merge")
                 staged.write_bytes(merged)
-                Path(staged).replace(canonical_file)
+                _copy_ownership_and_mode(canonical_file, staged)
+                staged.replace(canonical_file)
     if report.merged:
         if report.transplanted:
             logger.info(f"{function}: transplanted {', '.join(report.transplanted)}")
@@ -1272,35 +1317,61 @@ def _merge_and_verify(
         if call_graph is not None and function in call_graph
         else []
     )
-    try:
-        cbmc = verify_function(function, str(scratch_file), include_dirs=include_dirs)
-        with _CANONICAL_LOCK:
-            current = canonical_file.read_bytes()
-            moved = [
-                name
-                for name in functions_with_changed_contracts(verified_on, current)
-                if name in callees and name != function
-            ]
-            if moved:
-                logger.info(
-                    f"{function}: {', '.join(moved)} changed in the canonical file while "
-                    f"{function} was being verified; verifying it again on the file as it is now"
-                )
-                scratch_file.write_bytes(current)
-                cbmc = verify_function(function, str(scratch_file), include_dirs=include_dirs)
-                report = replace(
-                    report,
-                    changed_since_fork=[
-                        *report.changed_since_fork,
-                        *(name for name in moved if name not in report.changed_since_fork),
-                    ],
-                )
-            if state is not None:
-                state.active.discard(function)
-                state.record(function, cbmc)
-    finally:
-        shutil.rmtree(scratch_root, ignore_errors=True)
+    cbmc = verify_function(function, str(scratch_file), include_dirs=include_dirs)
+    with _CANONICAL_LOCK:
+        current = canonical_file.read_bytes()
+        moved = [
+            name
+            for name in functions_with_changed_contracts(verified_on, current)
+            if name in callees and name != function
+        ]
+        if moved:
+            logger.info(
+                f"{function}: {', '.join(moved)} changed in the canonical file while "
+                f"{function} was being verified; verifying it again on the file as it is now"
+            )
+            scratch_file.write_bytes(current)
+            cbmc = verify_function(function, str(scratch_file), include_dirs=include_dirs)
+            report = replace(
+                report,
+                changed_since_fork=[
+                    *report.changed_since_fork,
+                    *(name for name in moved if name not in report.changed_since_fork),
+                ],
+            )
+        if state is not None:
+            state.active.discard(function)
+            state.record(function, cbmc)
     return report, cbmc, reverified
+
+
+def _copy_ownership_and_mode(source: Path, target: Path) -> None:
+    """Give `target` the owner, group and permission bits of `source`, as far as allowed.
+
+    A merge replaces the canonical file with a new file. Without this, the replacement would be
+    owned by whoever runs the harness (root, in a container, against a file the host owns) and
+    would get the default permissions, so the host could lose the right to write its own file.
+    A process that is not permitted to change the owner leaves it as it is; the permission bits
+    are copied after the owner, because changing the owner can clear some of them.
+
+    Args:
+        source (Path): The file whose owner and permissions to copy.
+        target (Path): The file to give them to.
+    """
+    try:
+        status = source.stat()
+    except OSError as error:
+        logger.warning(f"cannot read the owner and permissions of {source}: {error}")
+        return
+    if status.st_uid != os.getuid() or status.st_gid != os.getgid():
+        try:
+            os.chown(target, status.st_uid, status.st_gid)
+        except OSError as error:
+            logger.warning(f"cannot give {target} the owner of {source}: {error}")
+    try:
+        shutil.copymode(source, target)
+    except OSError as error:
+        logger.warning(f"cannot give {target} the permissions of {source}: {error}")
 
 
 def _report_stray_edits(session: _Session, canonical_dir: Path) -> list[str]:
