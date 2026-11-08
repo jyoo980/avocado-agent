@@ -13,8 +13,8 @@ scored concurrently, each in its own thread; the mutants of every function addit
 their own thread pool. Machine-wide load is bounded by the subprocess cap in `tools.run_cbmc`
 (`AVOCADO_MAX_CONCURRENT_CBMC`), which is also the default for `--jobs`. Records are still emitted
 in the sequential order (files sorted, functions sorted within each file), so the JSONL output is
-identical to a `--jobs 1` run. Clause-redundancy scoring is not parallelized: its scratch files are
-named per source file, not per function, so it runs sequentially after mutation scoring.
+identical to a `--jobs 1` run. Clause-redundancy scoring is not parallelized: it runs
+sequentially after mutation scoring.
 
 Usage:
     % ./eval/mutants/evaluate_specification_quality.py <PATH_TO_C_FILE_OR_DIR> \
@@ -223,8 +223,7 @@ def _write_file_records(
     """Write one file's metric records to `out`: mutation summaries, then redundancy scores.
 
     Mutation records are written in function order as their futures complete; redundancy scoring
-    (when enabled) then runs sequentially in the calling thread, because its scratch files are
-    named per source file rather than per function.
+    (when enabled) then runs sequentially in the calling thread.
 
     Arguments:
         submitted (_SubmittedFile): The file's pending mutation work.
