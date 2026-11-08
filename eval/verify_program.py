@@ -20,11 +20,13 @@ from pathlib import Path
 from loguru import logger
 
 from tools.util import (
+    AUTO_INCLUDE_HELP,
     build_stub_index,
     get_call_graph,
     get_functions_with_cprover_annotations,
+    get_include_dirs,
     get_unstubbed_external_callees_for,
-    resolve_parent,
+    resolve_include_dirs,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -92,11 +94,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--auto-include",
-        help=(
-            "For each .c file, look for a sibling include/ directory at "
-            "<source>/../include and pass it to CBMC as an include path. "
-            "Fits projects whose headers live next to their src/ tree."
-        ),
+        help=AUTO_INCLUDE_HELP,
         action="store_true",
     )
     parser.add_argument(
@@ -113,10 +111,13 @@ def main() -> int:
         logger.info(f"No .c files found at: {args.path}")
         return 1
 
+    try:
+        include_dirs_from_cli = resolve_include_dirs(args.include_dirs or [])
+    except ValueError as e:
+        parser.error(str(e))
     files_to_program_verification_results: dict[str, ProgramVerificationResult] = {}
     for file in files:
         logger.info(f"=== {file} ===")
-        include_dirs_from_cli = args.include_dirs or []
         results_for_file = _verify_program(
             str(file),
             skip_unannotated_functions=args.skip_unannotated_functions,
@@ -165,9 +166,9 @@ def _verify_program(
         skip_unannotated_functions (bool): True iff unannotated functions should be skipped
             (i.e., CBMC should not be run on them).
         include_dirs (list[str]): List of directories containing files (e.g., headers) that should
-            be included in verification.
-        auto_include (bool): True iff `<file>/../include` should be added to CBMC's include
-            search path when that directory exists. Defaults to False.
+            be included in verification, as returned by `resolve_include_dirs()`.
+        auto_include (bool): True iff the auto-detected include directory (see
+            `get_include_dirs()`) should be added to CBMC's include search path. Defaults to False.
 
     Returns:
         ProgramVerificationResult: The verification result for the given file.
@@ -181,11 +182,7 @@ def _verify_program(
         names_of_functions_to_verify = get_functions_with_cprover_annotations(file)
         skipped_functions = set(call_graph.keys()).difference(names_of_functions_to_verify)
 
-    include_dirs = (
-        [*_autodetect_include_dirs(file), *include_dirs] if auto_include else include_dirs
-    )
-    if include_dirs:
-        logger.debug(f"[auto-include] using {include_dirs}")
+    include_dirs = get_include_dirs(file, include_dirs, auto_include=auto_include)
 
     results: list[FunctionVerificationResult] = []
     for function in names_of_functions_to_verify:
@@ -204,27 +201,6 @@ def _verify_program(
             logger.error(f"     {failure}")
         results.append(result)
     return ProgramVerificationResult(file, list(skipped_functions), results)
-
-
-def _autodetect_include_dirs(source_file: str) -> list[str]:
-    """Return `[<source>/../include]` if that directory exists, else an empty list.
-
-    Many CMake projects keep public headers in `<project>/include/` while sources live in
-    `<project>/src/`. When that layout holds, returning the sibling `include/` directory lets
-    CBMC resolve `#include "foo.h"` without the caller having to configure paths by hand.
-
-    `<source>` is the directory that contains `source_file`, without following `source_file`
-    itself if it is a symlink, so a symlinked source file uses the `include/` directory of the
-    project that contains the symlink.
-
-    Args:
-        source_file (str): Path to a `.c` file.
-
-    Returns:
-        list[str]: `[<resolved include dir>]` when present, else `[]`.
-    """
-    candidate = resolve_parent(source_file).parent.parent / "include"
-    return [str(candidate)] if candidate.is_dir() else []
 
 
 def _verify_function(

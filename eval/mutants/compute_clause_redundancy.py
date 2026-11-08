@@ -20,6 +20,8 @@ caller checks.
 Usage:
     % ./eval/mutants/compute_clause_redundancy.py --function <NAME> \
         --file <PATH_TO_C_FILE> \
+        [--auto-include] \
+        [--include-dirs <PATH_TO_INCLUDE_DIR>]... \
         [--keep-artifacts] \
         [--jsonl PATH]
 """
@@ -29,11 +31,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import tempfile
 from collections import Counter
 from dataclasses import dataclass, field
 from enum import StrEnum
-from itertools import starmap
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -47,8 +47,14 @@ from eval.mutants.util import (
     write_mutant_sources,
 )
 from tools.construct_call_graph import construct_call_graph
-from tools.run_cbmc import RunCbmcResult, run_cbmc
-from tools.util import get_in_file_callers_of, resolve_parent
+from tools.run_cbmc import run_cbmc
+from tools.util import (
+    AUTO_INCLUDE_HELP,
+    get_in_file_callers_of,
+    get_include_dirs,
+    resolve_include_dirs,
+    resolve_parent,
+)
 from tools.util.callgraph import CallGraph
 
 # Matches the GNU `timeout(1)` convention used elsewhere; surfaces in `returncode` for
@@ -208,14 +214,32 @@ def main() -> None:
     )
     parser.add_argument("--function", required=True)
     parser.add_argument("--file", required=True)
+    parser.add_argument("--auto-include", help=AUTO_INCLUDE_HELP, action="store_true")
+    parser.add_argument(
+        "-I",
+        "--include-dir",
+        "--include-dirs",
+        action="append",
+        default=[],
+        dest="include_dirs",
+        metavar="DIR",
+        help="Directory to add to the include search path. Can be repeated.",
+    )
     parser.add_argument("--jsonl", default=None)
     parser.add_argument("--keep-artifacts", action="store_true")
     args = parser.parse_args()
 
+    try:
+        include_dirs_from_cli = resolve_include_dirs(args.include_dirs)
+    except ValueError as e:
+        parser.error(str(e))
     clause_redundancy_score = compute_clause_redundancy_score(
         file_path=args.file,
         function_name=args.function,
         keep_artifacts=args.keep_artifacts,
+        include_dirs=get_include_dirs(
+            args.file, include_dirs_from_cli, auto_include=args.auto_include
+        ),
     )
 
     if not clause_redundancy_score:
@@ -284,6 +308,7 @@ def compute_clause_redundancy_score(
     file_path: str,
     function_name: str,
     keep_artifacts: bool = False,
+    include_dirs: list[str] | None = None,
 ) -> ClauseRedundancyScore | None:
     """Score clause redundancy for `function_name` in `file_path`.
 
@@ -299,6 +324,8 @@ def compute_clause_redundancy_score(
         file_path (str): Path to the C source defining the function.
         function_name (str): The function whose contract clauses should be tested.
         keep_artifacts (bool): When True, mutant `.c` files are kept for inspection.
+        include_dirs (list[str] | None): Directories forwarded to `run_cbmc()` as `-I` flags
+            for the baseline verification and for every mutant and caller verification.
 
     Returns:
         ClauseRedundancyScore: Aggregated counts plus the per-clause results.
@@ -309,7 +336,11 @@ def compute_clause_redundancy_score(
     source_path = resolve_parent(file_path)
 
     # Check that the original function verifies in the first place.
-    result = _run_cbmc_in_scratch_dir(function_name, source_path)
+    result = run_cbmc(
+        function_to_verify=function_name,
+        file_containing_function_to_verify=str(source_path),
+        include_dirs=include_dirs,
+    )
     if not is_valid_mutation_candidate(result):
         # No usable baseline; scoring would be meaningless without verifying the unmutated source.
         return None
@@ -318,7 +349,7 @@ def compute_clause_redundancy_score(
 
     in_file_callers = _get_in_file_callers(source_path, function_name)
     in_file_callers_to_baseline_verification_results = (
-        _get_baseline_verification_results_for_callers(in_file_callers, source_path)
+        _get_baseline_verification_results_for_callers(in_file_callers, source_path, include_dirs)
     )
 
     # Only the files created here are removed in the `finally` block below, so a pre-existing
@@ -333,15 +364,17 @@ def compute_clause_redundancy_score(
         )
     )
     try:
-        in_isolation_results = list(
-            starmap(_verify_removed_clause_source, paths_to_removed_clauses.items())
-        )
+        in_isolation_results = [
+            _verify_removed_clause_source(mutant_path, mutant, include_dirs)
+            for mutant_path, mutant in paths_to_removed_clauses.items()
+        ]
         caller_side_results = [
             _verify_callers(
                 mutant_path,
                 mutant,
                 in_file_callers,
                 in_file_callers_to_baseline_verification_results,
+                include_dirs,
             )
             for mutant_path, mutant in paths_to_removed_clauses.items()
         ]
@@ -434,27 +467,6 @@ def _aggregate_clause_redundancy_score(
     )
 
 
-def _run_cbmc_in_scratch_dir(function_to_verify: str, file_path: Path | str) -> RunCbmcResult:
-    """Run CBMC on a function in a private scratch working directory.
-
-    The CBMC pipeline writes intermediate `<function>.goto` / `checking-<function>-contracts.goto`
-    files, named only by the function, into its working directory. Several scoring runs (e.g. of
-    two functions that share a caller) may verify the same function concurrently, so each run gets
-    its own scratch directory to keep them from clobbering one another's goto-binaries.
-
-    Args:
-        function_to_verify (str): The function to verify.
-        file_path (Path | str): The C source file containing the function.
-
-    Returns:
-        RunCbmcResult: The result of running CBMC.
-    """
-    return run_cbmc(
-        function_to_verify=function_to_verify,
-        file_containing_function_to_verify=str(file_path),
-    )
-
-
 def _get_in_file_callers(source_path: Path, function_name: str) -> list[str]:
     """Return functions in a file that directly call the function with the given name.
 
@@ -474,7 +486,9 @@ def _get_in_file_callers(source_path: Path, function_name: str) -> list[str]:
 
 
 def _verify_removed_clause_source(
-    path_to_removed_clause_mutant: Path, clause_mutant: ClauseMutant
+    path_to_removed_clause_mutant: Path,
+    clause_mutant: ClauseMutant,
+    include_dirs: list[str] | None = None,
 ) -> ClauseRemovalVerificationResult:
     """Return the result of verifying a removed-clause mutant in isolation.
 
@@ -482,11 +496,16 @@ def _verify_removed_clause_source(
         path_to_removed_clause_mutant (Path): The path to the already-written source with the
             mutated specification.
         clause_mutant (ClauseMutant): The clause mutant.
+        include_dirs (list[str] | None): Directories forwarded to `run_cbmc()` as `-I` flags.
 
     Returns:
         ClauseRemovalVerificationResult: The result of verifying a removed-clause mutant.
     """
-    result = _run_cbmc_in_scratch_dir(clause_mutant.function, path_to_removed_clause_mutant)
+    result = run_cbmc(
+        function_to_verify=clause_mutant.function,
+        file_containing_function_to_verify=str(path_to_removed_clause_mutant),
+        include_dirs=include_dirs,
+    )
     if result.timed_out:
         return ClauseRemovalVerificationResult(
             clause_mutant,
@@ -503,7 +522,7 @@ def _verify_removed_clause_source(
 
 
 def _get_baseline_verification_results_for_callers(
-    in_file_callers: list[str], source_path: Path
+    in_file_callers: list[str], source_path: Path, include_dirs: list[str] | None = None
 ) -> dict[str, bool]:
     """Return a map from in-file caller name to whether it verifies on the unmutated source.
 
@@ -513,13 +532,18 @@ def _get_baseline_verification_results_for_callers(
     Args:
         in_file_callers (list[str]): The names of the in-file callers.
         source_path (Path): The unmutated source file.
+        include_dirs (list[str] | None): Directories forwarded to `run_cbmc()` as `-I` flags.
 
     Returns:
         dict[str, bool]: Map from caller name to True iff CBMC verified it on the unmutated source.
     """
     baselines: dict[str, bool] = {}
     for caller in in_file_callers:
-        result = _run_cbmc_in_scratch_dir(caller, source_path)
+        result = run_cbmc(
+            function_to_verify=caller,
+            file_containing_function_to_verify=str(source_path),
+            include_dirs=include_dirs,
+        )
         # Callers that don't verify on the unmutated source are excluded from caller-side
         # judgement via unverifiable_baseline_callers.
         baselines[caller] = is_valid_mutation_candidate(result)
@@ -531,6 +555,7 @@ def _verify_callers(
     clause_mutant: ClauseMutant,
     in_file_callers: list[str],
     caller_baselines: dict[str, bool],
+    include_dirs: list[str] | None = None,
 ) -> ClauseCallerSideResult:
     """Return the caller-side verdict for one mutant.
 
@@ -546,6 +571,7 @@ def _verify_callers(
         in_file_callers (list[str]): The names of the in-file callers.
         caller_baselines (dict[str, bool]): Map from caller name to baseline verification result
             on the unmutated source.
+        include_dirs (list[str] | None): Directories forwarded to `run_cbmc()` as `-I` flags.
 
     Returns:
         ClauseCallerSideResult: The caller-side verification result for a mutated specification.
@@ -565,7 +591,11 @@ def _verify_callers(
 
     caller_vresults: list[CallerVerificationResult] = []
     for caller in verifying_callers:
-        result = _run_cbmc_in_scratch_dir(caller, mutant_path)
+        result = run_cbmc(
+            function_to_verify=caller,
+            file_containing_function_to_verify=str(mutant_path),
+            include_dirs=include_dirs,
+        )
         if result.timed_out:
             caller_vresults.append(
                 CallerVerificationResult(

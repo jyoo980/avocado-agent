@@ -60,7 +60,12 @@ from tools.run_cbmc_and_mutation_testing import (
     VERIFICATION_ATTEMPTS_LOG_SUFFIX,
     verify_function,
 )
-from tools.util import get_in_file_callees_for, get_in_file_callers_of, resolve_parent
+from tools.util import (
+    get_in_file_callees_for,
+    get_in_file_callers_of,
+    get_include_dirs,
+    resolve_parent,
+)
 from tools.util.callgraph import CallGraph
 from tools.util.edit_rules import (
     MergeReport,
@@ -378,14 +383,14 @@ def main() -> None:
         parser.error("--jobs must be at least 1.")
 
     # A symlinked file is not followed. Therefore, it is compiled, and its mutants are written, in
-    # the directory that contains the symlink, which is also where `_autodetect_include_dirs` looks
-    # for the `include/` directory.
+    # the directory that contains the symlink, which is also where `get_include_dirs` looks for
+    # the `include/` directory.
     file_path = resolve_parent(args.file)
     if not file_path.is_file():
         logger.error(f"No such file: {file_path}")
         sys.exit(1)
 
-    if include_dirs := _autodetect_include_dirs(str(file_path)):
+    if include_dirs := get_include_dirs(str(file_path), [], auto_include=True):
         logger.info(f"[auto-include] using {include_dirs}")
 
     path_to_call_graph = construct_call_graph(str(file_path))
@@ -2258,27 +2263,6 @@ def _log_summary(results: list[FunctionVerificationResult], log_path: Path) -> N
         f"{verified}/{len(results)} function(s) verified ({vacuous_count} vacuously); log written "
         f"to {log_path}"
     )
-
-
-def _autodetect_include_dirs(source_file: str) -> list[str]:
-    """Return `[<source>/../include]` if that directory exists, else an empty list.
-
-    Many CMake projects keep public headers in `<project>/include/` while sources live in
-    `<project>/src/`. When that layout holds, returning the sibling `include/` directory lets
-    CBMC resolve `#include "foo.h"` without the caller having to configure paths by hand.
-
-    `<source>` is the directory that contains `source_file`, without following `source_file`
-    itself if it is a symlink, so a symlinked source file uses the `include/` directory of the
-    project that contains the symlink.
-
-    Args:
-        source_file (str): Path to a `.c` file.
-
-    Returns:
-        list[str]: `[<resolved include dir>]` when present, else `[]`.
-    """
-    candidate = resolve_parent(source_file).parent.parent / "include"
-    return [str(candidate)] if candidate.is_dir() else []
 
 
 if __name__ == "__main__":
