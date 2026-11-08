@@ -4,7 +4,7 @@
 
 Usage: ./eval/verify_program.py <PATH_TO_C_FILE_OR_DIRECTORY> \
                                 [--include-dirs <PATH_TO_INCLUDE_DIR>]... \
-                                [--auto-include] \
+                                [--no-auto-include] \
                                 [--v] \
                                 [--skip-unannotated-functions]
 
@@ -20,10 +20,13 @@ from pathlib import Path
 from loguru import logger
 
 from tools.util import (
+    AUTO_INCLUDE_HELP,
     build_stub_index,
     get_call_graph,
     get_functions_with_cprover_annotations,
+    get_include_dirs,
     get_unstubbed_external_callees_for,
+    resolve_include_dirs,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -92,12 +95,12 @@ def main() -> int:
     )
     parser.add_argument(
         "--auto-include",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
-            "For each .c file, look for a sibling include/ directory at "
-            "<source>/../include and pass it to CBMC as an include path. "
-            "Fits projects whose headers live next to their src/ tree."
+            AUTO_INCLUDE_HELP
+            + " It is searched after the --include-dirs directories. (default: %(default)s)"
         ),
-        action="store_true",
     )
     parser.add_argument(
         "--include-dirs", action="append", help="Path(s) to stubs to use in verification."
@@ -113,10 +116,13 @@ def main() -> int:
         logger.info(f"No .c files found at: {args.path}")
         return 1
 
+    try:
+        include_dirs_from_cli = resolve_include_dirs(args.include_dirs or [])
+    except ValueError as e:
+        parser.error(str(e))
     files_to_program_verification_results: dict[str, ProgramVerificationResult] = {}
     for file in files:
         logger.info(f"=== {file} ===")
-        include_dirs_from_cli = args.include_dirs or []
         results_for_file = _verify_program(
             str(file),
             skip_unannotated_functions=args.skip_unannotated_functions,
@@ -156,7 +162,7 @@ def _verify_program(
     file: str,
     skip_unannotated_functions: bool,
     include_dirs: list[str],
-    auto_include: bool = False,
+    auto_include: bool,
 ) -> ProgramVerificationResult:
     """Return the verification result for the given file.
 
@@ -165,9 +171,9 @@ def _verify_program(
         skip_unannotated_functions (bool): True iff unannotated functions should be skipped
             (i.e., CBMC should not be run on them).
         include_dirs (list[str]): List of directories containing files (e.g., headers) that should
-            be included in verification.
-        auto_include (bool): True iff `<file>/../include` should be added to CBMC's include
-            search path when that directory exists. Defaults to False.
+            be included in verification, as returned by `resolve_include_dirs()`.
+        auto_include (bool): True iff the auto-detected include directory (see
+            `get_include_dirs()`) should be added to CBMC's include search path.
 
     Returns:
         ProgramVerificationResult: The verification result for the given file.
@@ -181,9 +187,7 @@ def _verify_program(
         names_of_functions_to_verify = get_functions_with_cprover_annotations(file)
         skipped_functions = set(call_graph.keys()).difference(names_of_functions_to_verify)
 
-    include_dirs = [*autodetect_include_dirs(file), *include_dirs] if auto_include else include_dirs
-    if include_dirs:
-        logger.debug(f"[auto-include] using {include_dirs}")
+    include_dirs = get_include_dirs(file, include_dirs, auto_include=auto_include)
 
     results: list[FunctionVerificationResult] = []
     for function in names_of_functions_to_verify:

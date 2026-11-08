@@ -33,6 +33,7 @@ import tempfile
 from collections import Counter
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import partial
 from itertools import starmap
 from pathlib import Path
 
@@ -43,11 +44,12 @@ from eval.mutants.mutate_specification import ClauseMutant, get_clause_mutants
 from eval.mutants.util import (
     check_expected_cbmc_return_code,
     get_bounded_mutant_file_name,
+    get_mutant_paths,
     is_valid_mutation_candidate,
 )
 from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import RunCbmcResult, run_cbmc
-from tools.util import get_in_file_callers_of
+from tools.util import get_in_file_callers_of, resolve_parent
 from tools.util.callgraph import CallGraph
 
 # Matches the GNU `timeout(1)` convention used elsewhere; surfaces in `returncode` for
@@ -302,7 +304,10 @@ def compute_clause_redundancy_score(
     Returns:
         ClauseRedundancyScore: Aggregated counts plus the per-clause results.
     """
-    source_path = Path(file_path).resolve()
+    # A symlinked file is not followed, so the removed-clause sources are written next to the
+    # symlink and see the same quoted `#include`s as the file itself, which `run_cbmc` also
+    # compiles through the symlink.
+    source_path = resolve_parent(file_path)
     workspace = workspace or source_path.parent
     workspace.mkdir(parents=True, exist_ok=True)
 
@@ -313,10 +318,19 @@ def compute_clause_redundancy_score(
         return None
 
     mutants = get_clause_mutants(str(source_path), function_name)
-    paths_to_removed_clauses = {
-        _get_path_to_source_with_removed_clause(workspace, source_path, function_name, i): mutant
-        for i, mutant in enumerate(mutants)
-    }
+    paths_to_removed_clauses = dict(
+        zip(
+            get_mutant_paths(
+                source_path,
+                partial(
+                    _get_path_to_source_with_removed_clause, workspace, source_path, function_name
+                ),
+                len(mutants),
+            ),
+            mutants,
+            strict=True,
+        )
+    )
 
     in_file_callers = _get_in_file_callers(source_path, function_name)
     in_file_callers_to_baseline_verification_results = (
@@ -345,7 +359,8 @@ def compute_clause_redundancy_score(
         in_isolation_results,
         caller_side_results,
         in_file_callers_to_baseline_verification_results,
-        file=str(source_path),
+        # Results are reported under the fully resolved path, as are mutation-testing results.
+        file=str(source_path.resolve()),
         function=function_name,
     )
 
@@ -434,15 +449,14 @@ def _run_cbmc_in_scratch_dir(function_to_verify: str, file_path: Path | str) -> 
 
     Args:
         function_to_verify (str): The function to verify.
-        file_path (Path | str): The C source file containing the function. It is resolved to an
-            absolute path, since CBMC runs in a different working directory.
+        file_path (Path | str): The C source file containing the function.
 
     Returns:
         RunCbmcResult: The result of running CBMC.
     """
     return run_cbmc(
-            function_to_verify=function_to_verify,
-            file_containing_function_to_verify=str(Path(file_path).resolve()),
+        function_to_verify=function_to_verify,
+        file_containing_function_to_verify=str(file_path),
     )
 
 

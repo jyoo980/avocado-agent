@@ -24,7 +24,8 @@ Usage:
         [--claude-timeout <TIMEOUT>] \
         [--jobs <N>] \
         [--keep-sessions] \
-        [--resume-from <PATH_TO_JSONL_LOG>]
+        [--resume-from <PATH_TO_JSONL_LOG>] \
+        [--no-auto-include]
 """
 
 import argparse
@@ -60,7 +61,13 @@ from tools.run_cbmc_and_mutation_testing import (
     VERIFICATION_ATTEMPTS_LOG_SUFFIX,
     verify_function,
 )
-from tools.util import get_in_file_callees_for, get_in_file_callers_of
+from tools.util import (
+    AUTO_INCLUDE_HELP,
+    get_in_file_callees_for,
+    get_in_file_callers_of,
+    get_include_dirs,
+    resolve_parent,
+)
 from tools.util.callgraph import CallGraph
 from tools.util.edit_rules import (
     MergeReport,
@@ -360,6 +367,17 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--auto-include",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            AUTO_INCLUDE_HELP
+            + " The directory is also made accessible to the agent via `claude --add-dir`."
+            + " Use --no-auto-include if that directory is unrelated to the C file."
+            + " (default: %(default)s)"
+        ),
+    )
+    parser.add_argument(
         "--jobs",
         type=int,
         default=_DEFAULT_JOBS,
@@ -378,12 +396,15 @@ def main() -> None:
     if args.jobs < 1:
         parser.error("--jobs must be at least 1.")
 
-    file_path = Path(args.file).resolve()
+    # A symlinked file is not followed. Therefore, it is compiled, and its mutants are written, in
+    # the directory that contains the symlink, which is also where `get_include_dirs` looks for
+    # the `include/` directory.
+    file_path = resolve_parent(args.file)
     if not file_path.is_file():
         logger.error(f"No such file: {file_path}")
         sys.exit(1)
 
-    if include_dirs := autodetect_include_dirs(str(file_path)):
+    if include_dirs := get_include_dirs(str(file_path), [], auto_include=args.auto_include):
         logger.info(f"[auto-include] using {include_dirs}")
 
     path_to_call_graph = construct_call_graph(str(file_path))
