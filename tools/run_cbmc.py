@@ -349,7 +349,8 @@ def _subprocess_slot() -> Generator[int]:
         # safe; setting TMPDIR to a directory of this user's own gives the slots a new home.
         message = (
             f"{_SLOT_DIR} must be a directory that this user owns and no other user can write;"
-            " remove it, or set TMPDIR to a directory that only this user can write"
+            " if this user owns it, fix its permissions or remove it; otherwise set TMPDIR"
+            " to a directory that only this user can write"
         )
         raise PermissionError(message)
     cap = max_concurrent_subprocesses()
