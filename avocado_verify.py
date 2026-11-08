@@ -32,7 +32,6 @@ import json
 import os
 import shlex
 import shutil
-import subprocess
 import sys
 import tempfile
 import threading
@@ -42,7 +41,6 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from subprocess import TimeoutExpired
 from typing import Any, cast
 
 from loguru import logger
@@ -60,7 +58,7 @@ from tools.run_cbmc_and_mutation_testing import (
     VERIFICATION_ATTEMPTS_LOG_SUFFIX,
     verify_function,
 )
-from tools.util import get_in_file_callees_for, get_in_file_callers_of
+from tools.util import get_in_file_callees_for, get_in_file_callers_of, run_command
 from tools.util.callgraph import CallGraph
 from tools.util.edit_rules import (
     MergeReport,
@@ -2132,7 +2130,7 @@ def _build_claude_command(prompt: str, *, file_path: str, include_dirs: list[str
         include_dirs (list[str]): Extra include directories to expose via `--add-dir`.
 
     Returns:
-        list[str]: The argument vector to hand to `subprocess.run`.
+        list[str]: The argument vector to hand to `run_command`.
     """
     command = [
         "claude",
@@ -2166,16 +2164,8 @@ def _run_claude(command: list[str], timeout: int) -> ClaudeRun:
     session_id = str(uuid.uuid4())
     command = [*command, "--session-id", session_id]
     logger.debug(f"running: {shlex.join(command)}")
-    try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-    except TimeoutExpired:
+    completed = run_command(command, timeout)
+    if completed is None:
         # It isn't possible to calculate some of the fields below when the timeout for a `claude -p`
         # command is reached.
         return ClaudeRun(
