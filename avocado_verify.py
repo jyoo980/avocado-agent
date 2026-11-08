@@ -1110,9 +1110,10 @@ def _merge_and_verify(
     Under `_CANONICAL_LOCK`: read the canonical file, compute the merge
     (`tools.util.edit_rules.merge_copy`), copy the canonical directory to a scratch
     directory, write the merged bytes into that copy and check that `goto-cc` still accepts the
-    file. Only then is the canonical file replaced (atomically, via `os.replace`); a merge that
-    does not compile is rejected and the canonical file left untouched. The lock is released
-    before the function's own CBMC run, on the scratch copy, so other sessions can merge meanwhile.
+    file. Only then is the canonical file (or, if it is a symlink, its target) replaced
+    (atomically, via `os.replace`); a merge that does not compile is rejected and the canonical
+    file left untouched. The lock is released before the function's own CBMC run, on the
+    scratch copy, so other sessions can merge meanwhile.
 
     One of those merges may change the contract of a function this one calls: only the functions
     live sessions work on are frozen, not their callees, and this function is not yet in
@@ -1257,9 +1258,12 @@ def _merge_and_verify(
                 )
                 scratch_file.write_bytes(canonical)
             else:
-                staged = canonical_file.with_name(f"{canonical_file.name}.avocado-merge")
+                # If the canonical file is a symlink, replace its target rather than the link
+                # itself, so that the link keeps pointing to the file that has the merged edits.
+                destination = canonical_file.resolve()
+                staged = destination.with_name(f"{destination.name}.avocado-merge")
                 staged.write_bytes(merged)
-                Path(staged).replace(canonical_file)
+                staged.replace(destination)
     if report.merged:
         if report.transplanted:
             logger.info(f"{function}: transplanted {', '.join(report.transplanted)}")
