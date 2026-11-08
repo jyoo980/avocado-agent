@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections import defaultdict
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -14,6 +13,9 @@ from enum import StrEnum
 from pathlib import Path
 
 from loguru import logger
+
+# A function's (file, function) pair, such as ("/benchmarks/q.c", "f").
+FunctionKey = tuple[str, str]
 
 
 class SpecificationQualitySummary(StrEnum):
@@ -54,18 +56,56 @@ def group_by_summary_type(records: Iterable[dict]) -> dict[SpecificationQualityS
 
     Returns:
         dict[SpecificationQualitySummary, list[dict]]: Records grouped by specification quality
-            summary kinds.
+            summary kinds.  Every summary kind is a key, even if no record has that kind.
     """
-    summary_groups = defaultdict(list)
+    summary_groups: dict[SpecificationQualitySummary, list[dict]] = {
+        summary: [] for summary in SpecificationQualitySummary
+    }
     for record in records:
         match record.get("kind"):
             case supported_kind if supported_kind in {
                 summary.value for summary in SpecificationQualitySummary
             }:
-                summary_groups[supported_kind].append(record)
+                summary_groups[SpecificationQualitySummary(supported_kind)].append(record)
             case unsupported_kind:
                 logger.warning(f"Unknown record kind: {unsupported_kind!r}")
     return summary_groups
+
+
+def get_kill_scored_records(records: Iterable[dict]) -> list[dict]:
+    """Return the mutation summary records that have a kill score, with each kill score a float.
+
+    A record has no kill score if its function was not mutation tested (for example, because the
+    function did not verify or had no mutants), or if none of its mutants was decided (each one
+    timed out, failed to compile, or failed instrumentation).  The `kill_score` of a record with no
+    decided mutants is null or a string such as "0.0000", and it does not measure the spec.
+
+    Args:
+        records (Iterable[dict]): mutation summary records, each a dict parsed from a JSONL line
+            with keys such as "file", "function", "killed", "survived", and "kill_score".
+
+    Returns:
+        list[dict]: Copies of the records that have a kill score, in which `kill_score` is a float
+            even if the JSONL line stores it as a string such as "0.2500".
+    """
+    return [
+        {**record, "kill_score": float(record["kill_score"])}
+        for record in records
+        if record.get("kill_score") is not None and record["killed"] + record["survived"] > 0
+    ]
+
+
+def get_function_key(record: dict) -> FunctionKey:
+    """Return the `FunctionKey` of the given record.
+
+    Args:
+        record (dict): a record, as a dict parsed from a JSONL line with keys such as "file" and
+            "function".
+
+    Returns:
+        FunctionKey: The record's (file, function) pair, such as ("/benchmarks/q.c", "f").
+    """
+    return (record["file"], record["function"])
 
 
 def ascii_hbar(value: float, width: int, fill: str = "█") -> str:
