@@ -194,7 +194,8 @@ def test_run_command_timeout_kills_the_shells_children(tmp_path: Path) -> None:
     result = _run_command(CbmcStep.CBMC, command, [], timeout_sec=1)
     assert result.timed_out
     background_pid = int(pid_file.read_text().strip())
-    # A killed orphan may linger briefly as an unreaped zombie ("Z"); that counts as dead.
+    # `_run_command` returns only after every killed process has exited. A killed orphan can
+    # linger as an unreaped zombie ("Z"); that counts as exited.
     try:
         stat = Path(f"/proc/{background_pid}/stat").read_text()
     except FileNotFoundError:
