@@ -1,11 +1,17 @@
 """Tests for the `avocado-run-cbmc` entry point in `tools.run_cbmc_and_mutation_testing`."""
 
 import json
+from collections import Counter
 from pathlib import Path
 
 from tools.run_cbmc import _DEFAULT_RUN_CBMC_TIMEOUT_SEC
 from tools.run_cbmc_and_mutation_testing import _AGENT_MUTANT_TIMEOUT_SEC, _log_mutation_feedback
-from tools.util.mutation import DEFAULT_MUTANT_TIMEOUT_SEC, MutationScore, NoMutantsGenerated
+from tools.util.mutation import (
+    DEFAULT_MUTANT_TIMEOUT_SEC,
+    MutantOutcome,
+    MutationScore,
+    NoMutantsGenerated,
+)
 
 
 def test_mutation_feedback_of_each_passing_run_is_logged_beside_the_file(tmp_path: Path) -> None:
@@ -17,11 +23,14 @@ def test_mutation_feedback_of_each_passing_run_is_logged_beside_the_file(tmp_pat
             file=str(src),
             target_function="partition",
             num_mutants=6,
-            num_killed=killed,
-            num_survived=survived,
-            num_timed_out=1,
-            num_compile_failed=1,
-            num_instrumentation_failed=0,
+            outcome_counts=Counter(
+                {
+                    MutantOutcome.KILLED: killed,
+                    MutantOutcome.SURVIVED: survived,
+                    MutantOutcome.TIMED_OUT: 1,
+                    MutantOutcome.COMPILE_FAILED: 1,
+                }
+            ),
             kill_score=kill_score,
         )
         _log_mutation_feedback(

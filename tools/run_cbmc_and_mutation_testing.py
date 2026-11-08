@@ -25,6 +25,7 @@ from loguru import logger
 from tools.run_cbmc import RunCbmcResult
 from tools.run_cbmc import verify_function as verify_function_and_contract
 from tools.util.mutation import (
+    MutantOutcome,
     MutationScore,
     MutationTestingResult,
     generate_mutants_and_compute_score,
@@ -257,11 +258,7 @@ def _log_mutation_feedback(
             "was_mutation_tested": True,
             "kill_score": result.kill_score,
             "total": result.num_mutants,
-            "killed": result.num_killed,
-            "survived": result.num_survived,
-            "timed_out": result.num_timed_out,
-            "compile_failed": result.num_compile_failed,
-            "instrumentation_failed": result.num_instrumentation_failed,
+            **{outcome.value: result.outcome_counts[outcome] for outcome in MutantOutcome},
         }
     else:
         # No mutants could be generated, so there is no score to raise.
