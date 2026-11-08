@@ -554,37 +554,6 @@ def _verify_mutant(
     )
 
 
-def _get_paths_for_mutated_sources(
-    workspace_path: Path, path_to_original_source: Path, function: str, count: int
-) -> list[Path]:
-    """Return `count` distinct paths to which to write mutated source files.
-
-    The paths are those of `_get_path_for_mutated_source` for increasing indices, except that an
-    index is skipped if its path already exists and is the original source file or its symlink
-    target. Writing a mutant there would overwrite the source, and cleanup would delete it.
-
-    Args:
-        workspace_path (Path): The directory under which mutation testing occurs.
-        path_to_original_source (Path): The path to the original source file.
-        function (str): The function the mutants belong to.
-        count (int): The number of paths to return.
-
-    Returns:
-        list[Path]: The paths to which to write the mutated source files.
-    """
-    paths: list[Path] = []
-    index = 0
-    while len(paths) < count:
-        path = _get_path_for_mutated_source(
-            workspace_path, path_to_original_source, function, index
-        )
-        index += 1
-        if path.exists() and path.samefile(path_to_original_source):
-            continue
-        paths.append(path)
-    return paths
-
-
 def _get_path_for_mutated_source(
     workspace_path: Path, path_to_original_source: Path, function: str, index: int
 ) -> Path:

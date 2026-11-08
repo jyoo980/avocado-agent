@@ -38,7 +38,6 @@ from tools.util import (
     get_functions_with_cprover_annotations,
     get_include_dirs,
     resolve_include_dirs,
-    resolve_parent,
 )
 from tools.util.mutation import MutationScore
 
@@ -158,15 +157,14 @@ def _process_file(
                 result = {
                     "kind": "mutation_summary",
                     "was_mutation_tested": False,
-                    # Matches the `file` of `MutationScore.summary()` and of the redundancy summary.
-                    "file": str(resolve_parent(str(source))),
+                    "file": str(source.resolve()),
                     "function": function,
                     "metadata": str(mutation_testing_result),
                 }
                 out.write(json.dumps(result) + "\n")
         if run_redundancy:
             if clause_redundancy_score := compute_clause_redundancy_score(
-                str(source), function, keep_artifacts=keep_artifacts, include_dirs=include_dirs
+                str(source), function, keep_artifacts=keep_artifacts
             ):
                 out.write(json.dumps(clause_redundancy_score.summary()) + "\n")
             else:
