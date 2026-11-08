@@ -9,12 +9,13 @@ Each metric is a separate flag so the user can specify the ones they want, namel
     - --redundancy: Clause redundancy.
 
 Scoring of different functions is independent, so with `--jobs N` up to N function scorings
-(mutation or clause redundancy) run concurrently, each in its own thread; the mutants of every
-function additionally fan out in their own thread pool. Machine-wide load is bounded by the
+(mutation or clause redundancy) run concurrently, each in its own thread; the mutants of all
+functions additionally fan out in one shared thread pool. Machine-wide load is bounded by the
 subprocess cap in `tools.run_cbmc` (`AVOCADO_MAX_CONCURRENT_CBMC`), which is also the default for
-`--jobs`. Records are still emitted in the sequential order (files sorted; within each file,
-mutation records and then redundancy records, each in sorted function order), so the JSONL output
-is identical to a `--jobs 1` run.
+`--jobs`. Records are still emitted in the sequential order (files sorted, functions sorted within
+each file, and each function's mutation record before its redundancy record), so the JSONL output
+is identical to a `--jobs 1` run. If scoring any function raises an exception, the run stops
+promptly, even while earlier functions are still being scored.
 
 Usage:
     % ./eval/mutants/evaluate_specification_quality.py <PATH_TO_C_FILE_OR_DIR> \
@@ -32,7 +33,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    Future,
+    InvalidStateError,
+    ThreadPoolExecutor,
+    wait,
+)
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
@@ -85,8 +93,7 @@ def main() -> None:
     parser.add_argument(
         "--jobs",
         type=int,
-        # More functions than subprocess slots could only wait for a slot, while each holds its
-        # own pool of mutant threads.
+        # More functions than subprocess slots could only wait for a slot.
         default=max_concurrent_subprocesses(),
         metavar="N",
         help=(
@@ -118,6 +125,8 @@ def main() -> None:
     )
     try:
         include_dirs_from_cli = args.include_dirs or []
+        # Completed with an exception as soon as scoring any function raises one.
+        failure: Future[None] = Future()
         with ThreadPoolExecutor(max_workers=args.jobs) as executor:
             try:
                 # Submit every file's scoring tasks up front so the pool is never idle while one
@@ -131,11 +140,12 @@ def main() -> None:
                         run_redundancy=args.redundancy,
                         keep_artifacts=args.keep_artifacts,
                         executor=executor,
+                        failure=failure,
                     )
                     for source in input_files
                 ]
                 for submitted_file in submitted:
-                    _write_file_records(submitted_file, out=output_stream)
+                    _write_file_records(submitted_file, out=output_stream, failure=failure)
             finally:
                 # If we exit early (an unexpected error or a Ctrl-C), stop scoring functions that
                 # haven't started yet; the `with` block still waits for functions in progress.
@@ -174,6 +184,7 @@ def _submit_file(
     run_redundancy: bool,
     keep_artifacts: bool,
     executor: ThreadPoolExecutor,
+    failure: Future[None],
 ) -> _SubmittedFile:
     """Submit metric scoring for every annotated function in `source` to `executor`.
 
@@ -187,6 +198,8 @@ def _submit_file(
         run_redundancy (bool): True iff redundancy scoring should be reported.
         keep_artifacts (bool): True iff the mutant files should be retained after evaluation.
         executor (ThreadPoolExecutor): Pool in which per-function scoring runs.
+        failure (Future[None]): Completed with the exception of the first scoring task that
+            raises one.
 
     Returns:
         _SubmittedFile: The file's functions and their pending records.
@@ -221,27 +234,54 @@ def _submit_file(
             executor.submit(_redundancy_record, source, function, keep_artifacts=keep_artifacts)
             for function in functions_with_cprover_annotations
         ]
+    for future in [*mutation_futures, *redundancy_futures]:
+        future.add_done_callback(lambda done: _record_failure(done, failure))
     return _SubmittedFile(
         source, functions_with_cprover_annotations, mutation_futures, redundancy_futures
     )
 
 
-def _write_file_records(submitted: _SubmittedFile, out: IO[str]) -> None:
-    """Write one file's metric records to `out`: mutation summaries, then redundancy scores.
+def _record_failure(done: Future[dict | None], failure: Future[None]) -> None:
+    """Complete `failure` with the exception of `done`, if it raised one and `failure` is pending.
 
-    Each kind of record is written in function order, waiting for each future in turn.
+    Arguments:
+        done (Future[dict | None]): A finished scoring task.
+        failure (Future[None]): The future that records the first scoring failure.
+    """
+    if done.cancelled() or (exception := done.exception()) is None:
+        return
+    with suppress(InvalidStateError):  # An earlier task already failed.
+        failure.set_exception(exception)
+
+
+def _write_file_records(submitted: _SubmittedFile, out: IO[str], failure: Future[None]) -> None:
+    """Write one file's metric records to `out`, function by function.
+
+    For each function in order, its mutation summary and then its redundancy score (each when
+    enabled) are written once their futures complete.
 
     Arguments:
         submitted (_SubmittedFile): The file's pending work.
         out (IO[str]): The output.
+        failure (Future[None]): Completed with the exception of the first scoring task that
+            raises one. Waiting for a record stops as soon as `failure` completes.
+
+    Raises:
+        Exception: The exception of the first failed scoring task, as soon as one fails, even if
+            it belongs to a later function or file.
     """
-    for future in submitted.mutation_futures:
-        out.write(json.dumps(future.result()) + "\n")
-    out.flush()
-    for future in submitted.redundancy_futures:
-        if record := future.result():
-            out.write(json.dumps(record) + "\n")
-    out.flush()
+    for index in range(len(submitted.functions)):
+        for futures in (submitted.mutation_futures, submitted.redundancy_futures):
+            if not futures:
+                continue
+            future = futures[index]
+            wait([future, failure], return_when=FIRST_COMPLETED)
+            if failure.done():
+                failure.result()
+            # A redundancy record is None for a function that could not be scored.
+            if record := future.result():
+                out.write(json.dumps(record) + "\n")
+                out.flush()
 
 
 def _mutation_record(
