@@ -14,6 +14,7 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 
 from loguru import logger
@@ -23,12 +24,14 @@ from eval.mutants.util import (
     absolute_path_without_resolving,
     check_expected_cbmc_return_code,
     get_bounded_mutant_file_name,
+    get_mutant_paths,
     is_valid_mutation_candidate,
     write_new_file,
 )
 from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import _DEFAULT_RUN_CBMC_TIMEOUT_SEC, CbmcStep, run_cbmc
 from tools.util.callgraph import CallGraph
+from tools.util.paths import resolve_parent
 
 # Per-subprocess CBMC timeout applied to each mutant unless a caller overrides it. This is the
 # full pipeline timeout, so the evaluation metric (`evaluate_specification_quality.py`) decides
@@ -294,9 +297,10 @@ def generate_mutants_and_compute_score(
     Returns:
         MutationTestingResult: The result of running mutation testing on the target function.
     """
-    # Neither follows symlinks nor collapses `..`, so `source_path` names the same file as
-    # `file_path` and the mutants of a symlinked file see the same quoted `#include`s.
-    source_path = absolute_path_without_resolving(file_path)
+    # A symlinked file is not followed, so its mutants are written next to the symlink and see the
+    # same quoted `#include`s as the file itself, which `run_cbmc` also compiles through the
+    # symlink.
+    source_path = resolve_parent(file_path)
     mutants = get_mutants(str(source_path), target_function)
     if not mutants:
         return NoMutantsGenerated(file_path, target_function)
@@ -318,10 +322,17 @@ def generate_mutants_and_compute_score(
         json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
     )
 
-    paths_to_mutants = {
-        _get_path_for_mutated_source(source_path, target_function, i): mutant
-        for i, mutant in enumerate(mutants)
-    }
+    paths_to_mutants = dict(
+        zip(
+            get_mutant_paths(
+                source_path,
+                partial(_get_path_for_mutated_source, source_path, target_function),
+                len(mutants),
+            ),
+            mutants,
+            strict=True,
+        )
+    )
     # Heads-up to stderr so an agent polling the run can see the slow phase has begun and is
     # making progress. Written to stderr (not stdout) so it never contaminates the kill-score
     # result, and flushed so it is not buffered until the long run completes.
@@ -376,7 +387,8 @@ def generate_mutants_and_compute_score(
     # Every future either stored a result above or raised (which would have propagated), so no
     # None slots remain; the filter just refines the type for the aggregator.
     results = [vresult for vresult in mutant_vresults if vresult is not None]
-    return _aggregate_mutation_score(results, str(source_path), target_function)
+    # Results are reported under the fully resolved path, as are clause-redundancy results.
+    return _aggregate_mutation_score(results, str(source_path.resolve()), target_function)
 
 
 def _mutation_worker_count(num_mutants: int) -> int:
