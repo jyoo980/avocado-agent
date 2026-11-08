@@ -77,8 +77,8 @@ def get_kill_scored_records(records: Iterable[dict]) -> list[dict]:
 
     A record has no kill score if its function was not mutation tested (for example, because the
     function did not verify or had no mutants), or if none of its mutants was decided (each one
-    timed out or failed to compile).  The `kill_score` of a record with no decided mutants is null
-    or a string such as "0.0000", and it does not measure the spec.
+    timed out, failed to compile, or failed instrumentation).  The `kill_score` of a record with no
+    decided mutants is null or a string such as "0.0000", and it does not measure the spec.
 
     Args:
         records (Iterable[dict]): mutation summary records, each a dict parsed from a JSONL line

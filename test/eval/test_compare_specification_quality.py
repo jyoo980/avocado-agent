@@ -7,7 +7,10 @@ from eval.compare_specification_quality import _get_specification_quality_compar
 
 
 def _tested(function: str, killed: int, survived: int, timed_out: int = 0) -> dict:
-    """Return a mutation summary record, as `MutationScore.summary()` writes it."""
+    """Return a mutation summary record.
+
+    Its `kill_score` is a number, or null if no mutant was decided.
+    """
     decided = killed + survived
     return {
         "kind": "mutation_summary",

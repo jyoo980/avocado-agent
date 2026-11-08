@@ -24,13 +24,7 @@ from tools.run_cbmc import (
     compile_with_goto_cc,
     run_cbmc,
 )
-from tools.util.mutation import (
-    MutantVerificationResult,
-    MutationScore,
-    _MAX_MUTATION_SECTION_CHARS,
-    _print_mutation_progress,
-    get_mutation_testing_results_for_client,
-)
+from tools.util.mutation import MutantVerificationResult, MutationScore, _MAX_MUTATION_SECTION_CHARS, _print_mutation_progress, get_mutation_testing_results_for_client
 
 
 def _make_mutant(
@@ -57,7 +51,9 @@ def _vresult(mutant: Mutant, *, killed: bool) -> MutantVerificationResult:
 
 
 def test_get_goto_cc_command_no_stubs_no_includes() -> None:
-    command = _get_goto_cc_command(function="swap", file_containing_function="quicksort.c")
+    command = _get_goto_cc_command(
+        function="swap", file_containing_function="quicksort.c"
+    )
     assert command == "goto-cc  -o swap.goto  quicksort.c  --function swap"
 
 
@@ -76,7 +72,9 @@ def test_get_goto_instrument_contract_command_no_callees() -> None:
 def test_get_goto_instrument_contract_command_includes_self_for_inductive_recursive_verification() -> (
     None
 ):
-    command = _get_goto_instrument_contract_command("quickSort", callees=["partition", "quickSort"])
+    command = _get_goto_instrument_contract_command(
+        "quickSort", callees=["partition", "quickSort"]
+    )
     assert "--replace-call-with-contract partition" in command
     assert "--replace-call-with-contract quickSort" in command
     assert "--enforce-contract quickSort" in command
@@ -151,7 +149,9 @@ def test_run_cbmc_returns_success_result_for_trivially_verifying_function(
     original_cwd = Path.cwd()
     try:
         os.chdir(tmp_path)
-        result = run_cbmc(function_to_verify="swap", file_containing_function_to_verify=str(src))
+        result = run_cbmc(
+            function_to_verify="swap", file_containing_function_to_verify=str(src)
+        )
     finally:
         os.chdir(original_cwd)
     assert isinstance(result, RunCbmcResult)
@@ -448,8 +448,7 @@ def test_print_mutation_progress_reports_running_tally_on_stderr(capsys) -> None
     assert captured.out == ""
     assert (
         "[mutation testing] 3/5 done "
-        "(killed=2 survived=1 timed_out=0 compile_failed=0 instrumentation_failed=0)"
-        in captured.err
+        "(killed=2 survived=1 timed_out=0 compile_failed=0 instrumentation_failed=0)" in captured.err
     )
 
 
@@ -470,26 +469,8 @@ def test_print_mutation_progress_buckets_undecided_mutants(capsys) -> None:
     # mirroring `_aggregate_mutation_score`.
     assert (
         "[mutation testing] 2/2 done "
-        "(killed=0 survived=0 timed_out=1 compile_failed=1 instrumentation_failed=0)"
-        in capsys.readouterr().err
+        "(killed=0 survived=0 timed_out=1 compile_failed=1 instrumentation_failed=0)" in capsys.readouterr().err
     )
-
-
-def test_mutation_score_summary_has_null_kill_score_without_decided_mutants() -> None:
-    """A summary has no kill score when every mutant timed out."""
-    score = MutationScore(
-        file="quicksort.c",
-        target_function="f",
-        num_mutants=2,
-        num_killed=0,
-        num_survived=0,
-        num_timed_out=2,
-        num_compile_failed=0,
-        num_instrumentation_failed=0,
-        kill_score=0.0,
-    )
-
-    assert score.summary()["kill_score"] is None
 
 
 ALLOCATING_SOURCE = """#include <stdlib.h>

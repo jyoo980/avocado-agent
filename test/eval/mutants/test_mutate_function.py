@@ -12,7 +12,9 @@ def test_get_mutants_no_op() -> None:
 
 def test_get_mutants_arithmetic_operator() -> None:
     mutants = get_mutants("test/data/mutants/mutants.c", "add")
-    assert len(mutants) == 1, f"Expected one mutant (replacing '+' with '-'), but got: {mutants}"
+    assert len(mutants) == 1, (
+        f"Expected one mutant (replacing '+' with '-'), but got: {mutants}"
+    )
 
     mutant = mutants[0]
     assert mutant.operator_class == MutationClasses.ARITHMETIC
@@ -26,7 +28,9 @@ def test_get_mutants_relational_operator() -> None:
     assert len(mutants) == len(expected_replacement_operators), (
         f"Expected {len(expected_replacement_operators)} mutants, but got {len(mutants)}"
     )
-    assert {mutant.replacement_operator for mutant in mutants} == expected_replacement_operators
+    assert {
+        mutant.replacement_operator for mutant in mutants
+    } == expected_replacement_operators
 
 
 def test_get_mutants_relational_compare() -> None:
@@ -39,7 +43,9 @@ def test_get_mutants_relational_compare() -> None:
     assert len(mutants) == len(expected_replacement_operators), (
         f"Expected {len(expected_replacement_operators)} mutants, but got {len(mutants)}"
     )
-    assert {mutant.replacement_operator for mutant in mutants} == expected_replacement_operators
+    assert {
+        mutant.replacement_operator for mutant in mutants
+    } == expected_replacement_operators
 
 
 def test_get_mutants_with_cbmc_annotated_function() -> None:
@@ -48,7 +54,9 @@ def test_get_mutants_with_cbmc_annotated_function() -> None:
     assert len(mutants) == 14, f"Expected 14 mutants, but got {len(mutants)}"
 
     expected_replacement_operators = {">", ">=", "<", "==", "!=", "-", "+"}
-    assert {mutant.replacement_operator for mutant in mutants} == expected_replacement_operators
+    assert {
+        mutant.replacement_operator for mutant in mutants
+    } == expected_replacement_operators
 
 
 def test_mutant_get_diff() -> None:
@@ -65,7 +73,6 @@ def test_mutant_get_diff() -> None:
     context_lines = [line for line in diff.splitlines() if line.startswith(" ")]
     assert context_lines == []
 
-
 def test_get_mutants_recovers_function_after_forall_annotated_neighbor() -> None:
     # Regression: `quickSort` in eval/benchmarks/quicksort/quicksort.c sits after a `partition`
     # function whose `__CPROVER_forall { ... }` clauses make tree-sitter mis-parse. Previously
@@ -79,9 +86,9 @@ def test_get_mutants_recovers_function_after_forall_annotated_neighbor() -> None
     _, spans = strip_cbmc_clauses(source)
     for m in mutants:
         for span in spans:
-            assert not (span.start_byte <= m.start_byte and m.end_byte <= span.end_byte), (
-                f"Mutant at byte {m.start_byte} lies inside CBMC clause span {span}"
-            )
+            assert not (
+                span.start_byte <= m.start_byte and m.end_byte <= span.end_byte
+            ), f"Mutant at byte {m.start_byte} lies inside CBMC clause span {span}"
 
 
 def test_get_mutants_skips_operators_inside_in_body_cprover_assume() -> None:
@@ -99,6 +106,6 @@ def test_get_mutants_skips_operators_inside_in_body_cprover_assume() -> None:
     spans = find_cbmc_annotation_spans(source)
     for m in mutants:
         for span in spans:
-            assert not (span.start_byte <= m.start_byte and m.end_byte <= span.end_byte), (
-                f"Mutant at byte {m.start_byte} lies inside CBMC annotation span {span}"
-            )
+            assert not (
+                span.start_byte <= m.start_byte and m.end_byte <= span.end_byte
+            ), f"Mutant at byte {m.start_byte} lies inside CBMC annotation span {span}"

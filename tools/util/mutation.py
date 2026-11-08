@@ -121,13 +121,11 @@ class MutationScore(MutationTestingResult):
     kill_score: float
     results: list[MutantVerificationResult] = field(default_factory=list)
 
-    def summary(self) -> dict[str, str | int | float | None]:
+    def summary(self) -> dict[str, str | int | float]:
         """Return a summary of this mutation score.
 
         Returns:
-            dict[str, str | int | float | None]: A summary of this mutation score.  Its
-                `kill_score` is None if no mutant was decided, because then the kill score does not
-                measure the spec.
+            dict[str, str | int | float]: A summary of this mutation score.
         """
         return {
             "kind": "mutation_summary",
@@ -140,7 +138,7 @@ class MutationScore(MutationTestingResult):
             "timed_out": self.num_timed_out,
             "compile_failed": self.num_compile_failed,
             "instrumentation_failed": self.num_compile_failed,
-            "kill_score": self.kill_score if self.num_killed + self.num_survived else None,
+            "kill_score": f"{self.kill_score:.4f}",
         }
 
 

@@ -6,12 +6,10 @@ from tools.util.callgraph import CallGraph, CallGraphCallees
 
 
 def test_callgraph_is_json_serializable() -> None:
-    call_graph = CallGraph(
-        {
-            "foo": {"internal": ["bar"], "external": ["printf"]},
-            "bar": {"internal": [], "external": ["malloc", "strcpy"]},
-        }
-    )
+    call_graph = CallGraph({
+        "foo": {"internal": ["bar"], "external": ["printf"]},
+        "bar": {"internal": [], "external": ["malloc", "strcpy"]},
+    })
 
     decoded = json.loads(json.dumps(call_graph))
 
@@ -22,12 +20,10 @@ def test_callgraph_is_json_serializable() -> None:
 
 
 def test_callgraph_round_trip() -> None:
-    original = CallGraph(
-        {
-            "foo": {"internal": ["bar"], "external": ["printf"]},
-            "bar": {"internal": [], "external": ["malloc"]},
-        }
-    )
+    original = CallGraph({
+        "foo": {"internal": ["bar"], "external": ["printf"]},
+        "bar": {"internal": [], "external": ["malloc"]},
+    })
 
     restored = CallGraph(json.loads(json.dumps(original)))
 
