@@ -1110,8 +1110,8 @@ def _merge_and_verify(
     Under `_CANONICAL_LOCK`: read the canonical file, compute the merge
     (`tools.util.edit_rules.merge_copy`), copy the canonical directory to a scratch
     directory, write the merged bytes into that copy and check that `goto-cc` still accepts the
-    file. Only then is the canonical file replaced (atomically, via `os.replace`); a merge that
-    does not compile is rejected and the canonical file left untouched. The lock is released
+    file. Only then is the canonical file replaced (atomically, via `os.replace`; if the canonical
+    file is a symlink, its target is replaced and the symlink kept); a merge that does not compile is rejected and the canonical file left untouched. The lock is released
     before the function's own CBMC run, on the scratch copy, so other sessions can merge meanwhile.
 
     One of those merges may change the contract of a function this one calls: only the functions
@@ -1257,9 +1257,12 @@ def _merge_and_verify(
                 )
                 scratch_file.write_bytes(canonical)
             else:
-                staged = canonical_file.with_name(f"{canonical_file.name}.avocado-merge")
+                # Replace the symlink's target rather than the symlink itself, so a symlinked
+                # source stays a symlink (whose directory determines the quoted `#include`s).
+                target = canonical_file.resolve()
+                staged = target.with_name(f"{target.name}.avocado-merge")
                 staged.write_bytes(merged)
-                Path(staged).replace(canonical_file)
+                staged.replace(target)
     if report.merged:
         if report.transplanted:
             logger.info(f"{function}: transplanted {', '.join(report.transplanted)}")
