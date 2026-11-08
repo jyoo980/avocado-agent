@@ -300,7 +300,8 @@ def run_cbmc(
     Args:
         function_to_verify (str): Name of the function to verify.
         file_containing_function_to_verify (str): Path to the C file defining the function. A
-            relative path is relative to the current working directory. A symlink is not followed.
+            symlink is not followed, so a quoted `#include` is looked up in the directory that
+            contains the symlink.
         include_dirs (list[str] | None): Directories to add to the C preprocessor's include
             search path. Forwarded to `goto-cc` as `-I` flags.
         call_graph (CallGraph | None): When provided, this pre-built call graph is used instead
@@ -361,7 +362,8 @@ def _run_cbmc_in_directory(
     # caller (which are relative to the process's working directory) must be resolved first. The
     # invocation log still records the path as the caller gave it. A symlinked source file is not
     # followed, so the preprocessor finds quoted `#include`s next to the symlink, as a compiler
-    # given the symlink would, and as `get_include_dirs` and mutation testing assume.
+    # given the symlink would, and as mutation testing, which writes mutants next to the symlink,
+    # assumes.
     resolved_file = str(resolve_parent(file_containing_function_to_verify))
     include_dirs = [str(Path(d).resolve()) for d in include_dirs or []]
 
@@ -1214,7 +1216,8 @@ def _list_goto_functions(
         tuple[set[str], set[str]] | None: The functions with a body, and the functions with a
             contract, in the compiled program; None when it could not be compiled or listed.
     """
-    # The commands run in a scratch directory, so paths are resolved first.
+    # The commands run in a scratch directory, so paths are made absolute first. As in
+    # `run_cbmc`, a symlinked source file is not followed.
     include_flags = " ".join(
         f"-I {shlex.quote(str(Path(d).resolve()))}" for d in include_dirs or []
     )
