@@ -25,10 +25,10 @@
 #                       file are specified concurrently. When it is unset, `avocado-verify`'s own
 #                       default applies. Set it to 1 for a sequential run.
 #   AVOCADO_REPO_ROOT   Checkout whose harness (`avocado-verify`, `avocado-run-cbmc`, `CLAUDE.md`,
-#                       `.claude/settings.json`) the run should use. Defaults to the checkout this
-#                       script lives in. Point it at a separate `git worktree` (with its own
-#                       `.venv` from `uv sync`) to run several experiments concurrently without
-#                       sharing a working directory.
+#                       the agent's Claude Code settings) the run should use. Defaults to the
+#                       checkout this script lives in. Point it at a separate `git worktree` (with
+#                       its own `.venv` from `uv sync`) to run several experiments concurrently
+#                       without sharing a working directory.
 #   AVOCADO_DATA_DIR    Where run directories and result files go. Defaults to
 #                       `<AVOCADO_REPO_ROOT>/avocado-experimental-data`.
 #   AVOCADO_SKIP_GLOB   Shell pattern; any `.c` file whose path matches it is removed from the
