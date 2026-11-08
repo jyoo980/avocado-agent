@@ -21,9 +21,6 @@ of version control yourself.
 - `summarize_quality.py <jsonl>...` prints per-function kill scores plus the
   mean and pooled aggregates, and their mean, spread, and standard deviation
   across several files.
-- `compare_on_intersection.py <baseline-jsonl> <treatment-jsonl>` compares two
-  arms over only the functions both specified. Use it when a run was cut short,
-  where pooling everything would reward whichever arm stopped earlier.
 
 ## Agent measurement
 
@@ -39,16 +36,11 @@ of version control yourself.
   and cost for a run in flight.
 - `summarize_agent_runs.py <run-dir>...` aggregates a finished run, charging a
   session killed by the harness timeout its full timeout rather than zero.
-- `session_timeline.py --projects-dir <dir> --timeout <secs> <run-log>...`
-  reads the Claude Code transcripts of the sessions that
-  `<stem>-avocado-verify.jsonl` run logs name, and attributes each second of a
-  session to model generation or to a tool call. It prints, for all the given
-  run logs together, the split between model time and tool time (by kind of
-  tool), and the sessions that cost the most; run it once per arm to compare
-  arms. Pass `--timeout` the `CLAUDE_TIMEOUT` the run used (default 1800): it
-  is charged to every session the harness killed.
 - `compare_arms.py` with `--baseline`, `--treatment`, `--runs` and
   `--benchmarks` is the paired comparison that decides a treatment.
+- `compare_on_intersection.py <baseline-jsonl> <treatment-jsonl>` compares two
+  arms over only the functions both specified. Use it when a run was cut short,
+  where pooling everything would reward whichever arm stopped earlier.
 - `rescore_run.sh <label> <run-id> <benchmark>...` re-scores a run's
   specifications from one checkout. Use it whenever a scoring pass was
   interrupted, or to make sure both arms were scored by identical code.
