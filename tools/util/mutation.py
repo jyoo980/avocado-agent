@@ -549,34 +549,33 @@ def _verify_mutant(
     )
 
 
-def _get_path_for_mutated_source(
-    directory: Path, path_to_original_source: Path, function: str, index: int
-) -> Path:
+def _get_path_for_mutated_source(path_to_original_source: Path, function: str, index: int) -> Path:
     """Return the path to which to write a mutated source file.
 
-    For example, given the directory `/app/test/data`, the path `/app/test/data/foo.c`, and
-    function `bar`, return `/app/test/data/foo__mutant_bar_1.c`. The function name is part of the
-    file name so that mutants of different functions in the same file -- which may be scored
-    concurrently -- never overwrite one another; mutant files still match the `*__mutant_*.c`
-    pattern that `make clean-mutants` removes, and `is_mutant_artifact()` recognizes them.
+    The mutated source file is in the same directory as the original source file. For example,
+    given the path `/app/test/data/foo.c`, function `bar`, and the index 1, return
+    `/app/test/data/foo__mutant_bar_1.c`. The function name is part of the file name so that
+    mutants of different functions in the same file -- which may be scored concurrently -- never
+    overwrite one another; mutant files still match the `*__mutant_*.c` pattern that
+    `make clean-mutants` removes.
 
     If the readable file name would exceed the filesystem's per-component length limit, the name
     is shortened; see `get_bounded_mutant_file_name`.
 
     Args:
-        directory (Path): The directory in which to write the mutant; normally the directory of
-            the original source, so that a quoted `#include` finds the same header.
-        path_to_original_source (Path): The path to the original source file.
+        path_to_original_source (Path): A path to an original source file.
         function (str): The function the mutant belongs to.
         index (int): The index of the mutant, used as a identifier for the mutant source path.
 
     Returns:
         Path: The path to which to write a mutated source file.
     """
-    return directory / get_bounded_mutant_file_name(
-        path_to_original_source.stem,
-        MUTANT_INFIX,
-        function,
-        index,
-        path_to_original_source.suffix,
+    return path_to_original_source.with_name(
+        get_bounded_mutant_file_name(
+            path_to_original_source.stem,
+            "mutant",
+            function,
+            index,
+            path_to_original_source.suffix,
+        )
     )
