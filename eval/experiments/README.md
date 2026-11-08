@@ -100,8 +100,10 @@ run on the account default.
 
 `run.log` prints the runner and the model on its first line and, with the `claude` runner,
 `claude-output.json`'s `modelUsage` records what was actually billed
-(with `avocado-verify`, the per-function records in `subject/<file>-avocado-verify.jsonl` carry
-each session's cost); check these after launching a new treatment.
+(with `avocado-verify`, the per-function records in `subject/<stem>-avocado-verify.jsonl` carry
+each session's cost, where `<stem>` is the `--file` path without its extension, so `--file
+src/foo.c` gives `subject/src/foo-avocado-verify.jsonl`); check these after launching a new
+treatment.
 
 ## Step 3: launch a batch
 
@@ -165,15 +167,16 @@ non-zero `exit-code`, in one of these ways:
 
 This starts one new run, in a new batch under the same tag, from the stopped run's `subject/`
 (its specs so far and the driver's `*.jsonl` logs) rather than a pristine copy, and passes the
-driver `--resume-from <file>-avocado-verify.jsonl`. The driver skips the functions already
+driver `--resume-from <stem>-avocado-verify.jsonl` (`<stem>` is the `--file` path without its
+extension, as above). The driver skips the functions already
 processed, retries the one that was cut off, and appends to the same log, so the resumed run's
-`subject/<file>-avocado-verify.jsonl` covers the whole run. The subject, file, harness, runner
+`subject/<stem>-avocado-verify.jsonl` covers the whole run. The subject, file, harness, runner
 and profile default to those in the stopped batch's `batch-info.txt`, which for the new batch
 also records `resumed_from`. `--profile` may name another account, as long as it sets the same
 `AVOCADO_MODEL`; `--timeout`, `--memory` and `--cpus` are not carried over, so pass them again.
 The `claude` runner (one session) cannot be resumed.
 
-Resuming needs the driver's log, `subject/<file>-avocado-verify.jsonl`, in the stopped run. A
+Resuming needs the driver's log, `subject/<stem>-avocado-verify.jsonl`, in the stopped run. A
 run that timed out or was killed before the driver wrote its log has nothing to resume from, and
 `--resume` refuses it; start a fresh run instead.
 
@@ -211,7 +214,7 @@ scratch directories, CBMC `*.goto` files and dot-directories under `$HOME`; file
 are listed in `outside-subject/SKIPPED.txt` instead of copied.
 With the `claude` runner `claude-output.json` has the session id, cost and final message.
 With `avocado-verify`, `run.log` is the driver's log (what the manual procedure saved as
-`claude-output.json`) and `subject/<file>-avocado-verify.jsonl` holds one record per function
+`claude-output.json`) and `subject/<stem>-avocado-verify.jsonl` holds one record per function
 plus a final `run_summary` record.
 
 ## Step 5: save a run
