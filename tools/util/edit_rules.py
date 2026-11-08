@@ -332,8 +332,8 @@ def copy_violations(
         base (bytes): The file as it was when the session's copy was taken.
         snapshot (bytes): The session's finished copy.
         function (str): The function the session works on.
-        stray_files (list[str]): Relative paths tagged `added:`, `modified:` or `deleted:`, as
-            returned by `tools.util.session_state.find_stray_files`.
+        stray_files (list[str]): The files other than the source file that the session touched,
+            as returned by `tools.util.session_state.find_stray_files`.
 
     Returns:
         list[Violation]: One entry per violation of rules 1-6 and 8, in `ordered_violations`
@@ -421,7 +421,7 @@ def merge_copy(
         return canonical, MergeReport(
             False, f"the session copy breaks {len(rendered)} edit rule(s)", violations=rendered
         )
-    if not any(_defines(item, function) for item in mine.snapshot.items):
+    if not any(item.kind == "function" and item.name == function for item in mine.snapshot.items):
         return canonical, MergeReport(
             False,
             f"{function} could not be found as a function definition in the session copy, so its "
@@ -461,10 +461,9 @@ def merge_copy(
             changed_since_fork.append(current.name)
         # The session's own function takes its contract from the copy even when the copy left
         # that contract as it was at the fork.
-        own = _defines(edited, function)
-        if my_text == their_text or (my_text == base_text and not own):
+        if my_text == their_text or (my_text == base_text and edited.name != function):
             continue
-        if not own and edited.name is None:
+        if edited.name is None:
             return canonical, MergeReport(
                 False,
                 f"the copy changes the contract of an item at line {edited.line} that the merge "
@@ -472,7 +471,7 @@ def merge_copy(
                 "nothing was merged",
                 dropped=dropped,
             )
-        if not own and edited.name is not None:
+        if edited.name != function:
             reason = _reason_not_carried(
                 edited.name, frozen_functions, their_changed=their_text != base_text
             )
@@ -1085,11 +1084,11 @@ def _render_new_item(item: _Item) -> str:
 
 
 def stray_file_violations(stray_files: list[str]) -> list[Violation]:
-    """Return the rule 6 violations for files added, changed or deleted beside the source file.
+    """Return the rule 6 violations for files added or changed beside the source file.
 
     Args:
-        stray_files (list[str]): Relative paths tagged `added:`, `modified:` or `deleted:`, as
-            returned by `tools.util.session_state.find_stray_files`.
+        stray_files (list[str]): Relative paths tagged `added:` or `modified:`, as returned by
+            `tools.util.session_state.find_stray_files`.
 
     Returns:
         list[Violation]: One violation per file.
@@ -1099,8 +1098,6 @@ def stray_file_violations(stray_files: list[str]) -> list[Violation]:
         change, _, path = entry.partition(":")
         if change == "added":
             message = f"{path} was added to the copied directory; delete it or move it outside"
-        elif change == "deleted":
-            message = f"{path} was deleted; restore it, only the source file may be edited"
         else:
             message = f"{path} was modified; restore it, only the source file may be edited"
         violations.append(Violation(6, message))
@@ -1918,23 +1915,7 @@ def _count_definitions(items: list[_Item], function: str) -> int:
     Returns:
         int: The number of definitions.
     """
-    return sum(1 for item in items if _defines(item, function))
-
-
-def _defines(item: _Item, function: str) -> bool:
-    """Return whether `item` is a definition of `function`.
-
-    A definition whose header differs between preprocessor branches defines every name its
-    headers give (`_Item.body_names`), not only the first one (`_Item.name`).
-
-    Args:
-        item (_Item): An item.
-        function (str): A function name.
-
-    Returns:
-        bool: True iff `item` is a function definition one of whose headers names `function`.
-    """
-    return item.kind == "function" and (item.name == function or function in item.body_names)
+    return sum(1 for item in items if item.kind == "function" and item.name == function)
 
 
 def _check_new_items(
