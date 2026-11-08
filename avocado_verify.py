@@ -62,6 +62,7 @@ from tools.util import (
     get_in_file_callees_for,
     get_in_file_callers_of,
     get_include_dirs,
+    resolve_parent,
     run_command,
 )
 from tools.util.callgraph import CallGraph
@@ -382,10 +383,10 @@ def main() -> None:
     if args.jobs < 1:
         parser.error("--jobs must be at least 1.")
 
-    # Unlike `Path.resolve`, `os.path.abspath` does not follow symlinks. Therefore, a symlinked
-    # file is compiled, and its mutants are written, in the directory that contains the symlink,
-    # which is also where `get_include_dirs` looks for the `include/` directory.
-    file_path = Path(os.path.abspath(args.file))  # ruff: ignore[os-path-abspath] - must not follow symlinks.
+    # A symlinked file is not followed. Therefore, it is compiled, and its mutants are written, in
+    # the directory that contains the symlink, which is also where `get_include_dirs` looks for
+    # the `include/` directory.
+    file_path = resolve_parent(args.file)
     if not file_path.is_file():
         logger.error(f"No such file: {file_path}")
         sys.exit(1)
