@@ -233,7 +233,8 @@ def test_run_command_timeout_kills_the_shells_children(tmp_path: Path) -> None:
     pids = [int(line) for line in pid_file.read_text().split()] if pid_file.exists() else []
     if len(pids) != 2:
         pytest.skip("the shell was killed before both of its children recorded their pids")
-    # Once the pipes are closed, a killed child can still be exiting, so poll briefly.
+    # `_run_command` returns only after every killed process has exited (a zombie counts as
+    # exited), but it gives up waiting after a few seconds, so poll briefly here too.
     deadline = time.monotonic() + 5
     while True:
         running = {pid: state for pid in pids if (state := _running_sleep_state(pid)) is not None}
