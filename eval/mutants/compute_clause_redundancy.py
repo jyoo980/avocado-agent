@@ -20,7 +20,7 @@ caller checks.
 Usage:
     % ./eval/mutants/compute_clause_redundancy.py --function <NAME> \
         --file <PATH_TO_C_FILE> \
-        [--auto-include] \
+        [--no-auto-include] \
         [--include-dirs <PATH_TO_INCLUDE_DIR>]... \
         [--keep-artifacts] \
         [--jsonl PATH]
@@ -214,7 +214,15 @@ def main() -> None:
     )
     parser.add_argument("--function", required=True)
     parser.add_argument("--file", required=True)
-    parser.add_argument("--auto-include", help=AUTO_INCLUDE_HELP, action="store_true")
+    parser.add_argument(
+        "--auto-include",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            AUTO_INCLUDE_HELP
+            + " It is searched after the --include-dirs directories. (default: %(default)s)"
+        ),
+    )
     parser.add_argument(
         "-I",
         "--include-dir",
