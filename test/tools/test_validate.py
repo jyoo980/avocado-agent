@@ -15,6 +15,7 @@ from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
 from tools.util.edit_rules import function_body_offsets
 from tools.util.session_state import (
     SESSION_FILE_NAME,
+    SNAPSHOT_IGNORE,
     SessionFileError,
     read_run_state,
     read_session_info,
@@ -127,6 +128,21 @@ def test_run_state_round_trips_and_is_left_out_of_session_copies(tmp_path: Path)
         assert not run_state_path(session.file).exists()
     finally:
         shutil.rmtree(session.directory, ignore_errors=True)
+
+
+def test_a_staged_run_state_file_is_left_out_of_session_copies(tmp_path: Path, monkeypatch) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    before = {path.name for path in canonical.parent.iterdir()}
+
+    def fail_to_replace(_self: Path, _target: Path) -> Path:
+        raise OSError("simulated")
+
+    # A failed replace leaves the staged file behind, as a concurrent reader can see it.
+    monkeypatch.setattr(Path, "replace", fail_to_replace)
+    write_run_state(canonical, verified={"swap"}, active={"partition"})
+    staged = {path.name for path in canonical.parent.iterdir()} - before
+    assert len(staged) == 1
+    assert SNAPSHOT_IGNORE(str(canonical.parent), list(staged)) == staged
 
 
 def test_reverify_has_nothing_to_do_when_only_the_target_changed(swap_session, monkeypatch) -> None:

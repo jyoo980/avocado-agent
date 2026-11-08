@@ -2206,12 +2206,10 @@ def _build_prompt(
         file_path,
     ]
     reverify_command = ["avocado-validate", "reverify", "--function", function, "--file", file_path]
-    # Absolute, as in `_merge_and_verify`, so the agent's current directory does not matter.
     for include_dir in include_dirs:
-        absolute_include_dir = str(Path(include_dir).resolve())
-        command += ["-I", absolute_include_dir]
-        edits_command += ["-I", absolute_include_dir]
-        reverify_command += ["-I", absolute_include_dir]
+        command += ["-I", include_dir]
+        edits_command += ["-I", include_dir]
+        reverify_command += ["-I", include_dir]
     callees = get_in_file_callees_for(function, call_graph)
     callers = get_in_file_callers_of(function, call_graph)
     callees_text = ", ".join(callees) if callees else "none"
