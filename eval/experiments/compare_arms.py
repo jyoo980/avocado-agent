@@ -118,7 +118,9 @@ def _run_metrics(
 
     Quality is pooled over every benchmark named, so an arm cannot look better by specifying fewer
     functions: `unscored` counts functions that were annotated but not mutation tested (they did
-    not verify), and `functions`/`verified` come from the harness's own run log.
+    not verify), and `functions`/`verified` come from the harness's own run log. A function none of
+    whose mutants was decided (each timed out or failed to compile or instrument) is skipped: its
+    kill score does not measure the spec.
 
     Args:
         data_dir (Path): Directory holding `<label>-<run-id>-<benchmark>.jsonl` and `runs/`.
@@ -145,9 +147,13 @@ def _run_metrics(
             if record.get("kind") != "mutation_summary":
                 continue
             if record.get("was_mutation_tested"):
+                record_killed = int(record["killed"])
+                record_decided = record_killed + int(record["survived"])
+                if record.get("kill_score") is None or not record_decided:
+                    continue
                 scores.append(float(record["kill_score"]))
-                killed += int(record["killed"])
-                decided += int(record["killed"]) + int(record["survived"])
+                killed += record_killed
+                decided += record_decided
                 tested += 1
             elif "did not verify" in record.get("metadata", ""):
                 # A function with a spec that does not verify scores nothing; count it so an arm
