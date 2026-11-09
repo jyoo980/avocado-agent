@@ -42,7 +42,8 @@ def autodetect_include_dirs(source_file: str) -> list[str]:
         source_file (str): Path to a `.c` file.
 
     Returns:
-        list[str]: `[<resolved include dir>]` when present, else `[]`.
+        list[str]: `[<source>/../include]` if `<source>` is named `src` and that directory
+            exists, else `[]`.
     """
     source_dir = resolve_parent(source_file).parent
     candidate = source_dir.parent / "include"
