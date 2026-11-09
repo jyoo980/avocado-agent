@@ -62,8 +62,8 @@ def test_removed_clause_path_does_not_split_multibyte_characters() -> None:
     encoded.decode("utf-8")  # Raises if a multibyte character was split.
 
 
-def test_removed_clause_path_of_a_symlink_is_named_for_its_target(tmp_path: Path) -> None:
-    # If the file were named for `foo.c`, its path would be the target, and writing it would
+def test_removed_clause_path_of_a_symlink_is_never_its_target(tmp_path: Path) -> None:
+    # If the file were named for `foo.c` alone, its path would be the target, and writing it would
     # overwrite the source.
     target = tmp_path / "foo__clause_drop_bar_0.c"
     target.write_text("int bar(void) { return 0; }\n", encoding="utf-8")
@@ -73,5 +73,28 @@ def test_removed_clause_path_of_a_symlink_is_named_for_its_target(tmp_path: Path
     except OSError as e:
         pytest.skip(f"cannot create symlinks: {e}")
     assert _get_path_to_source_with_removed_clause(tmp_path, source, "bar", 0) == (
-        tmp_path / "foo__clause_drop_bar_0__clause_drop_bar_0.c"
+        tmp_path / "foo__foo__clause_drop_bar_0__clause_drop_bar_0.c"
+    )
+
+
+def test_removed_clause_paths_of_a_symlink_and_a_sibling_named_like_its_target_differ(
+    tmp_path: Path,
+) -> None:
+    # `a.c -> x/foo.c` and a regular sibling `foo.c` may be scored concurrently; their
+    # removed-clause sources must not overwrite one another.
+    (tmp_path / "x").mkdir()
+    target = tmp_path / "x" / "foo.c"
+    target.write_text("int bar(void) { return 0; }\n", encoding="utf-8")
+    sibling = tmp_path / "foo.c"
+    sibling.write_text("int bar(void) { return 1; }\n", encoding="utf-8")
+    source = tmp_path / "a.c"
+    try:
+        source.symlink_to(Path("x") / "foo.c")
+    except OSError as e:
+        pytest.skip(f"cannot create symlinks: {e}")
+    assert _get_path_to_source_with_removed_clause(tmp_path, source, "bar", 0) == (
+        tmp_path / "a__foo__clause_drop_bar_0.c"
+    )
+    assert _get_path_to_source_with_removed_clause(tmp_path, sibling, "bar", 0) == (
+        tmp_path / "foo__clause_drop_bar_0.c"
     )
