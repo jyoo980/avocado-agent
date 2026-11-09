@@ -152,6 +152,7 @@ def test_retry_note_leads_the_prompt_and_attempts_rule_is_stated() -> None:
 import json
 import re
 import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -514,6 +515,23 @@ def test_merge_and_verify_writes_through_a_symlinked_canonical_file(
     assert _CONTRACTS["swap"] in target.read_bytes()
 
 
+def test_merge_and_verify_keeps_the_permission_bits_of_the_canonical_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    canonical.chmod(0o640)
+    monkeypatch.setattr(avocado_verify, "verify_function", _FakeVerify())
+    session = _fork_session("swap", canonical)
+    try:
+        _write_contract(session.file, "swap", _CONTRACTS["swap"])
+        report, _cbmc, _reverified = _merge_and_verify(session, canonical, include_dirs=[])
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    assert report.merged, report
+    assert _CONTRACTS["swap"] in canonical.read_bytes()
+    assert stat.S_IMODE(canonical.stat().st_mode) == 0o640
+
+
 class _FakeVerify:
     """A `verify_function` stand-in that fails the functions named in `failing` and records calls."""
 
@@ -651,7 +669,8 @@ def test_merge_and_verify_reverts_carried_edits_that_break_a_verified_caller(
     assert _CONTRACTS["partition"] in merged
     assert _CONTRACTS["swap"] not in merged
     assert function_line(merged, "swap") is not None
-    assert not reverified["quickSort"].is_function_verified
+    # The verdicts were on the file with the reverted edits, which was never written.
+    assert reverified == {}
     # Nothing that was verified before is lost.
     assert {"swap", "quickSort"} <= state.verified
     assert original.count(b"__CPROVER_") == 0 and merged.count(b"__CPROVER_ensures") == 0
