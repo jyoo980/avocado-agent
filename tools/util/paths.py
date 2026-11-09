@@ -23,3 +23,28 @@ def resolve_parent(path: str) -> Path:
     """
     absolute = Path(path).absolute()
     return absolute.parent.resolve() / absolute.name
+
+
+def autodetect_include_dirs(source_file: str) -> list[str]:
+    """Return `[<source>/../include]` if `<source>` is named `src` and that directory exists.
+
+    Otherwise, return an empty list.
+
+    Many CMake projects keep public headers in `<project>/include/` while sources live in
+    `<project>/src/`. When that layout holds, returning the sibling `include/` directory lets
+    CBMC resolve `#include "foo.h"` without the caller having to configure paths by hand.
+
+    `<source>` is the directory that contains `source_file`, without following `source_file`
+    itself if it is a symlink, so a symlinked source file uses the `include/` directory of the
+    project that contains the symlink.
+
+    Args:
+        source_file (str): Path to a `.c` file.
+
+    Returns:
+        list[str]: `[<source>/../include]` if `<source>` is named `src` and that directory
+            exists, else `[]`.
+    """
+    source_dir = resolve_parent(source_file).parent
+    candidate = source_dir.parent / "include"
+    return [str(candidate)] if source_dir.name == "src" and candidate.is_dir() else []
