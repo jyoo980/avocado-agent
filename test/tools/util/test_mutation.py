@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+import pytest
+
 from tools.run_cbmc import max_concurrent_subprocesses
 from tools.util.mutation import _get_path_for_mutated_source, _mutation_worker_count
 
@@ -38,3 +40,18 @@ def test_mutant_path_is_bounded_for_long_names() -> None:
         assert path.suffix == ".c"
     assert path_a != path_b
     assert path_a != _get_path_for_mutated_source(source, long_a, 4)
+
+
+def test_mutant_path_of_a_symlink_is_named_for_its_target(tmp_path: Path) -> None:
+    # If the mutant were named for `foo.c`, its path would be the target, and writing the mutant
+    # would overwrite the source.
+    target = tmp_path / "foo__mutant_bar_0.c"
+    target.write_text("int bar(void) { return 0; }\n", encoding="utf-8")
+    source = tmp_path / "foo.c"
+    try:
+        source.symlink_to(target.name)
+    except OSError as e:
+        pytest.skip(f"cannot create symlinks: {e}")
+    assert _get_path_for_mutated_source(source, "bar", 0) == (
+        tmp_path / "foo__mutant_bar_0__mutant_bar_0.c"
+    )

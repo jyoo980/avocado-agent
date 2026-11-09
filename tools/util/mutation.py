@@ -14,7 +14,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass, field
-from functools import cache, partial
+from functools import cache
 from pathlib import Path
 
 from loguru import logger
@@ -23,7 +23,6 @@ from eval.mutants.mutate_function import Mutant, get_mutants
 from eval.mutants.util import (
     check_expected_cbmc_return_code,
     get_bounded_mutant_file_name,
-    get_mutant_paths,
     is_valid_mutation_candidate,
 )
 from tools.construct_call_graph import construct_call_graph
@@ -327,17 +326,10 @@ def generate_mutants_and_compute_score(
         json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
     )
 
-    paths_to_mutants = dict(
-        zip(
-            get_mutant_paths(
-                source_path,
-                partial(_get_path_for_mutated_source, source_path, target_function),
-                len(mutants),
-            ),
-            mutants,
-            strict=True,
-        )
-    )
+    paths_to_mutants = {
+        _get_path_for_mutated_source(source_path, target_function, i): mutant
+        for i, mutant in enumerate(mutants)
+    }
     # Heads-up to stderr so an agent polling the run can see the slow phase has begun and is
     # making progress. Written to stderr (not stdout) so it never contaminates the kill-score
     # result, and flushed so it is not buffered until the long run completes.
@@ -597,6 +589,9 @@ def _get_path_for_mutated_source(path_to_original_source: Path, function: str, i
     overwrite one another; mutant files still match the `*__mutant_*.c` pattern that
     `make clean-mutants` removes.
 
+    If the original source file is a symlink, the name is built from the name of its target, such
+    as `foo_impl__mutant_bar_1.c` for `foo.c -> foo_impl.c`, so the result is never the target.
+
     If the readable file name would exceed the filesystem's per-component length limit, the name
     is shortened; see `get_bounded_mutant_file_name`.
 
@@ -608,12 +603,13 @@ def _get_path_for_mutated_source(path_to_original_source: Path, function: str, i
     Returns:
         Path: The path to which to write a mutated source file.
     """
+    target = path_to_original_source.resolve()
     return path_to_original_source.with_name(
         get_bounded_mutant_file_name(
-            path_to_original_source.stem,
+            target.stem,
             "mutant",
             function,
             index,
-            path_to_original_source.suffix,
+            target.suffix,
         )
     )
