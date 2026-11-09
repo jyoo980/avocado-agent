@@ -1153,6 +1153,8 @@ def _merge_and_verify(
     function = session.function
     absolute_include_dirs = [str(Path(directory).resolve()) for directory in include_dirs]
     reverified: dict[str, RunCbmcResult] = {}
+    # Verdicts of `reverified` to record in `state` once the merged file has been written.
+    to_record: dict[str, RunCbmcResult] = {}
     with _CANONICAL_LOCK:
         canonical = canonical_file.read_bytes()
         try:
@@ -1247,8 +1249,8 @@ def _merge_and_verify(
                     )
                     returncode = compiles(merged)
                 else:
-                    for other, result in reverified.items():
-                        state.record(other, result)
+                    # Recorded only once the merged file has been written, below.
+                    to_record = reverified
             if returncode != 0:
                 report = replace(
                     report,
@@ -1261,8 +1263,23 @@ def _merge_and_verify(
                 # itself, so that the link keeps pointing to the file that has the merged edits.
                 destination = canonical_file.resolve()
                 staged = destination.with_name(f"{destination.name}.avocado-merge")
-                staged.write_bytes(merged)
-                staged.replace(destination)
+                try:
+                    staged.write_bytes(merged)
+                    staged.replace(destination)
+                except OSError as e:
+                    staged.unlink(missing_ok=True)
+                    report = replace(
+                        report,
+                        merged=False,
+                        reason=f"could not write the merged file to {destination}: {e}",
+                    )
+                    scratch_file.write_bytes(canonical)
+                    # The re-verified verdicts are on a file that was not written.
+                    reverified = {}
+                else:
+                    if state is not None:
+                        for other, result in to_record.items():
+                            state.record(other, result)
     if report.merged:
         if report.transplanted:
             logger.info(f"{function}: transplanted {', '.join(report.transplanted)}")

@@ -579,6 +579,50 @@ def test_merge_and_verify_carries_a_callee_fix_and_reverifies_its_verified_calle
     assert state.active == set() and state.verified == {"swap", "quickSort", "partition"}
 
 
+def test_merge_and_verify_rejects_a_merge_whose_file_cannot_be_written(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    original = canonical.read_bytes()
+    monkeypatch.setattr(avocado_verify, "verify_function", _FakeVerify())
+    real_replace = Path.replace
+
+    def failing_replace(self: Path, target):
+        if self.name.endswith(".avocado-merge"):
+            raise OSError("disk full")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", failing_replace)
+    state = avocado_verify._MergeState(active={"partition"}, verified={"swap", "quickSort"})
+    recorded: list[str] = []
+    real_record = state.record
+
+    def spying_record(function: str, cbmc: RunCbmcResult) -> None:
+        recorded.append(function)
+        real_record(function, cbmc)
+
+    monkeypatch.setattr(state, "record", spying_record)
+    session = _partition_session_that_fixes_swap(canonical)
+    try:
+        report, cbmc, reverified = _merge_and_verify(
+            session,
+            canonical,
+            include_dirs=[],
+            call_graph=_call_graph_where_quicksort_also_calls_swap(),
+            state=state,
+        )
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    assert not report.merged and "could not write" in report.reason, report
+    assert canonical.read_bytes() == original
+    assert not list(tmp_path.rglob("*.avocado-merge"))
+    # The carried edits' re-verified verdicts are on a file that was not written, so they are
+    # neither returned nor recorded; only the merging function's own verdict is.
+    assert reverified == {}
+    assert recorded == ["partition"]
+    assert cbmc.function == "partition"
+
+
 def test_merge_and_verify_reverts_carried_edits_that_break_a_verified_caller(
     tmp_path: Path, monkeypatch
 ) -> None:
