@@ -25,6 +25,7 @@ from tools.util import (
     get_in_file_callees_for,
     get_stub_paths_for,
     get_unstubbed_external_callees_for,
+    resolve_parent,
     run_command,
 )
 from tools.util.callgraph import CallGraph
@@ -294,7 +295,9 @@ def run_cbmc(
 
     Args:
         function_to_verify (str): Name of the function to verify.
-        file_containing_function_to_verify (str): Path to the C file defining the function.
+        file_containing_function_to_verify (str): Path to the C file defining the function. A
+            symlink is not followed, so a quoted `#include` is looked up in the directory that
+            contains the symlink.
         include_dirs (list[str] | None): Directories to add to the C preprocessor's include
             search path. Forwarded to `goto-cc` as `-I` flags.
         call_graph (CallGraph | None): When provided, this pre-built call graph is used instead
@@ -353,8 +356,11 @@ def _run_cbmc_in_directory(
     """
     # The pipeline's commands are executed relative to `cwd`, so relative paths given by the
     # caller (which are relative to the process's working directory) must be resolved first. The
-    # invocation log still records the path as the caller gave it.
-    resolved_file = str(Path(file_containing_function_to_verify).resolve())
+    # invocation log still records the path as the caller gave it. A symlinked source file is not
+    # followed, so the preprocessor finds quoted `#include`s next to the symlink, as a compiler
+    # given the symlink would, and as mutation testing, which writes mutants next to the symlink,
+    # assumes.
+    resolved_file = str(resolve_parent(file_containing_function_to_verify))
     include_dirs = [str(Path(d).resolve()) for d in include_dirs or []]
 
     if call_graph is None:
@@ -1149,11 +1155,12 @@ def _list_goto_functions(
         tuple[set[str], set[str]] | None: The functions with a body, and the functions with a
             contract, in the compiled program; None when it could not be compiled or listed.
     """
-    # The commands run in a scratch directory, so paths are resolved first.
+    # The commands run in a scratch directory, so paths are made absolute first. As in
+    # `run_cbmc`, a symlinked source file is not followed.
     include_flags = " ".join(
         f"-I {shlex.quote(str(Path(d).resolve()))}" for d in include_dirs or []
     )
-    source = shlex.quote(str(Path(file_path).resolve()))
+    source = shlex.quote(str(resolve_parent(file_path)))
     try:
         with tempfile.TemporaryDirectory(prefix="avocado-compiled-") as scratch_dir:
             commands = (
