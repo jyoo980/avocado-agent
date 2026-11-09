@@ -34,7 +34,6 @@ import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from enum import StrEnum
-from functools import partial
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -44,7 +43,6 @@ from eval.mutants.mutate_specification import ClauseMutant, get_clause_mutants
 from eval.mutants.util import (
     check_expected_cbmc_return_code,
     get_bounded_mutant_file_name,
-    get_mutant_paths,
     is_valid_mutation_candidate,
 )
 from tools.construct_call_graph import construct_call_graph
@@ -353,17 +351,10 @@ def compute_clause_redundancy_score(
         return None
 
     mutants = get_clause_mutants(str(source_path), function_name)
-    paths_to_removed_clauses = dict(
-        zip(
-            get_mutant_paths(
-                source_path,
-                partial(_get_path_to_source_with_removed_clause, source_path, function_name),
-                len(mutants),
-            ),
-            mutants,
-            strict=True,
-        )
-    )
+    paths_to_removed_clauses = {
+        _get_path_to_source_with_removed_clause(source_path, function_name, i): mutant
+        for i, mutant in enumerate(mutants)
+    }
 
     in_file_callers = _get_in_file_callers(source_path, function_name)
     in_file_callers_to_baseline_verification_results = (
@@ -504,6 +495,10 @@ def _get_path_to_source_with_removed_clause(
     concurrently -- never overwrite one another; the files still match the `*__clause_drop_*.c`
     pattern that `make clean-mutants` removes.
 
+    If the original source file is a symlink, the name is built from the name of its target, such
+    as `foo_impl__clause_drop_bar_1.c` for `foo.c -> foo_impl.c`, so the result is never the
+    target.
+
     If the readable file name would exceed the filesystem's per-component length limit, the name
     is shortened; see `get_bounded_mutant_file_name`.
 
@@ -515,13 +510,14 @@ def _get_path_to_source_with_removed_clause(
     Returns:
         Path: The path to which to write a mutated source file.
     """
+    target = path_to_original_source.resolve()
     return path_to_original_source.with_name(
         get_bounded_mutant_file_name(
-            path_to_original_source.stem,
+            target.stem,
             "clause_drop",
             function,
             index,
-            path_to_original_source.suffix,
+            target.suffix,
         )
     )
 

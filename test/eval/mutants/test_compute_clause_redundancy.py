@@ -116,3 +116,18 @@ def test_clause_redundancy_scoring_uses_the_include_directories(tmp_path: Path) 
     _assert_expected_clause_results(
         compute_clause_redundancy_score(str(source), "clamp", include_dirs=[str(include_dir)])
     )
+
+
+def test_removed_clause_path_of_a_symlink_is_named_for_its_target(tmp_path: Path) -> None:
+    # If the file were named for `foo.c`, its path would be the target, and writing it would
+    # overwrite the source.
+    target = tmp_path / "foo__clause_drop_bar_0.c"
+    target.write_text("int bar(void) { return 0; }\n", encoding="utf-8")
+    source = tmp_path / "foo.c"
+    try:
+        source.symlink_to(target.name)
+    except OSError as e:
+        pytest.skip(f"cannot create symlinks: {e}")
+    assert _get_path_to_source_with_removed_clause(source, "bar", 0) == (
+        tmp_path / "foo__clause_drop_bar_0__clause_drop_bar_0.c"
+    )
