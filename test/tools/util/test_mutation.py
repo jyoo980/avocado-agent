@@ -33,9 +33,9 @@ def test_mutant_path_is_bounded_for_long_names() -> None:
     assert path_a != _get_path_for_mutated_source(source, long_a, 4)
 
 
-def test_mutant_path_of_a_symlink_is_named_for_its_target(tmp_path: Path) -> None:
-    # If the mutant were named for `foo.c`, its path would be the target, and writing the mutant
-    # would overwrite the source.
+def test_mutant_path_of_a_symlink_is_never_its_target(tmp_path: Path) -> None:
+    # If the mutant were named for `foo.c` alone, its path would be the target, and writing the
+    # mutant would overwrite the source.
     target = tmp_path / "foo__mutant_bar_0.c"
     target.write_text("int bar(void) { return 0; }\n", encoding="utf-8")
     source = tmp_path / "foo.c"
@@ -44,5 +44,28 @@ def test_mutant_path_of_a_symlink_is_named_for_its_target(tmp_path: Path) -> Non
     except OSError as e:
         pytest.skip(f"cannot create symlinks: {e}")
     assert _get_path_for_mutated_source(source, "bar", 0) == (
-        tmp_path / "foo__mutant_bar_0__mutant_bar_0.c"
+        tmp_path / "foo__foo__mutant_bar_0__mutant_bar_0.c"
+    )
+
+
+def test_mutant_paths_of_a_symlink_and_a_sibling_named_like_its_target_differ(
+    tmp_path: Path,
+) -> None:
+    # `a.c -> x/foo.c` and a regular sibling `foo.c` may be scored concurrently; their mutants
+    # must not overwrite one another.
+    (tmp_path / "x").mkdir()
+    target = tmp_path / "x" / "foo.c"
+    target.write_text("int bar(void) { return 0; }\n", encoding="utf-8")
+    sibling = tmp_path / "foo.c"
+    sibling.write_text("int bar(void) { return 1; }\n", encoding="utf-8")
+    source = tmp_path / "a.c"
+    try:
+        source.symlink_to(Path("x") / "foo.c")
+    except OSError as e:
+        pytest.skip(f"cannot create symlinks: {e}")
+    assert _get_path_for_mutated_source(source, "bar", 0) == (
+        tmp_path / "a__foo__mutant_bar_0.c"
+    )
+    assert _get_path_for_mutated_source(sibling, "bar", 0) == (
+        tmp_path / "foo__mutant_bar_0.c"
     )

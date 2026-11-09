@@ -13,6 +13,31 @@ _CBMC_RETURN_CODES_SUCCESS_FAILURE_TIMEOUT = frozenset({0, 10, 124})
 _MAX_FILE_NAME_BYTES = 255
 
 
+def get_mutant_file_stem(path_to_original_source: Path) -> str:
+    """Return the stem from which to build the names of the mutants of a source file.
+
+    For a file that is not a symlink, this is its stem: `foo` for `foo.c`. For a symlink, the stem
+    of its target is appended if it differs, as in `a__foo` for `a.c -> ../x/foo.c`. So:
+
+     * The mutants of distinct files in one directory get distinct names, even if they are
+       symlinks whose targets have the same name as each other or as a regular sibling file.
+     * A mutant file name is never the name of the target, because its stem is longer than the
+       target's stem. For example, for `foo.c -> foo__mutant_bar_0.c`, the mutant name
+       `foo__foo__mutant_bar_0__mutant_bar_0.c` is not `foo__mutant_bar_0.c`.
+
+    Args:
+        path_to_original_source (Path): The path to the original source file.
+
+    Returns:
+        str: The stem from which to build mutant file names.
+    """
+    stem = path_to_original_source.stem
+    if not path_to_original_source.is_symlink():
+        return stem
+    target_stem = path_to_original_source.resolve().stem
+    return stem if target_stem == stem else f"{stem}__{target_stem}"
+
+
 def get_bounded_mutant_file_name(
     stem: str, marker: str, function: str, index: int, suffix: str
 ) -> str:

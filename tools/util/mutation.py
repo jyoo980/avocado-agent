@@ -22,6 +22,7 @@ from eval.mutants.mutate_function import Mutant, get_mutants
 from eval.mutants.util import (
     check_expected_cbmc_return_code,
     get_bounded_mutant_file_name,
+    get_mutant_file_stem,
     is_valid_mutation_candidate,
 )
 from tools.construct_call_graph import construct_call_graph
@@ -550,8 +551,9 @@ def _get_path_for_mutated_source(path_to_original_source: Path, function: str, i
     overwrite one another; mutant files still match the `*__mutant_*.c` pattern that
     `make clean-mutants` removes.
 
-    If the original source file is a symlink, the name is built from the name of its target, such
-    as `foo_impl__mutant_bar_1.c` for `foo.c -> foo_impl.c`, so the result is never the target.
+    If the original source file is a symlink, the name also contains the name of its target, such
+    as `foo__foo_impl__mutant_bar_1.c` for `foo.c -> foo_impl.c`, so the result is never the target
+    and differs from the mutant paths of other files in the directory; see `get_mutant_file_stem`.
 
     If the readable file name would exceed the filesystem's per-component length limit, the name
     is shortened; see `get_bounded_mutant_file_name`.
@@ -564,13 +566,12 @@ def _get_path_for_mutated_source(path_to_original_source: Path, function: str, i
     Returns:
         Path: The path to which to write a mutated source file.
     """
-    target = path_to_original_source.resolve()
     return path_to_original_source.with_name(
         get_bounded_mutant_file_name(
-            target.stem,
+            get_mutant_file_stem(path_to_original_source),
             "mutant",
             function,
             index,
-            target.suffix,
+            path_to_original_source.suffix,
         )
     )
