@@ -20,11 +20,11 @@ from pathlib import Path
 from loguru import logger
 
 from tools.util import (
+    autodetect_include_dirs,
     build_stub_index,
     get_call_graph,
     get_functions_with_cprover_annotations,
     get_unstubbed_external_callees_for,
-    resolve_parent,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -182,7 +182,7 @@ def _verify_program(
         skipped_functions = set(call_graph.keys()).difference(names_of_functions_to_verify)
 
     include_dirs = (
-        [*_autodetect_include_dirs(file), *include_dirs] if auto_include else include_dirs
+        [*autodetect_include_dirs(file), *include_dirs] if auto_include else include_dirs
     )
     if include_dirs:
         logger.debug(f"[auto-include] using {include_dirs}")
@@ -205,26 +205,6 @@ def _verify_program(
         results.append(result)
     return ProgramVerificationResult(file, list(skipped_functions), results)
 
-
-def _autodetect_include_dirs(source_file: str) -> list[str]:
-    """Return `[<source>/../include]` if that directory exists, else an empty list.
-
-    Many CMake projects keep public headers in `<project>/include/` while sources live in
-    `<project>/src/`. When that layout holds, returning the sibling `include/` directory lets
-    CBMC resolve `#include "foo.h"` without the caller having to configure paths by hand.
-
-    `<source>` is the directory that contains `source_file`, without following `source_file`
-    itself if it is a symlink, so a symlinked source file uses the `include/` directory of the
-    project that contains the symlink.
-
-    Args:
-        source_file (str): Path to a `.c` file.
-
-    Returns:
-        list[str]: `[<resolved include dir>]` when present, else `[]`.
-    """
-    candidate = resolve_parent(source_file).parent.parent / "include"
-    return [str(candidate)] if candidate.is_dir() else []
 
 
 def _verify_function(

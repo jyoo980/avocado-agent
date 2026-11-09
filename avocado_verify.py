@@ -59,6 +59,7 @@ from tools.run_cbmc_and_mutation_testing import (
     verify_function,
 )
 from tools.util import (
+    autodetect_include_dirs,
     get_in_file_callees_for,
     get_in_file_callers_of,
     resolve_parent,
@@ -381,14 +382,14 @@ def main() -> None:
         parser.error("--jobs must be at least 1.")
 
     # A symlinked file is not followed. Therefore, it is compiled, and its mutants are written, in
-    # the directory that contains the symlink, which is also where `_autodetect_include_dirs` looks
+    # the directory that contains the symlink, which is also where `autodetect_include_dirs` looks
     # for the `include/` directory.
     file_path = resolve_parent(args.file)
     if not file_path.is_file():
         logger.error(f"No such file: {file_path}")
         sys.exit(1)
 
-    if include_dirs := _autodetect_include_dirs(str(file_path)):
+    if include_dirs := autodetect_include_dirs(str(file_path)):
         logger.info(f"[auto-include] using {include_dirs}")
 
     path_to_call_graph = construct_call_graph(str(file_path))
@@ -830,7 +831,7 @@ def _verify_via_agent(
                 function, new_sessions, canonical_file
             )
             attempts += new_attempts
-            stray_files = _report_stray_edits(session, canonical_file.parent)
+            stray_files = _report_stray_edits(session, canonical_file)
             _mirror_tool_logs(session, canonical_file)
             report, cbmc, newly_reverified = _merge_and_verify(
                 session,
@@ -1313,21 +1314,21 @@ def _merge_and_verify(
     return report, cbmc, reverified
 
 
-def _report_stray_edits(session: _Session, canonical_dir: Path) -> list[str]:
+def _report_stray_edits(session: _Session, canonical_file: Path) -> list[str]:
     """Return the files other than the source file that the agent added or changed in its copy.
 
     Headers, other sources and new files the agent created in the private copy are never merged;
     they are named here so the run log shows when a contract depended on one. A file is compared
-    to the canonical directory's copy of it, which no session ever writes.
+    as `tools.util.session_state.find_stray_files` describes.
 
     Args:
         session (_Session): The finished session.
-        canonical_dir (Path): The canonical source directory.
+        canonical_file (Path): The canonical source file.
 
     Returns:
         list[str]: Relative paths tagged `added:` or `modified:`, in sorted order.
     """
-    stray = find_stray_files(session.file, canonical_dir)
+    stray = find_stray_files(session.file, canonical_file, session.fork_base)
     if stray:
         logger.warning(
             f"{session.function}: files changed in the session copy are not merged: {stray}"
@@ -2257,27 +2258,6 @@ def _log_summary(results: list[FunctionVerificationResult], log_path: Path) -> N
         f"{verified}/{len(results)} function(s) verified ({vacuous_count} vacuously); log written "
         f"to {log_path}"
     )
-
-
-def _autodetect_include_dirs(source_file: str) -> list[str]:
-    """Return `[<source>/../include]` if that directory exists, else an empty list.
-
-    Many CMake projects keep public headers in `<project>/include/` while sources live in
-    `<project>/src/`. When that layout holds, returning the sibling `include/` directory lets
-    CBMC resolve `#include "foo.h"` without the caller having to configure paths by hand.
-
-    `<source>` is the directory that contains `source_file`, without following `source_file`
-    itself if it is a symlink, so a symlinked source file uses the `include/` directory of the
-    project that contains the symlink.
-
-    Args:
-        source_file (str): Path to a `.c` file.
-
-    Returns:
-        list[str]: `[<resolved include dir>]` when present, else `[]`.
-    """
-    candidate = resolve_parent(source_file).parent.parent / "include"
-    return [str(candidate)] if candidate.is_dir() else []
 
 
 if __name__ == "__main__":
