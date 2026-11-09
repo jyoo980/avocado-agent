@@ -14,6 +14,7 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 
 from loguru import logger
@@ -21,6 +22,7 @@ from loguru import logger
 from eval.mutants.mutate_function import Mutant, get_mutants
 from eval.mutants.util import (
     check_expected_cbmc_return_code,
+    create_mutant_file,
     get_bounded_mutant_file_name,
     get_mutant_file_stem,
     is_valid_mutation_candidate,
@@ -317,32 +319,37 @@ def generate_mutants_and_compute_score(
         json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
     )
 
-    paths_to_mutants = {
-        _get_path_for_mutated_source(source_path, target_function, i): mutant
-        for i, mutant in enumerate(mutants)
-    }
-    # Heads-up to stderr so an agent polling the run can see the slow phase has begun and is
-    # making progress. Written to stderr (not stdout) so it never contaminates the kill-score
-    # result, and flushed so it is not buffered until the long run completes.
-    total = len(paths_to_mutants)
-    max_workers = _mutation_worker_count(total)
-    print(
-        f"Verified {target_function}; now running mutation testing on {total} "
-        f"mutants across up to {max_workers} worker(s) (one CBMC run each, with a timeout "
-        f"of {mutant_timeout_sec} s on each CBMC step) -- this can take several minutes; "
-        "do not interrupt.",
-        file=sys.stderr,
-        flush=True,
-    )
-
-    # Verify mutants concurrently: each mutant is an independent CBMC run, so a bounded thread
-    # pool overlaps their (subprocess-bound, GIL-releasing) work. Results are collected as each
-    # future completes -- emitting a flushed running tally to stderr so a consumer (a polling
-    # agent or a human at the terminal) sees forward motion -- then slotted back into original
-    # mutant order so survivor diffs render deterministically downstream. stderr (not stdout) is
-    # used so progress never contaminates the kill-score result.
+    # Only the files created here are deleted below; an existing file is never overwritten.
+    paths_to_mutants: dict[Path, Mutant] = {}
+    total = len(mutants)
     mutant_vresults: list[MutantVerificationResult | None] = [None] * total
     try:
+        for i, mutant in enumerate(mutants):
+            path = create_mutant_file(
+                partial(_get_path_for_mutated_source, source_path, target_function, i),
+                mutant.mutant_source,
+            )
+            paths_to_mutants[path] = mutant
+        # Heads-up to stderr so an agent polling the run can see the slow phase has begun and is
+        # making progress. Written to stderr (not stdout) so it never contaminates the kill-score
+        # result, and flushed so it is not buffered until the long run completes.
+        max_workers = _mutation_worker_count(total)
+        print(
+            f"Verified {target_function}; now running mutation testing on {total} "
+            f"mutants across up to {max_workers} worker(s) (one CBMC run each, with a timeout "
+            f"of {mutant_timeout_sec} s on each CBMC step) -- this can take several minutes; "
+            "do not interrupt.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+        # Verify mutants concurrently: each mutant is an independent CBMC run, so a bounded
+        # thread pool overlaps their (subprocess-bound, GIL-releasing) work. Results are
+        # collected as each future completes -- emitting a flushed running tally to stderr so a
+        # consumer (a polling agent or a human at the terminal) sees forward motion -- then
+        # slotted back into original mutant order so survivor diffs render deterministically
+        # downstream. stderr (not stdout) is used so progress never contaminates the kill-score
+        # result.
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_index = {
                 executor.submit(
@@ -458,7 +465,7 @@ def _aggregate_mutation_score(
 
 
 def _verify_mutant(
-    path_to_write_mutant: Path,
+    mutant_path: Path,
     mutant: Mutant,
     include_dirs: list[str] | None,
     call_graph: CallGraph,
@@ -475,7 +482,7 @@ def _verify_mutant(
     and the shared `call_graph` is read-only.
 
     Args:
-        path_to_write_mutant (Path): The path to which the mutated source is written.
+        mutant_path (Path): The file that holds the mutated source.
         mutant (Mutant): The mutant.
         include_dirs (list[str] | None): Include directories, which are forwarded to `run_cbmc()`.
         call_graph (CallGraph): The original function's call graph, reused verbatim for this
@@ -488,10 +495,9 @@ def _verify_mutant(
             `compile_failed` is True iff goto-cc rejected the source, in which case CBMC was
             not run.
     """
-    path_to_write_mutant.write_text(mutant.mutant_source, encoding="utf-8")
     cbmc_result = run_cbmc(
         function_to_verify=mutant.function,
-        file_containing_function_to_verify=str(path_to_write_mutant),
+        file_containing_function_to_verify=str(mutant_path),
         include_dirs=include_dirs,
         call_graph=call_graph,
         timeout_sec=timeout_sec,
@@ -499,7 +505,7 @@ def _verify_mutant(
     if cbmc_result.timed_out:
         return MutantVerificationResult(
             mutant,
-            path_to_mutant=str(path_to_write_mutant),
+            path_to_mutant=str(mutant_path),
             killed=False,
             returncode=cbmc_result.returncode,
             timed_out=True,
@@ -511,7 +517,7 @@ def _verify_mutant(
             check_expected_cbmc_return_code(cbmc_result.returncode)
             return MutantVerificationResult(
                 mutant,
-                path_to_mutant=str(path_to_write_mutant),
+                path_to_mutant=str(mutant_path),
                 killed=cbmc_result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
                 returncode=cbmc_result.returncode,
             )
@@ -519,13 +525,13 @@ def _verify_mutant(
         if compile_failed:
             logger.warning(
                 f"mutant failed to compile: {mutant.function} at "
-                f"{path_to_write_mutant}:{mutant.line}:{mutant.column} "
+                f"{mutant_path}:{mutant.line}:{mutant.column} "
                 f"({mutant.operator_class}: {mutant.original_operator} -> "
                 f"{mutant.replacement_operator}); goto-cc returncode={cbmc_result.returncode}"
             )
         return MutantVerificationResult(
             mutant,
-            path_to_mutant=str(path_to_write_mutant),
+            path_to_mutant=str(mutant_path),
             killed=False,
             returncode=cbmc_result.returncode,
             compile_failed=compile_failed,
@@ -535,25 +541,29 @@ def _verify_mutant(
     check_expected_cbmc_return_code(cbmc_result.returncode)
     return MutantVerificationResult(
         mutant,
-        path_to_mutant=str(path_to_write_mutant),
+        path_to_mutant=str(mutant_path),
         killed=cbmc_result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
         returncode=cbmc_result.returncode,
     )
 
 
-def _get_path_for_mutated_source(path_to_original_source: Path, function: str, index: int) -> Path:
+def _get_path_for_mutated_source(
+    path_to_original_source: Path, function: str, index: int, attempt: int = 0
+) -> Path:
     """Return the path to which to write a mutated source file.
 
     The mutated source file is in the same directory as the original source file. For example,
     given the path `/app/test/data/foo.c`, function `bar`, and the index 1, return
     `/app/test/data/foo__mutant_bar_1.c`. The function name is part of the file name so that
-    mutants of different functions in the same file -- which may be scored concurrently -- never
-    overwrite one another; mutant files still match the `*__mutant_*.c` pattern that
-    `make clean-mutants` removes.
+    mutants of different functions in the same file -- which may be scored concurrently -- do not
+    share names; mutant files still match the `*__mutant_*.c` pattern that `make clean-mutants`
+    removes.
 
     If the original source file is a symlink, the name also contains the name of its target, such
     as `foo__foo_impl__mutant_bar_1.c` for `foo.c -> foo_impl.c`, so the result is never the target
-    and differs from the mutant paths of other files in the directory; see `get_mutant_file_stem`.
+    and usually differs from the mutant paths of other files in the directory; see
+    `get_mutant_file_stem`. Mutant files are created with `create_mutant_file`, which moves on to
+    the next `attempt` when a path is taken.
 
     If the readable file name would exceed the filesystem's per-component length limit, the name
     is shortened; see `get_bounded_mutant_file_name`.
@@ -562,6 +572,8 @@ def _get_path_for_mutated_source(path_to_original_source: Path, function: str, i
         path_to_original_source (Path): A path to an original source file.
         function (str): The function the mutant belongs to.
         index (int): The index of the mutant, used as a identifier for the mutant source path.
+        attempt (int): The attempt number, nonzero if the paths of earlier attempts were taken;
+            see `create_mutant_file`.
 
     Returns:
         Path: The path to which to write a mutated source file.
@@ -573,5 +585,6 @@ def _get_path_for_mutated_source(path_to_original_source: Path, function: str, i
             function,
             index,
             path_to_original_source.suffix,
+            attempt,
         )
     )
