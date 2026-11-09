@@ -831,7 +831,7 @@ def _verify_via_agent(
                 function, new_sessions, canonical_file
             )
             attempts += new_attempts
-            stray_files = _report_stray_edits(session, canonical_file.parent)
+            stray_files = _report_stray_edits(session, canonical_file)
             _mirror_tool_logs(session, canonical_file)
             report, cbmc, newly_reverified = _merge_and_verify(
                 session,
@@ -1314,21 +1314,21 @@ def _merge_and_verify(
     return report, cbmc, reverified
 
 
-def _report_stray_edits(session: _Session, canonical_dir: Path) -> list[str]:
+def _report_stray_edits(session: _Session, canonical_file: Path) -> list[str]:
     """Return the files other than the source file that the agent added or changed in its copy.
 
     Headers, other sources and new files the agent created in the private copy are never merged;
     they are named here so the run log shows when a contract depended on one. A file is compared
-    to the canonical directory's copy of it, which no session ever writes.
+    as `tools.util.session_state.find_stray_files` describes.
 
     Args:
         session (_Session): The finished session.
-        canonical_dir (Path): The canonical source directory.
+        canonical_file (Path): The canonical source file.
 
     Returns:
         list[str]: Relative paths tagged `added:` or `modified:`, in sorted order.
     """
-    stray = find_stray_files(session.file, canonical_dir)
+    stray = find_stray_files(session.file, canonical_file, session.fork_base)
     if stray:
         logger.warning(
             f"{session.function}: files changed in the session copy are not merged: {stray}"

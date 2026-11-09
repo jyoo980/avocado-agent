@@ -4,7 +4,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from .paths import resolve_parent
+from .paths import autodetect_include_dirs
 
 AUTO_INCLUDE_HELP = (
     "For each .c file <project>/<subdir>/<name>.c, pass <project>/include to CBMC "
@@ -63,11 +63,10 @@ def get_include_dirs(source_file: str, include_dirs: list[str], *, auto_include:
     """
     result = list(include_dirs)
     if auto_include:
-        detected = resolve_parent(source_file).parent.parent / "include"
-        if detected.is_dir():
-            # Resolve `detected` as `resolve_include_dirs` resolves `include_dirs`, so that a
-            # duplicate is recognized.
-            result = list(dict.fromkeys([str(detected.resolve()), *result]))
+        # Resolve the detected directory as `resolve_include_dirs` resolves `include_dirs`, so that
+        # a duplicate is recognized.
+        detected = [str(Path(d).resolve()) for d in autodetect_include_dirs(source_file)]
+        result = list(dict.fromkeys([*detected, *result]))
     if result:
         logger.debug(f"[include-dirs] using {result}")
     return result
