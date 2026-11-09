@@ -8,8 +8,6 @@ CBMC can verify.  Ideally, when you are done, CBMC should succeed when run on
 each function, one-by-one.
 
 You must produce strong specifications.
-A kill score from mutation testing is a proxy for the strength of a specification;
-the higher the kill score, the stronger the spec.
 
 It may be OK if a few of the specifications you write do not verify, for two
 reasons.  First, if a program is incorrect, CBMC will issue a warning.  Second,
@@ -32,7 +30,7 @@ You can also search the web for more CBMC documentation.
                    [-I <PATH_TO_INCLUDE_DIR(S)>]...
   ```
 
-  If verification succeeds, exits with status 0 and prints mutation-testing related information to stdout.
+  If verification succeeds, exits with status 0.
   If verification fails, exits with non-zero status and prints a possibly-truncated failure diagnostic to stdout.
   If CBMC reports no failure but the proof is *vacuous* (see [Vacuous proofs](#vacuous-proofs)),
   exits with non-zero status and prints `VACUOUS` with the cause.
@@ -69,11 +67,12 @@ Work in this order, and do not skip the first CBMC run:
    the same file, so your preconditions are satisfiable at every call site.
 2. Write the contract, then run `avocado-run-cbmc` right away. Do not run CBMC by hand, do not
    run the tool in the background, and do not read the harness's `*.jsonl` logs: the tool's own
-   output is the source of truth and already includes the diff of every surviving mutant. A
-   `VACUOUS` result is a failed run: fix the contract as [Vacuous proofs](#vacuous-proofs) says.
-3. Strengthen the contract using the surviving-mutant diffs, and re-run `avocado-run-cbmc`. Stop
-   as soon as every decided mutant is killed, or when two consecutive runs leave the kill score
-   unchanged.
+   output is the source of truth. A `VACUOUS` result is a failed run: fix the contract as
+   [Vacuous proofs](#vacuous-proofs) says.
+3. Once the contract verifies, strengthen it until it states what the function does (see
+   [Writing strong contracts that verify](#writing-strong-contracts-that-verify)), re-running
+   `avocado-run-cbmc` after each change. Stop when you cannot strengthen it further and keep it
+   verifying, or when two consecutive attempts to strengthen it fail to verify.
 
 Do not read the harness's Python sources, and do not experiment with CBMC's `--depth` or
 `--unwind` bounds: the bounds are fixed by the harness and are not yours to tune. Spend your turns
@@ -84,7 +83,7 @@ on the contract itself.
 A contract is checked by assuming its preconditions, running the body and asserting its
 postconditions where the function returns. If no execution gets that far, nothing is asserted and
 CBMC reports no failure whatever the postconditions say. Such a proof is *vacuous*: it proves
-nothing, every mutant survives it, and it does not count as verified.
+nothing, and it does not count as verified.
 
 `avocado-run-cbmc` checks each passing run with one more CBMC run, on a copy of your file to which
 it adds a false postcondition and a false assertion at the top of the body, so do not probe by hand
@@ -131,7 +130,7 @@ The contract of a function you call may itself be unverified or vacuous; your pr
 callees for which that is so. Do not build on such a contract as it is. Read it, and repair it if
 your proof depends on it.
 
-## Writing contracts that verify and kill mutants
+## Writing strong contracts that verify
 
 - `__CPROVER_is_fresh(p, n)` demands a *separate* object for every such pointer at each call
   site. A helper that callers invoke with two pointers into the same array (e.g.
@@ -140,14 +139,14 @@ your proof depends on it.
   element of the pointed-to type, `w_ok` / `r_ok` alone is vacuous; use the
   `__CPROVER_w_ok(p, n) || __CPROVER_is_fresh(p, n)` form from
   [Vacuous proofs](#vacuous-proofs), which callers can still satisfy with pointers into one array.
-- A mutant survives when no clause distinguishes the mutated behaviour. Postconditions that state
-  the exact result -- `__CPROVER_return_value == <expression over the inputs>`, `*out ==
+- A contract is weak when it also admits behaviour the function does not have. Postconditions
+  that state the exact result -- `__CPROVER_return_value == <expression over the inputs>`, `*out ==
   __CPROVER_old(...)`-based equalities, and `__CPROVER_forall` over the whole affected range --
-  kill far more mutants than bounds or one-directional implications. Cover error and early-return
-  paths explicitly (`cond ==> __CPROVER_return_value == -1`, and the converse).
+  rule out far more wrong behaviour than bounds or one-directional implications. Cover error and
+  early-return paths explicitly (`cond ==> __CPROVER_return_value == -1`, and the converse).
 - Bound sizes and counts in preconditions (a small constant such as 8 or 16 elements) so that
-  CBMC decides every mutant quickly; an unbounded precondition makes mutants time out instead of
-  being killed, which does not raise the kill score.
+  CBMC finishes quickly; an unbounded precondition can make verification time out instead of
+  succeeding.
 - `__CPROVER_assigns` must list everything the function writes (use `__CPROVER_object_whole` /
   `__CPROVER_object_upto` for buffers); a missing target fails verification, an over-broad one
   weakens callers.

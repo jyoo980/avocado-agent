@@ -54,7 +54,7 @@ from tools.run_cbmc import (
     compile_with_goto_cc,
     list_compiled_functions,
 )
-from tools.run_cbmc_and_mutation_testing import (
+from tools.run_cbmc_and_check_vacuity import (
     VERIFICATION_ATTEMPTS_LOG_SUFFIX,
     verify_function,
 )
@@ -381,7 +381,7 @@ def main() -> None:
     if args.jobs < 1:
         parser.error("--jobs must be at least 1.")
 
-    # A symlinked file is not followed. Therefore, it is compiled, and its mutants are written, in
+    # A symlinked file is not followed. Therefore, it is compiled in
     # the directory that contains the symlink, which is also where `autodetect_include_dirs` looks
     # for the `include/` directory.
     file_path = resolve_parent(args.file)
@@ -2060,8 +2060,7 @@ def _build_prompt(
         f"{retry_text}"
         f"Verify {function} in {file_path}.\n"
         "\n"
-        "Run exactly this command to verify it; on success it also reports the mutation kill "
-        "score and the diff of every surviving mutant. Only runs of this command against exactly "
+        "Run exactly this command to verify it. Only runs of this command against exactly "
         "this path are recorded as verification attempts; runs on copies of the file are not.\n"
         "\n"
         f"    {shlex.join(command)}\n"
@@ -2221,7 +2220,7 @@ def _outcome_for(claude: ClaudeRun, cbmc: RunCbmcResult) -> GroundTruthVerificat
     """Combine the Claude session and CBMC verdict into a single outcome.
 
     A passing CBMC run is authoritative, and so is a vacuous pass: in the final tally a vacuous
-    proof counts as verified (its kill score is whatever its mutants give, usually 0), and the
+    proof counts as verified, and the
     record's CBMC verdict says `VACUOUS`. While the run is going it is still treated as not
     verified (`_MergeState`), and the agent is told to fix it. A pass on a function with no
     contract is not a pass. A session stopped by a usage limit is reported as such unless it

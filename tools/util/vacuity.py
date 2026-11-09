@@ -4,8 +4,7 @@ A contract is checked by assuming its preconditions, running the body, and asser
 postconditions wherever the function returns. If no execution CBMC explores gets that far, there
 is nothing to assert and the run passes whatever the postconditions say. That happens when the
 preconditions contradict one another, when a callee's contract promises something impossible, or
-when the harness's loop and depth bounds cut every path short. Such a pass proves nothing, and
-every mutant of the function survives it.
+when the harness's loop and depth bounds cut every path short. Such a pass proves nothing.
 
 The check is one extra run of the pipeline on a copy of the file with two probes added to the
 function: a postcondition that is false (`__CPROVER_ensures(0)`) and an assertion that is false as
@@ -310,8 +309,7 @@ def describe_vacuous_result(function: str, vacuity_check_result: VacuityCheckRes
         f"{function} verified VACUOUSLY, which does not count as verified: CBMC reported no "
         "failure, but the same run still reports none when a false postcondition "
         "(__CPROVER_ensures(0)) is added to the contract. No execution reaches the end of the "
-        "function, so none of your postconditions was actually checked, and every mutant would "
-        "survive. Mutation testing was skipped.\n\n"
+        "function, so none of your postconditions was actually checked.\n\n"
     )
     if vacuity_type is Vacuity.UNSATISFIABLE_PRECONDITIONS:
         return header + (

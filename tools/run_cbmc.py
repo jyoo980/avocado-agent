@@ -17,8 +17,6 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
-from loguru import logger
-
 from tools.construct_call_graph import construct_call_graph
 from tools.util import (
     build_stub_index,
@@ -123,7 +121,7 @@ class RunCbmcResult:
         response (str): Printable summary — a success line or a truncated failure block.
         vacuity_check_result (VacuityCheckResult | None): The result of the vacuity check on a run
             that passed, or None when no check was made (the run did not pass, or the caller did not
-            ask for one, as for mutants).
+            ask for one).
         variant (PipelineVariant | None): The variant of the pipeline that produced this result,
             when it came from `run_cbmc`.
         no_contract (bool): True iff the pipeline passed but the function has no contract in the
@@ -230,12 +228,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Run CBMC on a function with loop unwinding = _CBMC_UNWIND, depth = _CBMC_DEPTH. "
-            "Exits with status 0 on verification success. "
-            "On success, additionally runs mutation testing, which re-runs the full CBMC "
-            "pipeline once per mutant (sequentially, up to a 10-minute timeout each); this can "
-            "take several minutes, during which the tool is mostly silent. This is expected, "
-            "not a hang -- do not interrupt the process. Consider running it in the background "
-            "and polling for completion."
+            "Exits with status 0 on verification success."
         )
     )
     parser.add_argument("--function", required=True, help="Name of the function to verify.")
@@ -250,15 +243,6 @@ def main() -> None:
         help="Directory to add to the include search path. May be repeated.",
     )
     args = parser.parse_args()
-
-    # Tee mutation-testing compile failures into a file. Leaves loguru's default stderr sink
-    # untouched; the filter keys on the warning emitted by `_verify_mutant` in
-    # tools/util/mutation.py.
-    logger.add(
-        "mutation_compile_failures.log",
-        level="WARNING",
-        filter=lambda record: "failed to compile" in record["message"],
-    )
 
     result = run_cbmc(
         function_to_verify=args.function,
@@ -288,7 +272,7 @@ def run_cbmc(
 
     The pipeline's subprocesses run in a fresh private temporary directory, which receives the
     intermediate `<function>.goto` / `checking-<function>-contracts.goto` files and is removed
-    afterward. Therefore, concurrent calls (even for the same function, as in mutation testing)
+    afterward. Therefore, concurrent calls (even for the same function)
     never clobber one another's intermediates, and no files are left in the caller's working
     directory. Relative paths in the arguments are interpreted relative to the caller's working
     directory, as usual.
@@ -302,14 +286,14 @@ def run_cbmc(
             search path. Forwarded to `goto-cc` as `-I` flags.
         call_graph (CallGraph | None): When provided, this pre-built call graph is used instead
             of parsing `file_containing_function_to_verify`. Callers that verify many variants of
-            one source (e.g. mutation testing, where every mutant shares the original's call
-            graph) can build it once and pass it in, which both avoids redundant parsing and keeps
-            the non-thread-safe tree-sitter parser out of concurrent code paths. When None, the
-            call graph is constructed from the source file as usual.
+            one source, all sharing the original's call graph, can build it once and pass it in,
+            which both avoids redundant parsing and keeps the non-thread-safe tree-sitter parser
+            out of concurrent code paths. When None, the call graph is constructed from the
+            source file as usual.
         timeout_sec (int): Per-subprocess timeout in seconds. Defaults to
-            `_DEFAULT_RUN_CBMC_TIMEOUT_SEC`; callers that only need a quick verdict (e.g. mutation
-            feedback for the agent) can pass a smaller budget. A timed-out run is reported as such
-            and is never mistaken for a verification result.
+            `_DEFAULT_RUN_CBMC_TIMEOUT_SEC`; callers that only need a quick verdict can
+            pass a smaller budget. A timed-out run is reported as such and is never mistaken for a
+            verification result.
         variant (PipelineVariant | None): When given, the pipeline is run exactly once, in this
             variant, and nothing is retried. The vacuity check passes the variant of the run it
             is checking: its own run fails by design, and a failure must not be allowed to
@@ -358,8 +342,7 @@ def _run_cbmc_in_directory(
     # caller (which are relative to the process's working directory) must be resolved first. The
     # invocation log still records the path as the caller gave it. A symlinked source file is not
     # followed, so the preprocessor finds quoted `#include`s next to the symlink, as a compiler
-    # given the symlink would, and as mutation testing, which writes mutants next to the symlink,
-    # assumes.
+    # given the symlink would.
     resolved_file = str(resolve_parent(file_containing_function_to_verify))
     include_dirs = [str(Path(d).resolve()) for d in include_dirs or []]
 
@@ -924,7 +907,7 @@ def _get_goto_cc_command(
 
     This is the first step of the CBMC pipeline, exposed as a standalone helper so
     callers can run only the compile phase — useful for cheaply detecting inputs that goto-cc
-    rejects (e.g., a body-mutated source where mutating `p - q` to `p + q` is illegal C).
+    rejects (e.g., a source that adds two pointers, which is illegal C).
 
     Args:
         function (str): The function used as the goto-binary entry point.
@@ -1252,8 +1235,6 @@ def compile_with_goto_cc(
     """Run only the goto-cc compile command on a C file and return its exit code.
 
     A zero exit code means goto-cc accepted the input; non-zero means it rejected it.
-    Mutants that do not compile should be excluded from evaluation and calculations;
-    this is the client's responsibility.
 
     Args:
         function (str): The function used as the goto-binary entry point.

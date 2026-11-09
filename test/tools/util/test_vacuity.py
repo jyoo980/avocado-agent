@@ -4,7 +4,7 @@ from pathlib import Path
 
 import tools.run_cbmc
 from tools.run_cbmc import CbmcStep, PipelineVariant, RunCbmcResult, run_cbmc
-from tools.run_cbmc_and_mutation_testing import verify_function
+from tools.run_cbmc_and_check_vacuity import verify_function
 from tools.util import vacuity_check_result
 from tools.util.vacuity import (
     add_entry_probe,

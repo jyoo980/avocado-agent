@@ -1,4 +1,4 @@
-.PHONY: build-image run checks all test clean clean-mutants
+.PHONY: build-image run checks all test clean
 
 # Avocado Agent may be run in an environment that only offers `podman` or `docker`.
 CONTAINER_ENGINE ?= $(shell command -v docker 2> /dev/null || command -v podman 2> /dev/null)
@@ -33,8 +33,3 @@ checks:
 clean:
 	find . \( -name '*.goto' -o -name '*callgraph.json' -o -name '*.jsonl' \) -delete
 	find . -type d -name '__pycache__' -exec rm -rf {} +
-
-# Delete artifacts from mutation testing runs.
-clean-mutants:
-	find . \( -name '*.goto' -o -name '*__mutant_*.c' \) -delete
-	find . \( -name '*.goto' -o -name '*__clause_drop_*.c' \) -delete

@@ -1,4 +1,4 @@
-"""Run CBMC on a function and perform mutation testing.
+"""Run CBMC on a function and check that a passing run is not vacuous.
 
 Usage:
     % avocado-run-cbmc --function <FUNCTION_NAME> \
@@ -7,8 +7,7 @@ Usage:
 
 The CBMC pipeline itself, and the check that a passing function has a contract, live in
 `tools.run_cbmc`; this module adds the command-line interface, the check that the run is not
-vacuous (`tools.util.vacuity`), the verification-attempt log, and mutation testing (only when the
-function verifies, and not vacuously).
+vacuous (`tools.util.vacuity`), and the verification-attempt log.
 """
 
 import argparse
@@ -22,20 +21,7 @@ from loguru import logger
 
 from tools.run_cbmc import RunCbmcResult
 from tools.run_cbmc import verify_function as verify_function_and_contract
-from tools.util.mutation import (
-    generate_mutants_and_compute_score,
-    get_mutation_testing_results_for_client,
-)
 from tools.util.vacuity import Vacuity, check_vacuity, describe_vacuous_result
-
-# Per-subprocess CBMC timeout for each *mutant* when this tool reports mutation feedback to the
-# agent. The function itself is still verified under the full `tools.run_cbmc` timeout, and the
-# evaluation metric (`eval/mutants/evaluate_specification_quality.py`) always scores mutants under
-# that full timeout; this smaller budget only bounds how long the agent waits for feedback. In
-# practice almost every mutant is decided within a few seconds, while the rare hard mutant would
-# otherwise stall the session for the full timeout only to be reported as undecided anyway. A
-# mutant that exceeds this budget is reported as timed out -- never as killed.
-_AGENT_MUTANT_TIMEOUT_SEC = 120
 
 # Exit status of the tool when the pipeline passes but that does not count as verified: the proof
 # is vacuous, the function has no contract, or its contract check failed.
@@ -57,13 +43,7 @@ def main() -> None:
             "Run CBMC on a function, with bounded loop unwinding and bounded depth. "
             "Exits with status 0 on verification success. A run that passes is checked for "
             "vacuity with one more CBMC run; a vacuous pass is reported as VACUOUS and exits "
-            "with a non-zero status. "
-            "On success, additionally runs mutation testing, which re-runs the full CBMC "
-            "pipeline once per mutant (several mutants in parallel; each CBMC step has a timeout "
-            f"of {_AGENT_MUTANT_TIMEOUT_SEC} s, and retries can lengthen a mutant's run); this "
-            "can take a few minutes, during which the tool is mostly silent. This is expected, "
-            "not a hang -- do not interrupt the process. Consider running it in the background "
-            "and polling for completion."
+            "with a non-zero status."
         )
     )
     parser.add_argument("--function", required=True, help="Name of the function to verify.")
@@ -79,37 +59,16 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Tee mutation-testing compile failures into a file. Leaves loguru's default stderr sink
-    # untouched; the filter keys on the warning emitted by `_verify_mutant` in
-    # tools/util/mutation.py.
-    logger.add(
-        "mutation_compile_failures.log",
-        level="WARNING",
-        filter=lambda record: "failed to compile" in record["message"],
-    )
-
     result = verify_function(args.function, args.file, include_dirs=args.include_dirs)
     # Record this top-level verification attempt (pass or fail) so `avocado-verify` can gate its
     # per-function loop on the agent having actually attempted verification often enough.
     _log_verification_attempt(args.file, args.function, result)
+    print(result.response)
     if result.is_function_verified:
-        # The function verified, so run mutation testing to assess the strength of its
-        # specification and report the kill score (plus any surviving mutants) to the client.
-        score = generate_mutants_and_compute_score(
-            file_path=args.file,
-            target_function=args.function,
-            include_dirs=args.include_dirs,
-            is_function_already_verified=result.is_function_verified,
-            mutant_timeout_sec=_AGENT_MUTANT_TIMEOUT_SEC,
-        )
-        print(result.response)
-        print(get_mutation_testing_results_for_client(score))
         sys.exit(0)
-    else:
-        print(result.response)
-        # A vacuous or contract-less pass, or one whose contract check failed, carries the
-        # pipeline's own exit code, which is 0.
-        sys.exit(result.returncode or _EXIT_NOT_VERIFIED)
+    # A vacuous or contract-less pass, or one whose contract check failed, carries the pipeline's
+    # own exit code, which is 0.
+    sys.exit(result.returncode or _EXIT_NOT_VERIFIED)
 
 
 def verify_function(
