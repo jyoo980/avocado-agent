@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+import pytest
+
 from eval.mutants.compute_clause_redundancy import _get_path_to_source_with_removed_clause
 
 
@@ -51,3 +53,18 @@ def test_removed_clause_path_does_not_split_multibyte_characters() -> None:
     encoded = os.fsencode(path.name)
     assert len(encoded) <= 255
     encoded.decode("utf-8")  # Raises if a multibyte character was split.
+
+
+def test_removed_clause_path_of_a_symlink_is_named_for_its_target(tmp_path: Path) -> None:
+    # If the file were named for `foo.c`, its path would be the target, and writing it would
+    # overwrite the source.
+    target = tmp_path / "foo__clause_drop_bar_0.c"
+    target.write_text("int bar(void) { return 0; }\n", encoding="utf-8")
+    source = tmp_path / "foo.c"
+    try:
+        source.symlink_to(target.name)
+    except OSError as e:
+        pytest.skip(f"cannot create symlinks: {e}")
+    assert _get_path_to_source_with_removed_clause(source, "bar", 0) == (
+        tmp_path / "foo__clause_drop_bar_0__clause_drop_bar_0.c"
+    )
