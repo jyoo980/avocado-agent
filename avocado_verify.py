@@ -462,7 +462,13 @@ def main() -> None:
         jobs=args.jobs,
         log_path=log_path,
         keep_sessions=args.keep_sessions,
+        not_in_build=not_in_build,
     )
+    # The agent might have added functions (such as helpers), so recompute the functions and the
+    # call graph.
+    functions = _get_functions_to_verify(str(file_path))
+    call_graph = _read_call_graph(str(file_path), not_in_build=not_in_build)
+    pending = [function for function in functions if function not in already_done]
     if usage_limited:
         completed = {
             result.function
@@ -577,6 +583,23 @@ def _not_in_build_result(function: str) -> FunctionVerificationResult:
         agent_sessions=0,
         not_in_build=True,
     )
+
+
+def _read_call_graph(file_path: str, *, not_in_build: list[str]) -> CallGraph:
+    """Return the call graph of the given C file as the file is now.
+
+    Args:
+        file_path (str): Path to a C file.
+        not_in_build (list[str]): Functions in the file's source text that the preprocessor
+            removes (see `_functions_not_in_build`); the call graph leaves them out, as
+            `_without_functions` does.
+
+    Returns:
+        CallGraph: The call graph, without the functions in `not_in_build`.
+    """
+    path_to_call_graph = construct_call_graph(file_path)
+    call_graph = CallGraph(json.loads(Path(path_to_call_graph).read_text(encoding="utf-8")))
+    return _without_functions(call_graph, not_in_build) if not_in_build else call_graph
 
 
 def _get_functions_to_verify(file_path: str) -> list[str]:
@@ -1488,6 +1511,7 @@ def _verify_functions(
     jobs: int,
     log_path: Path,
     keep_sessions: bool,
+    not_in_build: list[str] | None = None,
 ) -> tuple[list[FunctionVerificationResult], set[str]]:
     """Specify every pending function, running up to `jobs` functions' sessions at once.
 
@@ -1496,6 +1520,11 @@ def _verify_functions(
     limit halts new submissions; sessions already running finish and merge. A `_MergeState`
     shared by the sessions tells each merge which functions have a live session and which are
     verified, so a callee fix made in passing is kept when it is sound (`_merge_and_verify`).
+
+    A merge can transplant new functions, such as helpers that the agent added, into the canonical
+    file. After such a merge, the order and the call graph are recomputed from the canonical file,
+    each new function is specified as well, and the merged function's `internal_callees` comes
+    from the recomputed call graph.
 
     Args:
         pending (list[str]): Functions still to process, in topological order.
@@ -1507,11 +1536,15 @@ def _verify_functions(
         jobs (int): Maximum number of concurrent sessions.
         log_path (Path): The run log to append each function's record to.
         keep_sessions (bool): When True, session copies are kept for inspection.
+        not_in_build (list[str] | None): Functions in the file's source text that the
+            preprocessor removes (see `_functions_not_in_build`); a recomputed call graph leaves
+            them out.
 
     Returns:
         tuple[list[FunctionVerificationResult], set[str]]: The results in completion order, and
             the functions whose sessions were stopped by a usage limit.
     """
+    pending = list(pending)
     done: set[str] = {function for function in order if function not in pending}
     vacuous = _vacuous_functions(log_path)
     state = _MergeState(
@@ -1562,6 +1595,23 @@ def _verify_functions(
             for future in finished:
                 function = active.pop(future)
                 result = future.result()
+                if result.merge is not None and result.merge.merged and result.merge.transplanted:
+                    # The order is callees-first, so a new callee of `function` precedes the
+                    # functions that are still pending.
+                    order = _get_functions_to_verify(file_path)
+                    call_graph = _read_call_graph(file_path, not_in_build=not_in_build or [])
+                    new_functions = [
+                        other for other in order if other not in pending and other not in done
+                    ]
+                    if new_functions:
+                        logger.info(
+                            f"{function}: the merge added function(s) to verify: "
+                            f"{', '.join(new_functions)}"
+                        )
+                        pending += new_functions
+                    result = replace(
+                        result, internal_callees=call_graph.get_callees(function).internal
+                    )
                 results.append(result)
                 _append_jsonl(log_path, result.to_record())
                 done.add(function)
