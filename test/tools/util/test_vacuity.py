@@ -162,9 +162,14 @@ def test_the_probe_run_uses_the_variant_that_passed_and_is_never_retried(
     source.write_bytes(SOURCE)
     runs: list[bool] = []
 
-    def failing_pipeline(function, callees, file, **kwargs):
-        del callees, file
+    get_pipeline = tools.run_cbmc._get_pipeline
+
+    def recording_get_pipeline(*args, **kwargs):
         runs.append(kwargs["prevent_macro_expansion"])
+        return get_pipeline(*args, **kwargs)
+
+    def failing_pipeline(function, *args, **kwargs):
+        del args, kwargs
         failure = RunCbmcResult(
             function=function,
             failed_step=CbmcStep.CBMC,
@@ -175,6 +180,7 @@ def test_the_probe_run_uses_the_variant_that_passed_and_is_never_retried(
         # The output a failing run needs for `run_cbmc` to retry with macros disabled.
         return failure, "", "no body for function 'memcpy'"
 
+    monkeypatch.setattr(tools.run_cbmc, "_get_pipeline", recording_get_pipeline)
     monkeypatch.setattr(tools.run_cbmc, "_run_pipeline", failing_pipeline)
     monkeypatch.setattr(tools.run_cbmc, "_log_invocation", lambda *a, **k: None)
     # An ordinary run takes that failure as a reason to run the other variant.

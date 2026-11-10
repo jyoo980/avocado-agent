@@ -517,13 +517,13 @@ def test_a_result_records_the_pipeline_variant_that_produced_it(
 
     # Given a variant, `run_cbmc` runs the pipeline once, in that variant, and does not retry.
     macro_expansion_flags: list[bool] = []
-    run_pipeline = run_cbmc_module._run_pipeline
+    get_pipeline = run_cbmc_module._get_pipeline
 
-    def recording_run_pipeline(*args, **kwargs):
+    def recording_get_pipeline(*args, **kwargs):
         macro_expansion_flags.append(kwargs["prevent_macro_expansion"])
-        return run_pipeline(*args, **kwargs)
+        return get_pipeline(*args, **kwargs)
 
-    monkeypatch.setattr(run_cbmc_module, "_run_pipeline", recording_run_pipeline)
+    monkeypatch.setattr(run_cbmc_module, "_get_pipeline", recording_get_pipeline)
     variant = PipelineVariant(prevent_macro_expansion=True)
     assert run_cbmc("swap", str(src), variant=variant).variant == variant
     assert macro_expansion_flags == [True]
