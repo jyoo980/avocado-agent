@@ -788,6 +788,87 @@ def test_the_contract_of_a_later_branch_header_name_is_merged() -> None:
     assert merged == snapshot and report.carried == []
 
 
+_TWO_HEADERS = b"#ifdef X\nint f(int a) {\n#else\nint g(int a) {\n#endif\n  return a;\n}\n"
+
+
+def _with_f_contract(source: bytes) -> bytes:
+    return source.replace(b"int f(int a) {", b"int f(int a)\n__CPROVER_requires(a > 1)\n{")
+
+
+def _with_g_contract(source: bytes) -> bytes:
+    return source.replace(b"int g(int a) {", b"int g(int a)\n__CPROVER_requires(a > 0)\n{")
+
+
+def test_merging_one_header_keeps_the_canonical_contract_of_the_other_header() -> None:
+    base = _TWO_HEADERS
+    merged, report = merge_copy(
+        canonical=_with_f_contract(base),
+        snapshot=_with_g_contract(base),
+        fork_base=base,
+        function="g",
+        frozen_functions=set(),
+    )
+    assert report.merged, report.reason
+    assert merged == _with_f_contract(_with_g_contract(base))
+    assert report.changed_since_fork == ["f"] and report.carried == []
+
+
+def test_an_edit_to_the_other_header_of_the_sessions_definition_is_another_functions() -> None:
+    base = _TWO_HEADERS
+    snapshot = _with_f_contract(_with_g_contract(base))
+    merged, report = merge_copy(
+        canonical=base, snapshot=snapshot, fork_base=base, function="g", frozen_functions={"f"}
+    )
+    assert report.merged, report.reason
+    assert merged == _with_g_contract(base)
+    assert report.dropped == ["function:f (a live session is working on it)"]
+    assert report.carried == []
+    merged, report = merge_copy(
+        canonical=base, snapshot=snapshot, fork_base=base, function="g", frozen_functions=set()
+    )
+    assert merged == snapshot and report.carried == ["f"]
+
+
+def test_a_canonical_change_to_a_later_header_names_its_function() -> None:
+    base = _TWO_HEADERS
+    merged, report = merge_copy(
+        canonical=_with_g_contract(base),
+        snapshot=base,
+        fork_base=base,
+        function="f",
+        frozen_functions=set(),
+    )
+    assert report.merged, report.reason
+    assert merged == _with_g_contract(base) and report.changed_since_fork == ["g"]
+    assert functions_with_changed_contracts(base, _with_g_contract(base)) == ["g"]
+    assert functions_with_changed_contracts(base, _with_f_contract(_with_g_contract(base))) == [
+        "f",
+        "g",
+    ]
+
+
+def test_rule_4_applies_to_every_header_of_a_new_definition() -> None:
+    helper = (
+        b"#ifdef X\nint avocado_spec_h(int a) {\n#else\nint h(int a) {\n#endif\n  return a;\n}\n"
+    )
+
+    def name_messages(base: bytes, addition: bytes) -> list[str]:
+        snapshot = base.replace(b"/* swap two ints */", addition)
+        return [
+            violation.message
+            for violation in check_edits(base, snapshot, "swap")
+            if "conditional" not in violation.message
+        ]
+
+    messages = name_messages(BASE, helper)
+    assert len(messages) == 1 and messages[0].startswith("function h is new"), messages
+    taken = helper.replace(b"int h(", b"int avocado_spec_k(")
+    assert name_messages(BASE, taken) == []
+    base = BASE.replace(b"/* swap two ints */", b"int avocado_spec_k(int a);\n/* swap two ints */")
+    messages = name_messages(base, taken)
+    assert len(messages) == 1 and "redefines a name" in messages[0], messages
+
+
 def test_a_function_followed_by_macros_is_found_under_its_own_name() -> None:
     source = (
         b"int f(int x) REQUIRES(x > 0) {\n  return x;\n}\n"
