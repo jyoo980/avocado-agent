@@ -851,6 +851,56 @@ def test_a_frozen_function_named_by_two_headers_is_dropped_once() -> None:
     assert report.dropped == ["function:f (a live session is working on it)"]
 
 
+def test_a_session_on_a_later_header_merges_its_contract() -> None:
+    base = _TWO_HEADERS
+    snapshot = _with_g_contract(base)
+    assert check_edits(base, snapshot, "g") == []
+    merged, report = merge_copy(
+        canonical=_with_f_contract(base),
+        snapshot=snapshot,
+        fork_base=base,
+        function="g",
+        frozen_functions=set(),
+    )
+    assert report.merged, report.reason
+    assert merged == _with_f_contract(_with_g_contract(base))
+    assert report.carried == [] and report.changed_since_fork == ["f"]
+    assert function_header(snapshot, "g") == b"int g(int a)\n__CPROVER_requires(a > 0)"
+    assert function_line(base, "g") == 4
+
+
+def test_a_function_named_by_two_headers_is_carried_or_dropped_as_a_whole() -> None:
+    base = (
+        b"int s(int a) {\n  return a;\n}\n"
+        b"#ifdef X\nint f(int a) {\n#else\nint f(long a) {\n#endif\n  return a;\n}\n"
+    )
+    snapshot = base.replace(b") {\n#", b")\n__CPROVER_requires(a > 0)\n{\n#")
+    canonical = base.replace(b"int f(int a) {", b"int f(int a)\n__CPROVER_requires(a > 2)\n{")
+    merged, report = merge_copy(
+        canonical=canonical, snapshot=snapshot, fork_base=base, function="s", frozen_functions=set()
+    )
+    assert report.merged, report.reason
+    assert merged == canonical
+    assert report.carried == []
+    assert report.dropped == ["function:f (changed in the canonical file since the fork)"]
+
+
+def test_the_body_comes_from_the_copy_whichever_header_the_copy_changed() -> None:
+    base = _TWO_HEADERS
+    for contract in (_with_f_contract, _with_g_contract):
+        snapshot = contract(base).replace(b"  return a;", b"  /* why */\n  return a;")
+        function = "f" if contract is _with_f_contract else "g"
+        merged, report = merge_copy(
+            canonical=base,
+            snapshot=snapshot,
+            fork_base=base,
+            function=function,
+            frozen_functions=set(),
+        )
+        assert report.merged, report.reason
+        assert merged == snapshot
+
+
 def test_an_unnamed_header_is_reported_at_its_own_line() -> None:
     base = b"#ifdef X\nint f(int a) {\n#else\nint g[2](int a) {\n#endif\n  return a;\n}\n"
     snapshot = base.replace(b"int g[2](int a) {", b"int g[2](int a)\n__CPROVER_requires(a > 0)\n{")
@@ -859,6 +909,19 @@ def test_an_unnamed_header_is_reported_at_its_own_line() -> None:
     )
     assert not report.merged and merged == base
     assert "an item at line 4 that the merge cannot name" in report.reason, report.reason
+
+
+def test_an_unnamed_header_line_skips_comments_and_continuation_lines() -> None:
+    base = (
+        b"#ifdef X\nint f(int a) { /* note */\n#elif defined(Y) \\\n  && 1\n"
+        b"// the other variant\nint g[2](int a) {\n#endif\n  return a;\n}\n"
+    )
+    snapshot = base.replace(b"int g[2](int a) {", b"int g[2](int a)\n__CPROVER_requires(a > 0)\n{")
+    merged, report = merge_copy(
+        canonical=base, snapshot=snapshot, fork_base=base, function="f", frozen_functions=set()
+    )
+    assert not report.merged and merged == base
+    assert "an item at line 6 that the merge cannot name" in report.reason, report.reason
 
 
 def test_a_function_followed_by_macros_is_found_under_its_own_name() -> None:
