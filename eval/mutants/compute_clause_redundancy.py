@@ -52,9 +52,9 @@ from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import run_cbmc
 from tools.util import (
     AUTO_INCLUDE_HELP,
+    existing_include_dir,
     get_in_file_callers_of,
     get_include_dirs,
-    resolve_include_dirs,
     resolve_parent,
 )
 from tools.util.callgraph import CallGraph
@@ -232,6 +232,7 @@ def main() -> None:
         action="append",
         default=[],
         dest="include_dirs",
+        type=existing_include_dir,
         metavar="DIR",
         help="Directory to add to the include search path. Can be repeated.",
     )
@@ -239,16 +240,12 @@ def main() -> None:
     parser.add_argument("--keep-artifacts", action="store_true")
     args = parser.parse_args()
 
-    try:
-        include_dirs_from_cli = resolve_include_dirs(args.include_dirs)
-    except ValueError as e:
-        parser.error(str(e))
     clause_redundancy_score = compute_clause_redundancy_score(
         file_path=args.file,
         function_name=args.function,
         keep_artifacts=args.keep_artifacts,
         include_dirs=get_include_dirs(
-            args.file, include_dirs_from_cli, auto_include=args.auto_include
+            args.file, args.include_dirs, auto_include=args.auto_include
         ),
     )
 
