@@ -94,25 +94,31 @@ def rechecked_on_change(verified: Iterable[str], unverified: Mapping[str, str]) 
     return set(verified) | {name for name, why in unverified.items() if is_vacuous_status(why)}
 
 
-def find_stray_files(session_file: Path, canonical_dir: Path) -> list[str]:
+def find_stray_files(session_file: Path, canonical_file: Path, fork_base: bytes) -> list[str]:
     """Return the files other than the source file that were added, changed or deleted in a copy.
 
     Headers, other sources and new files in the private copy are never merged. A file is compared
-    to the canonical directory's copy of it, which no session ever writes; logs, caches, CBMC
+    to the canonical directory's copy of it, which no session writes; logs, caches, CBMC
     intermediates and mutant sources (`SNAPSHOT_IGNORE`), and everything inside a directory that
     `SNAPSHOT_IGNORE` leaves out, do not count. A file of the canonical directory that the copy
     no longer has was deleted from the copy, so the session might have verified code that ground
     truth will not see.
 
+    The exception is a file whose canonical copy is the canonical source file itself, such as the
+    target `foo_impl.c` of a canonical source file `foo.c -> foo_impl.c`. Merges of other sessions
+    write that file, so it is compared to `fork_base` instead.
+
     Args:
         session_file (Path): The session's private copy of the source file.
-        canonical_dir (Path): The canonical source directory.
+        canonical_file (Path): The canonical source file, in the canonical source directory.
+        fork_base (bytes): The contents of `canonical_file` when the session copy was made.
 
     Returns:
         list[str]: Relative paths tagged `added:`, `modified:` or `deleted:`, in sorted order.
     """
     stray: list[str] = []
     session_dir = session_file.parent
+    canonical_dir = canonical_file.parent
     session_relative = session_file.relative_to(session_dir)
     for relative in sorted(_snapshot_files(session_dir)):
         if relative == session_relative:
@@ -121,7 +127,11 @@ def find_stray_files(session_file: Path, canonical_dir: Path) -> list[str]:
         original = canonical_dir / relative
         if not original.is_file():
             stray.append(f"added:{relative}")
-        elif not filecmp.cmp(original, path, shallow=False):
+        elif (
+            path.read_bytes() != fork_base
+            if original.samefile(canonical_file)
+            else not filecmp.cmp(original, path, shallow=False)
+        ):
             stray.append(f"modified:{relative}")
     stray.extend(
         f"deleted:{relative}"

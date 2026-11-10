@@ -3,6 +3,8 @@
 import shutil
 from pathlib import Path
 
+import pytest
+
 from tools.run_cbmc import VACUOUS_VERDICT
 from tools.util.session_state import (
     MERGE_STAGING_SUFFIX,
@@ -29,7 +31,8 @@ def _canonical_and_copy(tmp_path: Path) -> tuple[Path, Path]:
 def test_an_unchanged_copy_has_no_stray_files(tmp_path: Path) -> None:
     canonical, session_file = _canonical_and_copy(tmp_path)
     session_file.write_text("int f(void)\n__CPROVER_requires(1)\n{ return 0; }\n")
-    assert find_stray_files(session_file, canonical) == []
+    canonical_file = canonical / "f.c"
+    assert find_stray_files(session_file, canonical_file, canonical_file.read_bytes()) == []
 
 
 def test_added_modified_and_deleted_files_are_stray(tmp_path: Path) -> None:
@@ -38,7 +41,8 @@ def test_added_modified_and_deleted_files_are_stray(tmp_path: Path) -> None:
     (copy / "new.c").write_text("int h;\n")
     (copy / "f.h").write_text("int f(void); int x;\n")
     (copy / "sub" / "g.h").unlink()
-    assert find_stray_files(session_file, canonical) == [
+    canonical_file = canonical / "f.c"
+    assert find_stray_files(session_file, canonical_file, canonical_file.read_bytes()) == [
         "modified:f.h",
         "added:new.c",
         "deleted:sub/g.h",
@@ -52,13 +56,15 @@ def test_files_inside_an_ignored_directory_are_not_stray(tmp_path: Path) -> None
     (git / "config").write_text("[core]\n")
     (canonical / ".git").mkdir()
     (canonical / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
-    assert find_stray_files(session_file, canonical) == []
+    canonical_file = canonical / "f.c"
+    assert find_stray_files(session_file, canonical_file, canonical_file.read_bytes()) == []
 
 
 def test_the_staging_file_of_a_merge_is_not_a_deleted_file(tmp_path: Path) -> None:
     canonical, session_file = _canonical_and_copy(tmp_path)
     (canonical / f"f.c{MERGE_STAGING_SUFFIX}").write_text("int f(void) { return 0; }\n")
-    assert find_stray_files(session_file, canonical) == []
+    canonical_file = canonical / "f.c"
+    assert find_stray_files(session_file, canonical_file, canonical_file.read_bytes()) == []
 
 
 def test_vacuous_status_carries_the_kind_of_vacuity_when_known() -> None:
@@ -92,3 +98,40 @@ def test_rechecked_on_change_is_empty_when_nothing_is_verified_or_vacuous() -> N
     """With no verified function and no vacuous proof there is nothing to recheck."""
     assert rechecked_on_change(set(), {"swap": "CBMC_FAILED"}) == set()
     assert rechecked_on_change(set(), {}) == set()
+
+
+def _fork_with_symlinked_source(tmp_path: Path) -> tuple[Path, Path, Path, bytes]:
+    """Return a canonical `foo.c -> foo_impl.c`, its session copy, the target, and the fork base.
+
+    The session copy is made as a session's is, so `foo.c` and `foo_impl.c` in it are independent
+    regular files.
+    """
+    canonical_dir = tmp_path / "canonical"
+    canonical_dir.mkdir()
+    target = canonical_dir / "foo_impl.c"
+    target.write_text("int foo(void) { return 0; }\n", encoding="utf-8")
+    canonical_file = canonical_dir / "foo.c"
+    try:
+        canonical_file.symlink_to(target.name)
+    except OSError as e:
+        pytest.skip(f"cannot create symlinks: {e}")
+    fork_base = canonical_file.read_bytes()
+    session_dir = tmp_path / "session" / "canonical"
+    shutil.copytree(canonical_dir, session_dir)
+    return canonical_file, session_dir / "foo.c", target, fork_base
+
+
+def test_stray_files_ignore_a_merge_into_the_source_files_symlink_target(tmp_path: Path) -> None:
+    """Another session's merge writes the target, but this session did not change its copy."""
+    canonical_file, session_file, target, fork_base = _fork_with_symlinked_source(tmp_path)
+    target.write_text("int foo(void) { return 1; }\n", encoding="utf-8")
+    assert find_stray_files(session_file, canonical_file, fork_base) == []
+
+
+def test_stray_files_report_an_edit_to_the_source_files_symlink_target(tmp_path: Path) -> None:
+    """An edit to the session's copy of the target is not merged, so it is reported."""
+    canonical_file, session_file, _target, fork_base = _fork_with_symlinked_source(tmp_path)
+    (session_file.parent / "foo_impl.c").write_text(
+        "int foo(void) { return 2; }\n", encoding="utf-8"
+    )
+    assert find_stray_files(session_file, canonical_file, fork_base) == ["modified:foo_impl.c"]
