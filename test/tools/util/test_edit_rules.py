@@ -777,6 +777,17 @@ def test_each_branch_header_gives_its_own_body_brace_its_own_name() -> None:
     assert function_body_offsets(source, "g") == [source.index(b"{", source.index(b"int g"))]
 
 
+def test_the_contract_of_a_later_branch_header_name_is_merged() -> None:
+    base = b"#ifdef X\nint f(int a) {\n#else\nint g(int a) {\n#endif\n  return a;\n}\n"
+    snapshot = base.replace(b"int g(int a) {", b"int g(int a)\n__CPROVER_requires(a > 0)\n{")
+    assert check_edits(base, snapshot, "g") == []
+    merged, report = merge_copy(
+        canonical=base, snapshot=snapshot, fork_base=base, function="g", frozen_functions=set()
+    )
+    assert report.merged, report.reason
+    assert merged == snapshot and report.carried == []
+
+
 def test_a_function_followed_by_macros_is_found_under_its_own_name() -> None:
     source = (
         b"int f(int x) REQUIRES(x > 0) {\n  return x;\n}\n"
