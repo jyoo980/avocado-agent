@@ -20,10 +20,12 @@ from pathlib import Path
 from loguru import logger
 
 from tools.util import (
-    autodetect_include_dirs,
+    AUTO_INCLUDE_HELP,
     build_stub_index,
+    existing_include_dir,
     get_call_graph,
     get_functions_with_cprover_annotations,
+    get_include_dirs,
     get_unstubbed_external_callees_for,
 )
 
@@ -92,15 +94,14 @@ def main() -> int:
     )
     parser.add_argument(
         "--auto-include",
-        help=(
-            "For each .c file, look for a sibling include/ directory at "
-            "<source>/../include and pass it to CBMC as an include path. "
-            "Fits projects whose headers live next to their src/ tree."
-        ),
+        help=AUTO_INCLUDE_HELP,
         action="store_true",
     )
     parser.add_argument(
-        "--include-dirs", action="append", help="Path(s) to stubs to use in verification."
+        "--include-dirs",
+        action="append",
+        type=existing_include_dir,
+        help="Path(s) to stubs to use in verification.",
     )
     args = parser.parse_args()
 
@@ -166,8 +167,8 @@ def _verify_program(
             (i.e., CBMC should not be run on them).
         include_dirs (list[str]): List of directories containing files (e.g., headers) that should
             be included in verification.
-        auto_include (bool): True iff `<file>/../include` should be added to CBMC's include
-            search path when that directory exists. Defaults to False.
+        auto_include (bool): True iff the auto-detected include directory (see
+            `get_include_dirs()`) should be added to CBMC's include search path. Defaults to False.
 
     Returns:
         ProgramVerificationResult: The verification result for the given file.
@@ -181,11 +182,7 @@ def _verify_program(
         names_of_functions_to_verify = get_functions_with_cprover_annotations(file)
         skipped_functions = set(call_graph.keys()).difference(names_of_functions_to_verify)
 
-    include_dirs = (
-        [*autodetect_include_dirs(file), *include_dirs] if auto_include else include_dirs
-    )
-    if include_dirs:
-        logger.debug(f"[auto-include] using {include_dirs}")
+    include_dirs = get_include_dirs(file, include_dirs, auto_include=auto_include)
 
     results: list[FunctionVerificationResult] = []
     for function in names_of_functions_to_verify:
@@ -204,7 +201,6 @@ def _verify_program(
             logger.error(f"     {failure}")
         results.append(result)
     return ProgramVerificationResult(file, list(skipped_functions), results)
-
 
 
 def _verify_function(
