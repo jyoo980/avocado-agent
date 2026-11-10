@@ -224,7 +224,7 @@ def check_copy_edits(session_file: Path, *, include_dirs: list[str] | None = Non
         )
     try:
         snapshot = session_file.read_bytes()
-        stray_files = find_stray_files(session_file, info.canonical_file.parent)
+        stray_files = find_stray_files(session_file, info.canonical_file, info.fork_base)
     except OSError as error:
         return _cannot_check(f"could not read the session's copy: {error}")
 
