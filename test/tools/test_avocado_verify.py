@@ -606,7 +606,7 @@ def test_merge_and_verify_rejects_a_merge_whose_file_cannot_be_written(
     real_replace = Path.replace
 
     def failing_replace(self: Path, target):
-        if self.name.endswith(".avocado-merge"):
+        if self.name.startswith(".avocado-merge-"):
             raise OSError("disk full")
         return real_replace(self, target)
 
@@ -633,7 +633,7 @@ def test_merge_and_verify_rejects_a_merge_whose_file_cannot_be_written(
         shutil.rmtree(session.directory, ignore_errors=True)
     assert not report.merged and "could not write" in report.reason, report
     assert canonical.read_bytes() == original
-    assert not list(tmp_path.rglob("*.avocado-merge"))
+    assert not list(tmp_path.rglob(".avocado-merge-*"))
     # The carried edits' re-verified verdicts are on a file that was not written, so they are
     # neither returned nor recorded; only the merging function's own verdict is.
     assert reverified == {}

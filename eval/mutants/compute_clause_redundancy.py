@@ -20,6 +20,7 @@ caller checks.
 Usage:
     % ./eval/mutants/compute_clause_redundancy.py --function <NAME> \
         --file <PATH_TO_C_FILE> \
+        [-I DIR]... \
         [--keep-artifacts] \
         [--jsonl PATH]
 """
@@ -30,6 +31,7 @@ import argparse
 import json
 import sys
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import partial
@@ -48,7 +50,7 @@ from eval.mutants.util import (
     is_valid_mutation_candidate,
 )
 from tools.construct_call_graph import construct_call_graph
-from tools.run_cbmc import run_cbmc
+from tools.run_cbmc import RunCbmcResult, run_cbmc
 from tools.util import get_in_file_callers_of, resolve_parent
 from tools.util.callgraph import CallGraph
 
@@ -210,6 +212,15 @@ def main() -> None:
     parser.add_argument("--function", required=True)
     parser.add_argument("--file", required=True)
     parser.add_argument("--jsonl", default=None)
+    parser.add_argument(
+        "-I",
+        "--include-dir",
+        action="append",
+        default=[],
+        dest="include_dirs",
+        metavar="DIR",
+        help="Directory to add to the include search path. May be repeated.",
+    )
     parser.add_argument("--keep-artifacts", action="store_true")
     args = parser.parse_args()
 
@@ -217,6 +228,7 @@ def main() -> None:
         file_path=args.file,
         function_name=args.function,
         keep_artifacts=args.keep_artifacts,
+        include_dirs=args.include_dirs,
     )
 
     if not clause_redundancy_score:
@@ -286,6 +298,7 @@ def compute_clause_redundancy_score(
     function_name: str,
     workspace: Path | None = None,
     keep_artifacts: bool = False,
+    include_dirs: list[str] | None = None,
 ) -> ClauseRedundancyScore | None:
     """Score clause redundancy for `function_name` in `file_path`.
 
@@ -300,6 +313,8 @@ def compute_clause_redundancy_score(
         workspace (Path | None): Directory to write mutant files into. Defaults to the
             source file's directory so relative `#include` paths still resolve.
         keep_artifacts (bool): When True, mutant `.c` files are kept for inspection.
+        include_dirs (list[str] | None): Directories to add to CBMC's include search path in
+            every verification run: the baseline, each removed-clause source, and each caller.
 
     Returns:
         ClauseRedundancyScore: Aggregated counts plus the per-clause results.
@@ -311,11 +326,16 @@ def compute_clause_redundancy_score(
     workspace = workspace or source_path.parent
     workspace.mkdir(parents=True, exist_ok=True)
 
+    def run(function_to_verify: str, file_path: Path) -> RunCbmcResult:
+        """Run CBMC on a function in a file, adding `include_dirs` to the include search path."""
+        return run_cbmc(
+            function_to_verify=function_to_verify,
+            file_containing_function_to_verify=str(file_path),
+            include_dirs=include_dirs,
+        )
+
     # Check that the original function verifies in the first place.
-    result = run_cbmc(
-        function_to_verify=function_name,
-        file_containing_function_to_verify=str(source_path),
-    )
+    result = run(function_name, source_path)
     if not is_valid_mutation_candidate(result):
         # No usable baseline; scoring would be meaningless without verifying the unmutated source.
         return None
@@ -324,7 +344,7 @@ def compute_clause_redundancy_score(
 
     in_file_callers = _get_in_file_callers(source_path, function_name)
     in_file_callers_to_baseline_verification_results = (
-        _get_baseline_verification_results_for_callers(in_file_callers, source_path)
+        _get_baseline_verification_results_for_callers(in_file_callers, source_path, run)
     )
 
     # Only the files created here are deleted below; an existing file is never overwritten.
@@ -343,7 +363,7 @@ def compute_clause_redundancy_score(
             )
             paths_to_removed_clauses[path] = mutant
         in_isolation_results = [
-            _verify_removed_clause_source(mutant_path, mutant)
+            _verify_removed_clause_source(mutant_path, mutant, run)
             for mutant_path, mutant in paths_to_removed_clauses.items()
         ]
         caller_side_results = [
@@ -352,6 +372,7 @@ def compute_clause_redundancy_score(
                 mutant,
                 in_file_callers,
                 in_file_callers_to_baseline_verification_results,
+                run,
             )
             for mutant_path, mutant in paths_to_removed_clauses.items()
         ]
@@ -504,7 +525,9 @@ def _get_path_to_source_with_removed_clause(
 
 
 def _verify_removed_clause_source(
-    removed_clause_mutant_path: Path, clause_mutant: ClauseMutant
+    removed_clause_mutant_path: Path,
+    clause_mutant: ClauseMutant,
+    run: Callable[[str, Path], RunCbmcResult],
 ) -> ClauseRemovalVerificationResult:
     """Return the result of verifying a removed-clause mutant in isolation.
 
@@ -512,14 +535,12 @@ def _verify_removed_clause_source(
         removed_clause_mutant_path (Path): The file that holds the source with the mutated
             specification.
         clause_mutant (ClauseMutant): The clause mutant.
+        run (Callable[[str, Path], RunCbmcResult]): Runs CBMC on a function in a file.
 
     Returns:
         ClauseRemovalVerificationResult: The result of verifying a removed-clause mutant.
     """
-    result = run_cbmc(
-        function_to_verify=clause_mutant.function,
-        file_containing_function_to_verify=str(removed_clause_mutant_path),
-    )
+    result = run(clause_mutant.function, removed_clause_mutant_path)
     if result.timed_out:
         return ClauseRemovalVerificationResult(
             clause_mutant,
@@ -536,7 +557,9 @@ def _verify_removed_clause_source(
 
 
 def _get_baseline_verification_results_for_callers(
-    in_file_callers: list[str], source_path: Path
+    in_file_callers: list[str],
+    source_path: Path,
+    run: Callable[[str, Path], RunCbmcResult],
 ) -> dict[str, bool]:
     """Return a map from in-file caller name to whether it verifies on the unmutated source.
 
@@ -546,16 +569,14 @@ def _get_baseline_verification_results_for_callers(
     Args:
         in_file_callers (list[str]): The names of the in-file callers.
         source_path (Path): The unmutated source file.
+        run (Callable[[str, Path], RunCbmcResult]): Runs CBMC on a function in a file.
 
     Returns:
         dict[str, bool]: Map from caller name to True iff CBMC verified it on the unmutated source.
     """
     baselines: dict[str, bool] = {}
     for caller in in_file_callers:
-        result = run_cbmc(
-            function_to_verify=caller,
-            file_containing_function_to_verify=str(source_path),
-        )
+        result = run(caller, source_path)
         # Callers that don't verify on the unmutated source are excluded from caller-side
         # judgement via unverifiable_baseline_callers.
         baselines[caller] = is_valid_mutation_candidate(result)
@@ -567,6 +588,7 @@ def _verify_callers(
     clause_mutant: ClauseMutant,
     in_file_callers: list[str],
     caller_baselines: dict[str, bool],
+    run: Callable[[str, Path], RunCbmcResult],
 ) -> ClauseCallerSideResult:
     """Return the caller-side verdict for one mutant.
 
@@ -582,6 +604,7 @@ def _verify_callers(
         in_file_callers (list[str]): The names of the in-file callers.
         caller_baselines (dict[str, bool]): Map from caller name to baseline verification result
             on the unmutated source.
+        run (Callable[[str, Path], RunCbmcResult]): Runs CBMC on a function in a file.
 
     Returns:
         ClauseCallerSideResult: The caller-side verification result for a mutated specification.
@@ -601,10 +624,7 @@ def _verify_callers(
 
     caller_vresults: list[CallerVerificationResult] = []
     for caller in verifying_callers:
-        result = run_cbmc(
-            function_to_verify=caller,
-            file_containing_function_to_verify=str(mutant_path),
-        )
+        result = run(caller, mutant_path)
         if result.timed_out:
             caller_vresults.append(
                 CallerVerificationResult(

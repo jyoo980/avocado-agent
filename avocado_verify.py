@@ -24,7 +24,8 @@ Usage:
         [--claude-timeout <TIMEOUT>] \
         [--jobs <N>] \
         [--keep-sessions] \
-        [--resume-from <PATH_TO_JSONL_LOG>]
+        [--resume-from <PATH_TO_JSONL_LOG>] \
+        [--no-auto-include]
 """
 
 import argparse
@@ -59,6 +60,8 @@ from tools.run_cbmc_and_mutation_testing import (
     verify_function,
 )
 from tools.util import (
+    AUTO_INCLUDE_ENV_VAR,
+    AUTO_INCLUDE_HELP,
     get_in_file_callees_for,
     get_in_file_callers_of,
     get_include_dirs,
@@ -365,6 +368,17 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--auto-include",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            AUTO_INCLUDE_HELP
+            + " The directory is also made accessible to the agent via `claude --add-dir`."
+            + " Use --no-auto-include if that directory is unrelated to the C file."
+            + " (default: %(default)s)"
+        ),
+    )
+    parser.add_argument(
         "--jobs",
         type=int,
         default=_DEFAULT_JOBS,
@@ -391,7 +405,11 @@ def main() -> None:
         logger.error(f"No such file: {file_path}")
         sys.exit(1)
 
-    include_dirs = get_include_dirs(str(file_path), [], auto_include=True)
+    include_dirs = get_include_dirs(str(file_path), [], auto_include=args.auto_include)
+    if not args.auto_include:
+        # The agent's sessions inherit this, so that its `avocado-run-cbmc` runs do not auto-detect
+        # an include directory either.
+        os.environ[AUTO_INCLUDE_ENV_VAR] = "0"
 
     path_to_call_graph = construct_call_graph(str(file_path))
     call_graph = CallGraph(json.loads(Path(path_to_call_graph).read_text(encoding="utf-8")))
@@ -1274,13 +1292,28 @@ def _merge_and_verify(
                     # If the canonical file is a symlink, its target is replaced rather than the
                     # link itself, so that the link keeps pointing to the file with the merged
                     # edits. The target keeps its permission bits.
-                    staged = destination.with_name(f"{destination.name}.avocado-merge")
+                    #
+                    # The merged bytes are staged in a sibling that this merge creates
+                    # exclusively, so an existing file or symlink is never written through or
+                    # renamed over the destination. The name has a short fixed prefix rather than
+                    # the destination's name, so it stays within filesystem filename-length
+                    # limits however long that name is.
+                    staged = destination.with_name(f".avocado-merge-{uuid.uuid4().hex}.tmp")
+                    created = False
                     try:
-                        staged.write_bytes(merged)
+                        with staged.open("xb") as staged_file:
+                            created = True
+                            staged_file.write(merged)
                         shutil.copymode(destination, staged)
                         staged.replace(destination)
                     except OSError as e:
-                        staged.unlink(missing_ok=True)
+                        if created:
+                            try:
+                                staged.unlink(missing_ok=True)
+                            except OSError as cleanup_error:
+                                logger.warning(
+                                    f"{function}: could not remove {staged}: {cleanup_error}"
+                                )
                         report = replace(
                             report,
                             merged=False,
@@ -1349,6 +1382,11 @@ def _report_stray_edits(session: _Session, canonical_file: Path) -> list[str]:
     they are named here so the run log shows when a contract depended on one. A file is compared
     as `tools.util.session_state.find_stray_files` describes.
 
+    The comparison holds `_CANONICAL_LOCK`. Otherwise another session's merge could replace the
+    canonical file while it is compared; if the canonical file is a symlink, its target could
+    then be taken for a different file, and the session's unchanged copy of the target would be
+    reported as modified.
+
     Args:
         session (_Session): The finished session.
         canonical_file (Path): The canonical source file.
@@ -1356,7 +1394,8 @@ def _report_stray_edits(session: _Session, canonical_file: Path) -> list[str]:
     Returns:
         list[str]: Relative paths tagged `added:` or `modified:`, in sorted order.
     """
-    stray = find_stray_files(session.file, canonical_file, session.fork_base)
+    with _CANONICAL_LOCK:
+        stray = find_stray_files(session.file, canonical_file, session.fork_base)
     if stray:
         logger.warning(
             f"{session.function}: files changed in the session copy are not merged: {stray}"
