@@ -2,7 +2,11 @@
 
 import json
 import os
+import shlex
 import shutil
+import signal
+import time
+from contextlib import suppress
 from pathlib import Path
 from subprocess import CompletedProcess
 
@@ -57,6 +61,14 @@ def test_get_goto_cc_command_no_stubs_no_includes() -> None:
         function="swap", file_containing_function="quicksort.c"
     )
     assert command == "goto-cc  -o swap.goto  quicksort.c  --function swap"
+
+
+def test_get_goto_cc_command_forwards_each_include_dir_once() -> None:
+    command = _get_goto_cc_command(
+        function="swap", file_containing_function="quicksort.c", include_dirs=["a", "b", "a"]
+    )
+    assert "-I a -I b " in command
+    assert command.count("-I ") == 2
 
 
 def test_get_goto_instrument_unwind_command_uses_partial_loops_and_unwind() -> None:
@@ -186,24 +198,62 @@ def test_run_cbmc_names_failed_step_for_uncompilable_source(tmp_path: Path) -> N
     assert result.returncode != 0
 
 
+def _running_sleep_state(pid: int) -> str | None:
+    """Return the state of the given `sleep` process, or None if that process is dead.
+
+    A process counts as dead if it no longer exists, if it is a zombie (state "Z"), or if its
+    pid now belongs to a process other than `sleep` because the kernel reused the pid.
+
+    Args:
+        pid (int): a process id, such as 12345.
+
+    Returns:
+        str | None: a one-letter state from `/proc/PID/stat`, such as "R" or "S", if the
+            process is a live `sleep`; None otherwise.
+    """
+    # If the process is reaped between opening and reading the file, the read raises
+    # ProcessLookupError.
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    # The command name is parenthesized and can itself contain parentheses.
+    name = stat[stat.index("(") + 1 : stat.rindex(")")]
+    state = stat[stat.rindex(")") + 1 :].split()[0]
+    if name != "sleep" or state == "Z":
+        return None
+    return state
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="requires Linux /proc")
 def test_run_command_timeout_kills_the_shells_children(tmp_path: Path) -> None:
-    # The shell forks `sleep` (and here also backgrounds a second one); killing only the shell
-    # on timeout would orphan them, leaving e.g. a CBMC solver running after its mutant timed out.
+    # The shell forks a foreground child (like a CBMC solver) and here also a background one;
+    # killing only the shell on timeout would orphan them, leaving e.g. a CBMC solver running
+    # after its mutant timed out. The foreground child records its own pid and then execs
+    # `sleep`, so the shell waits on it as it would on any foreground command.
     pid_file = tmp_path / "pids"
-    command = f"sleep 60 & echo $! > {pid_file}; sleep 60; true"
+    command = (
+        f"sleep 60 & echo $! > {shlex.quote(str(pid_file))}; "
+        f"sh -c 'echo $$ >> \"$0\"; exec sleep 60' {shlex.quote(str(pid_file))}; true"
+    )
     result = _run_command(CbmcStep.CBMC, command, [], timeout_sec=1)
     assert result.timed_out
-    background_pid = int(pid_file.read_text().strip())
-    # `_run_command` returns only after every killed process has exited. A killed orphan can
-    # linger as an unreaped zombie ("Z"); that counts as exited.
-    try:
-        stat = Path(f"/proc/{background_pid}/stat").read_text()
-    except FileNotFoundError:
-        return
-    state = stat.rsplit(")", 1)[1].split()[0]
-    if state != "Z":
-        os.kill(background_pid, 9)
-        raise AssertionError(f"child of the timed-out shell is still running (state {state})")
+    pids = [int(line) for line in pid_file.read_text().split()] if pid_file.exists() else []
+    if len(pids) != 2:
+        pytest.skip("the shell was killed before both of its children recorded their pids")
+    # `_run_command` returns only after every killed process has exited (a zombie counts as
+    # exited), but it gives up waiting after a few seconds, so poll briefly here too.
+    deadline = time.monotonic() + 5
+    while True:
+        running = {pid: state for pid in pids if (state := _running_sleep_state(pid)) is not None}
+        if not running or time.monotonic() > deadline:
+            break
+        time.sleep(0.05)
+    for pid in running:
+        with suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+    assert not running, f"children of the timed-out shell are still running: {running}"
+
 
 def test_run_command_honours_a_custom_timeout() -> None:
     result = _run_command(CbmcStep.CBMC, "sleep 5", [], timeout_sec=1)
@@ -495,24 +545,22 @@ def test_print_mutation_progress_buckets_undecided_mutants(capsys) -> None:
     )
 
 
-def test_run_cbmc_resolves_relative_paths_against_callers_cwd(tmp_path: Path) -> None:
+def test_run_cbmc_resolves_relative_paths_against_callers_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # The subprocesses run in a private temporary directory, but the relative source file and
     # include directory are relative to the caller's working directory.
     (tmp_path / "include").mkdir()
     (tmp_path / "include" / "seven.h").write_text("#define SEVEN 7\n", encoding="utf-8")
     src = tmp_path / "seven.c"
     src.write_text('#include "seven.h"\nint seven(void) { return SEVEN; }\n', encoding="utf-8")
-    original_cwd = Path.cwd()
-    try:
-        os.chdir(tmp_path)
-        result = run_cbmc(
-            function_to_verify="seven",
-            file_containing_function_to_verify=src.name,
-            include_dirs=["include"],
-        )
-    finally:
-        os.chdir(original_cwd)
-    assert result.failed_step is not CbmcStep.GOTO_CC
+    monkeypatch.chdir(tmp_path)
+    result = run_cbmc(
+        function_to_verify="seven",
+        file_containing_function_to_verify=src.name,
+        include_dirs=["include"],
+    )
+    assert result.failed_step is not CbmcStep.GOTO_CC, result.response
 
 
 ALLOCATING_SOURCE = """#include <stdlib.h>
