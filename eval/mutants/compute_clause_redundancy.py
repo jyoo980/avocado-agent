@@ -30,13 +30,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import tempfile
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import partial
-from itertools import starmap
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -328,8 +326,15 @@ def compute_clause_redundancy_score(
     workspace = workspace or source_path.parent
     workspace.mkdir(parents=True, exist_ok=True)
 
+    def run(function_to_verify: str, file_path: Path) -> RunCbmcResult:
+        """Run CBMC on a function in a file, adding `include_dirs` to the include search path."""
+        return run_cbmc(
+            function_to_verify=function_to_verify,
+            file_containing_function_to_verify=str(file_path),
+            include_dirs=include_dirs,
+        )
+
     # Check that the original function verifies in the first place.
-    run = partial(_run_cbmc_in_scratch_dir, include_dirs=include_dirs)
     result = run(function_name, source_path)
     if not is_valid_mutation_candidate(result):
         # No usable baseline; scoring would be meaningless without verifying the unmutated source.
@@ -357,12 +362,10 @@ def compute_clause_redundancy_score(
                 mutant.mutant_source,
             )
             paths_to_removed_clauses[path] = mutant
-        in_isolation_results = list(
-            starmap(
-                partial(_verify_removed_clause_source, run=run),
-                paths_to_removed_clauses.items(),
-            )
-        )
+        in_isolation_results = [
+            _verify_removed_clause_source(mutant_path, mutant, run)
+            for mutant_path, mutant in paths_to_removed_clauses.items()
+        ]
         caller_side_results = [
             _verify_callers(
                 mutant_path,
@@ -459,31 +462,6 @@ def _aggregate_clause_redundancy_score(
             for caller, is_verified in in_file_callers_to_baseline_verification_results.items()
             if not is_verified
         ],
-    )
-
-
-def _run_cbmc_in_scratch_dir(
-    function_to_verify: str, file_path: Path | str, include_dirs: list[str] | None = None
-) -> RunCbmcResult:
-    """Run CBMC on a function in a private scratch working directory.
-
-    The CBMC pipeline writes intermediate `<function>.goto` / `checking-<function>-contracts.goto`
-    files, named only by the function, into its working directory. Several scoring runs (e.g. of
-    two functions that share a caller) may verify the same function concurrently, so each run gets
-    its own scratch directory to keep them from clobbering one another's goto-binaries.
-
-    Args:
-        function_to_verify (str): The function to verify.
-        file_path (Path | str): The C source file containing the function.
-        include_dirs (list[str] | None): Directories to add to CBMC's include search path.
-
-    Returns:
-        RunCbmcResult: The result of running CBMC.
-    """
-    return run_cbmc(
-        function_to_verify=function_to_verify,
-        file_containing_function_to_verify=str(file_path),
-        include_dirs=include_dirs,
     )
 
 
