@@ -802,6 +802,36 @@ def _with_g_contract(source: bytes) -> bytes:
 def test_merging_one_header_keeps_the_canonical_contract_of_the_other_header() -> None:
     base = _TWO_HEADERS
     merged, report = merge_copy(
+        canonical=_with_g_contract(base),
+        snapshot=_with_f_contract(base),
+        fork_base=base,
+        function="f",
+        frozen_functions=set(),
+    )
+    assert report.merged, report.reason
+    assert merged == _with_f_contract(_with_g_contract(base))
+    assert report.changed_since_fork == ["g"] and report.carried == []
+
+
+def test_an_edit_to_the_other_header_of_the_sessions_definition_is_another_functions() -> None:
+    base = _TWO_HEADERS
+    snapshot = _with_f_contract(_with_g_contract(base))
+    merged, report = merge_copy(
+        canonical=base, snapshot=snapshot, fork_base=base, function="f", frozen_functions={"g"}
+    )
+    assert report.merged, report.reason
+    assert merged == _with_f_contract(base)
+    assert report.dropped == ["function:g (a live session is working on it)"]
+    assert report.carried == []
+    merged, report = merge_copy(
+        canonical=base, snapshot=snapshot, fork_base=base, function="f", frozen_functions=set()
+    )
+    assert merged == snapshot and report.carried == ["g"]
+
+
+def test_merging_a_later_header_keeps_the_canonical_contract_of_the_first_header() -> None:
+    base = _TWO_HEADERS
+    merged, report = merge_copy(
         canonical=_with_f_contract(base),
         snapshot=_with_g_contract(base),
         fork_base=base,
@@ -813,7 +843,7 @@ def test_merging_one_header_keeps_the_canonical_contract_of_the_other_header() -
     assert report.changed_since_fork == ["f"] and report.carried == []
 
 
-def test_an_edit_to_the_other_header_of_the_sessions_definition_is_another_functions() -> None:
+def test_a_later_header_sessions_edit_to_the_first_header_is_another_functions() -> None:
     base = _TWO_HEADERS
     snapshot = _with_f_contract(_with_g_contract(base))
     merged, report = merge_copy(

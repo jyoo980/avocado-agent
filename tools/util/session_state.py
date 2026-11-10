@@ -11,6 +11,7 @@ from __future__ import annotations
 import shutil
 from typing import TYPE_CHECKING
 
+from eval.mutants.util import MUTANT_MARKERS
 from tools.run_cbmc import VACUOUS_VERDICT
 
 if TYPE_CHECKING:
@@ -34,8 +35,7 @@ SNAPSHOT_IGNORE = shutil.ignore_patterns(
     "*-callgraph.json",
     "*.jsonl",
     f"*{TRANSCRIPTS_DIR_SUFFIX}",
-    "*__mutant_*.c",
-    "*__clause_drop_*.c",
+    *(f"*__{marker}_*.c" for marker in MUTANT_MARKERS),
     "mutation_compile_failures.log",
 )
 
