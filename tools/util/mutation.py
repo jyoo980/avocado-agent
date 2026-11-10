@@ -30,7 +30,7 @@ from tools.construct_call_graph import construct_call_graph
 from tools.run_cbmc import (
     _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
     CbmcStep,
-    max_concurrent_subprocesses,
+    max_concurrent_cbmc_runs,
     run_cbmc,
 )
 from tools.util.callgraph import CallGraph
@@ -38,7 +38,7 @@ from tools.util.paths import resolve_parent
 
 # Per-subprocess CBMC timeout applied to each CBMC step of a mutant unless a caller overrides it.
 # It is not a limit on the full pipeline: each step (and each retry) gets a fresh budget, and time
-# spent waiting for a subprocess slot is not counted. It equals `run_cbmc`'s default
+# spent waiting for a CBMC slot is not counted. It equals `run_cbmc`'s default
 # per-subprocess timeout, so the evaluation metric (`evaluate_specification_quality.py`) decides
 # each mutant under the same budget as `run_cbmc` gives the original function.
 DEFAULT_MUTANT_TIMEOUT_SEC = _DEFAULT_RUN_CBMC_TIMEOUT_SEC
@@ -54,8 +54,8 @@ _VERIFICATION_FAILURE_RETURNCODE = 10
 _MAX_MUTATION_SECTION_CHARS = 50_000
 
 # Mutants are verified concurrently by worker threads (see `_mutation_worker_count`). Each worker
-# drives a full CBMC pipeline; the shared subprocess cap in `tools.run_cbmc`
-# (`AVOCADO_MAX_CONCURRENT_CBMC`) bounds how many of those pipelines can actually be running at
+# drives a full CBMC pipeline; the shared cap on `cbmc` subprocesses in `tools.run_cbmc`
+# (`AVOCADO_MAX_CONCURRENT_CBMC`) bounds how many of their `cbmc` steps can actually be running at
 # once, so lower that if mutation runs exhaust RAM.
 
 
@@ -393,10 +393,10 @@ def generate_mutants_and_compute_score(
 def _mutation_worker_count(num_mutants: int) -> int:
     """Return how many mutants to verify concurrently.
 
-    Bounded by the shared subprocess cap in `tools.run_cbmc` (more workers than that could
-    only wait for a subprocess slot, while each holds its own mutant file) and by the number of
-    mutants, and never below 1 (a `ThreadPoolExecutor` requires a positive worker count, even when
-    there are no mutants to run).
+    Bounded by the shared cap on `cbmc` subprocesses in `tools.run_cbmc` (more workers than that
+    would spend most of their time waiting for a CBMC slot, while each holds its own mutant file)
+    and by the number of mutants, and never below 1 (a `ThreadPoolExecutor` requires a positive
+    worker count, even when there are no mutants to run).
 
     Args:
         num_mutants (int): The total number of mutants to verify.
@@ -404,7 +404,7 @@ def _mutation_worker_count(num_mutants: int) -> int:
     Returns:
         int: The number of worker threads to use.
     """
-    return max(1, min(num_mutants, max_concurrent_subprocesses()))
+    return max(1, min(num_mutants, max_concurrent_cbmc_runs()))
 
 
 def _print_mutation_progress(

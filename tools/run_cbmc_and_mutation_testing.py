@@ -30,7 +30,7 @@ from tools.util.vacuity import Vacuity, check_vacuity, describe_vacuous_result
 
 # Per-subprocess CBMC timeout for each CBMC step of a *mutant* when this tool reports mutation
 # feedback to the agent. A mutant runs several steps, and each step, including each retry, gets a
-# fresh budget of this length; time spent waiting for a subprocess slot is not counted. So this
+# fresh budget of this length; time spent waiting for a CBMC slot is not counted. So this
 # does not bound the total time for a mutant or for the mutation run. The function itself is still
 # verified under the full `tools.run_cbmc` timeout, and the evaluation metric
 # (`eval/mutants/evaluate_specification_quality.py`) always scores mutants under that full

@@ -32,9 +32,9 @@ from tools.run_cbmc import (
     _get_goto_instrument_unwind_command,
     _run_command,
     compile_with_goto_cc,
-    max_concurrent_subprocesses,
+    max_concurrent_cbmc_runs,
     run_cbmc,
-    run_shell_command,
+    run_cbmc_command,
 )
 from tools.util.mutation import MutantVerificationResult, MutationScore, _MAX_MUTATION_SECTION_CHARS, _print_mutation_progress, get_mutation_testing_results_for_client
 
@@ -206,7 +206,7 @@ def _exclusive_command(busy_dir: Path) -> str:
 
 def test_run_command_waits_for_a_slot_used_by_another_thread(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", tmp_path / "slots")
-    monkeypatch.setattr(run_cbmc_module, "max_concurrent_subprocesses", lambda: 1)
+    monkeypatch.setattr(run_cbmc_module, "max_concurrent_cbmc_runs", lambda: 1)
     command = _exclusive_command(tmp_path / "busy")
     records: list[dict] = []
     results: list = []
@@ -222,19 +222,51 @@ def test_run_command_waits_for_a_slot_used_by_another_thread(monkeypatch, tmp_pa
     assert all(result.succeeded for result in results), "commands overlapped despite one slot"
 
 
+def test_only_cbmc_takes_a_cbmc_slot(monkeypatch, tmp_path: Path) -> None:
+    slotted: list[str] = []
+    unslotted: list[str] = []
+    run_cbmc_command = run_cbmc_module.run_cbmc_command
+    run_command = run_cbmc_module.run_command
+
+    def recording_run_cbmc_command(command: str, *args, **kwargs):
+        slotted.append(command)
+        return run_cbmc_command(command, *args, **kwargs)
+
+    def recording_run_command(command: str, *args, **kwargs):
+        # `run_cbmc_command` runs its command, prefixed by a `ulimit`, through `run_command`.
+        if not command.startswith("ulimit "):
+            unslotted.append(command)
+        return run_command(command, *args, **kwargs)
+
+    monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", tmp_path / "slots")
+    monkeypatch.setattr(run_cbmc_module, "run_cbmc_command", recording_run_cbmc_command)
+    monkeypatch.setattr(run_cbmc_module, "run_command", recording_run_command)
+    src = Path("test/data/quicksort.c").resolve()
+    original_cwd = Path.cwd()
+    try:
+        os.chdir(tmp_path)
+        result = run_cbmc(function_to_verify="swap", file_containing_function_to_verify=str(src))
+    finally:
+        os.chdir(original_cwd)
+    assert result.cbmc_ran_successfully
+    assert slotted
+    assert all(command.startswith("cbmc ") for command in slotted)
+    assert {command.split()[0] for command in unslotted} == {"goto-cc", "goto-instrument"}
+
+
 def test_a_process_that_runs_commands_back_to_back_does_not_starve_another(
     monkeypatch, tmp_path: Path
 ) -> None:
     slot_dir = tmp_path / f"avocado-cbmc-slots-{os.getuid()}"
     monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", slot_dir)
-    monkeypatch.setattr(run_cbmc_module, "max_concurrent_subprocesses", lambda: 1)
+    monkeypatch.setattr(run_cbmc_module, "max_concurrent_cbmc_runs", lambda: 1)
     order = tmp_path / "order"
     looping = threading.Event()
 
     def run_back_to_back() -> None:
         # Each command is requested as soon as the previous one finishes.
         for _ in range(30):
-            run_shell_command(f"sleep 0.2; echo loop >> {order}", timeout=30)
+            run_cbmc_command(f"sleep 0.2; echo loop >> {order}", timeout=30)
             looping.set()
 
     loop = threading.Thread(target=run_back_to_back)
@@ -242,8 +274,8 @@ def test_a_process_that_runs_commands_back_to_back_does_not_starve_another(
     try:
         looping.wait()
         script = (
-            "from tools.run_cbmc import run_shell_command; "
-            f"run_shell_command('echo other >> {order}', timeout=30)"
+            "from tools.run_cbmc import run_cbmc_command; "
+            f"run_cbmc_command('echo other >> {order}', timeout=30)"
         )
         env = os.environ | {"TMPDIR": str(tmp_path), "AVOCADO_MAX_CONCURRENT_CBMC": "1"}
         repo_root = Path(__file__).resolve().parents[2]
@@ -256,26 +288,26 @@ def test_a_process_that_runs_commands_back_to_back_does_not_starve_another(
 
 def test_a_caller_that_waits_for_a_slot_logs_warnings(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", tmp_path / "slots")
-    monkeypatch.setattr(run_cbmc_module, "max_concurrent_subprocesses", lambda: 1)
+    monkeypatch.setattr(run_cbmc_module, "max_concurrent_cbmc_runs", lambda: 1)
     monkeypatch.setattr(run_cbmc_module, "_SLOT_WAIT_WARNING_SEC", 0.2)
-    holder = threading.Thread(target=run_shell_command, args=("sleep 1", 30))
+    holder = threading.Thread(target=run_cbmc_command, args=("sleep 1", 30))
     holder.start()
     time.sleep(0.3)
     warnings: list[str] = []
     sink = run_cbmc_module.logger.add(warnings.append, level="WARNING", format="{message}")
     try:
-        run_shell_command("true", timeout=30)
+        run_cbmc_command("true", timeout=30)
     finally:
         run_cbmc_module.logger.remove(sink)
         holder.join()
     assert warnings, "the waiting caller logged no warning"
-    assert all("subprocess slots" in warning for warning in warnings)
+    assert all("CBMC slots" in warning for warning in warnings)
 
 
 def test_a_command_is_limited_to_its_timeout_in_cpu_time(monkeypatch, tmp_path: Path) -> None:
     # The limit ends a command that outlives the process that enforces its timeout.
     monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", tmp_path / "slots")
-    completed = run_shell_command("ulimit -t", timeout=7.5)
+    completed = run_cbmc_command("ulimit -t", timeout=7.5)
     assert completed is not None
     assert completed.stdout.strip() == str(8 + run_cbmc_module._CPU_LIMIT_GRACE_SEC)
 
@@ -288,7 +320,7 @@ def test_a_slot_directory_that_another_user_can_write_is_refused(
     slot_dir.chmod(0o777)
     monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", slot_dir)
     with pytest.raises(PermissionError, match="no other user can write"):
-        run_shell_command("true", timeout=30)
+        run_cbmc_command("true", timeout=30)
 
 
 def test_a_slot_directory_that_is_a_symbolic_link_is_refused(monkeypatch, tmp_path: Path) -> None:
@@ -298,14 +330,14 @@ def test_a_slot_directory_that_is_a_symbolic_link_is_refused(monkeypatch, tmp_pa
     slot_dir.symlink_to(target)
     monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", slot_dir)
     with pytest.raises(PermissionError, match="no other user can write"):
-        run_shell_command("true", timeout=30)
+        run_cbmc_command("true", timeout=30)
 
 
-def test_run_shell_command_waits_for_a_slot_used_by_another_process(tmp_path: Path) -> None:
+def test_run_cbmc_command_waits_for_a_slot_used_by_another_process(tmp_path: Path) -> None:
     command = _exclusive_command(tmp_path / "busy")
     script = (
-        "import sys; from tools.run_cbmc import run_shell_command; "
-        f"sys.exit(run_shell_command({command!r}, timeout=30).returncode)"
+        "import sys; from tools.run_cbmc import run_cbmc_command; "
+        f"sys.exit(run_cbmc_command({command!r}, timeout=30).returncode)"
     )
     # Both processes put their slot files under the same temporary directory.
     env = os.environ | {"TMPDIR": str(tmp_path), "AVOCADO_MAX_CONCURRENT_CBMC": "1"}
@@ -321,8 +353,8 @@ def test_a_slot_stays_held_while_the_command_outlives_its_killed_owner(tmp_path:
     finished = tmp_path / "finished"
     command = f"touch {started}; sleep 2; touch {finished}"
     script = (
-        "from tools.run_cbmc import run_shell_command; "
-        f"run_shell_command({command!r}, timeout=30)"
+        "from tools.run_cbmc import run_cbmc_command; "
+        f"run_cbmc_command({command!r}, timeout=30)"
     )
     env = os.environ | {"TMPDIR": str(tmp_path), "AVOCADO_MAX_CONCURRENT_CBMC": "1"}
     repo_root = Path(__file__).resolve().parents[2]
@@ -352,36 +384,36 @@ def test_a_slot_stays_held_while_the_command_outlives_its_killed_owner(tmp_path:
 
 
 @pytest.mark.parametrize("setting", ["0", "-3", "auto", "8.0"])
-def test_max_concurrent_subprocesses_rejects_a_malformed_setting(monkeypatch, setting: str) -> None:
+def test_max_concurrent_cbmc_runs_rejects_a_malformed_setting(monkeypatch, setting: str) -> None:
     monkeypatch.setenv("AVOCADO_MAX_CONCURRENT_CBMC", setting)
-    max_concurrent_subprocesses.cache_clear()
+    max_concurrent_cbmc_runs.cache_clear()
     try:
         with pytest.raises(ValueError, match="AVOCADO_MAX_CONCURRENT_CBMC"):
-            max_concurrent_subprocesses()
+            max_concurrent_cbmc_runs()
     finally:
-        max_concurrent_subprocesses.cache_clear()
+        max_concurrent_cbmc_runs.cache_clear()
 
 
-def test_max_concurrent_subprocesses_is_bounded_by_the_cpu_count(monkeypatch) -> None:
+def test_max_concurrent_cbmc_runs_is_bounded_by_the_cpu_count(monkeypatch) -> None:
     monkeypatch.setattr(run_cbmc_module, "_cgroup_cpu_quota", lambda: None)
     cpus = os.process_cpu_count() or 1
     try:
         for setting, expected in [("1", 1), ("100000", cpus), ("", min(cpus, 32))]:
             monkeypatch.setenv("AVOCADO_MAX_CONCURRENT_CBMC", setting)
-            max_concurrent_subprocesses.cache_clear()
-            assert max_concurrent_subprocesses() == expected
+            max_concurrent_cbmc_runs.cache_clear()
+            assert max_concurrent_cbmc_runs() == expected
     finally:
-        max_concurrent_subprocesses.cache_clear()
+        max_concurrent_cbmc_runs.cache_clear()
 
 
-def test_max_concurrent_subprocesses_is_bounded_by_the_cgroup_cpu_quota(monkeypatch) -> None:
+def test_max_concurrent_cbmc_runs_is_bounded_by_the_cgroup_cpu_quota(monkeypatch) -> None:
     monkeypatch.setattr(run_cbmc_module, "_cgroup_cpu_quota", lambda: 1.5)
     monkeypatch.setenv("AVOCADO_MAX_CONCURRENT_CBMC", "100000")
-    max_concurrent_subprocesses.cache_clear()
+    max_concurrent_cbmc_runs.cache_clear()
     try:
-        assert max_concurrent_subprocesses() == min(2, os.process_cpu_count() or 1)
+        assert max_concurrent_cbmc_runs() == min(2, os.process_cpu_count() or 1)
     finally:
-        max_concurrent_subprocesses.cache_clear()
+        max_concurrent_cbmc_runs.cache_clear()
 
 
 def test_the_cgroup_cpu_quota_is_the_smallest_of_the_cgroup_and_its_ancestors(
