@@ -10,10 +10,10 @@ from .callgraph import CallGraph, CallGraphCallees
 from .include_dirs import (
     AUTO_INCLUDE_ENV_VAR,
     AUTO_INCLUDE_HELP,
+    existing_include_dir,
     get_include_dirs,
-    resolve_include_dirs,
 )
-from .paths import autodetect_include_dirs, resolve_parent
+from .paths import resolve_parent
 from .stubs import (
     build_stub_index,
     get_in_file_callees_for,
@@ -36,8 +36,8 @@ __all__ = [
     "CallGraph",
     "CallGraphCallees",
     "FunctionSloc",
-    "autodetect_include_dirs",
     "build_stub_index",
+    "existing_include_dir",
     "get_call_graph",
     "get_function_definition",
     "get_function_sloc",
@@ -47,7 +47,6 @@ __all__ = [
     "get_include_dirs",
     "get_stub_paths_for",
     "get_unstubbed_external_callees_for",
-    "resolve_include_dirs",
     "resolve_parent",
     "run_command",
 ]

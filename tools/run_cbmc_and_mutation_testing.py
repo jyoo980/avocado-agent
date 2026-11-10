@@ -191,11 +191,10 @@ def _get_include_dirs_for_run(file_path: str, include_dirs: list[str]) -> list[s
         list[str]: `include_dirs`, made absolute and without duplicates, followed by the
             auto-detected include directory, if any.
     """
-    # Unlike `resolve_include_dirs`, this does not reject a directory that does not exist, which
-    # the agent's runs have always been allowed to pass.
-    absolute_include_dirs = list(dict.fromkeys(str(Path(d).resolve()) for d in include_dirs))
+    # Unlike the eval scripts' `--include-dirs`, `-I` is not checked with `existing_include_dir`:
+    # the agent's runs have always been allowed to pass a directory that does not exist.
     auto_include = os.environ.get(AUTO_INCLUDE_ENV_VAR) != "0"
-    return get_include_dirs(file_path, absolute_include_dirs, auto_include=auto_include)
+    return get_include_dirs(file_path, include_dirs, auto_include=auto_include)
 
 
 def _log_verification_attempt(

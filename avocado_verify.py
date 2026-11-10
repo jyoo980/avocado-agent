@@ -403,8 +403,7 @@ def main() -> None:
         logger.error(f"No such file: {file_path}")
         sys.exit(1)
 
-    if include_dirs := get_include_dirs(str(file_path), [], auto_include=args.auto_include):
-        logger.info(f"[auto-include] using {include_dirs}")
+    include_dirs = get_include_dirs(str(file_path), [], auto_include=args.auto_include)
     if not args.auto_include:
         # The agent's sessions inherit this, so that its `avocado-run-cbmc` runs do not auto-detect
         # an include directory either.
