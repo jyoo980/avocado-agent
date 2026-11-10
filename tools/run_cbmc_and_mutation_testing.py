@@ -20,8 +20,10 @@ from pathlib import Path
 
 from loguru import logger
 
+from tools.construct_call_graph import load_call_graph
 from tools.run_cbmc import RunCbmcResult
 from tools.run_cbmc import verify_function as verify_function_and_contract
+from tools.util.callgraph import CallGraph
 from tools.util.mutation import (
     generate_mutants_and_compute_score,
     get_mutation_testing_results_for_client,
@@ -91,7 +93,12 @@ def main() -> None:
         filter=lambda record: "failed to compile" in record["message"],
     )
 
-    result = verify_function(args.function, args.file, include_dirs=args.include_dirs)
+    # Built once and shared by the verification of the function and by all mutants during
+    # mutation testing.
+    call_graph = load_call_graph(args.file)
+    result = verify_function(
+        args.function, args.file, include_dirs=args.include_dirs, call_graph=call_graph
+    )
     # Record this top-level verification attempt (pass or fail) so `avocado-verify` can gate its
     # per-function loop on the agent having actually attempted verification often enough.
     _log_verification_attempt(args.file, args.function, result)
@@ -102,6 +109,7 @@ def main() -> None:
             file_path=args.file,
             target_function=args.function,
             include_dirs=args.include_dirs,
+            call_graph=call_graph,
             is_function_already_verified=result.is_function_verified,
             mutant_timeout_sec=_AGENT_MUTANT_TIMEOUT_SEC,
         )
@@ -120,6 +128,7 @@ def verify_function(
     file_path: str,
     include_dirs: list[str] | None = None,
     *,
+    call_graph: CallGraph | None = None,
     vacuity_check: bool = True,
 ) -> RunCbmcResult:
     """Run `tools.run_cbmc.verify_function` on `function`, then check a passing run for vacuity.
@@ -136,12 +145,14 @@ def verify_function(
         function (str): Name of the function to verify.
         file_path (str): Path to the C file defining the function.
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
+        call_graph (CallGraph | None): The call graph of `file_path`, used for the verification
+            run. When None, it is constructed from `file_path`.
         vacuity_check (bool): When False, a passing run is returned as is, unchecked.
 
     Returns:
         RunCbmcResult: The outcome of the run.
     """
-    result = verify_function_and_contract(function, file_path, include_dirs)
+    result = verify_function_and_contract(function, file_path, include_dirs, call_graph=call_graph)
     if not result.is_function_verified:
         return result
     if not vacuity_check:

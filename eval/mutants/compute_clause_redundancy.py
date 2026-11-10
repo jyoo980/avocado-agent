@@ -30,6 +30,7 @@ import argparse
 import json
 import sys
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import partial
@@ -47,14 +48,17 @@ from eval.mutants.util import (
     get_mutant_file_stem,
     is_valid_mutation_candidate,
 )
-from tools.construct_call_graph import construct_call_graph
-from tools.run_cbmc import run_cbmc
-from tools.util import get_in_file_callers_of, resolve_parent
-from tools.util.callgraph import CallGraph
+from tools.construct_call_graph import load_call_graph
+from tools.run_cbmc import RunCbmcResult, run_cbmc
+from tools.util import CallGraph, get_in_file_callers_of, resolve_parent
 
 # Matches the GNU `timeout(1)` convention used elsewhere; surfaces in `returncode` for
 # timed-out CBMC runs so the value is distinguishable from CBMC's real 0/10 exit codes.
 _TIMEOUT_RETURNCODE = 124
+
+type _VerifyFunction = Callable[[str, Path], RunCbmcResult]
+"""A function that takes the name of a C function, such as "f", and the path of a file that
+defines it, runs the CBMC pipeline on that function, and returns the result."""
 
 
 class CallerSideVerdict(StrEnum):
@@ -311,20 +315,32 @@ def compute_clause_redundancy_score(
     workspace = workspace or source_path.parent
     workspace.mkdir(parents=True, exist_ok=True)
 
+    # Contract clauses are erased before a call graph is built, so removing one leaves the call
+    # graph unchanged. Build it once and pass it into every run below, which avoids re-parsing and
+    # avoids caching a call-graph JSON next to each removed-clause source.
+    call_graph = load_call_graph(str(source_path))
+
+    def verify(function: str, path: Path) -> RunCbmcResult:
+        # Every CBMC run of this scoring calls this function, so each argument that all of the
+        # runs need is passed in this one place, and the baseline runs and the removed-clause
+        # runs cannot differ in it.
+        return run_cbmc(
+            function_to_verify=function,
+            file_containing_function_to_verify=str(path),
+            call_graph=call_graph,
+        )
+
     # Check that the original function verifies in the first place.
-    result = run_cbmc(
-        function_to_verify=function_name,
-        file_containing_function_to_verify=str(source_path),
-    )
+    result = verify(function_name, source_path)
     if not is_valid_mutation_candidate(result):
         # No usable baseline; scoring would be meaningless without verifying the unmutated source.
         return None
 
     mutants = get_clause_mutants(str(source_path), function_name)
 
-    in_file_callers = _get_in_file_callers(source_path, function_name)
+    in_file_callers = _get_in_file_callers(call_graph, function_name)
     in_file_callers_to_baseline_verification_results = (
-        _get_baseline_verification_results_for_callers(in_file_callers, source_path)
+        _get_baseline_verification_results_for_callers(in_file_callers, source_path, verify)
     )
 
     # Only the files created here are deleted below; an existing file is never overwritten.
@@ -343,7 +359,7 @@ def compute_clause_redundancy_score(
             )
             paths_to_removed_clauses[path] = mutant
         in_isolation_results = [
-            _verify_removed_clause_source(mutant_path, mutant)
+            _verify_removed_clause_source(mutant_path, mutant, verify)
             for mutant_path, mutant in paths_to_removed_clauses.items()
         ]
         caller_side_results = [
@@ -352,6 +368,7 @@ def compute_clause_redundancy_score(
                 mutant,
                 in_file_callers,
                 in_file_callers_to_baseline_verification_results,
+                verify,
             )
             for mutant_path, mutant in paths_to_removed_clauses.items()
         ]
@@ -444,18 +461,16 @@ def _aggregate_clause_redundancy_score(
     )
 
 
-def _get_in_file_callers(source_path: Path, function_name: str) -> list[str]:
+def _get_in_file_callers(call_graph: CallGraph, function_name: str) -> list[str]:
     """Return functions in a file that directly call the function with the given name.
 
     Args:
-        source_path (Path): The file in which to look up callers.
+        call_graph (CallGraph): The call graph of the file in which to look up callers.
         function_name (str): The function for which to look up callers.
 
     Returns:
         list[str]: The names of the in-file callers of the given name.
     """
-    call_graph_path = construct_call_graph(str(source_path))
-    call_graph = CallGraph(json.loads(Path(call_graph_path).read_text(encoding="utf-8")))
     if function_name not in call_graph:
         msg = f"'{function_name}' was missing from the call graph"
         raise ValueError(msg)
@@ -504,7 +519,7 @@ def _get_path_to_source_with_removed_clause(
 
 
 def _verify_removed_clause_source(
-    removed_clause_mutant_path: Path, clause_mutant: ClauseMutant
+    removed_clause_mutant_path: Path, clause_mutant: ClauseMutant, verify: _VerifyFunction
 ) -> ClauseRemovalVerificationResult:
     """Return the result of verifying a removed-clause mutant in isolation.
 
@@ -512,14 +527,12 @@ def _verify_removed_clause_source(
         removed_clause_mutant_path (Path): The file that holds the source with the mutated
             specification.
         clause_mutant (ClauseMutant): The clause mutant.
+        verify (_VerifyFunction): Runs the CBMC pipeline on a function in a file.
 
     Returns:
         ClauseRemovalVerificationResult: The result of verifying a removed-clause mutant.
     """
-    result = run_cbmc(
-        function_to_verify=clause_mutant.function,
-        file_containing_function_to_verify=str(removed_clause_mutant_path),
-    )
+    result = verify(clause_mutant.function, removed_clause_mutant_path)
     if result.timed_out:
         return ClauseRemovalVerificationResult(
             clause_mutant,
@@ -536,7 +549,7 @@ def _verify_removed_clause_source(
 
 
 def _get_baseline_verification_results_for_callers(
-    in_file_callers: list[str], source_path: Path
+    in_file_callers: list[str], source_path: Path, verify: _VerifyFunction
 ) -> dict[str, bool]:
     """Return a map from in-file caller name to whether it verifies on the unmutated source.
 
@@ -546,16 +559,14 @@ def _get_baseline_verification_results_for_callers(
     Args:
         in_file_callers (list[str]): The names of the in-file callers.
         source_path (Path): The unmutated source file.
+        verify (_VerifyFunction): Runs the CBMC pipeline on a function in a file.
 
     Returns:
         dict[str, bool]: Map from caller name to True iff CBMC verified it on the unmutated source.
     """
     baselines: dict[str, bool] = {}
     for caller in in_file_callers:
-        result = run_cbmc(
-            function_to_verify=caller,
-            file_containing_function_to_verify=str(source_path),
-        )
+        result = verify(caller, source_path)
         # Callers that don't verify on the unmutated source are excluded from caller-side
         # judgement via unverifiable_baseline_callers.
         baselines[caller] = is_valid_mutation_candidate(result)
@@ -567,6 +578,7 @@ def _verify_callers(
     clause_mutant: ClauseMutant,
     in_file_callers: list[str],
     caller_baselines: dict[str, bool],
+    verify: _VerifyFunction,
 ) -> ClauseCallerSideResult:
     """Return the caller-side verdict for one mutant.
 
@@ -582,6 +594,7 @@ def _verify_callers(
         in_file_callers (list[str]): The names of the in-file callers.
         caller_baselines (dict[str, bool]): Map from caller name to baseline verification result
             on the unmutated source.
+        verify (_VerifyFunction): Runs the CBMC pipeline on a function in a file.
 
     Returns:
         ClauseCallerSideResult: The caller-side verification result for a mutated specification.
@@ -601,10 +614,7 @@ def _verify_callers(
 
     caller_vresults: list[CallerVerificationResult] = []
     for caller in verifying_callers:
-        result = run_cbmc(
-            function_to_verify=caller,
-            file_containing_function_to_verify=str(mutant_path),
-        )
+        result = verify(caller, mutant_path)
         if result.timed_out:
             caller_vresults.append(
                 CallerVerificationResult(
