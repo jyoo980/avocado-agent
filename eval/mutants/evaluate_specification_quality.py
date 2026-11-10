@@ -53,7 +53,12 @@ from eval.mutants.compute_clause_redundancy import compute_clause_redundancy_sco
 from eval.mutants.generate_mutants_and_compute_score import generate_mutants_and_compute_score
 from eval.mutants.util import get_files_with_extension
 from tools.run_cbmc import max_concurrent_subprocesses
-from tools.util import autodetect_include_dirs, get_functions_with_cprover_annotations
+from tools.util import (
+    AUTO_INCLUDE_HELP,
+    existing_include_dir,
+    get_functions_with_cprover_annotations,
+    get_include_dirs,
+)
 from tools.util.mutation import MutationScore
 
 
@@ -65,15 +70,14 @@ def main() -> None:
     parser.add_argument("path", help="Path to a C file or directory of C files.")
     parser.add_argument(
         "--auto-include",
-        help=(
-            "For each .c file, look for a sibling include/ directory at "
-            "<source>/../include and pass it to CBMC as an include path. "
-            "Fits projects whose headers live next to their src/ tree."
-        ),
+        help=AUTO_INCLUDE_HELP,
         action="store_true",
     )
     parser.add_argument(
-        "--include-dirs", action="append", help="Path(s) to stubs to use in verification."
+        "--include-dirs",
+        action="append",
+        type=existing_include_dir,
+        help="Path(s) to stubs to use in verification.",
     )
     parser.add_argument(
         "--mutation",
@@ -190,8 +194,8 @@ def _submit_file(
 
     Arguments:
         source (Path): The path to the file for evaluation.
-        auto_include (bool): True iff an `include` dir (i.e., a dir containing headers) should be
-            automatically detected.
+        auto_include (bool): True iff the auto-detected include directory (see
+            `get_include_dirs()`) should be added to CBMC's include search path.
         include_dirs (list[str]): List of directories containing files (e.g., headers) that should
             be included in verification.
         run_mutation (bool): True iff mutation testing should be reported.
@@ -210,11 +214,7 @@ def _submit_file(
         logger.warning(f"{source} had no functions with CBMC annotations")
         return _SubmittedFile(source, [], [], [])
 
-    include_dirs = (
-        [*autodetect_include_dirs(str(source)), *include_dirs] if auto_include else include_dirs
-    )
-    if include_dirs:
-        logger.debug(f"[auto-include] using {include_dirs}")
+    include_dirs = get_include_dirs(str(source), include_dirs, auto_include=auto_include)
 
     mutation_futures: list[Future[dict]] = []
     if run_mutation:
