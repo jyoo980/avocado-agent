@@ -322,10 +322,12 @@ class _FakeClaude:
         match = re.search(r"Verify (\w+) in (\S+?)\.\n", command[2])
         assert match, command[2][:80]
         function, path = match.group(1), Path(match.group(2))
+        if function in self.fail:
+            # Return without sleeping, so that a usage-limited session finishes before any
+            # concurrent session that sleeps.
+            return _session(is_error=True, text="Usage limit reached; resets at 3pm")
         start = time.monotonic()
         time.sleep(self.sleep)
-        if function in self.fail:
-            return _session(is_error=True, text="Usage limit reached; resets at 3pm")
         if function in self.rename:
             renamed = path.read_bytes().replace(
                 function.encode(), b"renamed_" + function.encode(), 1
@@ -428,7 +430,7 @@ def test_usage_limit_stops_new_submissions_but_in_flight_sessions_merge(
 
     monkeypatch.setattr(avocado_verify, "verify_function", ground_truth)
     monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
-    fake = _fake_claude(sleep=0.2, fail={order[0]})
+    fake = _fake_claude(sleep=0.5, fail={order[0]})
     monkeypatch.setattr(avocado_verify, "_run_claude", fake)
     results, limited = _verify_functions(
         order,
