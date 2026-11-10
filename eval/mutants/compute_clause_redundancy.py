@@ -284,21 +284,19 @@ def main() -> None:
 def compute_clause_redundancy_score(
     file_path: str,
     function_name: str,
-    workspace: Path | None = None,
     keep_artifacts: bool = False,
 ) -> ClauseRedundancyScore | None:
     """Score clause redundancy for `function_name` in `file_path`.
 
-    Mutant `.c` files are written next to the original source by default to simplify compilation
-    and instrumentation with CBMC. Mutants are removed unless keep_artifacts is set to `True`.
+    Mutant `.c` files are written next to the original source, so that a quoted `#include` finds
+    the same header for a mutant as for the original source. Mutants are removed unless
+    keep_artifacts is set to `True`.
 
     If the unmutated function does not verify, return None.
 
     Args:
         file_path (str): Path to the C source defining the function.
         function_name (str): The function whose contract clauses should be tested.
-        workspace (Path | None): Directory to write mutant files into. Defaults to the
-            source file's directory so relative `#include` paths still resolve.
         keep_artifacts (bool): When True, mutant `.c` files are kept for inspection.
 
     Returns:
@@ -308,8 +306,6 @@ def compute_clause_redundancy_score(
     # symlink and see the same quoted `#include`s as the file itself, which `run_cbmc` also
     # compiles through the symlink.
     source_path = resolve_parent(file_path)
-    workspace = workspace or source_path.parent
-    workspace.mkdir(parents=True, exist_ok=True)
 
     # Check that the original function verifies in the first place.
     result = run_cbmc(
@@ -332,13 +328,7 @@ def compute_clause_redundancy_score(
     try:
         for i, mutant in enumerate(mutants):
             path = create_mutant_file(
-                partial(
-                    _get_path_to_source_with_removed_clause,
-                    workspace,
-                    source_path,
-                    function_name,
-                    i,
-                ),
+                partial(_get_path_to_source_with_removed_clause, source_path, function_name, i),
                 mutant.mutant_source,
             )
             paths_to_removed_clauses[path] = mutant
@@ -463,11 +453,12 @@ def _get_in_file_callers(source_path: Path, function_name: str) -> list[str]:
 
 
 def _get_path_to_source_with_removed_clause(
-    workspace_path: Path, path_to_original_source: Path, function: str, index: int, attempt: int = 0
+    path_to_original_source: Path, function: str, index: int, attempt: int = 0
 ) -> Path:
     """Return the path to which to write a source file with a removed clause.
 
-    For example, given the path `/app/test/data/foo.c` and function `bar`, return
+    The source file with a removed clause is in the same directory as the original source file.
+    For example, given the path `/app/test/data/foo.c`, function `bar`, and the index 1, return
     `/app/test/data/foo__clause_drop_bar_1.c`. The function name is part of the file name so that
     removed-clause sources of different functions in the same file -- which may be scored
     concurrently -- do not share names; the files still match the `*__clause_drop_*.c` pattern
@@ -483,8 +474,7 @@ def _get_path_to_source_with_removed_clause(
     is shortened; see `get_bounded_mutant_file_name`.
 
     Args:
-        workspace_path (Path): The directory under which redundancy score computation occurs.
-        path_to_original_source (Path): The path to the original source file.
+        path_to_original_source (Path): A path to an original source file.
         function (str): The function whose clause was removed.
         index (int): The index of the mutant, used as a identifier for the mutant source path.
         attempt (int): The attempt number, nonzero if the paths of earlier attempts were taken;
@@ -493,13 +483,15 @@ def _get_path_to_source_with_removed_clause(
     Returns:
         Path: The path to which to write a mutated source file.
     """
-    return workspace_path / get_bounded_mutant_file_name(
-        get_mutant_file_stem(path_to_original_source),
-        CLAUSE_DROP_MARKER,
-        function,
-        index,
-        path_to_original_source.suffix,
-        attempt,
+    return path_to_original_source.with_name(
+        get_bounded_mutant_file_name(
+            get_mutant_file_stem(path_to_original_source),
+            CLAUSE_DROP_MARKER,
+            function,
+            index,
+            path_to_original_source.suffix,
+            attempt,
+        )
     )
 
 
