@@ -44,7 +44,8 @@ Please feel free to open a pull request (draft pull requests are fine,
 ## Measuring changes
 
 Scripts for measuring changes, such as the quality of the specifications that a
-benchmark carries, are described in
+benchmark carries and paired baseline/treatment experiments with the agent, are
+described in
 [`eval/experiments/measuring.md`](./eval/experiments/measuring.md). The data they
 write lives under `avocado-experimental-data/`, which is git-ignored, so it is
 local to the machine that produced it.
