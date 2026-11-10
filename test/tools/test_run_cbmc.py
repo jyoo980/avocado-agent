@@ -1,10 +1,21 @@
 """Tests for the run_cbmc tool."""
 
+import contextlib
 import json
 import os
+import shlex
 import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+from collections import Counter
+from contextlib import suppress
 from pathlib import Path
 from subprocess import CompletedProcess
+
+import pytest
 
 from eval.mutants.mutate_function import Mutant
 from tools import run_cbmc as run_cbmc_module
@@ -22,10 +33,13 @@ from tools.run_cbmc import (
     _get_goto_instrument_unwind_command,
     _run_command,
     compile_with_goto_cc,
+    max_concurrent_subprocesses,
     run_cbmc,
+    run_shell_command,
 )
 from tools.util.mutation import (
     _MAX_MUTATION_SECTION_CHARS,
+    MutantOutcome,
     MutantVerificationResult,
     MutationScore,
     _aggregate_mutation_score,
@@ -191,23 +205,272 @@ def test_run_cbmc_names_failed_step_for_uncompilable_source(tmp_path: Path) -> N
     assert result.returncode != 0
 
 
+def _exclusive_command(busy_dir: Path) -> str:
+    """Return a 0.3 s shell command that fails if another instance of it is running.
+
+    `mkdir` of a directory that exists fails, so overlapping instances cannot all succeed.
+    """
+    return f"mkdir {busy_dir} && sleep 0.3 && rmdir {busy_dir}"
+
+
+def test_run_command_waits_for_a_slot_used_by_another_thread(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", tmp_path / "slots")
+    monkeypatch.setattr(run_cbmc_module, "max_concurrent_subprocesses", lambda: 1)
+    command = _exclusive_command(tmp_path / "busy")
+    records: list[dict] = []
+    results: list = []
+
+    def run() -> None:
+        results.append(_run_command(CbmcStep.CBMC, command, records))
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert all(result.succeeded for result in results), "commands overlapped despite one slot"
+
+
+def test_a_process_that_runs_commands_back_to_back_does_not_starve_another(
+    monkeypatch, tmp_path: Path
+) -> None:
+    slot_dir = tmp_path / f"avocado-cbmc-slots-{os.getuid()}"
+    monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", slot_dir)
+    monkeypatch.setattr(run_cbmc_module, "max_concurrent_subprocesses", lambda: 1)
+    order = tmp_path / "order"
+    looping = threading.Event()
+
+    def run_back_to_back() -> None:
+        # Each command is requested as soon as the previous one finishes.
+        for _ in range(30):
+            run_shell_command(f"sleep 0.2; echo loop >> {order}", timeout=30)
+            looping.set()
+
+    loop = threading.Thread(target=run_back_to_back)
+    loop.start()
+    try:
+        looping.wait()
+        script = (
+            "from tools.run_cbmc import run_shell_command; "
+            f"run_shell_command('echo other >> {order}', timeout=30)"
+        )
+        env = os.environ | {"TMPDIR": str(tmp_path), "AVOCADO_MAX_CONCURRENT_CBMC": "1"}
+        repo_root = Path(__file__).resolve().parents[2]
+        subprocess.run([sys.executable, "-c", script], env=env, cwd=repo_root, check=True)
+    finally:
+        loop.join()
+    runs = order.read_text().split()
+    assert "other" in runs[:-1], "the other process ran only after the back-to-back commands"
+
+
+def test_a_caller_that_waits_for_a_slot_logs_warnings(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", tmp_path / "slots")
+    monkeypatch.setattr(run_cbmc_module, "max_concurrent_subprocesses", lambda: 1)
+    monkeypatch.setattr(run_cbmc_module, "_SLOT_WAIT_WARNING_SEC", 0.2)
+    holder = threading.Thread(target=run_shell_command, args=("sleep 1", 30))
+    holder.start()
+    time.sleep(0.3)
+    warnings: list[str] = []
+    sink = run_cbmc_module.logger.add(warnings.append, level="WARNING", format="{message}")
+    try:
+        run_shell_command("true", timeout=30)
+    finally:
+        run_cbmc_module.logger.remove(sink)
+        holder.join()
+    assert warnings, "the waiting caller logged no warning"
+    assert all("subprocess slots" in warning for warning in warnings)
+
+
+def test_a_command_is_limited_to_its_timeout_in_cpu_time(monkeypatch, tmp_path: Path) -> None:
+    # The limit ends a command that outlives the process that enforces its timeout.
+    monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", tmp_path / "slots")
+    completed = run_shell_command("ulimit -t", timeout=7.5)
+    assert completed is not None
+    assert completed.stdout.strip() == str(8 + run_cbmc_module._CPU_LIMIT_GRACE_SEC)
+
+
+def test_a_slot_directory_that_another_user_can_write_is_refused(
+    monkeypatch, tmp_path: Path
+) -> None:
+    slot_dir = tmp_path / "slots"
+    slot_dir.mkdir()
+    slot_dir.chmod(0o777)
+    monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", slot_dir)
+    with pytest.raises(PermissionError, match="no other user can write"):
+        run_shell_command("true", timeout=30)
+
+
+def test_a_slot_directory_that_is_a_symbolic_link_is_refused(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "elsewhere"
+    target.mkdir(mode=0o700)
+    slot_dir = tmp_path / "slots"
+    slot_dir.symlink_to(target)
+    monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", slot_dir)
+    with pytest.raises(PermissionError, match="no other user can write"):
+        run_shell_command("true", timeout=30)
+
+
+def test_run_shell_command_waits_for_a_slot_used_by_another_process(tmp_path: Path) -> None:
+    command = _exclusive_command(tmp_path / "busy")
+    script = (
+        "import sys; from tools.run_cbmc import run_shell_command; "
+        f"sys.exit(run_shell_command({command!r}, timeout=30).returncode)"
+    )
+    # Both processes put their slot files under the same temporary directory.
+    env = os.environ | {"TMPDIR": str(tmp_path), "AVOCADO_MAX_CONCURRENT_CBMC": "1"}
+    repo_root = Path(__file__).resolve().parents[2]
+    processes = [
+        subprocess.Popen([sys.executable, "-c", script], env=env, cwd=repo_root) for _ in range(2)
+    ]
+    assert [process.wait() for process in processes] == [0, 0]
+
+
+def test_a_slot_stays_held_while_the_command_outlives_its_killed_owner(tmp_path: Path) -> None:
+    started = tmp_path / "started"
+    finished = tmp_path / "finished"
+    command = f"touch {started}; sleep 2; touch {finished}"
+    script = (
+        "from tools.run_cbmc import run_shell_command; "
+        f"run_shell_command({command!r}, timeout=30)"
+    )
+    env = os.environ | {"TMPDIR": str(tmp_path), "AVOCADO_MAX_CONCURRENT_CBMC": "1"}
+    repo_root = Path(__file__).resolve().parents[2]
+    owner = subprocess.Popen(
+        [sys.executable, "-c", script], env=env, cwd=repo_root, start_new_session=True
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not started.exists():
+            assert time.monotonic() < deadline, "the command never started"
+            time.sleep(0.05)
+        # Kill only the Python owner; the command it started keeps running.
+        owner.kill()
+        owner.wait()
+        slot_path = tmp_path / f"avocado-cbmc-slots-{os.getuid()}" / "slot-0"
+        fcntl = run_cbmc_module.fcntl
+        fd = os.open(slot_path, os.O_RDWR)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            assert not finished.exists(), "the command finished before the slot was checked"
+        finally:
+            os.close(fd)
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(owner.pid, signal.SIGKILL)
+
+
+@pytest.mark.parametrize("setting", ["0", "-3", "auto", "8.0"])
+def test_max_concurrent_subprocesses_rejects_a_malformed_setting(monkeypatch, setting: str) -> None:
+    monkeypatch.setenv("AVOCADO_MAX_CONCURRENT_CBMC", setting)
+    max_concurrent_subprocesses.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="AVOCADO_MAX_CONCURRENT_CBMC"):
+            max_concurrent_subprocesses()
+    finally:
+        max_concurrent_subprocesses.cache_clear()
+
+
+def test_max_concurrent_subprocesses_is_bounded_by_the_cpu_count(monkeypatch) -> None:
+    monkeypatch.setattr(run_cbmc_module, "_cgroup_cpu_quota", lambda: None)
+    cpus = os.process_cpu_count() or 1
+    try:
+        for setting, expected in [("1", 1), ("100000", cpus), ("", min(cpus, 32))]:
+            monkeypatch.setenv("AVOCADO_MAX_CONCURRENT_CBMC", setting)
+            max_concurrent_subprocesses.cache_clear()
+            assert max_concurrent_subprocesses() == expected
+    finally:
+        max_concurrent_subprocesses.cache_clear()
+
+
+def test_max_concurrent_subprocesses_is_bounded_by_the_cgroup_cpu_quota(monkeypatch) -> None:
+    monkeypatch.setattr(run_cbmc_module, "_cgroup_cpu_quota", lambda: 1.5)
+    monkeypatch.setenv("AVOCADO_MAX_CONCURRENT_CBMC", "100000")
+    max_concurrent_subprocesses.cache_clear()
+    try:
+        assert max_concurrent_subprocesses() == min(2, os.process_cpu_count() or 1)
+    finally:
+        max_concurrent_subprocesses.cache_clear()
+
+
+def test_the_cgroup_cpu_quota_is_the_smallest_of_the_cgroup_and_its_ancestors(
+    monkeypatch, tmp_path: Path
+) -> None:
+    proc_self_cgroup = tmp_path / "cgroup"
+    cgroup_root = tmp_path / "sys-fs-cgroup"
+    monkeypatch.setattr(run_cbmc_module, "_PROC_SELF_CGROUP", proc_self_cgroup)
+    monkeypatch.setattr(run_cbmc_module, "_CGROUP_ROOT", cgroup_root)
+    leaf = cgroup_root / "outer" / "inner"
+    leaf.mkdir(parents=True)
+    proc_self_cgroup.write_text("0::/outer/inner\n")
+    quota = run_cbmc_module._cgroup_cpu_quota
+    assert quota() is None
+    (leaf / "cpu.max").write_text("max 100000\n")
+    assert quota() is None
+    (leaf.parent / "cpu.max").write_text("250000 100000\n")
+    assert quota() == 2.5
+    (cgroup_root / "cpu.max").write_text("50000 100000\n")
+    assert quota() == 0.5
+    proc_self_cgroup.write_text("12:cpu,cpuacct:/outer\n")
+    assert quota() is None
+
+
+def _running_sleep_state(pid: int) -> str | None:
+    """Return the state of the given `sleep` process, or None if that process is dead.
+
+    A process counts as dead if it no longer exists, if it is a zombie (state "Z"), or if its
+    pid now belongs to a process other than `sleep` because the kernel reused the pid.
+
+    Args:
+        pid (int): a process id, such as 12345.
+
+    Returns:
+        str | None: a one-letter state from `/proc/PID/stat`, such as "R" or "S", if the
+            process is a live `sleep`; None otherwise.
+    """
+    # If the process is reaped between opening and reading the file, the read raises
+    # ProcessLookupError.
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    # The command name is parenthesized and can itself contain parentheses.
+    name = stat[stat.index("(") + 1 : stat.rindex(")")]
+    state = stat[stat.rindex(")") + 1 :].split()[0]
+    if name != "sleep" or state == "Z":
+        return None
+    return state
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="requires Linux /proc")
 def test_run_command_timeout_kills_the_shells_children(tmp_path: Path) -> None:
-    # The shell forks `sleep` (and here also backgrounds a second one); killing only the shell
-    # on timeout would orphan them, leaving e.g. a CBMC solver running after its mutant timed out.
+    # The shell forks a foreground child (like a CBMC solver) and here also a background one;
+    # killing only the shell on timeout would orphan them, leaving e.g. a CBMC solver running
+    # after its mutant timed out. The foreground child records its own pid and then execs
+    # `sleep`, so the shell waits on it as it would on any foreground command.
     pid_file = tmp_path / "pids"
-    command = f"sleep 60 & echo $! > {pid_file}; sleep 60; true"
+    command = (
+        f"sleep 60 & echo $! > {shlex.quote(str(pid_file))}; "
+        f"sh -c 'echo $$ >> \"$0\"; exec sleep 60' {shlex.quote(str(pid_file))}; true"
+    )
     result = _run_command(CbmcStep.CBMC, command, [], timeout_sec=1)
     assert result.timed_out
-    background_pid = int(pid_file.read_text().strip())
-    # A killed orphan may linger briefly as an unreaped zombie ("Z"); that counts as dead.
-    try:
-        stat = Path(f"/proc/{background_pid}/stat").read_text()
-    except FileNotFoundError:
-        return
-    state = stat.rsplit(")", 1)[1].split()[0]
-    if state != "Z":
-        os.kill(background_pid, 9)
-        raise AssertionError(f"child of the timed-out shell is still running (state {state})")
+    pids = [int(line) for line in pid_file.read_text().split()] if pid_file.exists() else []
+    if len(pids) != 2:
+        pytest.skip("the shell was killed before both of its children recorded their pids")
+    # `_run_command` returns only after every killed process has exited (a zombie counts as
+    # exited), but it gives up waiting after a few seconds, so poll briefly here too.
+    deadline = time.monotonic() + 5
+    while True:
+        running = {pid: state for pid in pids if (state := _running_sleep_state(pid)) is not None}
+        if not running or time.monotonic() > deadline:
+            break
+        time.sleep(0.05)
+    for pid in running:
+        with suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+    assert not running, f"children of the timed-out shell are still running: {running}"
+
 
 def test_run_command_honours_a_custom_timeout() -> None:
     result = _run_command(CbmcStep.CBMC, "sleep 5", [], timeout_sec=1)
@@ -231,6 +494,25 @@ def test_run_cbmc_leaves_no_goto_files_in_the_working_directory(tmp_path: Path) 
     assert result.is_function_verified, result.response
     assert list(work_dir.iterdir()) == [], "pipeline intermediates leaked into the cwd"
     assert not list(tmp_path.glob("*.goto")), "pipeline intermediates leaked next to the source"
+
+
+def test_run_cbmc_compiles_a_symlinked_source_with_the_headers_beside_the_symlink(
+    tmp_path: Path,
+) -> None:
+    # The target of the symlink has no `seven.h` beside it; the symlink does.
+    target = tmp_path / "elsewhere" / "seven.c"
+    target.parent.mkdir()
+    target.write_text('#include "seven.h"\nint seven(void) { return SEVEN; }\n', encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "seven.h").write_text("#define SEVEN 7\n", encoding="utf-8")
+    src = project / "seven.c"
+    try:
+        src.symlink_to(target)
+    except OSError as e:
+        pytest.skip(f"cannot create symlinks: {e}")
+    result = run_cbmc("seven", str(src))
+    assert result.failed_step is not CbmcStep.GOTO_CC, result.response
 
 
 def test_a_result_records_the_pipeline_variant_that_produced_it(
@@ -318,11 +600,7 @@ def test_format_mutation_success_section_renders_kill_score_and_survivor_diff() 
         file="quicksort.c",
         target_function="f",
         num_mutants=2,
-        num_killed=1,
-        num_survived=1,
-        num_timed_out=0,
-        num_compile_failed=0,
-        num_instrumentation_failed=0,
+        outcome_counts=Counter({MutantOutcome.KILLED: 1, MutantOutcome.SURVIVED: 1}),
         kill_score=0.5,
         results=[_vresult(killed, killed=True), _vresult(survivor, killed=False)],
     )
@@ -351,11 +629,7 @@ def test_format_mutation_success_section_reports_all_killed() -> None:
         file="quicksort.c",
         target_function="f",
         num_mutants=1,
-        num_killed=1,
-        num_survived=0,
-        num_timed_out=0,
-        num_compile_failed=0,
-        num_instrumentation_failed=0,
+        outcome_counts=Counter({MutantOutcome.KILLED: 1}),
         kill_score=1.0,
         results=[_vresult(killed, killed=True)],
     )
@@ -392,11 +666,13 @@ def test_format_mutation_success_section_excludes_undecided_mutants() -> None:
         file="quicksort.c",
         target_function="f",
         num_mutants=3,
-        num_killed=0,
-        num_survived=0,
-        num_timed_out=1,
-        num_compile_failed=1,
-        num_instrumentation_failed=1,
+        outcome_counts=Counter(
+            {
+                MutantOutcome.TIMED_OUT: 1,
+                MutantOutcome.COMPILE_FAILED: 1,
+                MutantOutcome.INSTRUMENTATION_FAILED: 1,
+            }
+        ),
         kill_score=0.0,
         results=[timed_out, compile_failed, instrumentation_failed],
     )
@@ -426,11 +702,7 @@ def test_format_mutation_success_section_bounds_size_and_marks_omissions() -> No
         file="big.c",
         target_function="f",
         num_mutants=20,
-        num_killed=0,
-        num_survived=20,
-        num_timed_out=0,
-        num_compile_failed=0,
-        num_instrumentation_failed=0,
+        outcome_counts=Counter({MutantOutcome.SURVIVED: 20}),
         kill_score=0.0,
         results=survivors,
     )

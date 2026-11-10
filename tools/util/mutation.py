@@ -10,10 +10,12 @@ that perturbation.
 from __future__ import annotations
 
 import json
-import os
 import sys
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from enum import Enum
+from functools import partial
 from pathlib import Path
 
 from loguru import logger
@@ -21,15 +23,25 @@ from loguru import logger
 from eval.mutants.mutate_function import Mutant, get_mutants
 from eval.mutants.util import (
     check_expected_cbmc_return_code,
+    create_mutant_file,
     get_bounded_mutant_file_name,
+    get_mutant_file_stem,
     is_valid_mutation_candidate,
 )
 from tools.construct_call_graph import construct_call_graph
-from tools.run_cbmc import _DEFAULT_RUN_CBMC_TIMEOUT_SEC, CbmcStep, run_cbmc
+from tools.run_cbmc import (
+    _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
+    CbmcStep,
+    max_concurrent_subprocesses,
+    run_cbmc,
+)
 from tools.util.callgraph import CallGraph
+from tools.util.paths import resolve_parent
 
-# Per-subprocess CBMC timeout applied to each mutant unless a caller overrides it. This is the
-# full pipeline timeout, so the evaluation metric (`evaluate_specification_quality.py`) decides
+# Per-subprocess CBMC timeout applied to each CBMC step of a mutant unless a caller overrides it.
+# It is not a limit on the full pipeline: each step (and each retry) gets a fresh budget, and time
+# spent waiting for a subprocess slot is not counted. It equals `run_cbmc`'s default
+# per-subprocess timeout, so the evaluation metric (`evaluate_specification_quality.py`) decides
 # each mutant under the same budget as `run_cbmc` gives the original function.
 DEFAULT_MUTANT_TIMEOUT_SEC = _DEFAULT_RUN_CBMC_TIMEOUT_SEC
 
@@ -43,11 +55,25 @@ _VERIFICATION_FAILURE_RETURNCODE = 10
 # output is capped, dropping trailing survivors behind an explicit omission marker.
 _MAX_MUTATION_SECTION_CHARS = 50_000
 
-# Upper bound on how many mutants are verified concurrently. Each worker drives a full CBMC
-# pipeline (its own subprocesses), which can be memory-heavy, so the effective worker count is
-# min(this cap, os.cpu_count(), number of mutants). The cap bounds peak memory on machines with
-# many cores; lower it if mutation runs exhaust RAM.
-_MAX_MUTATION_WORKERS = 32
+# Mutants are verified concurrently by worker threads (see `_mutation_worker_count`). Each worker
+# drives a full CBMC pipeline; the shared subprocess cap in `tools.run_cbmc`
+# (`AVOCADO_MAX_CONCURRENT_CBMC`) bounds how many of those pipelines can actually be running at
+# once, so lower that if mutation runs exhaust RAM.
+
+
+class MutantOutcome(Enum):
+    """The outcome of verifying one mutant.
+
+    Each value is the key under which `MutationScore.summary()` reports the number of mutants with
+    that outcome, such as "timed_out". Killed and survived mutants are *decided*; the others are
+    *undecided*, because CBMC did not run to completion on them.
+    """
+
+    KILLED = "killed"
+    SURVIVED = "survived"
+    TIMED_OUT = "timed_out"
+    COMPILE_FAILED = "compile_failed"
+    INSTRUMENTATION_FAILED = "instrumentation_failed"
 
 
 @dataclass(frozen=True)
@@ -79,6 +105,19 @@ class MutantVerificationResult:
     compile_failed: bool = False
     instrumentation_failed: bool = False
 
+    @property
+    def outcome(self) -> MutantOutcome:
+        """The outcome of verifying this mutant."""
+        if self.timed_out:
+            return MutantOutcome.TIMED_OUT
+        if self.compile_failed:
+            return MutantOutcome.COMPILE_FAILED
+        if self.instrumentation_failed:
+            return MutantOutcome.INSTRUMENTATION_FAILED
+        if self.killed:
+            return MutantOutcome.KILLED
+        return MutantOutcome.SURVIVED
+
 
 @dataclass(frozen=True)
 class MutationTestingResult:
@@ -92,12 +131,11 @@ class MutationTestingResult:
 class MutationScore(MutationTestingResult):
     """Mutation-testing related statistics for one function.
 
-    `num_survived` and `kill_score` are reported over *decided* mutants only —
-    timed-out, compile-failed, and instrumentation-failed mutants are excluded from both the
-    survivor count and the kill-rate denominator. `num_timed_out`, `num_compile_failed`, and
-    `num_instrumentation_failed` are reported separately so consumers can see how much of the
-    mutant space was undecidable, how much produced invalid C in the first place, and how much
-    goto-instrument could not process.
+    `kill_score` is computed over *decided* mutants only: timed-out, compile-failed, and
+    instrumentation-failed mutants are excluded from its denominator. Their counts are reported
+    separately in `outcome_counts` so consumers can see how much of the mutant space was
+    undecidable, how much produced invalid C in the first place, and how much goto-instrument
+    could not process.
 
     Note: A function can have 0 mutants (e.g., a function that solely calls another function
     will not have any mutants generated).
@@ -105,21 +143,14 @@ class MutationScore(MutationTestingResult):
     Attributes
     ----------
         num_mutants (int): The total number of mutants for this function.
-        num_killed (int): The number of killed mutants.
-        num_survived (int): The number of surviving (decided, not killed) mutants.
-        num_timed_out (int): The number of mutants for which CBMC exceeded its timeout.
-        num_compile_failed (int): The number of mutants that goto-cc rejected as invalid C.
-        num_instrumentation_failed (int): The number of mutants that goto-instrument failed on.
+        outcome_counts (Counter[MutantOutcome]): The number of mutants with each outcome, such
+            as 3 for `MutantOutcome.KILLED`. An outcome that no mutant had counts as 0.
         kill_score (float): killed / (killed + survived); 0.0 when no mutants were decided.
         results (list[MutantVerificationResult]): The verification result for each mutant.
     """
 
     num_mutants: int
-    num_killed: int
-    num_survived: int
-    num_timed_out: int
-    num_compile_failed: int
-    num_instrumentation_failed: int
+    outcome_counts: Counter[MutantOutcome]
     kill_score: float
     results: list[MutantVerificationResult] = field(default_factory=list)
 
@@ -135,11 +166,7 @@ class MutationScore(MutationTestingResult):
             "file": self.file,
             "function": self.target_function,
             "total": self.num_mutants,
-            "killed": self.num_killed,
-            "survived": self.num_survived,
-            "timed_out": self.num_timed_out,
-            "compile_failed": self.num_compile_failed,
-            "instrumentation_failed": self.num_instrumentation_failed,
+            **{outcome.value: self.outcome_counts[outcome] for outcome in MutantOutcome},
             "kill_score": f"{self.kill_score:.4f}",
         }
 
@@ -191,39 +218,25 @@ def get_mutation_testing_results_for_client(mutation_testing_result: MutationTes
     """
     match mutation_testing_result:
         case MutationScore(
-            file,
-            _,
-            num_mutants,
-            num_killed,
-            num_survived,
-            num_timed_out,
-            num_compile_failed,
-            num_instrumentation_failed,
-            kill_score,
-            results,
+            file=file,
+            num_mutants=num_mutants,
+            outcome_counts=counts,
+            kill_score=kill_score,
+            results=results,
         ):
             kill_score_line = (
                 f"Mutation kill score: {kill_score:.4f} "
-                f"(killed {num_killed}/{num_mutants}; "
-                f"{num_survived} survived, "
+                f"(killed {counts[MutantOutcome.KILLED]}/{num_mutants}; "
+                f"{counts[MutantOutcome.SURVIVED]} survived, "
                 # The kill score's denominator excludes timed-out, compile-failed, and
                 # instrumentation-failed mutants, so report their counts to show how many mutants
                 # went undecided.
-                f"{num_timed_out} timed out, "
-                f"{num_compile_failed} compile-failed, "
-                f"{num_instrumentation_failed} instrumentation-failed)"
+                f"{counts[MutantOutcome.TIMED_OUT]} timed out, "
+                f"{counts[MutantOutcome.COMPILE_FAILED]} compile-failed, "
+                f"{counts[MutantOutcome.INSTRUMENTATION_FAILED]} instrumentation-failed)"
             )
-            # A surviving mutant is one that was decided (it compiled, was instrumented, and did
-            # not time out), yet the spec did not kill.
             survivors = [
-                vresult
-                for vresult in results
-                if not (
-                    vresult.killed
-                    or vresult.compile_failed
-                    or vresult.timed_out
-                    or vresult.instrumentation_failed
-                )
+                vresult for vresult in results if vresult.outcome is MutantOutcome.SURVIVED
             ]
             if not survivors:
                 return f"{kill_score_line}\nAll decided mutants were killed."
@@ -295,7 +308,10 @@ def generate_mutants_and_compute_score(
     Returns:
         MutationTestingResult: The result of running mutation testing on the target function.
     """
-    source_path = Path(file_path).resolve()
+    # A symlinked file is not followed, so its mutants are written next to the symlink and see the
+    # same quoted `#include`s as the file itself, which `run_cbmc` also compiles through the
+    # symlink.
+    source_path = resolve_parent(file_path)
     mutants = get_mutants(str(source_path), target_function)
     if not mutants:
         return NoMutantsGenerated(file_path, target_function)
@@ -320,32 +336,37 @@ def generate_mutants_and_compute_score(
         json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
     )
 
-    paths_to_mutants = {
-        _get_path_for_mutated_source(workspace, source_path, target_function, i): mutant
-        for i, mutant in enumerate(mutants)
-    }
-    # Heads-up to stderr so an agent polling the run can see the slow phase has begun and is
-    # making progress. Written to stderr (not stdout) so it never contaminates the kill-score
-    # result, and flushed so it is not buffered until the long run completes.
-    total = len(paths_to_mutants)
-    max_workers = _mutation_worker_count(total)
-    print(
-        f"Verified {target_function}; now running mutation testing on {total} "
-        f"mutants across up to {max_workers} worker(s) (one CBMC run each, with a timeout "
-        f"of {mutant_timeout_sec} s on each CBMC step) -- this can take several minutes; "
-        "do not interrupt.",
-        file=sys.stderr,
-        flush=True,
-    )
-
-    # Verify mutants concurrently: each mutant is an independent CBMC run, so a bounded thread
-    # pool overlaps their (subprocess-bound, GIL-releasing) work. Results are collected as each
-    # future completes -- emitting a flushed running tally to stderr so a consumer (a polling
-    # agent or a human at the terminal) sees forward motion -- then slotted back into original
-    # mutant order so survivor diffs render deterministically downstream. stderr (not stdout) is
-    # used so progress never contaminates the kill-score result.
+    # Only the files created here are deleted below; an existing file is never overwritten.
+    paths_to_mutants: dict[Path, Mutant] = {}
+    total = len(mutants)
     mutant_vresults: list[MutantVerificationResult | None] = [None] * total
     try:
+        for i, mutant in enumerate(mutants):
+            path = create_mutant_file(
+                partial(_get_path_for_mutated_source, workspace, source_path, target_function, i),
+                mutant.mutant_source,
+            )
+            paths_to_mutants[path] = mutant
+        # Heads-up to stderr so an agent polling the run can see the slow phase has begun and is
+        # making progress. Written to stderr (not stdout) so it never contaminates the kill-score
+        # result, and flushed so it is not buffered until the long run completes.
+        max_workers = _mutation_worker_count(total)
+        print(
+            f"Verified {target_function}; now running mutation testing on {total} "
+            f"mutants across up to {max_workers} worker(s) (one CBMC run each, with a timeout "
+            f"of {mutant_timeout_sec} s on each CBMC step) -- this can take several minutes; "
+            "do not interrupt.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+        # Verify mutants concurrently: each mutant is an independent CBMC run, so a bounded
+        # thread pool overlaps their (subprocess-bound, GIL-releasing) work. Results are
+        # collected as each future completes -- emitting a flushed running tally to stderr so a
+        # consumer (a polling agent or a human at the terminal) sees forward motion -- then
+        # slotted back into original mutant order so survivor diffs render deterministically
+        # downstream. stderr (not stdout) is used so progress never contaminates the kill-score
+        # result.
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_index = {
                 executor.submit(
@@ -372,15 +393,17 @@ def generate_mutants_and_compute_score(
     # Every future either stored a result above or raised (which would have propagated), so no
     # None slots remain; the filter just refines the type for the aggregator.
     results = [vresult for vresult in mutant_vresults if vresult is not None]
-    return _aggregate_mutation_score(results, str(source_path), target_function)
+    # Results are reported under the fully resolved path, as are clause-redundancy results.
+    return _aggregate_mutation_score(results, str(source_path.resolve()), target_function)
 
 
 def _mutation_worker_count(num_mutants: int) -> int:
     """Return how many mutants to verify concurrently.
 
-    Bounded by `_MAX_MUTATION_WORKERS`, the machine's CPU count, and the number of mutants, and
-    never below 1 (a `ThreadPoolExecutor` requires a positive worker count, even when there are
-    no mutants to run).
+    Bounded by the shared subprocess cap in `tools.run_cbmc` (more workers than that could
+    only wait for a subprocess slot, while each holds its own mutant file) and by the number of
+    mutants, and never below 1 (a `ThreadPoolExecutor` requires a positive worker count, even when
+    there are no mutants to run).
 
     Args:
         num_mutants (int): The total number of mutants to verify.
@@ -388,7 +411,7 @@ def _mutation_worker_count(num_mutants: int) -> int:
     Returns:
         int: The number of worker threads to use.
     """
-    return max(1, min(num_mutants, os.cpu_count() or 1, _MAX_MUTATION_WORKERS))
+    return max(1, min(num_mutants, max_concurrent_subprocesses()))
 
 
 def _print_mutation_progress(
@@ -396,23 +419,17 @@ def _print_mutation_progress(
 ) -> None:
     """Print a one-line, flushed mutation-testing progress update to stderr.
 
-    Reports the running tally over the mutants decided so far. The buckets mirror those in
-    `_aggregate_mutation_score` so the live counts agree with the final `MutationScore`.
+    Reports how many of the mutants verified so far had each outcome.
 
     Args:
         done (int): The number of mutants verified so far.
         total (int): The total number of mutants.
         vresults (list[MutantVerificationResult]): The per-mutant results accumulated so far.
     """
-    killed = sum(1 for r in vresults if r.killed)
-    timed_out = sum(1 for r in vresults if r.timed_out)
-    compile_failed = sum(1 for r in vresults if r.compile_failed)
-    instrumentation_failed = sum(1 for r in vresults if r.instrumentation_failed)
-    survived = len(vresults) - killed - timed_out - compile_failed - instrumentation_failed
+    counts = Counter(vresult.outcome for vresult in vresults)
+    tally = " ".join(f"{outcome.value}={counts[outcome]}" for outcome in MutantOutcome)
     print(
-        f"[mutation testing] {done}/{total} done "
-        f"(killed={killed} survived={survived} timed_out={timed_out} "
-        f"compile_failed={compile_failed} instrumentation_failed={instrumentation_failed})",
+        f"[mutation testing] {done}/{total} done ({tally})",
         file=sys.stderr,
         flush=True,
     )
@@ -425,9 +442,8 @@ def _aggregate_mutation_score(
 ) -> MutationScore:
     """Aggregate per-mutant results into a MutationScore.
 
-    Timed-out, compile-failed, and instrumentation-failed mutants are bucketed separately and
-    excluded from the kill-rate denominator, so `kill_score` reflects only the mutants CBMC could
-    decide.
+    Timed-out, compile-failed, and instrumentation-failed mutants are excluded from the kill-rate
+    denominator, so `kill_score` reflects only the mutants CBMC could decide.
 
     Args:
         mutant_vresults (list[MutantVerificationResult]): The per-mutant results.
@@ -437,30 +453,22 @@ def _aggregate_mutation_score(
     Returns:
         MutationScore: The aggregated score.
     """
-    total = len(mutant_vresults)
-    killed = sum(1 for r in mutant_vresults if r.killed)
-    timed_out = sum(1 for r in mutant_vresults if r.timed_out)
-    compile_failed = sum(1 for r in mutant_vresults if r.compile_failed)
-    instrumentation_failed = sum(1 for r in mutant_vresults if r.instrumentation_failed)
-    survived = total - killed - timed_out - compile_failed - instrumentation_failed
-    decided = killed + survived
+    counts = Counter(vresult.outcome for vresult in mutant_vresults)
+    killed = counts[MutantOutcome.KILLED]
+    decided = killed + counts[MutantOutcome.SURVIVED]
     kill_rate = (killed / decided) if decided else 0.0
     return MutationScore(
         file=file,
         target_function=target_function,
-        num_mutants=total,
-        num_killed=killed,
-        num_survived=survived,
-        num_timed_out=timed_out,
-        num_compile_failed=compile_failed,
-        num_instrumentation_failed=instrumentation_failed,
+        num_mutants=len(mutant_vresults),
+        outcome_counts=counts,
         kill_score=round(kill_rate, 4),
         results=mutant_vresults,
     )
 
 
 def _verify_mutant(
-    path_to_write_mutant: Path,
+    mutant_path: Path,
     mutant: Mutant,
     include_dirs: list[str] | None,
     call_graph: CallGraph,
@@ -477,7 +485,7 @@ def _verify_mutant(
     and the shared `call_graph` is read-only.
 
     Args:
-        path_to_write_mutant (Path): The path to which the mutated source is written.
+        mutant_path (Path): The file that holds the mutated source.
         mutant (Mutant): The mutant.
         include_dirs (list[str] | None): Include directories, which are forwarded to `run_cbmc()`.
         call_graph (CallGraph): The original function's call graph, reused verbatim for this
@@ -490,10 +498,9 @@ def _verify_mutant(
             `compile_failed` is True iff goto-cc rejected the source, in which case CBMC was
             not run.
     """
-    path_to_write_mutant.write_text(mutant.mutant_source, encoding="utf-8")
     cbmc_result = run_cbmc(
         function_to_verify=mutant.function,
-        file_containing_function_to_verify=str(path_to_write_mutant),
+        file_containing_function_to_verify=str(mutant_path),
         include_dirs=include_dirs,
         call_graph=call_graph,
         timeout_sec=timeout_sec,
@@ -501,7 +508,7 @@ def _verify_mutant(
     if cbmc_result.timed_out:
         return MutantVerificationResult(
             mutant,
-            path_to_mutant=str(path_to_write_mutant),
+            path_to_mutant=str(mutant_path),
             killed=False,
             returncode=cbmc_result.returncode,
             timed_out=True,
@@ -513,7 +520,7 @@ def _verify_mutant(
             check_expected_cbmc_return_code(cbmc_result.returncode)
             return MutantVerificationResult(
                 mutant,
-                path_to_mutant=str(path_to_write_mutant),
+                path_to_mutant=str(mutant_path),
                 killed=cbmc_result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
                 returncode=cbmc_result.returncode,
             )
@@ -521,13 +528,13 @@ def _verify_mutant(
         if compile_failed:
             logger.warning(
                 f"mutant failed to compile: {mutant.function} at "
-                f"{path_to_write_mutant}:{mutant.line}:{mutant.column} "
+                f"{mutant_path}:{mutant.line}:{mutant.column} "
                 f"({mutant.operator_class}: {mutant.original_operator} -> "
                 f"{mutant.replacement_operator}); goto-cc returncode={cbmc_result.returncode}"
             )
         return MutantVerificationResult(
             mutant,
-            path_to_mutant=str(path_to_write_mutant),
+            path_to_mutant=str(mutant_path),
             killed=False,
             returncode=cbmc_result.returncode,
             compile_failed=compile_failed,
@@ -537,22 +544,32 @@ def _verify_mutant(
     check_expected_cbmc_return_code(cbmc_result.returncode)
     return MutantVerificationResult(
         mutant,
-        path_to_mutant=str(path_to_write_mutant),
+        path_to_mutant=str(mutant_path),
         killed=cbmc_result.returncode == _VERIFICATION_FAILURE_RETURNCODE,
         returncode=cbmc_result.returncode,
     )
 
 
 def _get_path_for_mutated_source(
-    workspace_path: Path, path_to_original_source: Path, function: str, index: int
+    workspace_path: Path,
+    path_to_original_source: Path,
+    function: str,
+    index: int,
+    attempt: int = 0,
 ) -> Path:
     """Return the path to which to write a mutated source file.
 
     For example, given the path `/app/test/data/foo.c` and function `bar`, return
     `/app/test/data/foo__mutant_bar_1.c`. The function name is part of the file name so that
-    mutants of different functions in the same file -- which may be scored concurrently -- never
-    overwrite one another; mutant files still match the `*__mutant_*.c` pattern that
-    `make clean-mutants` removes.
+    mutants of different functions in the same file -- which may be scored concurrently -- do not
+    share names; mutant files still match the `*__mutant_*.c` pattern that `make clean-mutants`
+    removes.
+
+    If the original source file is a symlink, the name also contains the name of its target, such
+    as `foo__foo_impl__mutant_bar_1.c` for `foo.c -> foo_impl.c`, so the result is never the target
+    and usually differs from the mutant paths of other files in the directory; see
+    `get_mutant_file_stem`. Mutant files are created with `create_mutant_file`, which moves on to
+    the next `attempt` when a path is taken.
 
     If the readable file name would exceed the filesystem's per-component length limit, the name
     is shortened; see `get_bounded_mutant_file_name`.
@@ -562,14 +579,17 @@ def _get_path_for_mutated_source(
         path_to_original_source (Path): The path to the original source file.
         function (str): The function the mutant belongs to.
         index (int): The index of the mutant, used as a identifier for the mutant source path.
+        attempt (int): The attempt number, nonzero if the paths of earlier attempts were taken;
+            see `create_mutant_file`.
 
     Returns:
         Path: The path to which to write a mutated source file.
     """
     return workspace_path / get_bounded_mutant_file_name(
-        path_to_original_source.stem,
+        get_mutant_file_stem(path_to_original_source),
         "mutant",
         function,
         index,
         path_to_original_source.suffix,
+        attempt,
     )
