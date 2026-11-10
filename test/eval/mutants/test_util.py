@@ -14,7 +14,7 @@ def test_is_mutant_artifact() -> None:
     assert is_mutant_artifact(Path("src/foo__clause_drop_bar_0.c"))
     # A name of a later attempt (see `create_mutant_file`).
     assert is_mutant_artifact(Path("src/foo__mutant_bar_3-1.c"))
-    # A name that an older version wrote, without a function name.
+    # A name without a function name.
     assert is_mutant_artifact(Path("src/foo__mutant_3.c"))
     assert not is_mutant_artifact(Path("src/foo.c"))
     assert not is_mutant_artifact(Path("src/foo__mutant_notes.c"))
