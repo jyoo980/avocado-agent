@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import tools.run_cbmc_and_mutation_testing
 import tools.util.mutation
 import tools.util.vacuity
 from tools.run_cbmc import _DEFAULT_RUN_CBMC_TIMEOUT_SEC, CbmcStep, RunCbmcResult
@@ -125,6 +126,34 @@ def test_mutation_feedback_of_each_passing_run_is_logged_beside_the_file(tmp_pat
     assert "no mutable operators" in records[2]["reason"]
     # The attempts log, which `avocado-verify` counts records of, is a different file.
     assert not (tmp_path / "quicksort-verification-attempts.jsonl").exists()
+
+
+def test_a_mutation_testing_error_is_logged_and_propagated(tmp_path: Path, monkeypatch) -> None:
+    src = tmp_path / "quicksort.c"
+    src.write_text("int f(void) { return 0; }\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        tools.run_cbmc_and_mutation_testing,
+        "verify_function",
+        lambda function, *args, **kwargs: RunCbmcResult(function, None, False, 0, "ok"),
+    )
+
+    def fail(**kwargs):
+        raise RuntimeError("unexpected return code 42")
+
+    monkeypatch.setattr(
+        tools.run_cbmc_and_mutation_testing, "generate_mutants_and_compute_score", fail
+    )
+    monkeypatch.setattr(sys, "argv", ["avocado-run-cbmc", "--function", "f", "--file", str(src)])
+    with pytest.raises(RuntimeError, match="unexpected return code 42"):
+        main()
+    attempts = (tmp_path / "quicksort-verification-attempts.jsonl").read_text().splitlines()
+    feedback = (tmp_path / "quicksort-mutation-feedback.jsonl").read_text().splitlines()
+    (attempt,) = [json.loads(line) for line in attempts]
+    (record,) = [json.loads(line) for line in feedback]
+    assert record["attempt_id"] == attempt["attempt_id"]
+    assert record["was_mutation_tested"] is False and record["kill_score"] is None
+    assert record["error"] == "RuntimeError: unexpected return code 42"
 
 
 def test_agent_tool_uses_a_shorter_mutant_budget_than_the_metric() -> None:

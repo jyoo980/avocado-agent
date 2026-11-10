@@ -57,7 +57,8 @@ VERIFICATION_ATTEMPTS_LOG_SUFFIX = "-verification-attempts.jsonl"
 # Suffix of the sibling JSONL log in which `main` records the mutation-testing result of each
 # passing verification attempt. It is a separate log because the attempt itself is recorded before
 # mutation testing starts: a passing attempt with no record here is one whose mutation testing
-# never finished (the session was stopped while it ran). Public because `avocado-verify` copies
+# never finished (the session was stopped while it ran). A run that failed with an error has a
+# record with an `error` field. Public because `avocado-verify` copies
 # the log out of the session's private copy.
 MUTATION_FEEDBACK_LOG_SUFFIX = "-mutation-feedback.jsonl"
 
@@ -133,14 +134,26 @@ def main() -> None:
         started = time.monotonic()
         # Mutants are judged at the depth the function verified at, so the score is about the
         # same analysis as the verdict.
-        score = generate_mutants_and_compute_score(
-            file_path=args.file,
-            target_function=args.function,
-            include_dirs=args.include_dirs,
-            is_function_already_verified=result.is_function_verified,
-            mutant_timeout_sec=_AGENT_MUTANT_TIMEOUT_SEC,
-            depth=args.depth,
-        )
+        try:
+            score = generate_mutants_and_compute_score(
+                file_path=args.file,
+                target_function=args.function,
+                include_dirs=args.include_dirs,
+                is_function_already_verified=result.is_function_verified,
+                mutant_timeout_sec=_AGENT_MUTANT_TIMEOUT_SEC,
+                depth=args.depth,
+            )
+        except Exception as e:
+            # Record the failure, so that it is not mistaken for a run that was interrupted (which
+            # leaves no record). `Exception` excludes `KeyboardInterrupt`, an interruption.
+            _log_mutation_feedback_error(
+                args.file,
+                args.function,
+                e,
+                attempt_id=attempt_id,
+                seconds=time.monotonic() - started,
+            )
+            raise
         _log_mutation_feedback(
             args.file,
             args.function,
@@ -266,7 +279,8 @@ def _log_mutation_feedback(
     are written in the order in which mutation testing finishes, which differs from the order of
     the attempts when invocations overlap. `attempt_id` joins each record to the attempt's record
     in the verification-attempts log, which is in attempt order; a passing attempt with no record
-    here is one whose mutation testing never finished. Failures to write are swallowed, as for the
+    here is one whose mutation testing never finished, and one whose mutation testing raised an
+    error has a record written by `_log_mutation_feedback_error`. Failures to write are swallowed, as for the
     attempts log.
 
     Args:
@@ -297,6 +311,40 @@ def _log_mutation_feedback(
     else:
         # No mutants could be generated, so there is no score to raise.
         record |= {"was_mutation_tested": False, "kill_score": None, "reason": str(result)}
+    _append_to_sibling_log(file_under_verification, MUTATION_FEEDBACK_LOG_SUFFIX, record)
+
+
+def _log_mutation_feedback_error(
+    file_under_verification: str,
+    function: str,
+    error: Exception,
+    *,
+    attempt_id: str,
+    seconds: float,
+) -> None:
+    """Append to the mutation-feedback log a record that mutation testing raised `error`.
+
+    The record has the same keys as one written by `_log_mutation_feedback` for an attempt that
+    was not mutation tested, plus `error`, so that consumers can tell a failed run from one that
+    produced no mutants and from one that was interrupted (which leaves no record).
+
+    Args:
+        file_under_verification (str): The file that contains the function under verification.
+        function (str): The function that verified.
+        error (Exception): The exception that mutation testing raised.
+        attempt_id (str): Unique identifier of the attempt, as in its verification-attempts record.
+        seconds (float): How long mutation testing ran before it failed.
+    """
+    record = {
+        "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "attempt_id": attempt_id,
+        "function": function,
+        "file": file_under_verification,
+        "seconds": round(seconds, 1),
+        "was_mutation_tested": False,
+        "kill_score": None,
+        "error": f"{type(error).__name__}: {error}",
+    }
     _append_to_sibling_log(file_under_verification, MUTATION_FEEDBACK_LOG_SUFFIX, record)
 
 
