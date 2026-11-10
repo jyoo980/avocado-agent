@@ -26,7 +26,11 @@ from tools.util.mutation import BaselineFailsVerification, MutantVerificationRes
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from eval.mutants.generate_mutants_and_compute_score import generate_mutants_and_compute_score
-from eval.mutants.mutate_function import get_mutants
+from eval.mutants.mutate_function import (
+    DEFAULT_SKIPPED_CALLS,
+    drop_mutants_unchanged_after_preprocessing,
+    get_mutants,
+)
 from eval.mutants.util import get_files_with_extension
 from tools.util import get_functions_with_cprover_annotations, get_call_graph
 
@@ -121,7 +125,10 @@ def get_mutation_testing_result(source_file: Path, function: str, annotated_func
         "num_mutants": 0,
         "num_killed": 0
     }
-    mutants = get_mutants(str(path_to_source), function_name=function)
+    mutants = get_mutants(
+        str(path_to_source), function_name=function, skipped_calls=DEFAULT_SKIPPED_CALLS
+    )
+    mutants = drop_mutants_unchanged_after_preprocessing(mutants, str(path_to_source), include_dirs)
     result["num_mutants"] = len(mutants)
     result["has_mutants"] = len(mutants) > 0
     cbmc_result = run_cbmc(function, str(path_to_source), include_dirs)

@@ -1,8 +1,15 @@
 """Tests for mutate.py"""
 
+import shutil
 from pathlib import Path
 
+import pytest
+
 from eval import get_mutants, MutationClasses
+from eval.mutants.mutate_function import (
+    DEFAULT_SKIPPED_CALLS,
+    drop_mutants_unchanged_after_preprocessing,
+)
 from tools.util.cbmc_clause_stripper import find_cbmc_annotation_spans, strip_cbmc_clauses
 
 
@@ -109,3 +116,43 @@ def test_get_mutants_skips_operators_inside_in_body_cprover_assume() -> None:
             assert not (
                 span.start_byte <= m.start_byte and m.end_byte <= span.end_byte
             ), f"Mutant at byte {m.start_byte} lies inside CBMC annotation span {span}"
+
+
+_FILTERS = "test/data/mutants/filters.c"
+
+
+def test_get_mutants_skips_arguments_of_skipped_calls() -> None:
+    # Without `skipped_calls`, the operators inside `assert(...)` and `DEBUGLOG(...)` are mutated.
+    assert len(get_mutants(_FILTERS, "with_assert_and_debuglog")) == 5 + 1 + 1
+    mutants = get_mutants(
+        _FILTERS, "with_assert_and_debuglog", skipped_calls=DEFAULT_SKIPPED_CALLS
+    )
+    assert [(m.original_operator, m.replacement_operator) for m in mutants] == [("+", "-")]
+
+
+def test_get_mutants_skips_preprocessor_conditions() -> None:
+    # The `&&` in `#if defined(FOO) && defined(BAR)` selects a build configuration.
+    mutants = get_mutants(_FILTERS, "with_preprocessor_condition")
+    assert [(m.original_operator, m.replacement_operator) for m in mutants] == [("+", "-")]
+
+
+def test_get_mutants_skips_cprover_only_ifdef_blocks() -> None:
+    # Only `a - b` is program code; `a + 1` and the operators in the assert are spec scaffolding.
+    mutants = get_mutants(_FILTERS, "with_cprover_ifdef")
+    assert [(m.original_operator, m.replacement_operator) for m in mutants] == [("-", "+")]
+
+
+def test_get_mutants_skips_else_branch_of_cprover_ifndef() -> None:
+    # `#ifndef __CPROVER__` holds the program code; its `#else` branch is CBMC-only.
+    mutants = get_mutants(_FILTERS, "with_cprover_ifndef_else")
+    assert [(m.original_operator, m.replacement_operator) for m in mutants] == [("+", "-")]
+
+
+def test_drop_mutants_unchanged_after_preprocessing() -> None:
+    if shutil.which("goto-cc") is None:
+        pytest.skip("goto-cc is not installed")
+    fn = "with_macro_that_expands_to_nothing"
+    mutants = get_mutants(_FILTERS, fn)
+    assert len(mutants) == 5 + 1  # `<` (inside a macro that expands to nothing) and `+`
+    kept = drop_mutants_unchanged_after_preprocessing(mutants, _FILTERS)
+    assert [(m.original_operator, m.replacement_operator) for m in kept] == [("+", "-")]

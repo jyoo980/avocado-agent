@@ -25,7 +25,11 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
+import re
+import shutil
+import subprocess
 import sys
+import tempfile
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -82,6 +86,15 @@ _OPERATOR_TO_REPLACEMENTS: dict[str, dict[str, list[str]]] = {
     MutationClasses.ARITHMETIC: _ARITHMETIC_REPLACEMENTS,
     MutationClasses.LOGICAL: _LOGICAL_REPLACEMENTS,
 }
+
+# Calls whose arguments are not mutated: assertion and logging macros. Their operators are checks
+# or debug output, not the program logic a contract is meant to pin down, and in many builds
+# (e.g., lz4's default build) the macros expand to nothing, so the mutant is identical to the
+# original program and can never be killed.
+DEFAULT_SKIPPED_CALLS: frozenset[str] = frozenset({"assert", "DEBUGLOG"})
+
+# A preprocessor line marker, e.g. `# 12 "lz4.c" 2` or `#line 12 "lz4.c"`.
+_LINE_MARKER = re.compile(r"^#\s*(line\s+)?\d+")
 
 OPERATORS_TO_NAMES = {
     "+": "add",
@@ -175,12 +188,17 @@ def main() -> None:
             print(json.dumps(record))
 
 
-def get_mutants(file_path: str, function_name: str) -> list[Mutant]:
+def get_mutants(
+    file_path: str, function_name: str, skipped_calls: frozenset[str] = frozenset()
+) -> list[Mutant]:
     """Return mutants for the function with the given name in the file.
 
     Args:
         file_path (str): Path to the C source file.
         function_name (str): The function whose body should be mutated.
+        skipped_calls (frozenset[str]): Names of calls (functions or function-like macros, e.g.
+            `DEFAULT_SKIPPED_CALLS`) whose arguments are not mutated. Empty by default, which
+            keeps the mutants the harness's mutation-testing tool shows the agent unchanged.
 
     Returns:
         list[Mutant]: One mutant per (binary operator site, replacement) pair.
@@ -211,6 +229,12 @@ def get_mutants(file_path: str, function_name: str) -> list[Mutant]:
                 for s in in_body_annotation_spans
             ):
                 continue
+            if _is_inside_preprocessor_condition(node):
+                continue
+            if _is_inside_cprover_only_block(node, source_code):
+                continue
+            if skipped_calls and _is_inside_call_to(node, skipped_calls, source_code):
+                continue
             # Here, we've found a binary operator node in the target function body.
             original_operator = source_code[op_node.start_byte : op_node.end_byte].decode("utf-8")
             replacement_operators = table.get(original_operator, [])
@@ -228,6 +252,140 @@ def get_mutants(file_path: str, function_name: str) -> list[Mutant]:
                 ]
             )
     return mutants
+
+
+def _is_inside_preprocessor_condition(node: Node) -> bool:
+    """Return True iff `node` is inside the condition of an `#if` or `#elif` directive.
+
+    Such operators (e.g., the `&&` in `#if defined(_MSC_VER) && (_MSC_VER <= 1937)`) select a
+    build configuration; they are not program logic a contract could constrain.
+
+    Args:
+        node (Node): The node to check.
+
+    Returns:
+        bool: True iff `node` lies within the condition of an enclosing `#if`/`#elif`.
+    """
+    ancestor = node.parent
+    while ancestor is not None:
+        if ancestor.type in ("preproc_if", "preproc_elif"):
+            condition = ancestor.child_by_field_name("condition")
+            if condition is not None and (
+                condition.start_byte <= node.start_byte and node.end_byte <= condition.end_byte
+            ):
+                return True
+        ancestor = ancestor.parent
+    return False
+
+
+_CPROVER_MACROS = frozenset({"__CPROVER", "__CPROVER__"})
+
+
+def _is_inside_cprover_only_block(node: Node, source_code: bytes) -> bool:
+    """Return True iff `node` is in code compiled only when CBMC's macros are defined.
+
+    That is, inside `#ifdef __CPROVER__ ... (#else|#endif)` (or `__CPROVER`), or inside the
+    `#else` branch of `#ifndef __CPROVER__`. Agents put spec scaffolding there (assumptions,
+    snapshots of inputs for postconditions, loops that count cells for an `__CPROVER_assert`);
+    it is part of the spec, not the program under test, so it is not mutated.
+
+    Args:
+        node (Node): The node to check.
+        source_code (bytes): The source code the node was parsed from.
+
+    Returns:
+        bool: True iff `node` lies in a CBMC-only region of an enclosing `#ifdef`/`#ifndef`.
+    """
+    child = node
+    ancestor = node.parent
+    while ancestor is not None:
+        if ancestor.type == "preproc_ifdef":
+            name = ancestor.child_by_field_name("name")
+            macro = source_code[name.start_byte : name.end_byte].decode("utf-8") if name else ""
+            if macro in _CPROVER_MACROS:
+                directive = ancestor.children[0].type  # "#ifdef" or "#ifndef"
+                alternative = ancestor.child_by_field_name("alternative")
+                in_alternative = alternative is not None and child.id == alternative.id
+                if (directive == "#ifdef") != in_alternative:
+                    return True
+        child = ancestor
+        ancestor = ancestor.parent
+    return False
+
+
+def _is_inside_call_to(node: Node, call_names: frozenset[str], source_code: bytes) -> bool:
+    """Return True iff `node` is inside the arguments of a call to one of `call_names`.
+
+    Tree-sitter parses a function-like macro invocation such as `assert(x < n)` or
+    `DEBUGLOG(5, "%i", a - b)` as a `call_expression`, so this covers macros as well as functions.
+
+    Args:
+        node (Node): The node to check (e.g., a binary expression in a function body).
+        call_names (frozenset[str]): The names of the calls to look for.
+        source_code (bytes): The source code the node was parsed from.
+
+    Returns:
+        bool: True iff an ancestor of `node` is a call to one of `call_names`.
+    """
+    ancestor = node.parent
+    while ancestor is not None:
+        if ancestor.type == "call_expression":
+            callee = ancestor.child_by_field_name("function")
+            if callee is not None and callee.type == "identifier":
+                name = source_code[callee.start_byte : callee.end_byte].decode("utf-8")
+                if name in call_names:
+                    return True
+        ancestor = ancestor.parent
+    return False
+
+
+def drop_mutants_unchanged_after_preprocessing(
+    mutants: list[Mutant], file_path: str, include_dirs: list[str] | None = None
+) -> list[Mutant]:
+    """Return the mutants whose preprocessed source differs from the original's.
+
+    A mutation inside code the preprocessor removes (an `#if` branch that is not taken, or the
+    argument of a macro that expands to nothing) leaves the compiled program unchanged, so no
+    contract can kill it. Both the original and each mutant are preprocessed by `goto-cc -E` (the
+    preprocessor CBMC uses) from the same path, so `__FILE__` expands identically; a single
+    operator replacement does not move any line, so `__LINE__` does too.
+
+    Args:
+        mutants (list[Mutant]): Mutants of the file at `file_path`.
+        file_path (str): Path to the original C source file.
+        include_dirs (list[str] | None): Extra include directories, as passed to CBMC.
+
+    Returns:
+        list[Mutant]: The mutants that change the preprocessed program, in their original order.
+    """
+    source = Path(file_path).resolve()
+    include_flags = [f"-I{d}" for d in [str(source.parent), *(include_dirs or [])]]
+    with tempfile.TemporaryDirectory(prefix="avocado-preprocess-") as tmp:
+        work_path = Path(tmp) / source.name
+
+        def preprocess(text: str) -> str | None:
+            work_path.write_text(text, encoding="utf-8")
+            result = subprocess.run(
+                ["goto-cc", "-E", *include_flags, work_path.name],
+                cwd=tmp,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                return None
+            # Line markers (`# <line> "<file>" ...`) only locate code; drop them. Other `#` lines,
+            # such as `#pragma CPROVER check ...`, can change what CBMC checks, so keep them.
+            return "\n".join(l for l in result.stdout.splitlines() if not _LINE_MARKER.match(l))
+
+        if shutil.which("goto-cc") is None:
+            msg = "goto-cc is required to drop mutants that preprocess to the original program"
+            raise RuntimeError(msg)
+        original = preprocess(source.read_text(encoding="utf-8"))
+        if original is None:
+            # Cannot compare; keep every mutant rather than drop any on a preprocessor error.
+            return list(mutants)
+        return [m for m in mutants if preprocess(m.mutant_source) != original]
 
 
 def _get_in_body_cbmc_annotation_spans(body: Node, source_code: bytes) -> list[CbmcClauseSpan]:
