@@ -65,6 +65,16 @@ def test_listing_the_compiled_functions_runs_through_run_shell_command(
     assert [command.split()[0] for command in commands] == ["goto-cc", "goto-instrument"] * 2
 
 
+def test_a_command_that_cannot_be_started_lists_nothing(tmp_path: Path, monkeypatch) -> None:
+    def failing_run_shell_command(*args, **kwargs):
+        raise OSError("no subprocess could be started")
+
+    monkeypatch.setattr(run_cbmc_module, "run_shell_command", failing_run_shell_command)
+    source = _source(tmp_path)
+    assert list_compiled_functions(str(source)) is None
+    assert has_contract("scale", str(source)) is None
+
+
 def test_a_file_that_does_not_compile_lists_nothing(tmp_path: Path) -> None:
     broken = tmp_path / "broken.c"
     broken.write_text("int f(void) { return }\n")
