@@ -152,6 +152,7 @@ import json
 import re
 import shutil
 import stat
+import sys
 import tempfile
 import threading
 import time
@@ -160,6 +161,7 @@ from pathlib import Path
 
 import avocado_verify
 from avocado_verify import (
+    FunctionVerificationResult,
     GroundTruthVerificationResult,
     _append_jsonl,
     _fork_session,
@@ -171,7 +173,7 @@ from avocado_verify import (
 from tools.run_cbmc import CbmcStep, RunCbmcResult
 from tools.util import get_call_graph
 from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
-from tools.util.edit_rules import function_body_offsets, function_line
+from tools.util.edit_rules import MergeReport, function_body_offsets, function_line
 from tools.util.session_state import is_vacuous_status, rechecked_on_change
 from tools.util.vacuity_check_result import Vacuity, VacuityCheckResult
 
@@ -1564,3 +1566,49 @@ def test_sessions_that_failed_with_an_error_do_not_count_toward_the_no_attempt_s
 def test_the_rationale_claims_no_verdict_before_any_attempt() -> None:
     assert "does not verify yet" not in _decide([_session()], [0]).rationale
     assert "does not verify yet" in _decide([_session()], [1]).rationale
+
+
+# --------------------------------------------------------------------------------------------------
+# The main loop.
+# --------------------------------------------------------------------------------------------------
+
+
+def test_a_helper_that_the_agent_adds_is_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A function that the agent adds during the run is verified in the same run."""
+    source = tmp_path / "f.c"
+    source.write_text("int f(void) { return 0; }\n")
+    verified: list[str] = []
+
+    def fake_verify_via_agent(function: str, **_kwargs: object) -> FunctionVerificationResult:
+        transplanted = []
+        if function == "f":
+            # While verifying `f`, the agent extracts a helper `g`, which the merge transplants.
+            source.write_text("int g(void) { return 1; }\nint f(void) { return g(); }\n")
+            transplanted = ["function:g"]
+        verified.append(function)
+        return FunctionVerificationResult(
+            function=function,
+            outcome=GroundTruthVerificationResult.VERIFIED,
+            claude_sessions=[],
+            cbmc=RunCbmcResult(
+                function=function, failed_step=None, timed_out=False, returncode=0, response="ok"
+            ),
+            internal_callees=[],
+            verification_attempts=1,
+            agent_sessions=1,
+            merge=MergeReport(True, transplanted=transplanted),
+        )
+
+    monkeypatch.setattr(avocado_verify, "_verify_via_agent", fake_verify_via_agent)
+    monkeypatch.setattr(sys, "argv", ["avocado-verify", "--file", str(source)])
+    with pytest.raises(SystemExit):
+        avocado_verify.main()
+
+    assert verified == ["f", "g"]
+    log = tmp_path / "f-avocado-verify.jsonl"
+    records = [json.loads(line) for line in log.read_text().splitlines()]
+    assert records[0]["function"] == "f" and records[0]["internal_callees"] == ["g"]
+    summary = records[-1]
+    assert summary["verified"] == summary["total"] == 2
