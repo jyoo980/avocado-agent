@@ -69,6 +69,14 @@ def test_get_goto_cc_command_no_stubs_no_includes() -> None:
     assert command == "goto-cc  -o swap.goto  quicksort.c  --function swap"
 
 
+def test_get_goto_cc_command_forwards_each_include_dir_once() -> None:
+    command = _get_goto_cc_command(
+        function="swap", file_containing_function="quicksort.c", include_dirs=["a", "b", "a"]
+    )
+    assert "-I a -I b " in command
+    assert command.count("-I ") == 2
+
+
 def test_get_goto_instrument_unwind_command_uses_partial_loops_and_unwind() -> None:
     command = _get_goto_instrument_unwind_command("swap.goto")
     assert command == "goto-instrument --partial-loops --unwind 5 swap.goto swap.goto"
@@ -765,6 +773,24 @@ def test_run_cbmc_records_the_depth_it_was_given_and_passes_it_to_cbmc(tmp_path:
     assert [run["depth"] for run in runs] == [300, 200]
     commands = [step["command"] for run in runs for step in run["subprocess_results"] if step["step"] == "cbmc"]
     assert [command.rsplit(" ", 1)[1] for command in commands] == ["300", "200"]
+
+
+def test_run_cbmc_resolves_relative_paths_against_callers_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The subprocesses run in a private temporary directory, but the relative source file and
+    # include directory are relative to the caller's working directory.
+    (tmp_path / "include").mkdir()
+    (tmp_path / "include" / "seven.h").write_text("#define SEVEN 7\n", encoding="utf-8")
+    src = tmp_path / "seven.c"
+    src.write_text('#include "seven.h"\nint seven(void) { return SEVEN; }\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    result = run_cbmc(
+        function_to_verify="seven",
+        file_containing_function_to_verify=src.name,
+        include_dirs=["include"],
+    )
+    assert result.failed_step is not CbmcStep.GOTO_CC, result.response
 
 
 ALLOCATING_SOURCE = """#include <stdlib.h>
