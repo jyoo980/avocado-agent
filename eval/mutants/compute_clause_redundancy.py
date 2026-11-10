@@ -51,7 +51,6 @@ from eval.mutants.util import (
 )
 from tools.run_cbmc import RunCbmcResult, run_cbmc
 from tools.util import get_call_graph, get_in_file_callers_of, resolve_parent
-from tools.util.callgraph import CallGraph
 
 # Matches the GNU `timeout(1)` convention used elsewhere; surfaces in `returncode` for
 # timed-out CBMC runs so the value is distinguishable from CBMC's real 0/10 exit codes.

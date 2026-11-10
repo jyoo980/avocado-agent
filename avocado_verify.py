@@ -67,6 +67,7 @@ from tools.util import (
 )
 from tools.util.callgraph import CallGraph
 from tools.util.edit_rules import (
+    RESERVED_PREFIXES,
     MergeReport,
     check_edits,
     frozen_functions_for,
@@ -394,9 +395,11 @@ def main() -> None:
     include_dirs = get_include_dirs(str(file_path), [], auto_include=True)
 
     # The call graph is built once and used for the whole run. A merge never changes it for the
-    # functions it is used for: the edit rules keep every original function body unchanged, the
-    # call graph ignores contract clauses, and the helpers a merge adds are `avocado_spec_`
-    # functions that no original body calls.
+    # functions that the run verifies: the edit rules keep every function body that is in the
+    # file now unchanged, the call graph ignores contract clauses, and every helper that a merge
+    # adds is an `avocado_spec_` function, which none of those bodies calls. The file can already
+    # contain such helpers, merged by an earlier run (for example, the run that `--resume-from`
+    # resumes); `_get_functions_to_verify` leaves them out.
     call_graph = get_call_graph(str(file_path))
     functions = _get_functions_to_verify(call_graph)
     if not functions:
@@ -586,6 +589,10 @@ def _not_in_build_result(function: str) -> FunctionVerificationResult:
 def _get_functions_to_verify(call_graph: CallGraph) -> list[str]:
     """Return the functions of the given call graph to verify, callees first.
 
+    The result omits `main` and the specification helpers that earlier sessions merged into the
+    file, whose names start with `avocado_spec_`. A helper is part of the specification of the
+    function whose session added it, so it gets no session of its own.
+
     Args:
         call_graph (CallGraph): a call graph of a C file.
 
@@ -595,7 +602,7 @@ def _get_functions_to_verify(call_graph: CallGraph) -> list[str]:
     return [
         function
         for function in get_topological_ordering_of_functions(call_graph)
-        if function not in _UNVERIFIABLE_FUNCTIONS
+        if function not in _UNVERIFIABLE_FUNCTIONS and not function.startswith(RESERVED_PREFIXES)
     ]
 
 

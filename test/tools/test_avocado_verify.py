@@ -163,6 +163,7 @@ from avocado_verify import (
     GroundTruthVerificationResult,
     _append_jsonl,
     _fork_session,
+    _get_functions_to_verify,
     _merge_and_verify,
     _ready_functions,
     _verify_functions,
@@ -173,6 +174,19 @@ from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
 from tools.util.edit_rules import function_body_offsets, function_line
 from tools.util.session_state import is_vacuous_status, rechecked_on_change
 from tools.util.vacuity_check_result import Vacuity, VacuityCheckResult
+
+
+def test_functions_to_verify_omit_main_and_specification_helpers() -> None:
+    # A run resumed with `--resume-from` reads a file into which the interrupted run merged
+    # `avocado_spec_` helpers; they get no session of their own.
+    graph = CallGraph(
+        {
+            "avocado_spec_is_sorted": {"internal": [], "external": []},
+            "sort": {"internal": [], "external": []},
+            "main": {"internal": ["sort"], "external": []},
+        }
+    )
+    assert _get_functions_to_verify(graph) == ["sort"]
 
 
 def test_ready_functions_waits_only_for_earlier_callees() -> None:

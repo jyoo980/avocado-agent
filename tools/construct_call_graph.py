@@ -61,7 +61,7 @@ def construct_call_graph(
     # making the file unreadable to other users (e.g. a host user after a root Docker run).
     # `open` creates the file with the usual 0666 & ~umask permissions. The name uses a short
     # fixed prefix, not the call graph's name, so it stays within filesystem filename-length
-    # limits.
+    # limits; `SNAPSHOT_IGNORE` in `tools.util.session_state` matches it.
     tmp_path = path_to_call_graph.with_name(f".callgraph-{uuid.uuid4().hex}.tmp")
     try:
         with tmp_path.open("x", encoding="utf-8") as tmp:
