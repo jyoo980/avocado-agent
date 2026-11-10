@@ -14,18 +14,10 @@ Usage:
 
 import argparse
 import json
-import threading
 import uuid
 from pathlib import Path
 
 from tools.util import get_call_graph
-
-# `construct_call_graph` caches its JSON next to the source and is called from concurrent code
-# paths (e.g. the evaluation driver scoring several functions of one file at once). The lock keeps
-# threads of one process from parsing the same file redundantly (tree-sitter parsing is not
-# thread-safe); the atomic rename in `construct_call_graph` keeps other processes from reading a
-# partially written file.
-_CALL_GRAPH_LOCK = threading.Lock()
 
 
 def main() -> None:
@@ -44,37 +36,41 @@ def main() -> None:
 def construct_call_graph(
     path_to_file_to_verify: str,
 ) -> str:
-    """Construct a call graph for the given C file.
+    """Write the call graph of the given C file to a JSON file beside it, and return that path.
+
+    The JSON file is `<stem>-callgraph.json`; for example, the call graph of `/app/a/b/file.c` is
+    written to `/app/a/b/file-callgraph.json`. It is rewritten on every call, so it reflects the
+    current contents of the C file. Code that needs the call graph in memory calls
+    `get_call_graph` instead, which writes nothing.
 
     Args:
-        path_to_file_to_verify (str): The path to the file from which to construct a call graph.
+        path_to_file_to_verify (str): a path to a C file.
 
     Returns:
-        str: The path to the file to which the call graph is written.
+        str: The path to the JSON file to which the call graph is written.
     """
     source_path = Path(path_to_file_to_verify)
     path_to_call_graph = source_path.with_name(f"{source_path.stem}-callgraph.json")
-    with _CALL_GRAPH_LOCK:
-        if path_to_call_graph.exists():
-            return str(path_to_call_graph)
-        call_graph = get_call_graph(path_to_file_to_verify)
-        # Write to a uniquely named sibling and rename it into place, so that a concurrent process
-        # sees either no file or a complete one. Two processes that race both write identical
-        # content, so whichever rename lands last is harmless.
-        #
-        # The temporary file is created with `open(..., "x")` rather than `tempfile`, because
-        # `tempfile` creates owner-only (0600) files and the rename would preserve that mode,
-        # making the cache unreadable to other users (e.g. a host user after a root Docker run).
-        # `open` creates the file with the usual 0666 & ~umask permissions. The name uses a short
-        # fixed prefix, not the cache name, so it stays within filesystem filename-length limits.
-        tmp_path = path_to_call_graph.with_name(f".callgraph-{uuid.uuid4().hex}.tmp")
-        try:
-            with tmp_path.open("x", encoding="utf-8") as tmp:
-                tmp.write(json.dumps(call_graph, indent=4))
-            tmp_path.replace(path_to_call_graph)
-        except BaseException:
-            tmp_path.unlink(missing_ok=True)
-            raise
+    call_graph = get_call_graph(path_to_file_to_verify)
+    # Several processes can run `avocado-construct-call-graph` on one file at once. Write to a
+    # uniquely named sibling and rename it into place, so that a concurrent reader sees either
+    # the previous file or a complete new one, never a partially written one.
+    #
+    # The temporary file is created with `open(..., "x")` rather than `tempfile`, because
+    # `tempfile` creates owner-only (0600) files and the rename would preserve that mode,
+    # making the file unreadable to other users (e.g. a host user after a root Docker run).
+    # `open` creates the file with the usual 0666 & ~umask permissions. The name uses a short
+    # fixed prefix, not the call graph's name, so it stays within filesystem filename-length
+    # limits; `SNAPSHOT_IGNORE` in `tools.util.session_state` matches it.
+    tmp_path = path_to_call_graph.with_name(f".callgraph-{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp_path.open("x", encoding="utf-8") as tmp:
+            tmp.write(json.dumps(call_graph, indent=4))
+        tmp_path.replace(path_to_call_graph)
+    finally:
+        # After a successful replace the temporary path no longer exists; after a failure,
+        # this removes the abandoned temporary file.
+        tmp_path.unlink(missing_ok=True)
     return str(path_to_call_graph)
 
 

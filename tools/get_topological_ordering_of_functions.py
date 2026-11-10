@@ -13,10 +13,9 @@ Usage:
 """
 
 import argparse
-import json
-from pathlib import Path
+from collections.abc import Mapping
 
-from tools import construct_call_graph
+from tools.util import get_call_graph
 
 
 def main() -> None:
@@ -34,29 +33,28 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
-    call_graph = construct_call_graph(args.path_to_source_file)
+    call_graph = get_call_graph(args.path_to_source_file)
     for function in get_topological_ordering_of_functions(call_graph):
         print(function)
 
 
 def get_topological_ordering_of_functions(
-    path_to_call_graph: str,
+    call_graph: Mapping[str, Mapping[str, list[str]]],
 ) -> list[str]:
-    """Return a topological ordering of functions from the given call graph JSON.
+    """Return a topological ordering of the functions in the given call graph.
 
     Callees come before their callers, so verifying functions in this order means each function's
     in-file callees already have established contracts when CBMC reaches them. In case of mutual
     recursion, functions in the SCC are printed in arbitary order.
 
     Args:
-        path_to_call_graph (str): The path to the call graph JSON.
+        call_graph (Mapping[str, Mapping[str, list[str]]]): a call graph, such as a `CallGraph`,
+            that maps each function name to its callees, keyed by "internal" and "external".
 
     Returns:
         list[str]: Function names ordered callees-first.
 
     """
-    call_graph: dict[str, dict[str, list[str]]] = json.loads(Path(path_to_call_graph).read_text())
-
     visited: set[str] = set()
     ordering: list[str] = []
 
