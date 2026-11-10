@@ -847,6 +847,46 @@ def test_a_canonical_change_to_a_later_header_names_its_function() -> None:
     ]
 
 
+def test_a_later_header_name_of_a_new_definition_clashes_with_a_canonical_new_item() -> None:
+    base = b"int s(int a) {\n  return a;\n}\n"
+    canonical = base + b"int avocado_spec_k(int a) {\n  return a + 1;\n}\n"
+    snapshot = base + (
+        b"#ifdef X\nint avocado_spec_j(int a) {\n#else\nint avocado_spec_k(int a) {\n#endif\n"
+        b"  return a;\n}\n"
+    )
+    assert check_edits(base, snapshot, "s") == []
+    merged, report = merge_copy(
+        canonical=canonical, snapshot=snapshot, fork_base=base, function="s", frozen_functions=set()
+    )
+    assert not report.merged and merged == canonical
+    assert "already defined differently in the canonical file" in report.reason
+
+
+def test_a_frozen_function_named_by_two_headers_is_dropped_once() -> None:
+    base = (
+        b"int s(int a) {\n  return a;\n}\n"
+        b"#ifdef X\nint f(int a) {\n#else\nint f(long a) {\n#endif\n  return a;\n}\n"
+    )
+    snapshot = base.replace(b") {\n#", b")\n__CPROVER_requires(a > 0)\n{\n#")
+    assert snapshot.count(b"__CPROVER_requires") == 2
+    merged, report = merge_copy(
+        canonical=base, snapshot=snapshot, fork_base=base, function="s", frozen_functions={"f"}
+    )
+    assert report.merged, report.reason
+    assert merged == base
+    assert report.dropped == ["function:f (a live session is working on it)"]
+
+
+def test_an_unnamed_header_is_reported_at_its_own_line() -> None:
+    base = b"#ifdef X\nint f(int a) {\n#else\nint g[2](int a) {\n#endif\n  return a;\n}\n"
+    snapshot = base.replace(b"int g[2](int a) {", b"int g[2](int a)\n__CPROVER_requires(a > 0)\n{")
+    merged, report = merge_copy(
+        canonical=base, snapshot=snapshot, fork_base=base, function="f", frozen_functions=set()
+    )
+    assert not report.merged and merged == base
+    assert "an item at line 4 that the merge cannot name" in report.reason, report.reason
+
+
 def test_rule_4_applies_to_every_header_of_a_new_definition() -> None:
     helper = (
         b"#ifdef X\nint avocado_spec_h(int a) {\n#else\nint h(int a) {\n#endif\n  return a;\n}\n"

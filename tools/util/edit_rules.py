@@ -284,7 +284,7 @@ class _Item:
         return (self.name,) if self.name is not None else ()
 
     def header_spans(self) -> list[_HeaderSpan]:
-        """Return the item's text split after each brace that opens its body but the last.
+        """Return the byte ranges of the item's parts, split after each body brace but the last.
 
         A function definition whose header differs between preprocessor branches has one
         header per branch, each with its own contract slots and possibly its own name. With
@@ -482,16 +482,18 @@ def merge_copy(
                 if name is None:
                     return canonical, MergeReport(
                         False,
-                        f"the copy changes the contract of an item at line {edited.line} that "
-                        "the merge cannot name, so it cannot tell whether that is the contract "
-                        f"of {function}; nothing was merged",
+                        "the copy changes the contract of an item at line "
+                        f"{_header_line(snapshot, edited_span)} that the merge cannot name, so "
+                        f"it cannot tell whether that is the contract of {function}; nothing "
+                        "was merged",
                         dropped=dropped,
                     )
                 reason = _reason_not_carried(
                     name, frozen_functions, their_changed=their_text != base_text
                 )
                 if reason is not None:
-                    dropped.append(f"function:{name}{reason}")
+                    if f"function:{name}{reason}" not in dropped:
+                        dropped.append(f"function:{name}{reason}")
                 else:
                     take_mine = True
                     if name not in carried:
@@ -510,7 +512,7 @@ def merge_copy(
     their_by_text = {_unit_text(canonical, theirs_items, unit): unit for unit in their_units}
     their_by_name: dict[str, list[_Item]] = {}
     for index in sorted(their_new):
-        if (name := theirs_items[index].name) is not None:
+        for name in theirs_items[index].names:
             their_by_name.setdefault(name, []).append(theirs_items[index])
     snapshot_to_base = {snapshot_index: base_index for base_index, snapshot_index in mine.pairs}
     transplanted: list[str] = []
@@ -558,7 +560,11 @@ def merge_copy(
                 pieces.append(snapshot[previous_end : items[-1].end])
             else:
                 clash = next(
-                    (item for item in items if _clashes(item, their_by_name.get(item.name or ""))),
+                    (
+                        item
+                        for item in items
+                        if any(_clashes(item, their_by_name.get(name)) for name in item.names)
+                    ),
                     None,
                 )
                 if clash is not None:
@@ -869,6 +875,31 @@ def _apply(source: bytes, edits: list[tuple[int, int, bytes]]) -> bytes:
     for start, end, text in sorted(edits, key=itemgetter(0, 1), reverse=True):
         source = source[:start] + text + source[end:]
     return source
+
+
+def _header_line(source: bytes, span: _HeaderSpan) -> int:
+    """Return the line that the header in the given span starts on.
+
+    Blank lines and preprocessor directives, such as the `#else` before a header in a later
+    preprocessor branch, are skipped.
+
+    Args:
+        source (bytes): A C source.
+        span (_HeaderSpan): A span of one of the source's items.
+
+    Returns:
+        int: The line of the header's first token, or of the span's start when the span holds
+            nothing but blank lines and directives.
+    """
+    offset = span.start
+    for line in source[span.start : span.end].splitlines(keepends=True):
+        if line.strip() and not line.lstrip().startswith(b"#"):
+            offset += len(line) - len(line.lstrip())
+            break
+        offset += len(line)
+    else:
+        offset = span.start
+    return source.count(b"\n", 0, offset) + 1
 
 
 def _clashes(item: _Item, others: list[_Item] | None) -> bool:
