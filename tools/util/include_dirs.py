@@ -1,10 +1,11 @@
 """Choose the include directories to pass to CBMC."""
 
+import argparse
 from pathlib import Path
 
 from loguru import logger
 
-from .paths import autodetect_include_dirs
+from .paths import resolve_parent
 
 AUTO_INCLUDE_HELP = (
     "For a C file <project>/src/<name>.c, pass <project>/include to CBMC as an include path "
@@ -18,26 +19,23 @@ relative to other include directories; each client describes those.
 """
 
 
-def resolve_include_dirs(include_dirs: list[str]) -> list[str]:
-    """Return `include_dirs`, made absolute with symlinks resolved, without duplicates.
-
-    Relative paths are resolved against the current working directory. The first occurrence of a
-    duplicate is kept.
+def existing_include_dir(value: str) -> str:
+    """Return `value` if it names an existing directory; for use as an argparse `type=`.
 
     Args:
-        include_dirs (list[str]): Include directories, such as ones given on the command line.
+        value (str): A command-line argument, such as `include` or `/usr/local/include`. A
+            relative path is relative to the current working directory.
 
     Returns:
-        list[str]: A new list of the resolved include directories, without duplicates.
+        str: `value`, unchanged.
 
     Raises:
-        ValueError: If an element of `include_dirs` is empty or is not an existing directory.
+        argparse.ArgumentTypeError: If `value` is empty or is not an existing directory.
     """
-    for include_dir in include_dirs:
-        if not include_dir or not Path(include_dir).is_dir():
-            msg = f"Not an existing include directory: {include_dir!r}"
-            raise ValueError(msg)
-    return list(dict.fromkeys(str(Path(include_dir).resolve()) for include_dir in include_dirs))
+    if not value or not Path(value).is_dir():
+        msg = f"Not an existing include directory: {value!r}"
+        raise argparse.ArgumentTypeError(msg)
+    return value
 
 
 def get_include_dirs(source_file: str, include_dirs: list[str], *, auto_include: bool) -> list[str]:
@@ -62,22 +60,38 @@ def get_include_dirs(source_file: str, include_dirs: list[str], *, auto_include:
 
     Args:
         source_file (str): Path to a `.c` file.
-        include_dirs (list[str]): Include directories that were given explicitly, as returned by
-            `resolve_include_dirs()`.
+        include_dirs (list[str]): Include directories that were given explicitly, such as ones
+            given on the command line. A relative path is relative to the current working
+            directory.
         auto_include (bool): True iff the auto-detected directory, if any, should follow
             `include_dirs`.
 
     Returns:
-        list[str]: A new list of absolute include directories, without duplicates:
-            `include_dirs`, followed by the auto-detected directory if `auto_include` is true, that
-            directory exists, and `include_dirs` does not already contain it.
+        list[str]: A new list of include directories, made absolute with symlinks resolved and
+            without duplicates (the first occurrence is kept): `include_dirs`, followed by the
+            auto-detected directory if `auto_include` is true, that directory exists, and
+            `include_dirs` does not already contain it.
     """
-    result = list(include_dirs)
-    if auto_include:
-        # Resolve the detected directory as `resolve_include_dirs` resolves `include_dirs`, so that
-        # a duplicate is recognized.
-        detected = [str(Path(d).resolve()) for d in autodetect_include_dirs(source_file)]
-        result = list(dict.fromkeys([*result, *detected]))
+    detected = _autodetect_include_dir(source_file) if auto_include else None
+    candidates = [*(Path(d).resolve() for d in include_dirs), detected]
+    result = list(dict.fromkeys(str(d) for d in candidates if d is not None))
     if result:
-        logger.debug(f"[include-dirs] using {result}")
+        logger.info(f"[include-dirs] using {result}")
     return result
+
+
+def _autodetect_include_dir(source_file: str) -> Path | None:
+    """Return `<project>/include`, with symlinks resolved, for the given source file, if it exists.
+
+    See `get_include_dirs` for how `<project>` is determined.
+
+    Args:
+        source_file (str): Path to a `.c` file `<project>/src/<name>.c`.
+
+    Returns:
+        Path | None: The resolved `<project>/include` directory, or None if it does not exist or
+            the parent directory of `source_file` is not named `src`.
+    """
+    source_dir = resolve_parent(source_file).parent
+    candidate = source_dir.parent / "include"
+    return candidate.resolve() if source_dir.name == "src" and candidate.is_dir() else None

@@ -402,8 +402,7 @@ def main() -> None:
         logger.error(f"No such file: {file_path}")
         sys.exit(1)
 
-    if include_dirs := get_include_dirs(str(file_path), [], auto_include=args.auto_include):
-        logger.info(f"[auto-include] using {include_dirs}")
+    include_dirs = get_include_dirs(str(file_path), [], auto_include=args.auto_include)
 
     path_to_call_graph = construct_call_graph(str(file_path))
     call_graph = CallGraph(json.loads(Path(path_to_call_graph).read_text(encoding="utf-8")))
