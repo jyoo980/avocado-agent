@@ -1532,20 +1532,48 @@ def compile_with_goto_cc(
 
     Args:
         function (str): The function used as the goto-binary entry point.
-        file_path (str): Path to the C file to compile.
-        include_dirs (list[str] | None): Directories forwarded as `-I` flags.
+        file_path (str): Path to the C file to compile; relative to the caller's working
+            directory.
+        include_dirs (list[str] | None): Directories forwarded as `-I` flags; relative to the
+            caller's working directory.
         cwd (str | None): Working directory for the subprocess; the `<function>.goto` output
             lands there. When None, it lands in the current working directory as before.
 
     Returns:
         int: the return code of the subprocess used to invoke `goto-cc`,
-            (0 == compiled successfully).
+            (0 == compiled successfully), or `_TIMEOUT_RETURNCODE` on timeout.
     """
+    result = run_goto_cc(function, file_path, include_dirs=include_dirs, cwd=cwd)
+    return _TIMEOUT_RETURNCODE if result is None else result.returncode
+
+
+def run_goto_cc(
+    function: str,
+    file_path: str,
+    include_dirs: list[str] | None = None,
+    cwd: str | None = None,
+) -> subprocess.CompletedProcess[str] | None:
+    """Run only the goto-cc compile command on a C file and return the finished process.
+
+    Args:
+        function (str): The function used as the goto-binary entry point.
+        file_path (str): Path to the C file to compile. A relative path is relative to the
+            caller's working directory, even when `cwd` is given.
+        include_dirs (list[str] | None): Directories forwarded as `-I` flags. Relative paths are
+            relative to the caller's working directory, even when `cwd` is given.
+        cwd (str | None): Working directory for the subprocess; the `<function>.goto` output
+            lands there. When None, it lands in the current working directory.
+
+    Returns:
+        subprocess.CompletedProcess[str] | None: The process, with its exit code and its captured
+            standard output and standard error, or None if goto-cc did not finish within
+            `_GOTO_CC_TIMEOUT_SEC` seconds.
+    """
+    if cwd is not None:
+        file_path = str(Path(file_path).resolve())
+        include_dirs = [str(Path(d).resolve()) for d in include_dirs or []]
     compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
-    completed = run_shell_command(compilation_command, _GOTO_CC_TIMEOUT_SEC, cwd=cwd)
-    if completed is None:
-        return _TIMEOUT_RETURNCODE
-    return completed.returncode
+    return run_shell_command(compilation_command, _GOTO_CC_TIMEOUT_SEC, cwd=cwd)
 
 
 if __name__ == "__main__":
