@@ -59,9 +59,9 @@ from tools.run_cbmc_and_mutation_testing import (
     verify_function,
 )
 from tools.util import (
-    autodetect_include_dirs,
     get_in_file_callees_for,
     get_in_file_callers_of,
+    get_include_dirs,
     resolve_parent,
     run_command,
 )
@@ -384,15 +384,14 @@ def main() -> None:
         parser.error("--jobs must be at least 1.")
 
     # A symlinked file is not followed. Therefore, it is compiled, and its mutants are written, in
-    # the directory that contains the symlink, which is also where `autodetect_include_dirs` looks
-    # for the `include/` directory.
+    # the directory that contains the symlink, which is also where `get_include_dirs` looks for
+    # the `include/` directory.
     file_path = resolve_parent(args.file)
     if not file_path.is_file():
         logger.error(f"No such file: {file_path}")
         sys.exit(1)
 
-    if include_dirs := autodetect_include_dirs(str(file_path)):
-        logger.info(f"[auto-include] using {include_dirs}")
+    include_dirs = get_include_dirs(str(file_path), [], auto_include=True)
 
     path_to_call_graph = construct_call_graph(str(file_path))
     call_graph = CallGraph(json.loads(Path(path_to_call_graph).read_text(encoding="utf-8")))
