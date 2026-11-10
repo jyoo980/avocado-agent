@@ -45,6 +45,7 @@ from bisect import bisect_left, bisect_right
 from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from itertools import starmap
 from operator import itemgetter
 from typing import TYPE_CHECKING
 
@@ -270,6 +271,24 @@ class _Item:
         """The line the item starts on."""
         return self.lines[0]
 
+    def header_spans(self) -> list[_HeaderSpan]:
+        """Return the byte ranges of the item's parts, split after each body brace but the last.
+
+        A function definition whose header differs between preprocessor branches has one
+        header per branch, each with its own contract slots and possibly its own name. With
+        `#ifdef X` / `int f(int a) {` / `#else` / `int g(int a) {` / `#endif`, the first span
+        runs through the first `{` and holds f's header, and the second runs through the end of
+        the item and holds g's. Every other item is one span, named `name`.
+
+        Returns:
+            list[_HeaderSpan]: The spans, in order; they are contiguous and cover the item.
+        """
+        if self.kind != "function":
+            return [_HeaderSpan(self.name, self.start, self.end)]
+        ends = [offset + 1 for offset in self.body_offsets[:-1]] + [self.end]
+        starts = [self.start, *ends[:-1]]
+        return list(starmap(_HeaderSpan, zip(self.body_names, starts, ends, strict=True)))
+
     @property
     def directive(self) -> str:
         """The directive's keyword (`define`, `if`, ...), or "" for other items."""
@@ -293,6 +312,22 @@ class _Item:
         if self.name:
             return f"the declaration of {self.name}"
         return f"`{_quote(self.tokens)}`"
+
+
+@dataclass(frozen=True)
+class _HeaderSpan:
+    """A part of an item that holds at most one header and its contract slots.
+
+    Attributes:
+        name (str | None): The name that the header defines, or for an item that is not a
+            function, the item's `name`.
+        start (int): The byte offset the span starts at in the item's source.
+        end (int): The byte offset just past the span.
+    """
+
+    name: str | None
+    start: int
+    end: int
 
 
 def check_edits(base: bytes, snapshot: bytes, function: str) -> list[Violation]:
@@ -337,6 +372,8 @@ def merge_copy(
       such edit is kept), the item is frozen (a live session is working on it), or the
       item's contract also changed in the canonical file since the fork. In those cases the
       edit is left out and named in `MergeReport.dropped`; the rest of the copy still merges.
+    - A definition whose header differs between preprocessor branches is merged header by
+      header, so each header's contract is decided by the function that the header names.
     - Items the session added are inserted after the original item they followed in the copy,
       after the items other sessions added right after that original item, and after the
       original comments that preceded them in the copy. A new conditional block, from
@@ -407,38 +444,56 @@ def merge_copy(
         current = theirs_items[theirs_index[base_index]]
         if edited.kind == "directive":
             continue
-        base_text = _code_text(fork_base[original.start : original.end])
-        my_text = _code_text(snapshot[edited.start : edited.end])
-        their_text = _code_text(canonical[current.start : current.end])
-        if (
-            their_text != base_text
-            and current.kind == "function"
-            and current.name
-            and current.name not in changed_since_fork
+        # Each header of a definition, with its contract, is merged on its own, because the
+        # headers of different preprocessor branches can define different functions.
+        pieces: list[bytes] = []
+        for original_span, edited_span, current_span in zip(
+            original.header_spans(), edited.header_spans(), current.header_spans(), strict=True
         ):
-            changed_since_fork.append(current.name)
-        # The session's own function takes its contract from the copy even when the copy left
-        # that contract as it was at the fork.
-        if my_text == their_text or (my_text == base_text and edited.name != function):
-            continue
-        if edited.name is None:
-            return canonical, MergeReport(
-                False,
-                f"the copy changes the contract of an item at line {edited.line} that the merge "
-                f"cannot name, so it cannot tell whether that is the contract of {function}; "
-                "nothing was merged",
-                dropped=dropped,
+            name = edited_span.name
+            base_text = _code_text(fork_base[original_span.start : original_span.end])
+            my_text = _code_text(snapshot[edited_span.start : edited_span.end])
+            their_text = _code_text(canonical[current_span.start : current_span.end])
+            if (
+                their_text != base_text
+                and current.kind == "function"
+                and name
+                and name not in changed_since_fork
+            ):
+                changed_since_fork.append(name)
+            take_mine = False
+            # The session's own function takes its contract from the copy even when the copy
+            # left that contract as it was at the fork.
+            if name == function:
+                take_mine = my_text != their_text
+            elif my_text not in (their_text, base_text):
+                if name is None:
+                    return canonical, MergeReport(
+                        False,
+                        "the copy changes the contract of an item at line "
+                        f"{_header_line(snapshot, edited_span)} that the merge cannot name, so "
+                        f"it cannot tell whether that is the contract of {function}; nothing "
+                        "was merged",
+                        dropped=dropped,
+                    )
+                reason = _reason_not_carried(
+                    name, frozen_functions, their_changed=their_text != base_text
+                )
+                if reason is not None:
+                    if f"function:{name}{reason}" not in dropped:
+                        dropped.append(f"function:{name}{reason}")
+                else:
+                    take_mine = True
+                    if name not in carried:
+                        carried.append(name)
+            pieces.append(
+                snapshot[edited_span.start : edited_span.end]
+                if take_mine
+                else canonical[current_span.start : current_span.end]
             )
-        if edited.name != function:
-            reason = _reason_not_carried(
-                edited.name, frozen_functions, their_changed=their_text != base_text
-            )
-            if reason is not None:
-                dropped.append(f"function:{edited.name}{reason}")
-                continue
-            if edited.name not in carried:
-                carried.append(edited.name)
-        edits.append((current.start, current.end, snapshot[edited.start : edited.end]))
+        merged_item = b"".join(pieces)
+        if merged_item != canonical[current.start : current.end]:
+            edits.append((current.start, current.end, merged_item))
 
     their_new = set(theirs.new_indices)
     their_units = [unit for run in _runs(theirs.new_indices) for unit in _units(theirs_items, run)]
@@ -556,10 +611,16 @@ def functions_with_changed_contracts(before: bytes, after: bytes) -> list[str]:
     for before_index, after_index in comparison.pairs:
         old = comparison.base.items[before_index]
         new = comparison.snapshot.items[after_index]
-        if old.kind != "function" or not old.name or old.name in changed:
+        if old.kind != "function":
             continue
-        if _code_text(before[old.start : old.end]) != _code_text(after[new.start : new.end]):
-            changed.append(old.name)
+        for old_span, new_span in zip(old.header_spans(), new.header_spans(), strict=True):
+            if (
+                old_span.name
+                and old_span.name not in changed
+                and _code_text(before[old_span.start : old_span.end])
+                != _code_text(after[new_span.start : new_span.end])
+            ):
+                changed.append(old_span.name)
     return changed
 
 
@@ -798,6 +859,31 @@ def _apply(source: bytes, edits: list[tuple[int, int, bytes]]) -> bytes:
     for start, end, text in sorted(edits, key=itemgetter(0, 1), reverse=True):
         source = source[:start] + text + source[end:]
     return source
+
+
+def _header_line(source: bytes, span: _HeaderSpan) -> int:
+    """Return the line that the header in the given span starts on.
+
+    Blank lines and preprocessor directives, such as the `#else` before a header in a later
+    preprocessor branch, are skipped.
+
+    Args:
+        source (bytes): A C source.
+        span (_HeaderSpan): A span of one of the source's items.
+
+    Returns:
+        int: The line of the header's first token, or of the span's start when the span holds
+            nothing but blank lines and directives.
+    """
+    offset = span.start
+    for line in source[span.start : span.end].splitlines(keepends=True):
+        if line.strip() and not line.lstrip().startswith(b"#"):
+            offset += len(line) - len(line.lstrip())
+            break
+        offset += len(line)
+    else:
+        offset = span.start
+    return source.count(b"\n", 0, offset) + 1
 
 
 def _clashes(item: _Item, others: list[_Item] | None) -> bool:
