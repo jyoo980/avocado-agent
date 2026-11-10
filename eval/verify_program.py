@@ -31,6 +31,7 @@ from tools.util import (
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from eval.mutants.util import get_files_with_extension
 from tools.run_cbmc import RunCbmcResult, verify_function
 
 
@@ -109,7 +110,7 @@ def main() -> int:
     debug_level = "DEBUG" if args.v else "INFO"
     logger.add(sys.stderr, level=debug_level)
 
-    files = _get_files_for_verification(args.path)
+    files = get_files_with_extension(args.path, ".c") if Path(args.path).exists() else []
     if not files:
         logger.info(f"No .c files found at: {args.path}")
         return 1
@@ -131,26 +132,6 @@ def main() -> int:
     return (
         0 if all(result.passed for result in files_to_program_verification_results.values()) else 1
     )
-
-
-def _get_files_for_verification(path_str: str) -> list[Path]:
-    """Return the list of C files to verify for a given path.
-
-    If the path is a directory, recursively collects all `.c` files underneath it, including
-    sub-directories.
-
-    Args:
-        path_str (str): Path to a C file or a directory containing C files.
-
-    Returns:
-        list[Path]: Sorted list of paths to verify.
-    """
-    path = Path(path_str)
-    if not path.exists():
-        return []
-    if path.is_dir():
-        return sorted(path.rglob("*.c"))
-    return [path] if path.suffix == ".c" else []
 
 
 def _verify_program(
