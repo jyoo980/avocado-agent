@@ -188,7 +188,7 @@ session.
    the very checks that make a verification mean something.
 5. **No `__CPROVER_assume` in new text.** It may not appear in any new helper or macro.
    *Why:* an assumption can make a proof pass by assuming the problem away.
-6. **Only the source file is edited.** Do not add or modify any other file in the copied
+6. **Only the source file is edited.** Do not add, modify or delete any other file in the copied
    directory, including headers and stub files. Keep scratch files and scripts outside it.
    *Why:* other files are never merged, so a proof that depends on them does not hold on the
    shared file.

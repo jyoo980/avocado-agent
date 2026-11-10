@@ -1042,11 +1042,11 @@ def _render_new_item(item: _Item) -> str:
 
 
 def stray_file_violations(stray_files: list[str]) -> list[Violation]:
-    """Return the rule 6 violations for files added or changed beside the source file.
+    """Return the rule 6 violations for files added, changed or deleted beside the source file.
 
     Args:
-        stray_files (list[str]): Relative paths tagged `added:` or `modified:`, as returned by
-            `tools.util.session_state.find_stray_files`.
+        stray_files (list[str]): Relative paths tagged `added:`, `modified:` or `deleted:`, as
+            returned by `tools.util.session_state.find_stray_files`.
 
     Returns:
         list[Violation]: One violation per file.
@@ -1056,6 +1056,8 @@ def stray_file_violations(stray_files: list[str]) -> list[Violation]:
         change, _, path = entry.partition(":")
         if change == "added":
             message = f"{path} was added to the copied directory; delete it or move it outside"
+        elif change == "deleted":
+            message = f"{path} was deleted; restore it, only the source file may be edited"
         else:
             message = f"{path} was modified; restore it, only the source file may be edited"
         violations.append(Violation(6, message))

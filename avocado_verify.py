@@ -76,6 +76,7 @@ from tools.util.edit_rules import (
     stray_file_violations,
 )
 from tools.util.session_state import (
+    MERGE_STAGING_SUFFIX,
     SNAPSHOT_IGNORE,
     TRANSCRIPTS_DIR_SUFFIX,
     find_stray_files,
@@ -250,8 +251,8 @@ class FunctionVerificationResult:
             harness moved on (>= 1; > 1 when re-runs were needed to reach the attempt floor).
         merge (MergeReport | None): What the merge of the session's copy into the canonical file
             kept and dropped, or None when no merge was attempted.
-        stray_files (list[str]): Files other than the source file that the agent added or changed
-            in its private copy; they are never merged, only reported.
+        stray_files (list[str]): Files other than the source file that the agent added, changed
+            or deleted in its private copy; any of them blocks the merge (edit rule 6).
         reverified (dict[str, RunCbmcResult]): Ground-truth verdicts of the other functions this
             merge had to re-verify because it carried edits to them or to their callees, on the
             file it wrote (see `_merge_and_verify`); empty when it carried none.
@@ -1144,8 +1145,9 @@ def _merge_and_verify(
         call_graph (CallGraph | None): Call graph of the file, to find the callers a carried edit
             can affect; None finds none.
         state (_MergeState | None): The run's shared merge state; None carries nothing.
-        stray_files (list[str] | None): Files other than the source file that the session added
-            or changed (`_report_stray_edits`); any of them blocks the merge (edit rule 6).
+        stray_files (list[str] | None): Files other than the source file that the session added,
+            changed or deleted (`_report_stray_edits`); any of them blocks the merge (edit
+            rule 6).
 
     Returns:
         tuple[MergeReport, RunCbmcResult, dict[str, RunCbmcResult]]: What the merge did, the
@@ -1274,7 +1276,7 @@ def _merge_and_verify(
                     # If the canonical file is a symlink, its target is replaced rather than the
                     # link itself, so that the link keeps pointing to the file with the merged
                     # edits. The target keeps its permission bits.
-                    staged = destination.with_name(f"{destination.name}.avocado-merge")
+                    staged = destination.with_name(f"{destination.name}{MERGE_STAGING_SUFFIX}")
                     try:
                         staged.write_bytes(merged)
                         shutil.copymode(destination, staged)
@@ -1343,7 +1345,7 @@ def _merge_and_verify(
 
 
 def _report_stray_edits(session: _Session, canonical_file: Path) -> list[str]:
-    """Return the files other than the source file that the agent added or changed in its copy.
+    """Return the files other than the source file that the agent added, changed or deleted.
 
     Headers, other sources and new files the agent created in the private copy are never merged;
     they are named here so the run log shows when a contract depended on one. A file is compared
@@ -1354,7 +1356,7 @@ def _report_stray_edits(session: _Session, canonical_file: Path) -> list[str]:
         canonical_file (Path): The canonical source file.
 
     Returns:
-        list[str]: Relative paths tagged `added:` or `modified:`, in sorted order.
+        list[str]: Relative paths tagged `added:`, `modified:` or `deleted:`, in sorted order.
     """
     stray = find_stray_files(session.file, canonical_file, session.fork_base)
     if stray:

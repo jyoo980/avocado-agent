@@ -214,10 +214,11 @@ def test_violations_render_with_rule_number_title_and_line() -> None:
 
 
 def test_stray_files_become_rule_6_violations() -> None:
-    violations = stray_file_violations(["added:scratch.c", "modified:q.h"])
-    assert [violation.rule for violation in violations] == [6, 6]
+    violations = stray_file_violations(["added:scratch.c", "modified:q.h", "deleted:r.h"])
+    assert [violation.rule for violation in violations] == [6, 6, 6]
     assert "scratch.c was added" in violations[0].message
     assert "q.h was modified" in violations[1].message
+    assert "r.h was deleted" in violations[2].message
 
 
 def test_quicksort_with_quantified_contracts_matches_its_contract_free_form() -> None:
