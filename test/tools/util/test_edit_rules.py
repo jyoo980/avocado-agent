@@ -777,6 +777,43 @@ def test_each_branch_header_gives_its_own_body_brace_its_own_name() -> None:
     assert function_body_offsets(source, "g") == [source.index(b"{", source.index(b"int g"))]
 
 
+def test_a_later_header_name_of_a_new_definition_clashes_with_a_canonical_new_item() -> None:
+    base = b"int s(int a) {\n  return a;\n}\n"
+    canonical = base + b"int avocado_spec_k(int a) {\n  return a + 1;\n}\n"
+    snapshot = base + (
+        b"#ifdef X\nint avocado_spec_j(int a) {\n#else\nint avocado_spec_k(int a) {\n#endif\n"
+        b"  return a;\n}\n"
+    )
+    assert check_edits(base, snapshot, "s") == []
+    merged, report = merge_copy(
+        canonical=canonical, snapshot=snapshot, fork_base=base, function="s", frozen_functions=set()
+    )
+    assert not report.merged and merged == canonical
+    assert "already defined differently in the canonical file" in report.reason
+
+
+def test_rule_4_applies_to_every_header_of_a_new_definition() -> None:
+    helper = (
+        b"#ifdef X\nint avocado_spec_h(int a) {\n#else\nint h(int a) {\n#endif\n  return a;\n}\n"
+    )
+
+    def name_messages(base: bytes, addition: bytes) -> list[str]:
+        snapshot = base.replace(b"/* swap two ints */", addition)
+        return [
+            violation.message
+            for violation in check_edits(base, snapshot, "swap")
+            if "conditional" not in violation.message
+        ]
+
+    messages = name_messages(BASE, helper)
+    assert len(messages) == 1 and messages[0].startswith("function h is new"), messages
+    taken = helper.replace(b"int h(", b"int avocado_spec_k(")
+    assert name_messages(BASE, taken) == []
+    base = BASE.replace(b"/* swap two ints */", b"int avocado_spec_k(int a);\n/* swap two ints */")
+    messages = name_messages(base, taken)
+    assert len(messages) == 1 and "redefines a name" in messages[0], messages
+
+
 def test_a_function_followed_by_macros_is_found_under_its_own_name() -> None:
     source = (
         b"int f(int x) REQUIRES(x > 0) {\n  return x;\n}\n"

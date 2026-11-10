@@ -271,6 +271,18 @@ class _Item:
         return self.lines[0]
 
     @property
+    def names(self) -> tuple[str, ...]:
+        """The names the item introduces.
+
+        For a function, they are every name that one of its headers defines, such as `f` and
+        `g` for `#ifdef X` / `int f(int a) {` / `#else` / `int g(int a) {` / `#endif`. For every
+        other item, they are `name` when it is not None.
+        """
+        if self.kind == "function":
+            return tuple(dict.fromkeys(name for name in self.body_names if name is not None))
+        return (self.name,) if self.name is not None else ()
+
+    @property
     def directive(self) -> str:
         """The directive's keyword (`define`, `if`, ...), or "" for other items."""
         if self.kind != "directive":
@@ -445,7 +457,7 @@ def merge_copy(
     their_by_text = {_unit_text(canonical, theirs_items, unit): unit for unit in their_units}
     their_by_name: dict[str, list[_Item]] = {}
     for index in sorted(their_new):
-        if (name := theirs_items[index].name) is not None:
+        for name in theirs_items[index].names:
             their_by_name.setdefault(name, []).append(theirs_items[index])
     snapshot_to_base = {snapshot_index: base_index for base_index, snapshot_index in mine.pairs}
     transplanted: list[str] = []
@@ -493,7 +505,11 @@ def merge_copy(
                 pieces.append(snapshot[previous_end : items[-1].end])
             else:
                 clash = next(
-                    (item for item in items if _clashes(item, their_by_name.get(item.name or ""))),
+                    (
+                        item
+                        for item in items
+                        if any(_clashes(item, their_by_name.get(name)) for name in item.names)
+                    ),
                     None,
                 )
                 if clash is not None:
@@ -1890,7 +1906,7 @@ def _check_new_items(
         list[Violation]: The violations.
     """
     new = set(new_indices)
-    existing_names = {item.name for item in base_items if item.name}
+    existing_names = {name for item in base_items for name in item.names}
     violations: list[Violation] = []
     for index in new_indices:
         item = snapshot_items[index]
@@ -1930,7 +1946,7 @@ def _check_new_item(item: _Item, existing_names: set[str]) -> list[Violation]:
                 item.line,
             )
         ]
-    if item.name is None:
+    if item.name is None or (item.kind == "function" and None in item.body_names):
         return [
             Violation(
                 4,
@@ -1939,7 +1955,18 @@ def _check_new_item(item: _Item, existing_names: set[str]) -> list[Violation]:
                 item.line,
             )
         ]
-    return _check_new_name(item.name, item.describe(), item.line, existing_names)
+    # A definition whose header differs between preprocessor branches introduces every name
+    # that one of its headers defines.
+    return [
+        violation
+        for name in item.names
+        for violation in _check_new_name(
+            name,
+            f"function {name}" if item.kind == "function" else item.describe(),
+            item.line,
+            existing_names,
+        )
+    ]
 
 
 def _check_new_directive(text: str, line: int, existing_names: set[str]) -> list[Violation]:
