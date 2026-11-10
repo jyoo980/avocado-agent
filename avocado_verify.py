@@ -1286,14 +1286,24 @@ def _merge_and_verify(
                 else:
                     # If the canonical file is a symlink, its target is replaced rather than the
                     # link itself, so that the link keeps pointing to the file with the merged
-                    # edits. The target keeps its permission bits.
-                    staged = destination.with_name(f"{destination.name}.avocado-merge")
+                    # edits. The target keeps its permission bits. The staging file is created
+                    # exclusively under a fresh name, so that no existing file (or symlink target)
+                    # is overwritten, and only that file is removed on failure. Its name has a
+                    # short fixed prefix, not the destination's name, so it stays within
+                    # filesystem filename-length limits.
+                    staged: Path | None = None
                     try:
-                        staged.write_bytes(merged)
+                        fd, staged_name = tempfile.mkstemp(
+                            prefix=".", suffix=".avocado-merge", dir=destination.parent
+                        )
+                        staged = Path(staged_name)
+                        with os.fdopen(fd, "wb") as staged_file:
+                            staged_file.write(merged)
                         shutil.copymode(destination, staged)
                         staged.replace(destination)
                     except OSError as e:
-                        staged.unlink(missing_ok=True)
+                        if staged is not None:
+                            staged.unlink(missing_ok=True)
                         report = replace(
                             report,
                             merged=False,

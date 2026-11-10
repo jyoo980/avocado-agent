@@ -15,6 +15,7 @@ from eval.mutants.compute_clause_redundancy import (
 )
 from eval.mutants.mutate_specification import CbmcClause
 from eval.mutants.util import create_mutant_file
+from tools.construct_call_graph import get_call_graph_path
 
 
 def test_removed_clause_path_includes_function_name_so_functions_never_collide() -> None:
@@ -118,6 +119,15 @@ def test_clause_redundancy_scoring_uses_the_include_directories(tmp_path: Path) 
     _assert_expected_clause_results(
         compute_clause_redundancy_score(str(source), "clamp", include_dirs=[str(include_dir)])
     )
+    # Neither the removed-clause sources nor the call graphs cached for them are left behind.
+    assert sorted(p.name for p in source.parent.iterdir()) == ["clamp-callgraph.json", "clamp.c"]
+
+
+def test_removed_clause_path_leaves_room_for_the_call_graph_cache() -> None:
+    source = Path("/src/" + "s" * 240 + ".c")
+    for function in ("f", "f" * 200):
+        path = _get_path_to_source_with_removed_clause(source, function, 0)
+        assert len(os.fsencode(get_call_graph_path(path).name)) <= 255
 
 
 def test_removed_clause_path_of_a_symlink_is_never_its_target(tmp_path: Path) -> None:
