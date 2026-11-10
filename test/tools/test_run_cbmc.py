@@ -6,6 +6,8 @@ import shutil
 from pathlib import Path
 from subprocess import CompletedProcess
 
+import pytest
+
 from eval.mutants.mutate_function import Mutant
 from tools import run_cbmc as run_cbmc_module
 from tools.run_cbmc import (
@@ -225,6 +227,25 @@ def test_run_cbmc_leaves_no_goto_files_in_the_working_directory(tmp_path: Path) 
     assert result.is_function_verified, result.response
     assert list(work_dir.iterdir()) == [], "pipeline intermediates leaked into the cwd"
     assert not list(tmp_path.glob("*.goto")), "pipeline intermediates leaked next to the source"
+
+
+def test_run_cbmc_compiles_a_symlinked_source_with_the_headers_beside_the_symlink(
+    tmp_path: Path,
+) -> None:
+    # The target of the symlink has no `seven.h` beside it; the symlink does.
+    target = tmp_path / "elsewhere" / "seven.c"
+    target.parent.mkdir()
+    target.write_text('#include "seven.h"\nint seven(void) { return SEVEN; }\n', encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "seven.h").write_text("#define SEVEN 7\n", encoding="utf-8")
+    src = project / "seven.c"
+    try:
+        src.symlink_to(target)
+    except OSError as e:
+        pytest.skip(f"cannot create symlinks: {e}")
+    result = run_cbmc("seven", str(src))
+    assert result.failed_step is not CbmcStep.GOTO_CC, result.response
 
 
 def test_a_result_records_the_pipeline_variant_that_produced_it(
