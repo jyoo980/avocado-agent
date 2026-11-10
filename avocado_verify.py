@@ -45,7 +45,6 @@ from typing import Any, cast
 
 from loguru import logger
 
-from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
 from tools.run_cbmc import (
     VACUOUS_VERDICT,
@@ -59,6 +58,7 @@ from tools.run_cbmc_and_mutation_testing import (
     verify_function,
 )
 from tools.util import (
+    get_call_graph,
     get_in_file_callees_for,
     get_in_file_callers_of,
     get_include_dirs,
@@ -393,9 +393,12 @@ def main() -> None:
 
     include_dirs = get_include_dirs(str(file_path), [], auto_include=True)
 
-    path_to_call_graph = construct_call_graph(str(file_path))
-    call_graph = CallGraph(json.loads(Path(path_to_call_graph).read_text(encoding="utf-8")))
-    functions = _get_functions_to_verify(str(file_path))
+    # The call graph is built once and used for the whole run. A merge never changes it for the
+    # functions it is used for: the edit rules keep every original function body unchanged, the
+    # call graph ignores contract clauses, and the helpers a merge adds are `avocado_spec_`
+    # functions that no original body calls.
+    call_graph = get_call_graph(str(file_path))
+    functions = _get_functions_to_verify(call_graph)
     if not functions:
         logger.warning(f"No verifiable functions found in {file_path}")
         sys.exit(0)
@@ -580,11 +583,18 @@ def _not_in_build_result(function: str) -> FunctionVerificationResult:
     )
 
 
-def _get_functions_to_verify(file_path: str) -> list[str]:
-    path_to_call_graph = construct_call_graph(str(file_path))
+def _get_functions_to_verify(call_graph: CallGraph) -> list[str]:
+    """Return the functions of the given call graph to verify, callees first.
+
+    Args:
+        call_graph (CallGraph): a call graph of a C file.
+
+    Returns:
+        list[str]: The functions to verify, in topological order.
+    """
     return [
         function
-        for function in get_topological_ordering_of_functions(path_to_call_graph)
+        for function in get_topological_ordering_of_functions(call_graph)
         if function not in _UNVERIFIABLE_FUNCTIONS
     ]
 

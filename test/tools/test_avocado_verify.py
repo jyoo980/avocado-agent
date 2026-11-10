@@ -9,7 +9,6 @@ from avocado_verify import (
     _RerunDecision,
     _should_rerun_session,
 )
-from tools.construct_call_graph import construct_call_graph
 from tools.util.callgraph import CallGraph
 
 
@@ -169,6 +168,7 @@ from avocado_verify import (
     _verify_functions,
 )
 from tools.run_cbmc import CbmcStep, RunCbmcResult
+from tools.util import get_call_graph
 from tools.util.cbmc_clause_stripper import strip_cbmc_clauses
 from tools.util.edit_rules import function_body_offsets, function_line
 from tools.util.session_state import is_vacuous_status, rechecked_on_change
@@ -384,7 +384,7 @@ def test_two_independent_functions_overlap_only_with_two_jobs(tmp_path: Path, mo
     source_dir.mkdir()
     canonical = source_dir / "no_callees.c"
     shutil.copy(Path("test/data/no_callees.c"), canonical)
-    graph = CallGraph(json.loads(Path(construct_call_graph(str(canonical))).read_text()))
+    graph = get_call_graph(str(canonical))
     order = [f for f in graph if f != "main"]
     assert len(order) >= 2
     monkeypatch.setattr(avocado_verify, "verify_function", lambda f, *a, **k: _verified_cbmc(f))
@@ -415,7 +415,7 @@ def test_usage_limit_stops_new_submissions_but_in_flight_sessions_merge(
     source_dir.mkdir()
     canonical = source_dir / "no_callees.c"
     shutil.copy(Path("test/data/no_callees.c"), canonical)
-    graph = CallGraph(json.loads(Path(construct_call_graph(str(canonical))).read_text()))
+    graph = get_call_graph(str(canonical))
     order = [f for f in graph if f != "main"]
     assert len(order) >= 3
 

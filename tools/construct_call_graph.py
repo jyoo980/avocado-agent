@@ -36,20 +36,23 @@ def main() -> None:
 def construct_call_graph(
     path_to_file_to_verify: str,
 ) -> str:
-    """Construct a call graph for the given C file.
+    """Write the call graph of the given C file to a JSON file beside it, and return that path.
+
+    The JSON file is `<stem>-callgraph.json`; for example, the call graph of `/app/a/b/file.c` is
+    written to `/app/a/b/file-callgraph.json`. It is rewritten on every call, so it reflects the
+    current contents of the C file. Code that needs the call graph in memory calls
+    `get_call_graph` instead, which writes nothing.
 
     Args:
-        path_to_file_to_verify (str): The path to the file from which to construct a call graph.
+        path_to_file_to_verify (str): a path to a C file.
 
     Returns:
-        str: The path to the file to which the call graph is written.  The file is always
-            rewritten, so it reflects the current contents of the C file.
+        str: The path to the JSON file to which the call graph is written.
     """
     source_path = Path(path_to_file_to_verify)
     path_to_call_graph = source_path.with_name(f"{source_path.stem}-callgraph.json")
     call_graph = get_call_graph(path_to_file_to_verify)
-    # `construct_call_graph` is called from concurrent code paths (e.g. the evaluation driver
-    # scoring several functions of one file at once), in one process or several. Write to a
+    # Several processes can run `avocado-construct-call-graph` on one file at once. Write to a
     # uniquely named sibling and rename it into place, so that a concurrent reader sees either
     # the previous file or a complete new one, never a partially written one.
     #
