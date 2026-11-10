@@ -36,6 +36,14 @@ of version control yourself.
   and cost for a run in flight.
 - `summarize_agent_runs.py <run-dir>...` aggregates a finished run, charging a
   session killed by the harness timeout its full timeout rather than zero.
+- `session_timeline.py --projects-dir <dir> --timeout <secs> <run-log>...`
+  reads the Claude Code transcripts of the sessions that
+  `<stem>-avocado-verify.jsonl` run logs name, and attributes each second of a
+  session to model generation or to a tool call. It prints, for all the given
+  run logs together, the split between model time and tool time (by kind of
+  tool), and the sessions that cost the most; run it once per arm to compare
+  arms. Pass `--timeout` the `CLAUDE_TIMEOUT` the run used (default 1800): it
+  is charged to every session the harness killed.
 - `compare_arms.py` with `--baseline`, `--treatment`, `--runs` and
   `--benchmarks` is the paired comparison that decides a treatment.
 - `compare_on_intersection.py <baseline-jsonl> <treatment-jsonl>` compares two
