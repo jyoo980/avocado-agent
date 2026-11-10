@@ -29,12 +29,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import tempfile
 from collections import Counter
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import partial
-from itertools import starmap
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -50,7 +48,7 @@ from eval.mutants.util import (
     is_valid_mutation_candidate,
 )
 from tools.construct_call_graph import construct_call_graph
-from tools.run_cbmc import RunCbmcResult, run_cbmc
+from tools.run_cbmc import run_cbmc
 from tools.util import get_in_file_callers_of, resolve_parent
 from tools.util.callgraph import CallGraph
 
@@ -310,7 +308,10 @@ def compute_clause_redundancy_score(
     source_path = resolve_parent(file_path)
 
     # Check that the original function verifies in the first place.
-    result = _run_cbmc_in_scratch_dir(function_name, source_path)
+    result = run_cbmc(
+        function_to_verify=function_name,
+        file_containing_function_to_verify=str(source_path),
+    )
     if not is_valid_mutation_candidate(result):
         # No usable baseline; scoring would be meaningless without verifying the unmutated source.
         return None
@@ -331,9 +332,10 @@ def compute_clause_redundancy_score(
                 mutant.mutant_source,
             )
             paths_to_removed_clauses[path] = mutant
-        in_isolation_results = list(
-            starmap(_verify_removed_clause_source, paths_to_removed_clauses.items())
-        )
+        in_isolation_results = [
+            _verify_removed_clause_source(mutant_path, mutant)
+            for mutant_path, mutant in paths_to_removed_clauses.items()
+        ]
         caller_side_results = [
             _verify_callers(
                 mutant_path,
@@ -432,27 +434,6 @@ def _aggregate_clause_redundancy_score(
     )
 
 
-def _run_cbmc_in_scratch_dir(function_to_verify: str, file_path: Path | str) -> RunCbmcResult:
-    """Run CBMC on a function in a private scratch working directory.
-
-    The CBMC pipeline writes intermediate `<function>.goto` / `checking-<function>-contracts.goto`
-    files, named only by the function, into its working directory. Several scoring runs (e.g. of
-    two functions that share a caller) may verify the same function concurrently, so each run gets
-    its own scratch directory to keep them from clobbering one another's goto-binaries.
-
-    Args:
-        function_to_verify (str): The function to verify.
-        file_path (Path | str): The C source file containing the function.
-
-    Returns:
-        RunCbmcResult: The result of running CBMC.
-    """
-    return run_cbmc(
-        function_to_verify=function_to_verify,
-        file_containing_function_to_verify=str(file_path),
-    )
-
-
 def _get_in_file_callers(source_path: Path, function_name: str) -> list[str]:
     """Return functions in a file that directly call the function with the given name.
 
@@ -527,7 +508,10 @@ def _verify_removed_clause_source(
     Returns:
         ClauseRemovalVerificationResult: The result of verifying a removed-clause mutant.
     """
-    result = _run_cbmc_in_scratch_dir(clause_mutant.function, removed_clause_mutant_path)
+    result = run_cbmc(
+        function_to_verify=clause_mutant.function,
+        file_containing_function_to_verify=str(removed_clause_mutant_path),
+    )
     if result.timed_out:
         return ClauseRemovalVerificationResult(
             clause_mutant,
@@ -560,7 +544,10 @@ def _get_baseline_verification_results_for_callers(
     """
     baselines: dict[str, bool] = {}
     for caller in in_file_callers:
-        result = _run_cbmc_in_scratch_dir(caller, source_path)
+        result = run_cbmc(
+            function_to_verify=caller,
+            file_containing_function_to_verify=str(source_path),
+        )
         # Callers that don't verify on the unmutated source are excluded from caller-side
         # judgement via unverifiable_baseline_callers.
         baselines[caller] = is_valid_mutation_candidate(result)
@@ -606,7 +593,10 @@ def _verify_callers(
 
     caller_vresults: list[CallerVerificationResult] = []
     for caller in verifying_callers:
-        result = _run_cbmc_in_scratch_dir(caller, mutant_path)
+        result = run_cbmc(
+            function_to_verify=caller,
+            file_containing_function_to_verify=str(mutant_path),
+        )
         if result.timed_out:
             caller_vresults.append(
                 CallerVerificationResult(
