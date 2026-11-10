@@ -118,9 +118,8 @@ class RunCbmcResult:
 
     Attributes:
         function (str): The function under verification.
-        failed_step (CbmcStep | None): The pipeline step that failed or timed out,
-            or None on success.
-        timed_out (bool): True iff any subprocess in the `run_cbmc` pipeline timed out.
+        failed_step (CbmcStep | None): The pipeline step that failed, or None on success.
+        timed_out (bool): True iff any step hit the per-attempt timeout.
         returncode (int): 0 on success, `_TIMEOUT_RETURNCODE` on timeout, otherwise the
             exit code of the failing subprocess (cbmc's verification exit code when
             `failed_step` is CBMC).
@@ -202,21 +201,17 @@ class RunCbmcResult:
 
 @dataclass(frozen=True)
 class _SubprocessResult:
-    """Outcome of a single subprocess invocation (one command).
-
-    A `CbmcStep` may comprise several subprocess invocations (e.g. `goto-instrument` runs
-    more than once); this object captures exactly one of them, so it has exactly one exit
-    code.
+    """Outcome of running one subprocess step.
 
     Attributes:
-        step (CbmcStep): The logical pipeline step this single subprocess belongs to. The
-            step may span several subprocesses; this is one of them.
+        step (CbmcStep): The logical step in the CBMC verification pipeline this subprocess belongs
+            to.
         command (str): The shell command that was run.
-        returncode (int): This subprocess's exit code, or `_TIMEOUT_RETURNCODE` on timeout.
+        returncode (int): The subprocess exit code, or `_TIMEOUT_RETURNCODE` on timeout.
         stdout (str): Captured stdout (empty on timeout).
         stderr (str): Captured stderr (empty on timeout).
-        timed_out (bool): True iff the subprocess hit the per-subprocess timeout.
-        timeout_sec (int): The per-subprocess timeout that applied, for the timeout diagnostic.
+        timed_out (bool): True iff the subprocess hit the per-step timeout.
+        timeout_sec (int): The per-step timeout that applied, for the timeout diagnostic.
     """
 
     step: CbmcStep
@@ -305,11 +300,11 @@ def run_cbmc(
     """Run CBMC on the given function with loop unwinding = `_UNWIND`, depth = `_DEPTH`.
 
     The pipeline is split into three logical steps — `goto-cc`, `goto-instrument`, and
-    `cbmc` — each run as one or more subprocesses so that failures can be attributed to a
+    `cbmc` — each run as its own subprocess so that failures can be attributed to a
     specific step. Up to three pipeline attempts are made: an initial run, a retry
     when an apparent recursive-inlining error is detected, and a retry when a missing
-    callee body is detected. The timeout is per subprocess, not a total
-    budget; a timeout in any single step terminates the whole call, with no further retries.
+    callee body is detected. The timeout is per CBMC subprocess attempt, not a total
+    budget; a timeout in any single step terminates the whole call.
 
     The pipeline's subprocesses run in a fresh private temporary directory, which receives the
     intermediate `<function>.goto` / `checking-<function>-contracts.goto` files and is removed
@@ -652,7 +647,7 @@ def _run_command(
     cwd: str | None = None,
     timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
 ) -> _SubprocessResult:
-    """Run one command of a pipeline step as a subprocess with the per-subprocess timeout.
+    """Run one pipeline step as a subprocess with the per-step timeout.
 
     Args:
         step (CbmcStep): The logical step this subprocess belongs to.
