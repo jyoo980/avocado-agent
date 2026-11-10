@@ -244,25 +244,62 @@ def test_run_command_waits_for_a_slot_used_by_another_thread(monkeypatch, tmp_pa
     assert all(record["seconds"] < 1 for record in records)
 
 
-def test_threads_waiting_for_a_slot_do_not_poll_the_slot_files(monkeypatch, tmp_path: Path) -> None:
+def test_a_process_that_runs_commands_back_to_back_does_not_starve_another(
+    monkeypatch, tmp_path: Path
+) -> None:
+    slot_dir = tmp_path / f"avocado-cbmc-slots-{os.getuid()}"
+    monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", slot_dir)
+    monkeypatch.setattr(run_cbmc_module, "max_concurrent_subprocesses", lambda: 1)
+    order = tmp_path / "order"
+    looping = threading.Event()
+
+    def run_back_to_back() -> None:
+        # Each command is requested as soon as the previous one finishes.
+        for _ in range(30):
+            run_shell_command(f"sleep 0.2; echo loop >> {order}", timeout=30)
+            looping.set()
+
+    loop = threading.Thread(target=run_back_to_back)
+    loop.start()
+    try:
+        looping.wait()
+        script = (
+            "from tools.run_cbmc import run_shell_command; "
+            f"run_shell_command('echo other >> {order}', timeout=30)"
+        )
+        env = os.environ | {"TMPDIR": str(tmp_path), "AVOCADO_MAX_CONCURRENT_CBMC": "1"}
+        repo_root = Path(__file__).resolve().parents[2]
+        subprocess.run([sys.executable, "-c", script], env=env, cwd=repo_root, check=True)
+    finally:
+        loop.join()
+    runs = order.read_text().split()
+    assert "other" in runs[:-1], "the other process ran only after the back-to-back commands"
+
+
+def test_a_caller_that_waits_for_a_slot_logs_warnings(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", tmp_path / "slots")
     monkeypatch.setattr(run_cbmc_module, "max_concurrent_subprocesses", lambda: 1)
-    flock = run_cbmc_module.fcntl.flock
-    lock_attempts: list[int] = []
+    monkeypatch.setattr(run_cbmc_module, "_SLOT_WAIT_WARNING_SEC", 0.2)
+    holder = threading.Thread(target=run_shell_command, args=("sleep 1", 30))
+    holder.start()
+    time.sleep(0.3)
+    warnings: list[str] = []
+    sink = run_cbmc_module.logger.add(warnings.append, level="WARNING", format="{message}")
+    try:
+        run_shell_command("true", timeout=30)
+    finally:
+        run_cbmc_module.logger.remove(sink)
+        holder.join()
+    assert warnings, "the waiting caller logged no warning"
+    assert all("subprocess slots" in warning for warning in warnings)
 
-    def counting_flock(fd: int, operation: int) -> None:
-        lock_attempts.append(fd)
-        flock(fd, operation)
 
-    monkeypatch.setattr(run_cbmc_module.fcntl, "flock", counting_flock)
-    threads = [threading.Thread(target=run_shell_command, args=("sleep 0.5", 30)) for _ in range(2)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-    # One attempt per thread: the second thread waits on this process's semaphore, not by
-    # retrying the lock every `_SLOT_POLL_SEC`.
-    assert len(lock_attempts) == 2
+def test_a_command_is_limited_to_its_timeout_in_cpu_time(monkeypatch, tmp_path: Path) -> None:
+    # The limit ends a command that outlives the process that enforces its timeout.
+    monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", tmp_path / "slots")
+    completed = run_shell_command("ulimit -t", timeout=7.5).completed
+    assert completed is not None
+    assert completed.stdout.strip() == str(8 + run_cbmc_module._CPU_LIMIT_GRACE_SEC)
 
 
 def test_a_slot_directory_that_another_user_can_write_is_refused(
@@ -348,6 +385,7 @@ def test_max_concurrent_subprocesses_rejects_a_malformed_setting(monkeypatch, se
 
 
 def test_max_concurrent_subprocesses_is_bounded_by_the_cpu_count(monkeypatch) -> None:
+    monkeypatch.setattr(run_cbmc_module, "_cgroup_cpu_quota", lambda: None)
     cpus = os.process_cpu_count() or 1
     try:
         for setting, expected in [("1", 1), ("100000", cpus), ("", min(cpus, 32))]:
@@ -356,6 +394,38 @@ def test_max_concurrent_subprocesses_is_bounded_by_the_cpu_count(monkeypatch) ->
             assert max_concurrent_subprocesses() == expected
     finally:
         max_concurrent_subprocesses.cache_clear()
+
+
+def test_max_concurrent_subprocesses_is_bounded_by_the_cgroup_cpu_quota(monkeypatch) -> None:
+    monkeypatch.setattr(run_cbmc_module, "_cgroup_cpu_quota", lambda: 1.5)
+    monkeypatch.setenv("AVOCADO_MAX_CONCURRENT_CBMC", "100000")
+    max_concurrent_subprocesses.cache_clear()
+    try:
+        assert max_concurrent_subprocesses() == min(2, os.process_cpu_count() or 1)
+    finally:
+        max_concurrent_subprocesses.cache_clear()
+
+
+def test_the_cgroup_cpu_quota_is_the_smallest_of_the_cgroup_and_its_ancestors(
+    monkeypatch, tmp_path: Path
+) -> None:
+    proc_self_cgroup = tmp_path / "cgroup"
+    cgroup_root = tmp_path / "sys-fs-cgroup"
+    monkeypatch.setattr(run_cbmc_module, "_PROC_SELF_CGROUP", proc_self_cgroup)
+    monkeypatch.setattr(run_cbmc_module, "_CGROUP_ROOT", cgroup_root)
+    leaf = cgroup_root / "outer" / "inner"
+    leaf.mkdir(parents=True)
+    proc_self_cgroup.write_text("0::/outer/inner\n")
+    quota = run_cbmc_module._cgroup_cpu_quota
+    assert quota() is None
+    (leaf / "cpu.max").write_text("max 100000\n")
+    assert quota() is None
+    (leaf.parent / "cpu.max").write_text("250000 100000\n")
+    assert quota() == 2.5
+    (cgroup_root / "cpu.max").write_text("50000 100000\n")
+    assert quota() == 0.5
+    proc_self_cgroup.write_text("12:cpu,cpuacct:/outer\n")
+    assert quota() is None
 
 
 def _running_sleep_state(pid: int) -> str | None:
