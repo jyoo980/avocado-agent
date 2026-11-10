@@ -53,7 +53,7 @@ class _FakeRedundancyScore:
         self.function = function
 
     def summary(self) -> dict:
-        return {"kind": "redundancy_summary", "function": self.function}
+        return {"kind": "clause_redundancy_summary", "function": self.function}
 
 
 def _fake_redundancy(file_path: str, function: str, *, keep_artifacts: bool):
@@ -72,17 +72,12 @@ def _score_and_write(*, run_mutation: bool, run_redundancy: bool) -> list[dict]:
             auto_include=False,
             include_dirs=[],
             run_mutation=run_mutation,
+            run_redundancy=run_redundancy,
             keep_artifacts=False,
             executor=executor,
             failure=failure,
         )
-        driver._write_file_records(
-            submitted,
-            out=out,
-            run_redundancy=run_redundancy,
-            keep_artifacts=False,
-            failure=failure,
-        )
+        driver._write_file_records(submitted, out=out, failure=failure)
     return [json.loads(line) for line in out.getvalue().splitlines()]
 
 
@@ -97,17 +92,40 @@ def test_records_are_written_in_function_order_regardless_of_completion_order(
     assert records[2]["metadata"].endswith("no mutable operators")
 
 
+def _fake_redundancy_scorer(file_path: str, function: str, *, keep_artifacts: bool):
+    """Stand-in for `compute_clause_redundancy_score` that finishes in reverse name order."""
+    del file_path, keep_artifacts
+    time.sleep({"partition": 0.05, "quickSort": 0.1, "swap": 0.2}[function])
+    # `quickSort` stands for a function whose baseline does not verify, which yields no record.
+    return None if function == "quickSort" else _FakeRedundancyScore(function)
+
+
+def test_redundancy_records_are_written_in_function_order_regardless_of_completion_order(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(driver, "generate_mutants_and_compute_score", _fake_scorer)
+    monkeypatch.setattr(driver, "compute_clause_redundancy_score", _fake_redundancy_scorer)
+    records = _score_and_write(run_mutation=True, run_redundancy=True)
+    assert [(record["kind"], record["function"]) for record in records] == [
+        ("mutation_summary", "partition"),
+        ("clause_redundancy_summary", "partition"),
+        ("mutation_summary", "quickSort"),
+        ("mutation_summary", "swap"),
+        ("clause_redundancy_summary", "swap"),
+    ]
+
+
 def test_each_functions_mutation_and_redundancy_records_are_adjacent(monkeypatch) -> None:
     monkeypatch.setattr(driver, "generate_mutants_and_compute_score", _fake_scorer)
     monkeypatch.setattr(driver, "compute_clause_redundancy_score", _fake_redundancy)
     records = _score_and_write(run_mutation=True, run_redundancy=True)
     assert [(record["kind"], record["function"]) for record in records] == [
         ("mutation_summary", "partition"),
-        ("redundancy_summary", "partition"),
+        ("clause_redundancy_summary", "partition"),
         ("mutation_summary", "quickSort"),
-        ("redundancy_summary", "quickSort"),
+        ("clause_redundancy_summary", "quickSort"),
         ("mutation_summary", "swap"),
-        ("redundancy_summary", "swap"),
+        ("clause_redundancy_summary", "swap"),
     ]
 
 
@@ -141,18 +159,13 @@ def test_a_later_functions_failure_is_raised_without_waiting_for_earlier_ones(
                 auto_include=False,
                 include_dirs=[],
                 run_mutation=True,
+                run_redundancy=False,
                 keep_artifacts=False,
                 executor=executor,
                 failure=failure,
             )
             with pytest.raises(RuntimeError, match="boom"):
-                driver._write_file_records(
-                    submitted,
-                    out=io.StringIO(),
-                    run_redundancy=False,
-                    keep_artifacts=False,
-                    failure=failure,
-                )
+                driver._write_file_records(submitted, out=io.StringIO(), failure=failure)
             # `partition` is still being scored: the failure was not reported in function order.
             assert not submitted.mutation_futures[0].done()
         finally:
@@ -161,15 +174,18 @@ def test_a_later_functions_failure_is_raised_without_waiting_for_earlier_ones(
 
 def test_unannotated_file_submits_nothing(monkeypatch) -> None:
     monkeypatch.setattr(driver, "generate_mutants_and_compute_score", _fake_scorer)
+    monkeypatch.setattr(driver, "compute_clause_redundancy_score", _fake_redundancy_scorer)
     with ThreadPoolExecutor(max_workers=1) as executor:
         submitted = driver._submit_file(
             source=Path("test/data/no_callees.c"),
             auto_include=False,
             include_dirs=[],
             run_mutation=True,
+            run_redundancy=True,
             keep_artifacts=False,
             executor=executor,
             failure=Future(),
         )
     assert submitted.functions == []
     assert submitted.mutation_futures == []
+    assert submitted.redundancy_futures == []
