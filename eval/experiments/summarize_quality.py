@@ -15,6 +15,8 @@ Functions that were not mutation tested (did not verify, or had no mutants) are 
 so a treatment cannot look better merely by verifying fewer functions.  So are functions whose
 mutants were all undecided (timed out, failed to compile, or failed instrumentation):  their
 `kill_score` of 0.0 does not mean that a mutant survived, so it is not part of `mean_kill_score`.
+A mutation-tested function's record that lacks a usable `killed`, `survived`, or `kill_score`
+field, as in a truncated or hand-edited file, is skipped with a warning.
 
 When several JSONL files are given (e.g. three independent agent runs), a final block reports the
 mean, spread (min..max), and standard deviation of both aggregates and of the counts across files,
@@ -121,8 +123,17 @@ def summarize(path: Path, *, verbose: bool) -> dict[str, float | int | None] | N
     if not records:
         print("  no mutation summary records")
         return None
-    tested = [r for r in records if r.get("was_mutation_tested") and _num_decided(r) > 0]
-    undecided = [r for r in records if r.get("was_mutation_tested") and _num_decided(r) == 0]
+    # A record from a truncated or hand-edited file can lack a field that the aggregates need.
+    malformed = [r for r in records if r.get("was_mutation_tested") and not _is_well_formed(r)]
+    for r in malformed:
+        print(
+            f"warning: {path}: skipping a malformed mutation summary record for "
+            f"{r.get('file')}#{r.get('function')}",
+            file=sys.stderr,
+        )
+    well_formed = [r for r in records if r.get("was_mutation_tested") and _is_well_formed(r)]
+    tested = [r for r in well_formed if _num_decided(r) > 0]
+    undecided = [r for r in well_formed if _num_decided(r) == 0]
     untested = [r for r in records if not r.get("was_mutation_tested")]
     scores = [float(r["kill_score"]) for r in tested]
     killed = sum(int(r["killed"]) for r in tested)
@@ -141,14 +152,14 @@ def summarize(path: Path, *, verbose: bool) -> dict[str, float | int | None] | N
             print(
                 f"  {Path(r['file']).name}#{r['function']:35s} "
                 f"{int(r['killed']):3d}/{_num_decided(r):3d} decided "
-                f"(timed_out={r['timed_out']} compile_failed={r['compile_failed']}) "
+                f"(timed_out={r.get('timed_out')} compile_failed={r.get('compile_failed')}) "
                 f"kill_score={float(r['kill_score']):.4f}"
             )
         for r in undecided:
             print(
                 f"  {Path(r['file']).name}#{r['function']:35s} -- no decided mutants "
-                f"(timed_out={r['timed_out']} compile_failed={r['compile_failed']} "
-                f"instrumentation_failed={r['instrumentation_failed']})"
+                f"(timed_out={r.get('timed_out')} compile_failed={r.get('compile_failed')} "
+                f"instrumentation_failed={r.get('instrumentation_failed')})"
             )
         for r in untested:
             reason = "did not verify" if "did not verify" in r.get("metadata", "") else "no mutants"
@@ -172,6 +183,26 @@ def _format_score(score: float | None) -> str:
         str: The formatted kill score, such as "0.7500".
     """
     return "n/a" if score is None else f"{score:.4f}"
+
+
+def _is_well_formed(record: dict) -> bool:
+    """Return True if the given record has usable "killed", "survived", and "kill_score" fields.
+
+    Args:
+        record (dict): a mutation-tested function's `mutation_summary` record, as a dict parsed
+            from the JSONL.
+
+    Returns:
+        bool: True if "killed" and "survived" are non-negative integers and "kill_score" is a
+            number.
+    """
+    counts = (record.get("killed"), record.get("survived"))
+    kill_score = record.get("kill_score")
+    return (
+        all(isinstance(c, int) and not isinstance(c, bool) and c >= 0 for c in counts)
+        and isinstance(kill_score, (int, float))
+        and not isinstance(kill_score, bool)
+    )
 
 
 def _num_decided(record: dict) -> int:
