@@ -168,9 +168,10 @@ _MAX_MERGE_RERUNS_PER_FUNCTION = 2
 
 
 class GroundTruthVerificationResult(StrEnum):
-    """Ground truth verification result, corresponding to an invocation of `tools.run_cbmc.py`.
+    """Per-function outcome of the harness.
 
-    Corresponds to this harness's own CBMC re-run, not Claude's self-report.
+    Either the verdict of the harness's own CBMC re-run (not Claude's self-report), or the reason
+    that the Claude session failed.
     """
 
     VERIFIED = "VERIFIED"
