@@ -37,5 +37,4 @@ clean:
 # Delete artifacts from mutation testing runs.
 # The globs use the markers in `MUTANT_MARKERS` in `eval/mutants/util.py`.
 clean-mutants:
-	find . \( -name '*.goto' -o -name '*__mutant_*.c' \) -delete
-	find . \( -name '*.goto' -o -name '*__clause_drop_*.c' \) -delete
+	find . \( -name '*.goto' -o -name '*__mutant_*' -o -name '*__clause_drop_*' \) -type f -delete

@@ -45,7 +45,7 @@ from typing import Any, cast
 
 from loguru import logger
 
-from tools.construct_call_graph import construct_call_graph
+from tools.construct_call_graph import construct_call_graph, load_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
 from tools.run_cbmc import (
     VACUOUS_VERDICT,
@@ -393,8 +393,7 @@ def main() -> None:
 
     include_dirs = get_include_dirs(str(file_path), [], auto_include=True)
 
-    path_to_call_graph = construct_call_graph(str(file_path))
-    call_graph = CallGraph(json.loads(Path(path_to_call_graph).read_text(encoding="utf-8")))
+    call_graph = load_call_graph(str(file_path))
     functions = _get_functions_to_verify(str(file_path))
     if not functions:
         logger.warning(f"No verifiable functions found in {file_path}")
