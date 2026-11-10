@@ -1292,13 +1292,28 @@ def _merge_and_verify(
                     # If the canonical file is a symlink, its target is replaced rather than the
                     # link itself, so that the link keeps pointing to the file with the merged
                     # edits. The target keeps its permission bits.
-                    staged = destination.with_name(f"{destination.name}.avocado-merge")
+                    #
+                    # The merged bytes are staged in a sibling that this merge creates
+                    # exclusively, so an existing file or symlink is never written through or
+                    # renamed over the destination. The name has a short fixed prefix rather than
+                    # the destination's name, so it stays within filesystem filename-length
+                    # limits however long that name is.
+                    staged = destination.with_name(f".avocado-merge-{uuid.uuid4().hex}.tmp")
+                    created = False
                     try:
-                        staged.write_bytes(merged)
+                        with staged.open("xb") as staged_file:
+                            created = True
+                            staged_file.write(merged)
                         shutil.copymode(destination, staged)
                         staged.replace(destination)
                     except OSError as e:
-                        staged.unlink(missing_ok=True)
+                        if created:
+                            try:
+                                staged.unlink(missing_ok=True)
+                            except OSError as cleanup_error:
+                                logger.warning(
+                                    f"{function}: could not remove {staged}: {cleanup_error}"
+                                )
                         report = replace(
                             report,
                             merged=False,
@@ -1367,6 +1382,11 @@ def _report_stray_edits(session: _Session, canonical_file: Path) -> list[str]:
     they are named here so the run log shows when a contract depended on one. A file is compared
     as `tools.util.session_state.find_stray_files` describes.
 
+    The comparison holds `_CANONICAL_LOCK`. Otherwise another session's merge could replace the
+    canonical file while it is compared; if the canonical file is a symlink, its target could
+    then be taken for a different file, and the session's unchanged copy of the target would be
+    reported as modified.
+
     Args:
         session (_Session): The finished session.
         canonical_file (Path): The canonical source file.
@@ -1374,7 +1394,8 @@ def _report_stray_edits(session: _Session, canonical_file: Path) -> list[str]:
     Returns:
         list[str]: Relative paths tagged `added:` or `modified:`, in sorted order.
     """
-    stray = find_stray_files(session.file, canonical_file, session.fork_base)
+    with _CANONICAL_LOCK:
+        stray = find_stray_files(session.file, canonical_file, session.fork_base)
     if stray:
         logger.warning(
             f"{session.function}: files changed in the session copy are not merged: {stray}"
