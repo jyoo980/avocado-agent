@@ -72,31 +72,34 @@ _CBMC_UNWIND = 5
 # `--depth` argument to CBMC.
 _CBMC_DEPTH = 200
 
-# Cap on how many pipeline subprocesses (`goto-cc`, `goto-instrument`, `cbmc`) may run at once,
-# shared by all processes of one user that have the same temporary directory (see `_SLOT_DIR`).
-# It is not host-wide: separate containers, or process trees with different `TMPDIR` values, each
-# get their own cap. Pipelines are spawned concurrently both within a process (mutants of one
-# function run in a thread pool) and across processes (for example, several `avocado-run-cbmc`
-# invocations at once), and without a shared bound the product of those fan-outs could
-# oversubscribe the machine, turning slow-but-decidable CBMC runs into timeouts. See
-# `max_concurrent_subprocesses` for how the cap is chosen and `run_shell_command` for how it is
+# Cap on how many `cbmc` subprocesses may run at once, shared by all processes of one user that
+# have the same temporary directory (see `_SLOT_DIR`). It is not host-wide: separate containers,
+# or process trees with different `TMPDIR` values, each get their own cap. Pipelines are spawned
+# concurrently both within a process (mutants of one function run in a thread pool) and across
+# processes (for example, several `avocado-run-cbmc` invocations at once), and without a shared
+# bound the product of those fan-outs could oversubscribe the machine, turning
+# slow-but-decidable CBMC runs into timeouts. Every `cbmc` subprocess must therefore be run with
+# `run_cbmc_command`. The other pipeline subprocesses (`goto-cc` and `goto-instrument`) are run
+# with `run_command` and are not capped: they are fast and use little memory, and making them wait
+# behind long `cbmc` runs would delay quick results such as whether a file compiles. See
+# `max_concurrent_cbmc_runs` for how the cap is chosen and `run_cbmc_command` for how it is
 # enforced.
-_MAX_CONCURRENT_SUBPROCESSES_ENV_VAR = "AVOCADO_MAX_CONCURRENT_CBMC"
-_DEFAULT_MAX_CONCURRENT_SUBPROCESSES = 32
+_MAX_CONCURRENT_CBMC_ENV_VAR = "AVOCADO_MAX_CONCURRENT_CBMC"
+_DEFAULT_MAX_CONCURRENT_CBMC = 32
 
 # Directory of the slot files that enforce the cap. It is shared by every process of this user
 # that has the same temporary directory, which is the whole container under Docker.
 _SLOT_DIR = Path(tempfile.gettempdir()) / f"avocado-cbmc-slots-{os.getuid()}"
 
-# How often the caller at the head of the queue for a subprocess slot checks whether a slot has
+# How often the caller at the head of the queue for a CBMC slot checks whether a slot has
 # become free.
 _SLOT_POLL_SEC = 0.1
 
-# How often a caller that is waiting for a subprocess slot logs a warning that it is still waiting.
+# How often a caller that is waiting for a CBMC slot logs a warning that it is still waiting.
 _SLOT_WAIT_WARNING_SEC = 60
 
-# Seconds of CPU time, beyond its timeout, that a pipeline subprocess may use. See
-# `run_shell_command`.
+# Seconds of CPU time, beyond its timeout, that a `cbmc` subprocess may use. See
+# `run_cbmc_command`.
 _CPU_LIMIT_GRACE_SEC = 10
 
 # The file that lists this process's cgroups, and the directory where the cgroup v2 hierarchy is
@@ -106,13 +109,13 @@ _CGROUP_ROOT = Path("/sys/fs/cgroup")
 
 
 @cache
-def max_concurrent_subprocesses() -> int:
-    """Return the cap on how many pipeline subprocesses may run at once.
+def max_concurrent_cbmc_runs() -> int:
+    """Return the cap on how many `cbmc` subprocesses may run at once.
 
     The cap is the number of CPUs available to this process (its CPU affinity, further limited by
     the CPU quota of its cgroup, as `docker run --cpus` sets), further limited by
     `AVOCADO_MAX_CONCURRENT_CBMC` if that environment variable is set to a non-empty value, and
-    otherwise by `_DEFAULT_MAX_CONCURRENT_SUBPROCESSES`. The CPU count is not the only limit
+    otherwise by `_DEFAULT_MAX_CONCURRENT_CBMC`. The CPU count is not the only limit
     because each CBMC run can use a lot of memory, so on many-core hosts RAM rather than CPUs is the
     binding constraint; lower `AVOCADO_MAX_CONCURRENT_CBMC` if mutation runs exhaust RAM.
 
@@ -123,15 +126,15 @@ def max_concurrent_subprocesses() -> int:
         ValueError: If `AVOCADO_MAX_CONCURRENT_CBMC` is set to something other than a positive
             integer.
     """
-    limit = _DEFAULT_MAX_CONCURRENT_SUBPROCESSES
-    setting = os.environ.get(_MAX_CONCURRENT_SUBPROCESSES_ENV_VAR, "").strip()
+    limit = _DEFAULT_MAX_CONCURRENT_CBMC
+    setting = os.environ.get(_MAX_CONCURRENT_CBMC_ENV_VAR, "").strip()
     if setting:
         try:
             limit = int(setting)
         except ValueError:
             limit = 0
         if limit < 1:
-            env_var = _MAX_CONCURRENT_SUBPROCESSES_ENV_VAR
+            env_var = _MAX_CONCURRENT_CBMC_ENV_VAR
             message = f"{env_var} must be a positive integer, not {setting!r}"
             raise ValueError(message)
     cpus = os.process_cpu_count() or 1
@@ -338,29 +341,28 @@ class _SubprocessResult:
         return self.returncode == 0 and not self.timed_out
 
 
-def run_shell_command(
+def run_cbmc_command(
     command: str, timeout: float, cwd: str | None = None
 ) -> subprocess.CompletedProcess[str] | None:
-    """Run a shell command with `run_command`, once a subprocess slot is free.
+    """Run a shell command with `run_command`, once a CBMC slot is free.
 
-    Every pipeline subprocess (`goto-cc`, `goto-instrument`, `cbmc`) should be run through this
-    function. Then the number of them running at once, across all threads and all processes that
-    share `_SLOT_DIR`, never exceeds `max_concurrent_subprocesses()` (or, if those processes
+    The number of commands that this function runs at once, across all threads and all processes
+    that share `_SLOT_DIR`, never exceeds `max_concurrent_cbmc_runs()` (or, if those processes
     disagree about the cap, the largest of their caps). A caller that releases a slot and asks for
     another has no advantage over callers that are already waiting, so a process that runs many
     commands back to back does not starve other processes. While a caller waits, it logs a warning
-    every `_SLOT_WAIT_WARNING_SEC`
-    seconds. The timeout starts once the subprocess is launched; waiting for a slot does not count
-    against it. On timeout, the command and every process it started are killed.
+    every `_SLOT_WAIT_WARNING_SEC` seconds. The timeout starts once the subprocess is launched;
+    waiting for a slot does not count against it. On timeout, the command and every process it
+    started are killed.
 
     The command inherits the slot's locked file descriptor, so the slot stays held while the
     command or any descendant that keeps the descriptor is running, even if this process is killed
-    first. So no `cbmc` keeps running without holding a subprocess slot. Such a command no longer
+    first. So no `cbmc` keeps running without holding a CBMC slot. Such a command no longer
     has this process to enforce its timeout, so each process that the command starts is also
     limited to `timeout` plus `_CPU_LIMIT_GRACE_SEC` seconds of CPU time; that limit ends a
     CPU-bound process such as `cbmc`, and with it its hold on the slot. A process that the timeout
-    applies to uses no more CPU time than wall-clock time (pipeline subprocesses are
-    single-threaded), so the timeout ends it before the CPU limit does.
+    applies to uses no more CPU time than wall-clock time (`cbmc` is single-threaded), so the
+    timeout ends it before the CPU limit does.
 
     Args:
         command (str): The shell command to run.
@@ -373,21 +375,21 @@ def run_shell_command(
             and stderr, or None if it hit the timeout.
     """
     cpu_limit = math.ceil(timeout) + _CPU_LIMIT_GRACE_SEC
-    with _subprocess_slot() as slot_fd:
+    with _cbmc_slot() as slot_fd:
         return run_command(
             f"ulimit -t {cpu_limit}; {command}", timeout, cwd=cwd, pass_fds=(slot_fd,)
         )
 
 
 @contextmanager
-def _subprocess_slot() -> Generator[int]:
-    """Hold one of the `max_concurrent_subprocesses()` subprocess slots for the `with` body.
+def _cbmc_slot() -> Generator[int]:
+    """Hold one of the `max_concurrent_cbmc_runs()` CBMC slots for the `with` body.
 
     Each slot is an exclusive `flock` on a file in `_SLOT_DIR`. An `flock` belongs to an open file
     description, so it excludes other threads of this process as well as other processes, and the
     kernel releases it once every file descriptor for that open file description is closed, so a
     killed process never leaks a slot. The lock's file descriptor is inherited only by a
-    subprocess it is passed to explicitly (as `run_shell_command` does); that subprocess and its
+    subprocess it is passed to explicitly (as `run_cbmc_command` does); that subprocess and its
     descendants then keep the slot held until they close the descriptor or exit.
 
     Blocks until a slot is free. A caller first takes a blocking `flock` on the queue file in
@@ -421,7 +423,7 @@ def _subprocess_slot() -> Generator[int]:
             " to a directory that only this user can write"
         )
         raise PermissionError(message)
-    cap = max_concurrent_subprocesses()
+    cap = max_concurrent_cbmc_runs()
     queue_fd = os.open(_SLOT_DIR / "queue", os.O_RDWR | os.O_CREAT, 0o600)
     try:
         with _warnings_while_waiting(cap):
@@ -472,7 +474,7 @@ def _warnings_while_waiting(cap: int) -> Generator[None]:
     """Log a warning every `_SLOT_WAIT_WARNING_SEC` seconds while the `with` body runs.
 
     Args:
-        cap (int): The number of subprocess slots; used for diagnostics.
+        cap (int): The number of CBMC slots; used for diagnostics.
 
     Yields:
         None: While the warnings are being logged.
@@ -484,7 +486,7 @@ def _warnings_while_waiting(cap: int) -> Generator[None]:
         while not done.wait(_SLOT_WAIT_WARNING_SEC):
             logger.warning(
                 f"waited {time.monotonic() - start:.0f} seconds so far for one of the {cap} CBMC"
-                f" subprocess slots in {_SLOT_DIR}; other CBMC runs hold them all. To list the"
+                f" CBMC slots in {_SLOT_DIR}; other CBMC runs hold them all. To list the"
                 f" processes that have the slot files open, run: fuser -v {_SLOT_DIR}/slot-*"
             )
 
@@ -902,6 +904,10 @@ def _run_command(
 ) -> _SubprocessResult:
     """Run one pipeline step as a subprocess with the per-step timeout.
 
+    A `CbmcStep.CBMC` step is run with `run_cbmc_command`: it first waits for a CBMC slot (time
+    that does not count against the timeout), and its CPU time is limited. Every other step is run
+    with `run_command`, at once and with no CPU limit.
+
     Args:
         step (CbmcStep): The logical step this subprocess belongs to.
         command (str): The shell command to run.
@@ -915,7 +921,10 @@ def _run_command(
     Returns:
         _SubprocessResult: The captured outcome, including stdout/stderr or the timeout sentinel.
     """
-    completed = run_shell_command(command, timeout_sec, cwd=cwd)
+    if step is CbmcStep.CBMC:
+        completed = run_cbmc_command(command, timeout_sec, cwd=cwd)
+    else:
+        completed = run_command(command, timeout_sec, cwd=cwd)
     if completed is None:
         returncode = _TIMEOUT_RETURNCODE
         stdout = ""
@@ -1442,7 +1451,7 @@ def _list_goto_functions(
             )
             listing = ""
             for command in commands:
-                completed = run_shell_command(command, _GOTO_CC_TIMEOUT_SEC, cwd=scratch_dir)
+                completed = run_command(command, _GOTO_CC_TIMEOUT_SEC, cwd=scratch_dir)
                 if completed is None or completed.returncode != 0:
                     return None
                 listing = completed.stdout
@@ -1541,7 +1550,7 @@ def compile_with_goto_cc(
             (0 == compiled successfully).
     """
     compilation_command = _get_goto_cc_command(function, file_path, include_dirs=include_dirs)
-    completed = run_shell_command(compilation_command, _GOTO_CC_TIMEOUT_SEC, cwd=cwd)
+    completed = run_command(compilation_command, _GOTO_CC_TIMEOUT_SEC, cwd=cwd)
     if completed is None:
         return _TIMEOUT_RETURNCODE
     return completed.returncode

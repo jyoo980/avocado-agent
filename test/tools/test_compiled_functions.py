@@ -45,20 +45,23 @@ def test_the_compiler_says_which_functions_exist(tmp_path: Path) -> None:
     assert [path.name for path in tmp_path.iterdir()] == ["build.c"]
 
 
-def test_listing_the_compiled_functions_runs_through_run_shell_command(
+def test_listing_the_compiled_functions_runs_through_run_command_without_a_cbmc_slot(
     tmp_path: Path, monkeypatch
 ) -> None:
-    # Like every pipeline subprocess, `goto-cc` and `goto-instrument` run through
-    # `run_shell_command`, which takes a subprocess slot and kills the whole process tree on
-    # timeout.
+    # `goto-cc` and `goto-instrument` run through `run_command`, which kills the whole process
+    # tree on timeout. They do not wait for a CBMC slot, which only `cbmc` takes.
     commands: list[str] = []
-    run_shell_command = run_cbmc_module.run_shell_command
+    run_command = run_cbmc_module.run_command
 
-    def recording_run_shell_command(command: str, *args, **kwargs):
+    def recording_run_command(command: str, *args, **kwargs):
         commands.append(command)
-        return run_shell_command(command, *args, **kwargs)
+        return run_command(command, *args, **kwargs)
 
-    monkeypatch.setattr(run_cbmc_module, "run_shell_command", recording_run_shell_command)
+    def failing_run_cbmc_command(*args, **kwargs):
+        raise AssertionError("listing the compiled functions took a CBMC slot")
+
+    monkeypatch.setattr(run_cbmc_module, "run_command", recording_run_command)
+    monkeypatch.setattr(run_cbmc_module, "run_cbmc_command", failing_run_cbmc_command)
     source = _source(tmp_path)
     assert list_compiled_functions(str(source)) == {"twice", "scale"}
     assert has_contract("scale", str(source)) is True
@@ -66,10 +69,10 @@ def test_listing_the_compiled_functions_runs_through_run_shell_command(
 
 
 def test_a_command_that_cannot_be_started_lists_nothing(tmp_path: Path, monkeypatch) -> None:
-    def failing_run_shell_command(*args, **kwargs):
+    def failing_run_command(*args, **kwargs):
         raise OSError("no subprocess could be started")
 
-    monkeypatch.setattr(run_cbmc_module, "run_shell_command", failing_run_shell_command)
+    monkeypatch.setattr(run_cbmc_module, "run_command", failing_run_command)
     source = _source(tmp_path)
     assert list_compiled_functions(str(source)) is None
     assert has_contract("scale", str(source)) is None

@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from tools.run_cbmc import max_concurrent_subprocesses
+from tools.run_cbmc import max_concurrent_cbmc_runs
 from tools.util.mutation import _get_path_for_mutated_source, _mutation_worker_count
 
 
-def test_mutation_worker_count_is_bounded_by_subprocess_slots_and_mutants() -> None:
-    slots = max_concurrent_subprocesses()
+def test_mutation_worker_count_is_bounded_by_cbmc_slots_and_mutants() -> None:
+    slots = max_concurrent_cbmc_runs()
     assert _mutation_worker_count(0) == 1
     assert _mutation_worker_count(1) == 1
     assert _mutation_worker_count(10_000) == slots
