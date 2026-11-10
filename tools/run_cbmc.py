@@ -78,8 +78,9 @@ _CBMC_DEPTH = 200
 # concurrently both within a process (mutants of one function run in a thread pool) and across
 # processes (for example, several `avocado-run-cbmc` invocations at once), and without a shared
 # bound the product of those fan-outs could oversubscribe the machine, turning
-# slow-but-decidable CBMC runs into timeouts. The other pipeline subprocesses (`goto-cc` and
-# `goto-instrument`) are not capped: they are fast and use little memory, and making them wait
+# slow-but-decidable CBMC runs into timeouts. Every `cbmc` subprocess must therefore be run with
+# `run_cbmc_command`. The other pipeline subprocesses (`goto-cc` and `goto-instrument`) are run
+# with `run_command` and are not capped: they are fast and use little memory, and making them wait
 # behind long `cbmc` runs would delay quick results such as whether a file compiles. See
 # `max_concurrent_cbmc_runs` for how the cap is chosen and `run_cbmc_command` for how it is
 # enforced.
@@ -345,16 +346,14 @@ def run_cbmc_command(
 ) -> subprocess.CompletedProcess[str] | None:
     """Run a shell command with `run_command`, once a CBMC slot is free.
 
-    Every `cbmc` subprocess should be run through this function; other pipeline subprocesses
-    (`goto-cc`, `goto-instrument`) should be run with `run_command`. Then the number of `cbmc`
-    subprocesses running at once, across all threads and all processes that share `_SLOT_DIR`,
-    never exceeds `max_concurrent_cbmc_runs()` (or, if those processes disagree about the cap, the
-    largest of their caps). A caller that releases a slot and asks for another has no advantage
-    over callers that are already waiting, so a process that runs many commands back to back does
-    not starve other processes. While a caller waits, it logs a warning every
-    `_SLOT_WAIT_WARNING_SEC` seconds. The timeout starts once the subprocess is launched; waiting
-    for a slot does not count against it. On timeout, the command and every process it started
-    are killed.
+    The number of commands that this function runs at once, across all threads and all processes
+    that share `_SLOT_DIR`, never exceeds `max_concurrent_cbmc_runs()` (or, if those processes
+    disagree about the cap, the largest of their caps). A caller that releases a slot and asks for
+    another has no advantage over callers that are already waiting, so a process that runs many
+    commands back to back does not starve other processes. While a caller waits, it logs a warning
+    every `_SLOT_WAIT_WARNING_SEC` seconds. The timeout starts once the subprocess is launched;
+    waiting for a slot does not count against it. On timeout, the command and every process it
+    started are killed.
 
     The command inherits the slot's locked file descriptor, so the slot stays held while the
     command or any descendant that keeps the descriptor is running, even if this process is killed
@@ -904,6 +903,10 @@ def _run_command(
     timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
 ) -> _SubprocessResult:
     """Run one pipeline step as a subprocess with the per-step timeout.
+
+    A `CbmcStep.CBMC` step is run with `run_cbmc_command`: it first waits for a CBMC slot (time
+    that does not count against the timeout), and its CPU time is limited. Every other step is run
+    with `run_command`, at once and with no CPU limit.
 
     Args:
         step (CbmcStep): The logical step this subprocess belongs to.
