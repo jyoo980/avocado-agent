@@ -248,12 +248,9 @@ class _Item:
             or `#undef` names. None for every other directive.
         start (int): The byte offset the item starts at in its source.
         end (int): The byte offset just past the item, contract clauses included.
-        body_offsets (tuple[int, ...]): For a function, the offset of each `{` that opens its
-            body: one, or one per preprocessor branch when the header differs between branches.
-            Empty for every other kind.
-        body_names (tuple[str | None, ...]): For a function, the name that the header before
-            each of `body_offsets` defines, in the same order. Branches of a conditional can give
-            one body different names. Empty for every other kind.
+        headers (tuple[_Header, ...]): For a function, its headers in source order: one, or one
+            per preprocessor branch when the header differs between branches. Empty for every
+            other kind.
     """
 
     tokens: tuple[str, ...]
@@ -262,13 +259,49 @@ class _Item:
     name: str | None
     start: int
     end: int
-    body_offsets: tuple[int, ...] = ()
-    body_names: tuple[str | None, ...] = ()
+    headers: tuple[_Header, ...] = ()
 
     @property
     def line(self) -> int:
         """The line the item starts on."""
         return self.lines[0]
+
+    @property
+    def body_start(self) -> int:
+        """The byte offset just past the item's last header, or `end` for a non-function."""
+        return self.headers[-1].brace + 1 if self.headers else self.end
+
+    def defines(self, function: str) -> bool:
+        """Return True iff the item is a definition of the given function.
+
+        Args:
+            function (str): A function's name, such as `main`.
+
+        Returns:
+            bool: True iff one of the item's headers names `function`.
+        """
+        return any(header.name == function for header in self.headers)
+
+    def header_spans(self) -> list[_HeaderSpan]:
+        """Return the byte ranges of the item's parts that hold its headers.
+
+        A function definition whose header differs between preprocessor branches has one
+        header per branch, each with its own contract slots and possibly its own name. With
+        `#ifdef X` / `int f(int a) {` / `#else` / `int g(int a) {` / `#endif`, the first span
+        runs through the first `{` and holds f's header, and the second runs through the second
+        `{` and holds g's. Every other item is one span, named `name`.
+
+        Returns:
+            list[_HeaderSpan]: The spans, in order. They are contiguous, start at `start` and
+                end at `body_start`.
+        """
+        if self.kind != "function":
+            return [_HeaderSpan(self.name, self.start, self.end, self.line)]
+        starts = [self.start, *(header.brace + 1 for header in self.headers[:-1])]
+        return [
+            _HeaderSpan(header.name, start, header.brace + 1, header.line)
+            for header, start in zip(self.headers, starts, strict=True)
+        ]
 
     @property
     def directive(self) -> str:
@@ -293,6 +326,43 @@ class _Item:
         if self.name:
             return f"the declaration of {self.name}"
         return f"`{_quote(self.tokens)}`"
+
+
+@dataclass(frozen=True)
+class _Header:
+    """One header of a function definition: its text before a `{` that opens the body.
+
+    Attributes:
+        name (str | None): The function that the header defines, or None when it cannot be told.
+        start (int): The byte offset of the header's first token, such as the `int` of
+            `int g(int a) {`. A directive before the header, such as `#else`, is not part of it.
+        line (int): The line of the header's first token.
+        brace (int): The byte offset of the `{` that ends the header.
+    """
+
+    name: str | None
+    start: int
+    line: int
+    brace: int
+
+
+@dataclass(frozen=True)
+class _HeaderSpan:
+    """A part of an item that holds at most one header and its contract slots.
+
+    Attributes:
+        name (str | None): The name that the header defines, or for an item that is not a
+            function, the item's `name`.
+        start (int): The byte offset the span starts at in the item's source.
+        end (int): The byte offset just past the span.
+        line (int): The line of the first token of the span's header, which follows any
+            directives at the start of the span.
+    """
+
+    name: str | None
+    start: int
+    end: int
+    line: int
 
 
 def check_edits(base: bytes, snapshot: bytes, function: str) -> list[Violation]:
@@ -334,9 +404,15 @@ def merge_copy(
     - The session's own function always takes its contract from the copy.
     - A contract the session changed on *another* item is kept, and the item named in
       `MergeReport.carried` for the caller to re-verify, unless `frozen_functions` is None (no
-      such edit is kept), the item is frozen (a live session is working on it), or the
-      item's contract also changed in the canonical file since the fork. In those cases the
-      edit is left out and named in `MergeReport.dropped`; the rest of the copy still merges.
+      such edit is kept), the item is frozen (a live session is working on it), or a
+      contract of the item's name also changed in the canonical file since the fork. In those
+      cases the edit is left out and named in `MergeReport.dropped`; the rest of the copy still
+      merges. The decision is made once per name, so a function with several definitions or
+      headers has all of its contracts kept or all left out.
+    - A definition whose header differs between preprocessor branches is merged header by
+      header, so each header's contract is decided by the function that the header names.
+      With `#ifdef X` / `int f(int a) {` / `#else` / `int g(int a) {` / `#endif`, a session on
+      g takes g's contract from the copy, and f's contract is another function's.
     - Items the session added are inserted after the original item they followed in the copy,
       after the items other sessions added right after that original item, and after the
       original comments that preceded them in the copy. A new conditional block, from
@@ -379,7 +455,7 @@ def merge_copy(
         return canonical, MergeReport(
             False, f"the session copy breaks {len(rendered)} edit rule(s)", violations=rendered
         )
-    if not any(item.kind == "function" and item.name == function for item in mine.snapshot.items):
+    if not any(item.defines(function) for item in mine.snapshot.items):
         return canonical, MergeReport(
             False,
             f"{function} could not be found as a function definition in the session copy, so its "
@@ -400,6 +476,16 @@ def merge_copy(
     changed_since_fork: list[str] = []
     edits: list[tuple[int, int, bytes]] = []  # (start, end, replacement) in `canonical`
     mine_to_theirs: dict[int, int] = {}  # index in the copy to index in the canonical file
+    # Each header of a definition, with its contract, is decided by the name that the header
+    # defines, because the headers of different preprocessor branches can define different
+    # functions. A name is decided once for the whole file, so every contract of a function
+    # with several headers or definitions is carried, or every one is dropped.
+    their_changed: set[str] = set()  # the names whose contracts the canonical file changed
+    edited_names: list[str] = []  # the other names whose contracts the copy changed
+    # For each item: the item in the copy, the item in the canonical file, and for each header
+    # span of the item, the span in the copy, the span in the canonical file, and True iff
+    # their contracts differ.
+    paired: list[tuple[_Item, _Item, list[tuple[_HeaderSpan, _HeaderSpan, bool]]]] = []
     for base_index, snapshot_index in mine.pairs:
         original = mine.base.items[base_index]
         edited = mine.snapshot.items[snapshot_index]
@@ -407,38 +493,56 @@ def merge_copy(
         current = theirs_items[theirs_index[base_index]]
         if edited.kind == "directive":
             continue
-        base_text = _code_text(fork_base[original.start : original.end])
-        my_text = _code_text(snapshot[edited.start : edited.end])
-        their_text = _code_text(canonical[current.start : current.end])
-        if (
-            their_text != base_text
-            and current.kind == "function"
-            and current.name
-            and current.name not in changed_since_fork
+        spans: list[tuple[_HeaderSpan, _HeaderSpan, bool]] = []
+        for original_span, edited_span, current_span in zip(
+            original.header_spans(), edited.header_spans(), current.header_spans(), strict=True
         ):
-            changed_since_fork.append(current.name)
+            name = edited_span.name
+            base_text = _code_text(fork_base[original_span.start : original_span.end])
+            my_text = _code_text(snapshot[edited_span.start : edited_span.end])
+            their_text = _code_text(canonical[current_span.start : current_span.end])
+            spans.append((edited_span, current_span, my_text != their_text))
+            if their_text != base_text and name:
+                their_changed.add(name)
+                if current.kind == "function" and name not in changed_since_fork:
+                    changed_since_fork.append(name)
+            if name == function or my_text in (their_text, base_text):
+                continue
+            if name is None:
+                return canonical, MergeReport(
+                    False,
+                    f"the copy changes the contract of an item at line {edited_span.line} that "
+                    "the merge cannot name, so it cannot tell whether that is the contract of "
+                    f"{function}; nothing was merged",
+                )
+            if name not in edited_names:
+                edited_names.append(name)
+        paired.append((edited, current, spans))
+    for name in edited_names:
+        reason = _reason_not_carried(name, frozen_functions, their_changed=name in their_changed)
+        if reason is None:
+            carried.append(name)
+        else:
+            dropped.append(f"function:{name}{reason}")
+    for edited, current, spans in paired:
         # The session's own function takes its contract from the copy even when the copy left
         # that contract as it was at the fork.
-        if my_text == their_text or (my_text == base_text and edited.name != function):
+        takes_mine = [
+            differ and (edited_span.name == function or edited_span.name in carried)
+            for edited_span, _, differ in spans
+        ]
+        if not any(takes_mine):
             continue
-        if edited.name is None:
-            return canonical, MergeReport(
-                False,
-                f"the copy changes the contract of an item at line {edited.line} that the merge "
-                f"cannot name, so it cannot tell whether that is the contract of {function}; "
-                "nothing was merged",
-                dropped=dropped,
-            )
-        if edited.name != function:
-            reason = _reason_not_carried(
-                edited.name, frozen_functions, their_changed=their_text != base_text
-            )
-            if reason is not None:
-                dropped.append(f"function:{edited.name}{reason}")
-                continue
-            if edited.name not in carried:
-                carried.append(edited.name)
-        edits.append((current.start, current.end, snapshot[edited.start : edited.end]))
+        header_pieces = [
+            snapshot[edited_span.start : edited_span.end]
+            if take_mine
+            else canonical[current_span.start : current_span.end]
+            for (edited_span, current_span, _), take_mine in zip(spans, takes_mine, strict=True)
+        ]
+        # The body holds no contract slot, so it differs only in comments and spacing; it comes
+        # from the copy, like the header that the copy changed.
+        body = snapshot[edited.body_start : edited.end]
+        edits.append((current.start, current.end, b"".join(header_pieces) + body))
 
     their_new = set(theirs.new_indices)
     their_units = [unit for run in _runs(theirs.new_indices) for unit in _units(theirs_items, run)]
@@ -556,10 +660,16 @@ def functions_with_changed_contracts(before: bytes, after: bytes) -> list[str]:
     for before_index, after_index in comparison.pairs:
         old = comparison.base.items[before_index]
         new = comparison.snapshot.items[after_index]
-        if old.kind != "function" or not old.name or old.name in changed:
+        if old.kind != "function":
             continue
-        if _code_text(before[old.start : old.end]) != _code_text(after[new.start : new.end]):
-            changed.append(old.name)
+        for old_span, new_span in zip(old.header_spans(), new.header_spans(), strict=True):
+            if (
+                old_span.name
+                and old_span.name not in changed
+                and _code_text(before[old_span.start : old_span.end])
+                != _code_text(after[new_span.start : new_span.end])
+            ):
+                changed.append(old_span.name)
     return changed
 
 
@@ -571,14 +681,14 @@ def function_header(source: bytes, function: str) -> bytes | None:
         function (str): The function's name.
 
     Returns:
-        bytes | None: The text from the start of the first definition of `function` up to the
-            opening brace of its body, or None when the definition is not found.
+        bytes | None: The text of the first header that names `function`, from its first token
+            up to the opening brace of the body, or None when the definition is not found. A
+            directive before the header, such as `#else`, is not part of it.
     """
-    definitions = _definitions(source, function)
-    if not definitions:
+    headers = _definitions(source, function)
+    if not headers:
         return None
-    start, brace = definitions[0]
-    return source[start:brace].rstrip()
+    return source[headers[0].start : headers[0].brace].rstrip()
 
 
 def function_body_offsets(source: bytes, function: str) -> list[int]:
@@ -594,29 +704,26 @@ def function_body_offsets(source: bytes, function: str) -> list[int]:
             and, within a definition whose header differs between branches, one per header that
             names the function.
     """
-    return [brace for _, brace in _definitions(source, function)]
+    return [header.brace for header in _definitions(source, function)]
 
 
-def _definitions(source: bytes, function: str) -> list[tuple[int, int]]:
-    """Return where each definition of the given function starts and where its body opens.
+def _definitions(source: bytes, function: str) -> list[_Header]:
+    """Return the headers that name the given function in the definitions of the source.
 
     Args:
         source (bytes): A C source.
         function (str): A function's name, such as `main`.
 
     Returns:
-        list[tuple[int, int]]: One pair per opening brace of the body of a definition, in source
-            order: the offset of the definition's first token and the offset of the brace. A
-            definition has one such brace, or one per header when its header differs between
-            preprocessor branches.
+        list[_Header]: The headers in source order. A definition has one header, or one per
+            preprocessor branch when its header differs between branches.
     """
     tokens, _ = _tokenize(source)
     return [
-        (item.start, offset)
+        header
         for item in _split_items(tokens)
-        if item.kind == "function"
-        for offset, name in zip(item.body_offsets, item.body_names, strict=True)
-        if name == function
+        for header in item.headers
+        if header.name == function
     ]
 
 
@@ -883,12 +990,10 @@ def function_line(source: bytes, function: str) -> int | None:
         function (str): The function's name.
 
     Returns:
-        int | None: The line of its first definition, or None when it is not found.
+        int | None: The line of the first header that names it, or None when it is not found.
     """
-    for item in _split_items(_tokenize(source)[0]):
-        if item.kind == "function" and item.name == function:
-            return item.line
-    return None
+    headers = _definitions(source, function)
+    return headers[0].line if headers else None
 
 
 @dataclass(frozen=True)
@@ -1459,7 +1564,7 @@ def _make_item(
         _Item: The item, with the name it introduces when that can be told.
     """
     texts = tuple(token.text for token in tokens)
-    body_names: tuple[str | None, ...] = ()
+    headers: tuple[_Header, ...] = ()
     if kind == "directive":
         match = _DIRECTIVE_HEAD.match(texts[0])
         # `#ifdef X` tests X and `#if defined(X)` would give `defined`; neither introduces a name.
@@ -1471,18 +1576,30 @@ def _make_item(
         # return type, does not end the search. Each body brace gets the name from its own
         # header, which ends just before it: with `#ifdef X` / `int f(...) {` / `#else` /
         # `int g(...) {` / `#endif`, the first brace opens `f` and the second `g`.
+        body_indexes = [index for index, token in enumerate(tokens) if token.offset in body_offsets]
         if header_end is not None:
-            name = _name_before_last_group(_without_attributes(list(texts[: header_end + 1])))
-            body_names = (name,) * len(body_offsets)
+            knr_name = _name_before_last_group(_without_attributes(list(texts[: header_end + 1])))
+            names = [knr_name] * len(body_indexes)
         else:
-            body_indexes = [
-                index for index, token in enumerate(tokens) if token.offset in body_offsets
-            ]
-            body_names = tuple(
+            names = [
                 _name_before_last_group(_without_attributes(list(texts[:index])))
                 for index in body_indexes
+            ]
+        name = names[0]
+        # A header starts at its first token that is not a directive, such as the `#else`
+        # between one header's `{` and the next header.
+        firsts = [
+            next(
+                index
+                for index in range(previous + 1, brace + 1)
+                if not tokens[index].is_preprocessor_directive
             )
-            name = body_names[0]
+            for previous, brace in zip([-1, *body_indexes[:-1]], body_indexes, strict=True)
+        ]
+        headers = tuple(
+            _Header(header_name, tokens[first].offset, tokens[first].line, tokens[brace].offset)
+            for header_name, first, brace in zip(names, firsts, body_indexes, strict=True)
+        )
     elif kind == "declaration":
         name = _declared_name(texts)
     else:
@@ -1494,8 +1611,7 @@ def _make_item(
         name=name,
         start=tokens[0].offset,
         end=tokens[-1].end,
-        body_offsets=body_offsets,
-        body_names=body_names,
+        headers=headers,
     )
 
 
@@ -1864,7 +1980,7 @@ def _check_function_intact(
 
 
 def _count_definitions(items: list[_Item], function: str) -> int:
-    """Return how many function definitions named `function` are among `items`.
+    """Return how many function definitions among `items` have a header that names `function`.
 
     Args:
         items (list[_Item]): A file's items.
@@ -1873,7 +1989,7 @@ def _count_definitions(items: list[_Item], function: str) -> int:
     Returns:
         int: The number of definitions.
     """
-    return sum(1 for item in items if item.kind == "function" and item.name == function)
+    return sum(1 for item in items if item.defines(function))
 
 
 def _check_new_items(
