@@ -45,7 +45,6 @@ from typing import Any, cast
 
 from loguru import logger
 
-from tools.construct_call_graph import construct_call_graph
 from tools.get_topological_ordering_of_functions import get_topological_ordering_of_functions
 from tools.run_cbmc import (
     VACUOUS_VERDICT,
@@ -59,14 +58,16 @@ from tools.run_cbmc_and_mutation_testing import (
     verify_function,
 )
 from tools.util import (
-    autodetect_include_dirs,
+    get_call_graph,
     get_in_file_callees_for,
     get_in_file_callers_of,
+    get_include_dirs,
     resolve_parent,
     run_command,
 )
 from tools.util.callgraph import CallGraph
 from tools.util.edit_rules import (
+    RESERVED_PREFIXES,
     MergeReport,
     check_edits,
     frozen_functions_for,
@@ -86,7 +87,9 @@ from tools.util.session_state import (
 
 # Per-function wall-clock budget for a single `claude -p` session. A session may run CBMC
 # several times (each with its own multi-minute timeout) across the coverage and quality
-# passes, so this default is deliberately generous.
+# passes, so this default is deliberately generous. The budget is wall-clock time, so it also
+# counts the time those CBMC runs spend waiting for a shared subprocess slot (see
+# `tools.run_cbmc.run_shell_command`) while other processes use the slots.
 _DEFAULT_CLAUDE_TIMEOUT_SEC = 1800
 
 # GNU `timeout(1)` convention, matching `tools.run_cbmc`: distinguishes a timeout from an
@@ -382,19 +385,24 @@ def main() -> None:
         parser.error("--jobs must be at least 1.")
 
     # A symlinked file is not followed. Therefore, it is compiled, and its mutants are written, in
-    # the directory that contains the symlink, which is also where `autodetect_include_dirs` looks
-    # for the `include/` directory.
+    # the directory that contains the symlink, which is also where `get_include_dirs` looks for
+    # the `include/` directory.
     file_path = resolve_parent(args.file)
     if not file_path.is_file():
         logger.error(f"No such file: {file_path}")
         sys.exit(1)
 
-    if include_dirs := autodetect_include_dirs(str(file_path)):
-        logger.info(f"[auto-include] using {include_dirs}")
+    include_dirs = get_include_dirs(str(file_path), [], auto_include=True)
 
-    path_to_call_graph = construct_call_graph(str(file_path))
-    call_graph = CallGraph(json.loads(Path(path_to_call_graph).read_text(encoding="utf-8")))
-    functions = _get_functions_to_verify(str(file_path))
+    # The call graph is built here, and is rebuilt only after a merge that adds functions (see
+    # `_verify_functions`). A merge never changes it for the functions that the run verifies: the
+    # edit rules keep every function body that is in the file now unchanged, the call graph
+    # ignores contract clauses, and every helper that a merge adds is an `avocado_spec_` function,
+    # which none of those bodies calls. The file can already contain such helpers, merged by an
+    # earlier run (for example, the run that `--resume-from` resumes); `_get_functions_to_verify`
+    # leaves them out.
+    call_graph = get_call_graph(str(file_path))
+    functions = _get_functions_to_verify(call_graph)
     if not functions:
         logger.warning(f"No verifiable functions found in {file_path}")
         sys.exit(0)
@@ -466,7 +474,7 @@ def main() -> None:
     )
     # The agent might have added functions (such as helpers), so recompute the functions and the
     # call graph.
-    functions = _get_functions_to_verify(str(file_path))
+    functions = _get_functions_to_verify(get_call_graph(str(file_path)))
     call_graph = _read_call_graph(str(file_path), not_in_build=not_in_build)
     pending = [function for function in functions if function not in already_done]
     if usage_limited:
@@ -597,17 +605,27 @@ def _read_call_graph(file_path: str, *, not_in_build: list[str]) -> CallGraph:
     Returns:
         CallGraph: The call graph, without the functions in `not_in_build`.
     """
-    path_to_call_graph = construct_call_graph(file_path)
-    call_graph = CallGraph(json.loads(Path(path_to_call_graph).read_text(encoding="utf-8")))
+    call_graph = get_call_graph(file_path)
     return _without_functions(call_graph, not_in_build) if not_in_build else call_graph
 
 
-def _get_functions_to_verify(file_path: str) -> list[str]:
-    path_to_call_graph = construct_call_graph(str(file_path))
+def _get_functions_to_verify(call_graph: CallGraph) -> list[str]:
+    """Return the functions of the given call graph to verify, callees first.
+
+    The result omits `main` and the specification helpers that earlier sessions merged into the
+    file, whose names start with `avocado_spec_`. A helper is part of the specification of the
+    function whose session added it, so it gets no session of its own.
+
+    Args:
+        call_graph (CallGraph): a call graph of a C file.
+
+    Returns:
+        list[str]: The functions to verify, in topological order.
+    """
     return [
         function
-        for function in get_topological_ordering_of_functions(path_to_call_graph)
-        if function not in _UNVERIFIABLE_FUNCTIONS
+        for function in get_topological_ordering_of_functions(call_graph)
+        if function not in _UNVERIFIABLE_FUNCTIONS and not function.startswith(RESERVED_PREFIXES)
     ]
 
 
@@ -1598,7 +1616,7 @@ def _verify_functions(
                 if result.merge is not None and result.merge.merged and result.merge.transplanted:
                     # The order is callees-first, so a new callee of `function` precedes the
                     # functions that are still pending.
-                    order = _get_functions_to_verify(file_path)
+                    order = _get_functions_to_verify(get_call_graph(file_path))
                     call_graph = _read_call_graph(file_path, not_in_build=not_in_build or [])
                     new_functions = [
                         other for other in order if other not in pending and other not in done

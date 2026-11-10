@@ -1,0 +1,19 @@
+{
+    "swap": {
+        "internal": [],
+        "external": []
+    },
+    "partition": {
+        "internal": [
+            "swap"
+        ],
+        "external": []
+    },
+    "quickSort": {
+        "internal": [
+            "partition",
+            "quickSort"
+        ],
+        "external": []
+    }
+}

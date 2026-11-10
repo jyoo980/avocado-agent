@@ -9,31 +9,41 @@ that perturbation.
 
 from __future__ import annotations
 
-import json
-import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from functools import partial
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
 from eval.mutants.mutate_function import Mutant, get_mutants
 from eval.mutants.util import (
+    MUTANT_MARKER,
     check_expected_cbmc_return_code,
     create_mutant_file,
     get_bounded_mutant_file_name,
     get_mutant_file_stem,
     is_valid_mutation_candidate,
 )
-from tools.construct_call_graph import construct_call_graph
-from tools.run_cbmc import _DEFAULT_RUN_CBMC_TIMEOUT_SEC, CbmcStep, run_cbmc
-from tools.util.callgraph import CallGraph
+from tools.run_cbmc import (
+    _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
+    CbmcStep,
+    max_concurrent_subprocesses,
+    run_cbmc,
+)
 from tools.util.paths import resolve_parent
+from tools.util.tree_sitter_utils import get_call_graph
 
-# Per-subprocess CBMC timeout applied to each mutant unless a caller overrides it. This is the
-# full pipeline timeout, so the evaluation metric (`evaluate_specification_quality.py`) decides
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from tools.util.callgraph import CallGraph
+
+# Per-subprocess CBMC timeout applied to each CBMC step of a mutant unless a caller overrides it.
+# It is not a limit on the full pipeline: each step (and each retry) gets a fresh budget, and time
+# spent waiting for a subprocess slot is not counted. It equals `run_cbmc`'s default
+# per-subprocess timeout, so the evaluation metric (`evaluate_specification_quality.py`) decides
 # each mutant under the same budget as `run_cbmc` gives the original function.
 DEFAULT_MUTANT_TIMEOUT_SEC = _DEFAULT_RUN_CBMC_TIMEOUT_SEC
 
@@ -47,11 +57,10 @@ _VERIFICATION_FAILURE_RETURNCODE = 10
 # output is capped, dropping trailing survivors behind an explicit omission marker.
 _MAX_MUTATION_SECTION_CHARS = 50_000
 
-# Upper bound on how many mutants are verified concurrently. Each worker drives a full CBMC
-# pipeline (its own subprocesses), which can be memory-heavy, so the effective worker count is
-# min(this cap, os.cpu_count(), number of mutants). The cap bounds peak memory on machines with
-# many cores; lower it if mutation runs exhaust RAM.
-_MAX_MUTATION_WORKERS = 32
+# Mutants are verified concurrently by worker threads (see `_mutation_worker_count`). Each worker
+# drives a full CBMC pipeline; the shared subprocess cap in `tools.run_cbmc`
+# (`AVOCADO_MAX_CONCURRENT_CBMC`) bounds how many of those pipelines can actually be running at
+# once, so lower that if mutation runs exhaust RAM.
 
 
 @dataclass(frozen=True)
@@ -307,20 +316,18 @@ def generate_mutants_and_compute_score(
     workspace = workspace or source_path.parent
     workspace.mkdir(parents=True, exist_ok=True)
 
+    # Operator-swap mutations never add or remove calls (or rename functions), so the call graph
+    # is identical for the original and every mutant. Build it once and pass it into the baseline
+    # run_cbmc and each mutant's run_cbmc below, so that the file is not parsed again per mutant.
+    call_graph = get_call_graph(file_path)
+
     if not is_function_already_verified:
-        cbmc_result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
+        cbmc_result = run_cbmc(
+            target_function, file_path, include_dirs=include_dirs, call_graph=call_graph
+        )
         if not is_valid_mutation_candidate(cbmc_result):
             # No usable baseline if CBMC can't verify the unmutated function.
             return BaselineFailsVerification(file_path, target_function)
-
-    # Operator-swap mutations never add or remove calls (or rename functions), so the call graph
-    # is identical for the original and every mutant. Build it once and pass it into each
-    # mutant's run_cbmc below. Besides avoiding redundant parsing, this keeps the
-    # non-thread-safe tree-sitter parser out of the concurrent section: no call graph is
-    # constructed inside the worker threads.
-    call_graph = CallGraph(
-        json.loads(Path(construct_call_graph(file_path)).read_text(encoding="utf-8"))
-    )
 
     # Only the files created here are deleted below; an existing file is never overwritten.
     paths_to_mutants: dict[Path, Mutant] = {}
@@ -386,9 +393,10 @@ def generate_mutants_and_compute_score(
 def _mutation_worker_count(num_mutants: int) -> int:
     """Return how many mutants to verify concurrently.
 
-    Bounded by `_MAX_MUTATION_WORKERS`, the machine's CPU count, and the number of mutants, and
-    never below 1 (a `ThreadPoolExecutor` requires a positive worker count, even when there are
-    no mutants to run).
+    Bounded by the shared subprocess cap in `tools.run_cbmc` (more workers than that could
+    only wait for a subprocess slot, while each holds its own mutant file) and by the number of
+    mutants, and never below 1 (a `ThreadPoolExecutor` requires a positive worker count, even when
+    there are no mutants to run).
 
     Args:
         num_mutants (int): The total number of mutants to verify.
@@ -396,7 +404,7 @@ def _mutation_worker_count(num_mutants: int) -> int:
     Returns:
         int: The number of worker threads to use.
     """
-    return max(1, min(num_mutants, os.cpu_count() or 1, _MAX_MUTATION_WORKERS))
+    return max(1, min(num_mutants, max_concurrent_subprocesses()))
 
 
 def _print_mutation_progress(
@@ -587,7 +595,7 @@ def _get_path_for_mutated_source(
     """
     return workspace_path / get_bounded_mutant_file_name(
         get_mutant_file_stem(path_to_original_source),
-        "mutant",
+        MUTANT_MARKER,
         function,
         index,
         path_to_original_source.suffix,

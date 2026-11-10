@@ -46,13 +46,13 @@ def test_construct_call_graph_with_callees_no_libraries() -> None:
         )
 
 
-def test_construct_call_graph_matches_checked_in_artifact() -> None:
-    # `construct_call_graph` writes its output next to the source; the checked-in artifact for
-    # quicksort.c must stay in sync with what `get_call_graph` produces.
+def test_construct_call_graph_matches_goal_file() -> None:
+    # The goal file is checked in under a name that neither `.gitignore` (`*.json`) nor
+    # `make clean` (`*callgraph.json`) matches, so no tool run overwrites or deletes it.
     call_graph = tree_sitter_utils.get_call_graph("test/data/quicksort.c")
-    expected = json.loads(Path("test/data/quicksort-callgraph.json").read_text())
+    expected = json.loads(Path("test/data/quicksort-callgraph.json.goal").read_text())
     assert dict(call_graph) == expected, (
-        f"Expected the call graph of quicksort.c to match the checked-in artifact, got {call_graph}"
+        f"Expected the call graph of quicksort.c to match the goal file, got {call_graph}"
     )
 
 
