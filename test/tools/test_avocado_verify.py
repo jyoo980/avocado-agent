@@ -150,6 +150,7 @@ def test_retry_note_leads_the_prompt_and_attempts_rule_is_stated() -> None:
 # --------------------------------------------------------------------------------------------------
 
 import json
+import os
 import re
 import shutil
 import stat
@@ -530,6 +531,105 @@ def test_merge_and_verify_keeps_the_permission_bits_of_the_canonical_file(
     assert report.merged, report
     assert _CONTRACTS["swap"] in canonical.read_bytes()
     assert stat.S_IMODE(canonical.stat().st_mode) == 0o640
+
+
+def _fake_chown(calls: list[tuple[str, int, int]], *, fail_owner: bool = False, fail_group: bool = False):
+    """Return an `os.chown` stand-in that appends `(file name, uid, gid)` to `calls`.
+
+    Like `os.chown` run by a process that is not root, it clears the setuid and setgid bits of the
+    file it changes.
+
+    Args:
+        calls (list[tuple[str, int, int]]): A list to append each call to.
+        fail_owner (bool): True if a call that changes the owner (uid other than -1) raises
+            `PermissionError`.
+        fail_group (bool): True if a call that changes only the group raises `PermissionError`.
+
+    Returns:
+        Callable[[Path, int, int], None]: The stand-in.
+    """
+
+    def chown(path, uid: int, gid: int) -> None:
+        calls.append((Path(path).name, uid, gid))
+        if fail_owner if uid != -1 else fail_group:
+            raise PermissionError(1, "Operation not permitted", str(path))
+        os.chmod(path, stat.S_IMODE(os.stat(path).st_mode) & ~(stat.S_ISUID | stat.S_ISGID))
+
+    return chown
+
+
+def test_merge_and_verify_gives_the_merged_file_the_owner_and_mode_of_the_canonical_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    # The setgid bit checks that the permission bits are set after the owner, which clears it.
+    canonical.chmod(0o2750)
+    owner = canonical.stat()
+    calls: list[tuple[str, int, int]] = []
+    monkeypatch.setattr(avocado_verify.os, "chown", _fake_chown(calls))
+    monkeypatch.setattr(avocado_verify, "verify_function", _FakeVerify())
+    session = _fork_session("swap", canonical)
+    try:
+        _write_contract(session.file, "swap", _CONTRACTS["swap"])
+        report, _cbmc, _reverified = _merge_and_verify(session, canonical, include_dirs=[])
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    assert report.merged, report
+    assert calls == [(f"{canonical.name}.avocado-merge", owner.st_uid, owner.st_gid)]
+    assert stat.S_IMODE(canonical.stat().st_mode) == 0o2750
+
+
+def test_merge_and_verify_merges_when_the_owner_cannot_be_copied(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    canonical.chmod(0o640)
+    calls: list[tuple[str, int, int]] = []
+    monkeypatch.setattr(
+        avocado_verify.os, "chown", _fake_chown(calls, fail_owner=True, fail_group=True)
+    )
+    monkeypatch.setattr(avocado_verify, "verify_function", _FakeVerify())
+    session = _fork_session("swap", canonical)
+    try:
+        _write_contract(session.file, "swap", _CONTRACTS["swap"])
+        report, _cbmc, _reverified = _merge_and_verify(session, canonical, include_dirs=[])
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    assert report.merged, report
+    assert _CONTRACTS["swap"] in canonical.read_bytes()
+    assert stat.S_IMODE(canonical.stat().st_mode) == 0o640
+    assert not canonical.with_name(f"{canonical.name}.avocado-merge").exists()
+
+
+def test_copy_owner_and_mode_keeps_the_group_and_warns_once_when_the_owner_cannot_be_copied(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "source.c"
+    source.write_text("int x;\n")
+    source.chmod(0o2750)
+    owner = source.stat()
+    calls: list[tuple[str, int, int]] = []
+    monkeypatch.setattr(avocado_verify.os, "chown", _fake_chown(calls, fail_owner=True))
+    monkeypatch.setattr(avocado_verify, "_owner_failure_logged", False)
+    levels: list[str] = []
+    handler = avocado_verify.logger.add(
+        lambda message: levels.append(message.record["level"].name), level="DEBUG"
+    )
+    try:
+        for name in ("first.c", "second.c"):
+            target = tmp_path / name
+            target.write_text("int x;\n")
+            avocado_verify._copy_owner_and_mode(source, target)
+            assert stat.S_IMODE(target.stat().st_mode) == 0o2750
+    finally:
+        avocado_verify.logger.remove(handler)
+    assert calls == [
+        ("first.c", owner.st_uid, owner.st_gid),
+        ("first.c", -1, owner.st_gid),
+        ("second.c", owner.st_uid, owner.st_gid),
+        ("second.c", -1, owner.st_gid),
+    ]
+    assert levels == ["WARNING", "DEBUG"]
 
 
 class _FakeVerify:

@@ -32,6 +32,7 @@ import json
 import os
 import shlex
 import shutil
+import stat
 import sys
 import tempfile
 import threading
@@ -149,6 +150,9 @@ _CANONICAL_LOCK = threading.Lock()
 
 # Serialises appends to the run log and the canonical-side attempts log from worker threads.
 _RUN_LOG_LOCK = threading.Lock()
+
+# True if `_copy_owner_and_mode` has logged, as a warning, that it could not copy an owner.
+_owner_failure_logged = False
 
 # Sets the max number of times a session is re-run when it initially ends without a verification
 # attempt (i.e., a CBMC execution). A session that fails with a non-timeout error does not count
@@ -1273,11 +1277,11 @@ def _merge_and_verify(
                 else:
                     # If the canonical file is a symlink, its target is replaced rather than the
                     # link itself, so that the link keeps pointing to the file with the merged
-                    # edits. The target keeps its permission bits.
+                    # edits. The target keeps its owner, group and permission bits.
                     staged = destination.with_name(f"{destination.name}.avocado-merge")
                     try:
                         staged.write_bytes(merged)
-                        shutil.copymode(destination, staged)
+                        _copy_owner_and_mode(destination, staged)
                         staged.replace(destination)
                     except OSError as e:
                         staged.unlink(missing_ok=True)
@@ -1340,6 +1344,42 @@ def _merge_and_verify(
     finally:
         shutil.rmtree(scratch_root, ignore_errors=True)
     return report, cbmc, reverified
+
+
+def _copy_owner_and_mode(source: Path, target: Path) -> None:
+    """Give `target` the owner, group and permission bits of `source`.
+
+    A merge replaces the canonical file with a new file. Without this, the new file would be owned
+    by whoever runs the harness: root, in a container, against a file that the host owns. A
+    process that is not permitted to change the owner gives `target` only the group of `source`,
+    if it is permitted to, and otherwise leaves both as they are. The first such failure in a
+    process is logged as a warning, and later ones at debug level, because a process that cannot
+    copy one file's owner usually cannot copy any file's owner. The permission bits are set last,
+    because changing the owner can clear the setuid and setgid bits. An `OSError` from reading the
+    status of `source` or from setting the permission bits of `target` propagates.
+
+    Args:
+        source (Path): A file whose owner, group and permission bits to copy.
+        target (Path): The file to give them to.
+    """
+    global _owner_failure_logged
+    status = source.stat()
+    try:
+        os.chown(target, status.st_uid, status.st_gid)
+    except OSError as error:
+        try:
+            os.chown(target, -1, status.st_gid)
+        except OSError:
+            missing = "owner and group"
+        else:
+            missing = "owner"
+        message = f"cannot give {target} the {missing} of {source}: {error}"
+        if _owner_failure_logged:
+            logger.debug(message)
+        else:
+            _owner_failure_logged = True
+            logger.warning(f"{message}; later such failures are logged at debug level")
+    target.chmod(stat.S_IMODE(status.st_mode))
 
 
 def _report_stray_edits(session: _Session, canonical_file: Path) -> list[str]:
