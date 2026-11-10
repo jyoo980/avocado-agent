@@ -1,10 +1,11 @@
 """Tests for `tools.util.include_dirs`."""
 
+import argparse
 from pathlib import Path
 
 import pytest
 
-from tools.util import get_include_dirs, resolve_include_dirs
+from tools.util import existing_include_dir, get_include_dirs
 
 
 def _symlink_or_skip(link: Path, target: Path) -> None:
@@ -15,36 +16,14 @@ def _symlink_or_skip(link: Path, target: Path) -> None:
         pytest.skip(f"cannot create symlinks: {e}")
 
 
-def test_resolve_include_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_existing_include_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "src").mkdir()
-    stubs_path = tmp_path / "stubs"
-    stubs_path.mkdir()
-    stubs = str(stubs_path.resolve())
-
-    assert resolve_include_dirs([]) == []
-    assert resolve_include_dirs(["stubs"]) == [stubs]
-    assert resolve_include_dirs(["stubs", "./stubs", "src/../stubs", stubs]) == [stubs]
-
-    _symlink_or_skip(tmp_path / "link", stubs_path)
-    assert resolve_include_dirs(["link", "stubs"]) == [stubs]
-
-
-def test_resolve_include_dirs_rejects_bad_dirs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stubs").mkdir()
     (tmp_path / "file").write_text("")
+    assert existing_include_dir("stubs") == "stubs"
     for bad in ["", "nonexistent", "file"]:
-        with pytest.raises(ValueError, match="Not an existing include directory"):
-            resolve_include_dirs([bad])
-
-
-def test_resolve_include_dirs_returns_new_list(tmp_path: Path) -> None:
-    include_dirs = [str(tmp_path.resolve())]
-    result = resolve_include_dirs(include_dirs)
-    result.append("other")
-    assert include_dirs == [str(tmp_path.resolve())]
+        with pytest.raises(argparse.ArgumentTypeError, match="Not an existing include directory"):
+            existing_include_dir(bad)
 
 
 def test_get_include_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -69,6 +48,15 @@ def test_get_include_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 
     # The auto-detected directory is not duplicated.
     assert get_include_dirs(source, [detected], auto_include=True) == [detected]
+
+    # Explicit directories are resolved against the current working directory and deduplicated.
+    (tmp_path / "stubs").mkdir()
+    assert get_include_dirs(
+        source, ["stubs", "./stubs", "src/../stubs", stubs], auto_include=False
+    ) == [stubs]
+    assert get_include_dirs(source, ["include", "stubs"], auto_include=True) == [detected, stubs]
+    _symlink_or_skip(tmp_path / "link", tmp_path / "stubs")
+    assert get_include_dirs(source, ["link", "stubs"], auto_include=False) == [stubs]
 
 
 def test_get_include_dirs_returns_new_list(tmp_path: Path) -> None:
@@ -102,3 +90,13 @@ def test_get_include_dirs_dotdot_after_symlinked_dir(tmp_path: Path) -> None:
     _symlink_or_skip(tmp_path / "work" / "link", tmp_path / "project" / "subdir")
     source = str(tmp_path / "work" / "link" / ".." / "src" / "foo.c")
     assert get_include_dirs(source, [], auto_include=True) == [str(include.resolve())]
+
+
+def test_get_include_dirs_symlinked_include_dir(tmp_path: Path) -> None:
+    headers = tmp_path / "headers"
+    headers.mkdir()
+    _symlink_or_skip(tmp_path / "include", headers)
+    source = str(tmp_path / "src" / "foo.c")
+    detected = str(headers.resolve())
+    assert get_include_dirs(source, [], auto_include=True) == [detected]
+    assert get_include_dirs(source, [str(headers)], auto_include=True) == [detected]
