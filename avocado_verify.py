@@ -252,9 +252,11 @@ class FunctionVerificationResult:
             kept and dropped, or None when no merge was attempted.
         stray_files (list[str]): Files other than the source file that the agent added or changed
             in its private copy; they are never merged, only reported.
-        reverified (dict[str, RunCbmcResult]): Ground-truth verdicts of the other functions this
-            merge had to re-verify because it carried edits to them or to their callees, on the
-            file it wrote (see `_merge_and_verify`); empty when it carried none.
+        reverified (dict[str, RunCbmcResult]): Ground-truth verdicts of the other functions that
+            this function's merges re-verified because they carried edits to them or to their
+            callees, on the file each merge wrote, for every merge whose carried edits were
+            committed (see `_merge_and_verify`); empty when none were. A later merge's verdict
+            replaces an earlier one's.
         merge_reruns (int): How many times the function was given another session on a fresh
             copy because a merge left out edits its proof depended on, or because another
             session changed the contract of a function it calls
@@ -266,6 +268,12 @@ class FunctionVerificationResult:
         not_in_build (bool): True iff the function is in the source text but not in the compiled
             program (the preprocessor removes it), so it was given no session and no CBMC run
             (see `_functions_not_in_build`). It is recorded as unverified.
+        merge_run (str | None): The run of the harness whose merge state recorded the verdicts
+            (`_MergeState.run`), or None when none was recorded.
+        recorded_order (dict[str, int]): For the function and for each function in
+            `reverified`, the ordinal with which the merge state recorded the verdict given here
+            (`_MergeState.record`). Within one run, the verdict with the larger ordinal is the
+            later one, whatever order the records are written in.
     """
 
     function: str
@@ -281,6 +289,8 @@ class FunctionVerificationResult:
     merge_reruns: int = 0
     unverified_callees: dict[str, str] = field(default_factory=dict)
     not_in_build: bool = False
+    merge_run: str | None = None
+    recorded_order: dict[str, int] = field(default_factory=dict)
 
     def to_record(self) -> dict:
         """Return a JSON-serializable record of this result for the run log.
@@ -314,7 +324,9 @@ class FunctionVerificationResult:
                 "vacuity": None
                 if self.cbmc.vacuity_check_result is None
                 else str(self.cbmc.vacuity_check_result.vacuity),
+                "order": self.recorded_order.get(self.function),
             },
+            "merge_run": self.merge_run,
             "unverified_callees": dict(self.unverified_callees),
             "not_in_build": self.not_in_build,
             "total_cost_to_verify_usd": total_cost_to_verify_usd,
@@ -325,6 +337,9 @@ class FunctionVerificationResult:
                 function: {
                     "verdict": str(result),
                     "is_function_verified": result.is_function_verified,
+                    # Only verdicts on committed edits are kept (see `_merge_and_verify`).
+                    "committed": True,
+                    "order": self.recorded_order.get(function),
                     "vacuity": None
                     if result.vacuity_check_result is None
                     else str(result.vacuity_check_result.vacuity),
@@ -684,18 +699,29 @@ class _MergeState:
             why (`_status_of`). Their contracts are in the canonical file all the same, because
             a caller cannot be verified against a callee that has no contract; a session for a
             caller is told about them, and a function verified against one records it.
+        run (str): Identifies this run of the harness, so that the run log can tell which
+            recorded verdicts the ordinals of `record` can order.
+        recorded (int): How many verdicts `record` has recorded in this run.
     """
 
     active: set[str] = field(default_factory=set)
     verified: set[str] = field(default_factory=set)
     unverified: dict[str, str] = field(default_factory=dict)
+    run: str = field(default_factory=lambda: uuid.uuid4().hex)
+    recorded: int = 0
 
-    def record(self, function: str, cbmc: RunCbmcResult) -> None:
+    def record(self, function: str, cbmc: RunCbmcResult) -> int:
         """Record a function's latest ground truth; the caller holds `_CANONICAL_LOCK`.
 
         Args:
             function (str): The function.
             cbmc (RunCbmcResult): Its ground truth on the canonical file.
+
+        Returns:
+            int: The verdict's ordinal in this run: verdicts recorded later have larger ones. The
+                run log is written in the order sessions finish, not the order their merges
+                recorded verdicts, so the ordinal goes into the log to put them back in order
+                (`_read_function_verdicts`).
         """
         if cbmc.is_function_verified:
             self.verified.add(function)
@@ -703,6 +729,8 @@ class _MergeState:
         else:
             self.verified.discard(function)
             self.unverified[function] = _status_of(cbmc)
+        self.recorded += 1
+        return self.recorded
 
     def rechecked_on_change(self) -> set[str]:
         """Return the functions to re-verify when a merge changes one of their callees' contracts.
@@ -813,6 +841,8 @@ def _verify_via_agent(
     attempts = 0
     merge_reruns = 0
     reverified: dict[str, RunCbmcResult] = {}
+    # A later merge's ordinal replaces an earlier one's, as its verdict does in `reverified`.
+    recorded_order: dict[str, int] = {}
     retry_note = ""
     callees = [callee for callee in call_graph.get_callees(function).internal if callee != function]
     while True:
@@ -842,6 +872,7 @@ def _verify_via_agent(
                 call_graph=call_graph,
                 state=state,
                 stray_files=stray_files,
+                recorded_order=recorded_order,
             )
             reverified.update(newly_reverified)
         finally:
@@ -885,6 +916,8 @@ def _verify_via_agent(
         reverified=reverified,
         merge_reruns=merge_reruns,
         unverified_callees=unverified_callees,
+        merge_run=None if state is None else state.run,
+        recorded_order=recorded_order,
     )
 
 
@@ -1099,6 +1132,7 @@ def _merge_and_verify(
     call_graph: CallGraph | None = None,
     state: _MergeState | None = None,
     stray_files: list[str] | None = None,
+    recorded_order: dict[str, int] | None = None,
 ) -> tuple[MergeReport, RunCbmcResult, dict[str, RunCbmcResult]]:
     """Merge the session's copy into the canonical file, then run the independent ground truth.
 
@@ -1133,10 +1167,10 @@ def _merge_and_verify(
     longer compiles, the merge is redone without the carried edits and the reason is appended to
     `MergeReport.dropped`. A merge therefore never turns a verified function into an unverified
     one. The re-verification verdicts are returned for the run log only if the merge that
-    carries the edits is written; verdicts on a file without which the merge was redone, or that
-    could not be written, are not returned, since they do not describe the file. A vacuous caller is
-    re-verified so that its verdict is not left stale, but is not protected: if the kept edits
-    make it fail, its new verdict is recorded.
+    carries the edits is committed, that is, written; verdicts on a file without which the merge
+    was redone, or that could not be written, describe a file that never existed, and are not
+    returned. A vacuous caller is re-verified so that its verdict is not left stale, but is not
+    protected: if the kept edits make it fail, its new verdict is recorded.
 
     Args:
         session (_Session): The finished session.
@@ -1147,13 +1181,18 @@ def _merge_and_verify(
         state (_MergeState | None): The run's shared merge state; None carries nothing.
         stray_files (list[str] | None): Files other than the source file that the session added
             or changed (`_report_stray_edits`); any of them blocks the merge (edit rule 6).
+        recorded_order (dict[str, int] | None): When given, receives the ordinal
+            (`_MergeState.record`) of every verdict this records in `state`: the function's own
+            and each committed re-verification's.
 
     Returns:
         tuple[MergeReport, RunCbmcResult, dict[str, RunCbmcResult]]: What the merge did, the
             ground-truth verdict for the function on the canonical file as it is when this
             returns, and the verdicts of the functions re-verified because of carried edits that
-            were written to the canonical file (empty when there were none).
+            were committed, that is, written to the canonical file (empty when none were).
     """
+    if recorded_order is None:
+        recorded_order = {}
     function = session.function
     absolute_include_dirs = [str(Path(directory).resolve()) for directory in include_dirs]
     # Verdicts of the functions re-verified on the merged file; they are recorded in `state` and
@@ -1292,7 +1331,7 @@ def _merge_and_verify(
                         reverified = pending
                         if state is not None:
                             for other, result in reverified.items():
-                                state.record(other, result)
+                                recorded_order[other] = state.record(other, result)
         if report.merged:
             if report.transplanted:
                 logger.info(f"{function}: transplanted {', '.join(report.transplanted)}")
@@ -1337,7 +1376,7 @@ def _merge_and_verify(
                 )
             if state is not None:
                 state.active.discard(function)
-                state.record(function, cbmc)
+                recorded_order[function] = state.record(function, cbmc)
     finally:
         shutil.rmtree(scratch_root, ignore_errors=True)
     return report, cbmc, reverified
@@ -1776,9 +1815,11 @@ def _read_function_verdicts(log_path: Path) -> dict[str, tuple[str, str]]:
     """Return the last recorded outcome and ground-truth verdict of each function in the run log.
 
     Reads `<stem>-avocado-verify.jsonl`, ignoring blank/malformed lines and the terminal
-    run-summary record (identified by a `"type"` key). Later records win, so each entry reflects
-    the function's most recent attempt, including a later merge's re-verification of it
-    (`reverified`). Never raises; a missing log yields an empty map.
+    run-summary record (identified by a `"type"` key). Later verdicts win, so each entry reflects
+    the function's most recent attempt, including a later merge's committed re-verification of
+    it (`reverified`). Within one run of the harness, "later" is the order in which the merges
+    recorded the verdicts, which the records carry (`FunctionVerificationResult.recorded_order`);
+    otherwise it is the order of the records. Never raises; a missing log yields an empty map.
 
     Args:
         log_path (Path): Path to the `<stem>-avocado-verify.jsonl` run log.
@@ -1789,9 +1830,37 @@ def _read_function_verdicts(log_path: Path) -> dict[str, tuple[str, str]]:
             example `VACUOUS (end_unreachable)`), or the outcome when no verdict was recorded.
     """
     verdicts: dict[str, tuple[str, str]] = {}
+    # The run and ordinal of the verdict now in `verdicts`, for a verdict that has them.
+    stamps: dict[str, tuple[str, int]] = {}
+
+    def is_newer(name: str, run: object, order: object) -> bool:
+        """Return true if a verdict for `name` replaces the one in `verdicts`, and if so stamp it.
+
+        Records are written in the order sessions finish, which is not the order their merges
+        recorded verdicts in. Two verdicts recorded in the same run are put in the order of
+        their ordinals (`_MergeState.record`); otherwise the one later in the log wins.
+
+        Args:
+            name (str): A function's name.
+            run (object): The `merge_run` of the record that holds the verdict.
+            order (object): The ordinal of the verdict within its run.
+
+        Returns:
+            bool: True if the verdict replaces the one in `verdicts`.
+        """
+        if not isinstance(run, str) or not isinstance(order, int):
+            stamps.pop(name, None)
+            return True
+        previous = stamps.get(name)
+        if previous is not None and previous[0] == run and previous[1] > order:
+            return False
+        stamps[name] = (run, order)
+        return True
+
     for record in _read_jsonl_records(log_path):
         if "type" in record:  # terminal run-summary record, not a per-function result
             continue
+        run = record.get("merge_run")
         function = record.get("function")
         outcome = record.get("outcome")
         if isinstance(function, str) and isinstance(outcome, str):
@@ -1799,17 +1868,24 @@ def _read_function_verdicts(log_path: Path) -> dict[str, tuple[str, str]]:
             verdict = cbmc.get("verdict") or outcome
             if verdict == VACUOUS_VERDICT and cbmc.get("vacuity"):
                 verdict = vacuous_status(cbmc["vacuity"])
-            verdicts[function] = (outcome, verdict)
+            if is_newer(function, run, cbmc.get("order")):
+                verdicts[function] = (outcome, verdict)
+        # A record written before re-verifications were marked `committed` says only whether its
+        # last merge carried edits; that is the best available guess for such a record.
         kept = bool(_object_field(record, "merge").get("carried"))
         for other, result in _object_field(record, "reverified").items():
             if other not in verdicts or not isinstance(result, dict):
                 continue
+            if not result.get("committed", kept):
+                continue
+            if not is_newer(other, run, result.get("order")):
+                continue
             if result.get("is_function_verified"):
                 verdicts[other] = (str(GroundTruthVerificationResult.VERIFIED), "PASS")
-            elif kept and result.get("verdict") == VACUOUS_VERDICT:
+            elif result.get("verdict") == VACUOUS_VERDICT:
                 verdict = vacuous_status(result.get("vacuity"))
                 verdicts[other] = (str(GroundTruthVerificationResult.VERIFIED), verdict)
-            elif kept and result.get("verdict"):
+            elif result.get("verdict"):
                 verdicts[other] = (
                     str(GroundTruthVerificationResult.UNVERIFIED),
                     str(result["verdict"]),
