@@ -9,6 +9,7 @@ Usage:
 import argparse
 import fcntl
 import json
+import math
 import os
 import re
 import shlex
@@ -19,7 +20,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -87,21 +88,29 @@ _DEFAULT_MAX_CONCURRENT_SUBPROCESSES = 32
 # that has the same temporary directory, which is the whole container under Docker.
 _SLOT_DIR = Path(tempfile.gettempdir()) / f"avocado-cbmc-slots-{os.getuid()}"
 
-# How often a caller waiting for a subprocess slot checks whether one has become free.
+# How often the caller at the head of the queue for a subprocess slot checks whether a slot has
+# become free.
 _SLOT_POLL_SEC = 0.1
 
-# For each cap, a semaphore with that many permits. A thread holds a permit while it waits for a
-# subprocess slot and while it uses the slot, so at most the cap's number of threads of this
-# process poll the slot files; other threads of this process block on the semaphore instead.
-_IN_PROCESS_SLOTS: dict[int, threading.BoundedSemaphore] = {}
-_IN_PROCESS_SLOTS_LOCK = threading.Lock()
+# How often a caller that is waiting for a subprocess slot logs a warning that it is still waiting.
+_SLOT_WAIT_WARNING_SEC = 60
+
+# Seconds of CPU time, beyond its timeout, that a pipeline subprocess may use. See
+# `run_shell_command`.
+_CPU_LIMIT_GRACE_SEC = 10
+
+# The file that lists this process's cgroups, and the directory where the cgroup v2 hierarchy is
+# mounted.
+_PROC_SELF_CGROUP = Path("/proc/self/cgroup")
+_CGROUP_ROOT = Path("/sys/fs/cgroup")
 
 
 @cache
 def max_concurrent_subprocesses() -> int:
     """Return the cap on how many pipeline subprocesses may run at once.
 
-    The cap is the number of CPUs available to this process, further limited by
+    The cap is the number of CPUs available to this process (its CPU affinity, further limited by
+    the CPU quota of its cgroup, as `docker run --cpus` sets), further limited by
     `AVOCADO_MAX_CONCURRENT_CBMC` if that environment variable is set to a non-empty value, and
     otherwise by `_DEFAULT_MAX_CONCURRENT_SUBPROCESSES`. The CPU count is not the only limit
     because each CBMC run can use a lot of memory, so on many-core hosts RAM rather than CPUs is the
@@ -125,7 +134,45 @@ def max_concurrent_subprocesses() -> int:
             env_var = _MAX_CONCURRENT_SUBPROCESSES_ENV_VAR
             message = f"{env_var} must be a positive integer, not {setting!r}"
             raise ValueError(message)
-    return min(os.process_cpu_count() or 1, limit)
+    cpus = os.process_cpu_count() or 1
+    quota = _cgroup_cpu_quota()
+    if quota is not None:
+        cpus = min(cpus, max(1, math.ceil(quota)))
+    return min(cpus, limit)
+
+
+def _cgroup_cpu_quota() -> float | None:
+    """Return the number of CPUs' worth of time that this process's cgroups allow it, or None.
+
+    The result is the smallest quota of this process's cgroup v2 cgroup and its ancestors, as a
+    number of CPUs: the quota "150000 100000" in a `cpu.max` file is 1.5 CPUs. The result is None
+    if none of those cgroups has a quota, or if the cgroup v2 hierarchy is not mounted at
+    `_CGROUP_ROOT`.
+
+    Returns:
+        float | None: The smallest quota, as a number of CPUs, or None if there is none.
+    """
+    try:
+        cgroup_lines = _PROC_SELF_CGROUP.read_text().splitlines()
+    except OSError:
+        return None
+    # The cgroup v2 line has the form "0::/PATH", as in "0::/user.slice/session-3.scope".
+    paths = [line.removeprefix("0::") for line in cgroup_lines if line.startswith("0::")]
+    if not paths:
+        return None
+    quota: float | None = None
+    directory = _CGROUP_ROOT / paths[0].lstrip("/")
+    for cgroup in [directory, *directory.parents]:
+        try:
+            limit, period = (cgroup / "cpu.max").read_text().split()
+            if limit != "max":
+                cpus = int(limit) / int(period)
+                quota = cpus if quota is None else min(quota, cpus)
+        except (OSError, ValueError):
+            pass
+        if cgroup == _CGROUP_ROOT:
+            break
+    return quota
 
 
 # What goto-instrument prints when `--replace-call-with-contract` names a function the compiled
@@ -299,11 +346,21 @@ def run_shell_command(
     Every pipeline subprocess (`goto-cc`, `goto-instrument`, `cbmc`) should be run through this
     function. Then the number of them running at once, across all threads and all processes that
     share `_SLOT_DIR`, never exceeds `max_concurrent_subprocesses()` (or, if those processes
-    disagree about the cap, the largest of their caps). The timeout starts once the subprocess is
-    launched; waiting for a slot does not count against it. On timeout, the command and every
-    process it started are killed. The command inherits the slot's locked file descriptor, so the
-    slot stays held while the command or any descendant that keeps the descriptor is running, even
-    if this process is killed first. So no `cbmc` keeps running without holding a subprocess slot.
+    disagree about the cap, the largest of their caps). A caller that releases a slot and asks for
+    another has no advantage over callers that are already waiting, so a process that runs many
+    commands back to back does not starve other processes. While a caller waits, it logs a warning
+    every `_SLOT_WAIT_WARNING_SEC`
+    seconds. The timeout starts once the subprocess is launched; waiting for a slot does not count
+    against it. On timeout, the command and every process it started are killed.
+
+    The command inherits the slot's locked file descriptor, so the slot stays held while the
+    command or any descendant that keeps the descriptor is running, even if this process is killed
+    first. So no `cbmc` keeps running without holding a subprocess slot. Such a command no longer
+    has this process to enforce its timeout, so each process that the command starts is also
+    limited to `timeout` plus `_CPU_LIMIT_GRACE_SEC` seconds of CPU time; that limit ends a
+    CPU-bound process such as `cbmc`, and with it its hold on the slot. A process that the timeout
+    applies to uses no more CPU time than wall-clock time (pipeline subprocesses are
+    single-threaded), so the timeout ends it before the CPU limit does.
 
     Args:
         command (str): The shell command to run.
@@ -315,8 +372,11 @@ def run_shell_command(
         subprocess.CompletedProcess[str] | None: The finished subprocess, with its captured stdout
             and stderr, or None if it hit the timeout.
     """
+    cpu_limit = math.ceil(timeout) + _CPU_LIMIT_GRACE_SEC
     with _subprocess_slot() as slot_fd:
-        return run_command(command, timeout, cwd=cwd, pass_fds=(slot_fd,))
+        return run_command(
+            f"ulimit -t {cpu_limit}; {command}", timeout, cwd=cwd, pass_fds=(slot_fd,)
+        )
 
 
 @contextmanager
@@ -328,9 +388,16 @@ def _subprocess_slot() -> Generator[int]:
     kernel releases it once every file descriptor for that open file description is closed, so a
     killed process never leaks a slot. The lock's file descriptor is inherited only by a
     subprocess it is passed to explicitly (as `run_shell_command` does); that subprocess and its
-    descendants then keep the slot held until they close the descriptor or exit. Blocks until a
-    slot is free: a thread first waits for a permit from this process's semaphore for the cap,
-    then polls the slot files every `_SLOT_POLL_SEC`.
+    descendants then keep the slot held until they close the descriptor or exit.
+
+    Blocks until a slot is free. A caller first takes a blocking `flock` on the queue file in
+    `_SLOT_DIR`, which makes it the head of the queue, and holds that lock until it has a slot.
+    Only the head polls the slot files (every `_SLOT_POLL_SEC` seconds); every other waiter, in
+    any process, sleeps in the kernel until it becomes the head. A caller that has just released
+    a slot must also take the queue lock to get its next one, so the freed slot goes to the head,
+    which was already waiting. The kernel hands the queue lock to its waiters in no fixed order,
+    but no waiter has an advantage over another. While a caller waits, it logs a warning every
+    `_SLOT_WAIT_WARNING_SEC` seconds.
 
     Yields:
         int: The slot's locked file descriptor, while the slot is held.
@@ -355,25 +422,77 @@ def _subprocess_slot() -> Generator[int]:
         )
         raise PermissionError(message)
     cap = max_concurrent_subprocesses()
-    with _IN_PROCESS_SLOTS_LOCK:
-        in_process_slots = _IN_PROCESS_SLOTS.setdefault(cap, threading.BoundedSemaphore(cap))
-    slot_paths = [_SLOT_DIR / f"slot-{i}" for i in range(cap)]
-    with in_process_slots:
+    queue_fd = os.open(_SLOT_DIR / "queue", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        with _warnings_while_waiting(cap):
+            fcntl.flock(queue_fd, fcntl.LOCK_EX)
+            slot_fd = _take_free_slot(cap)
+    finally:
+        os.close(queue_fd)
+    try:
+        yield slot_fd
+    finally:
+        os.close(slot_fd)
+
+
+def _take_free_slot(cap: int) -> int:
+    """Lock a free one of the given number of slot files, waiting until one is free.
+
+    Polls the slot files every `_SLOT_POLL_SEC` seconds until one of them can be locked.
+
+    Args:
+        cap (int): The number of slot files.
+
+    Returns:
+        int: A file descriptor that holds an exclusive `flock` on a slot file. The caller must
+            close it to release the slot.
+    """
+    slot_fds: list[int] = []
+    taken: int | None = None
+    try:
+        # `extend` keeps the descriptors opened before an `os.open` that fails, so they are closed.
+        slot_fds.extend(
+            os.open(_SLOT_DIR / f"slot-{i}", os.O_RDWR | os.O_CREAT, 0o600) for i in range(cap)
+        )
         while True:
-            for slot_path in slot_paths:
-                fd = os.open(slot_path, os.O_RDWR | os.O_CREAT, 0o600)
-                # The descriptor is closed on every path: when the slot is busy, when `flock`
-                # fails some other way, and when the `with` body finishes.
-                try:
-                    try:
-                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError:
-                        continue
-                    yield fd
-                finally:
-                    os.close(fd)
-                return
+            for slot_fd in slot_fds:
+                with suppress(BlockingIOError):
+                    fcntl.flock(slot_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    taken = slot_fd
+                    return slot_fd
             time.sleep(_SLOT_POLL_SEC)
+    finally:
+        for slot_fd in slot_fds:
+            if slot_fd != taken:
+                os.close(slot_fd)
+
+
+@contextmanager
+def _warnings_while_waiting(cap: int) -> Generator[None]:
+    """Log a warning every `_SLOT_WAIT_WARNING_SEC` seconds while the `with` body runs.
+
+    Args:
+        cap (int): The number of subprocess slots; used for diagnostics.
+
+    Yields:
+        None: While the warnings are being logged.
+    """
+    start = time.monotonic()
+    done = threading.Event()
+
+    def warn() -> None:
+        while not done.wait(_SLOT_WAIT_WARNING_SEC):
+            logger.warning(
+                f"waited {time.monotonic() - start:.0f} seconds so far for one of the {cap} CBMC"
+                f" subprocess slots in {_SLOT_DIR}; other CBMC runs hold them all. To list the"
+                f" processes that have the slot files open, run: fuser -v {_SLOT_DIR}/slot-*"
+            )
+
+    threading.Thread(target=warn, name="slot-wait-warnings", daemon=True).start()
+    try:
+        yield
+    finally:
+        done.set()
 
 
 def main() -> None:
@@ -1210,7 +1329,8 @@ def list_compiled_functions(
 
     Returns:
         set[str] | None: The functions that have a body in the compiled program, or None when
-            the file could not be compiled or listed, in which case nothing is known.
+            the file could not be compiled or listed (as when `goto-cc` rejects it, times out, or
+            cannot be started), in which case nothing is known.
     """
     listing = _list_goto_functions(file_path, include_dirs)
     return None if listing is None else listing[0]
@@ -1287,7 +1407,8 @@ def has_contract(
         include_dirs (list[str] | None): Directories forwarded to `goto-cc` as `-I` flags.
 
     Returns:
-        bool | None: True or False, or None when the file could not be compiled or listed.
+        bool | None: True or False, or None when the file could not be compiled or listed (as
+            when `goto-cc` rejects it, times out, or cannot be started).
     """
     listing = _list_goto_functions(file_path, include_dirs)
     return None if listing is None else function in listing[1]
@@ -1304,7 +1425,8 @@ def _list_goto_functions(
 
     Returns:
         tuple[set[str], set[str]] | None: The functions with a body, and the functions with a
-            contract, in the compiled program; None when it could not be compiled or listed.
+            contract, in the compiled program; None when it could not be compiled or listed (as
+            when `goto-cc` rejects it, times out, or cannot be started).
     """
     # The commands run in a scratch directory, so paths are made absolute first. As in
     # `run_cbmc`, a symlinked source file is not followed.
@@ -1312,17 +1434,21 @@ def _list_goto_functions(
         f"-I {shlex.quote(str(Path(d).resolve()))}" for d in include_dirs or []
     )
     source = shlex.quote(str(resolve_parent(file_path)))
-    with tempfile.TemporaryDirectory(prefix="avocado-compiled-") as scratch_dir:
-        commands = (
-            f"goto-cc -o compiled.goto {include_flags} {source}",
-            "goto-instrument --list-goto-functions compiled.goto",
-        )
-        listing = ""
-        for command in commands:
-            completed = run_shell_command(command, _GOTO_CC_TIMEOUT_SEC, cwd=scratch_dir)
-            if completed is None or completed.returncode != 0:
-                return None
-            listing = completed.stdout
+    try:
+        with tempfile.TemporaryDirectory(prefix="avocado-compiled-") as scratch_dir:
+            commands = (
+                f"goto-cc -o compiled.goto {include_flags} {source}",
+                "goto-instrument --list-goto-functions compiled.goto",
+            )
+            listing = ""
+            for command in commands:
+                completed = run_shell_command(command, _GOTO_CC_TIMEOUT_SEC, cwd=scratch_dir)
+                if completed is None or completed.returncode != 0:
+                    return None
+                listing = completed.stdout
+    except OSError:
+        # A command that cannot be started, like one that fails, leaves the listing unknown.
+        return None
     compiled: set[str] = set()
     contracted: set[str] = set()
     for line in listing.splitlines():
