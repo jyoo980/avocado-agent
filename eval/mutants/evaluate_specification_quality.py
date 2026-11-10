@@ -33,7 +33,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from eval.mutants.compute_clause_redundancy import compute_clause_redundancy_score
 from eval.mutants.generate_mutants_and_compute_score import generate_mutants_and_compute_score
 from eval.mutants.util import get_files_with_extension
-from tools.util import get_functions_with_cprover_annotations
+from tools.util import (
+    AUTO_INCLUDE_HELP,
+    existing_include_dir,
+    get_functions_with_cprover_annotations,
+    get_include_dirs,
+)
 from tools.util.mutation import MutationScore
 
 
@@ -45,15 +50,14 @@ def main() -> None:
     parser.add_argument("path", help="Path to a C file or directory of C files.")
     parser.add_argument(
         "--auto-include",
-        help=(
-            "For each .c file, look for a sibling include/ directory at "
-            "<source>/../include and pass it to CBMC as an include path. "
-            "Fits projects whose headers live next to their src/ tree."
-        ),
+        help=AUTO_INCLUDE_HELP,
         action="store_true",
     )
     parser.add_argument(
-        "--include-dirs", action="append", help="Path(s) to stubs to use in verification."
+        "--include-dirs",
+        action="append",
+        type=existing_include_dir,
+        help="Path(s) to stubs to use in verification.",
     )
     parser.add_argument(
         "--mutation",
@@ -121,8 +125,8 @@ def _process_file(
     Arguments:
         source (Path): The path to the file for evaluation.
         out (IO[str]): The output.
-        auto_include (bool): True iff an `include` dir (i.e., a dir containing headers) should be
-            automatically detected.
+        auto_include (bool): True iff the auto-detected include directory (see
+            `get_include_dirs()`) should be added to CBMC's include search path.
         include_dirs (list[str]): List of directories containing files (e.g., headers) that should
             be included in verification.
         run_mutation (bool): True iff mutation testing should be reported.
@@ -136,11 +140,7 @@ def _process_file(
         logger.warning(f"{source} had no functions with CBMC annotations")
         return
 
-    include_dirs = (
-        [*_autodetect_include_dirs(str(source)), *include_dirs] if auto_include else include_dirs
-    )
-    if include_dirs:
-        logger.debug(f"[auto-include] using {include_dirs}")
+    include_dirs = get_include_dirs(str(source), include_dirs, auto_include=auto_include)
 
     for function in functions_with_cprover_annotations:
         if run_mutation:
@@ -167,23 +167,6 @@ def _process_file(
                 logger.warning(
                     f"No redundancy score calculation reported for: '{source!s}#{function}'"
                 )
-
-
-def _autodetect_include_dirs(source_file: str) -> list[str]:
-    """Return `[<source>/../include]` if that directory exists, else an empty list.
-
-    Many CMake projects keep public headers in `<project>/include/` while sources live in
-    `<project>/src/`. When that layout holds, returning the sibling `include/` directory lets
-    CBMC resolve `#include "foo.h"` without the caller having to configure paths by hand.
-
-    Args:
-        source_file (str): Path to a `.c` file.
-
-    Returns:
-        list[str]: `[<resolved include dir>]` when present, else `[]`.
-    """
-    candidate = Path(source_file).resolve().parent.parent / "include"
-    return [str(candidate)] if candidate.is_dir() else []
 
 
 if __name__ == "__main__":

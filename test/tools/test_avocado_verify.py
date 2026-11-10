@@ -152,6 +152,7 @@ def test_retry_note_leads_the_prompt_and_attempts_rule_is_stated() -> None:
 import json
 import re
 import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -492,6 +493,45 @@ def test_merge_and_verify_rejects_a_merge_that_does_not_compile(tmp_path: Path) 
     assert cbmc.function == "swap"
 
 
+def test_merge_and_verify_writes_through_a_symlinked_canonical_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    target = _stripped_quicksort(tmp_path)
+    link = target.with_name(f"link-{target.name}")
+    try:
+        link.symlink_to(target.name)
+    except OSError as e:
+        pytest.skip(f"cannot create symlinks: {e}")
+    monkeypatch.setattr(avocado_verify, "verify_function", _FakeVerify())
+    session = _fork_session("swap", link)
+    try:
+        _write_contract(session.file, "swap", _CONTRACTS["swap"])
+        report, _cbmc, _reverified = _merge_and_verify(session, link, include_dirs=[])
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    assert report.merged, report
+    # The link is kept, and its target has the merged edits.
+    assert link.is_symlink() and link.readlink() == Path(target.name)
+    assert _CONTRACTS["swap"] in target.read_bytes()
+
+
+def test_merge_and_verify_keeps_the_permission_bits_of_the_canonical_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    canonical.chmod(0o640)
+    monkeypatch.setattr(avocado_verify, "verify_function", _FakeVerify())
+    session = _fork_session("swap", canonical)
+    try:
+        _write_contract(session.file, "swap", _CONTRACTS["swap"])
+        report, _cbmc, _reverified = _merge_and_verify(session, canonical, include_dirs=[])
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    assert report.merged, report
+    assert _CONTRACTS["swap"] in canonical.read_bytes()
+    assert stat.S_IMODE(canonical.stat().st_mode) == 0o640
+
+
 class _FakeVerify:
     """A `verify_function` stand-in that fails the functions named in `failing` and records calls."""
 
@@ -557,6 +597,50 @@ def test_merge_and_verify_carries_a_callee_fix_and_reverifies_its_verified_calle
     assert state.active == set() and state.verified == {"swap", "quickSort", "partition"}
 
 
+def test_merge_and_verify_rejects_a_merge_whose_file_cannot_be_written(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    original = canonical.read_bytes()
+    monkeypatch.setattr(avocado_verify, "verify_function", _FakeVerify())
+    real_replace = Path.replace
+
+    def failing_replace(self: Path, target):
+        if self.name.endswith(".avocado-merge"):
+            raise OSError("disk full")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", failing_replace)
+    state = avocado_verify._MergeState(active={"partition"}, verified={"swap", "quickSort"})
+    recorded: list[str] = []
+    real_record = state.record
+
+    def spying_record(function: str, cbmc: RunCbmcResult) -> None:
+        recorded.append(function)
+        real_record(function, cbmc)
+
+    monkeypatch.setattr(state, "record", spying_record)
+    session = _partition_session_that_fixes_swap(canonical)
+    try:
+        report, cbmc, reverified = _merge_and_verify(
+            session,
+            canonical,
+            include_dirs=[],
+            call_graph=_call_graph_where_quicksort_also_calls_swap(),
+            state=state,
+        )
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    assert not report.merged and "could not write" in report.reason, report
+    assert canonical.read_bytes() == original
+    assert not list(tmp_path.rglob("*.avocado-merge"))
+    # The carried edits' re-verified verdicts are on a file that was not written, so they are
+    # neither returned nor recorded; only the merging function's own verdict is.
+    assert reverified == {}
+    assert recorded == ["partition"]
+    assert cbmc.function == "partition"
+
+
 def test_merge_and_verify_reverts_carried_edits_that_break_a_verified_caller(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -585,7 +669,8 @@ def test_merge_and_verify_reverts_carried_edits_that_break_a_verified_caller(
     assert _CONTRACTS["partition"] in merged
     assert _CONTRACTS["swap"] not in merged
     assert function_line(merged, "swap") is not None
-    assert not reverified["quickSort"].is_function_verified
+    # The verdicts were on the file with the reverted edits, which was never written.
+    assert reverified == {}
     # Nothing that was verified before is lost.
     assert {"swap", "quickSort"} <= state.verified
     assert original.count(b"__CPROVER_") == 0 and merged.count(b"__CPROVER_ensures") == 0
@@ -1011,11 +1096,10 @@ def test_the_tools_logs_are_mirrored_beside_the_canonical_file(tmp_path: Path) -
 def test_run_claude_names_the_session_so_a_timed_out_one_can_be_found(monkeypatch) -> None:
     commands: list[list[str]] = []
 
-    def times_out(command, **kwargs):
+    def times_out(command, timeout):
         commands.append(command)
-        raise avocado_verify.TimeoutExpired(command, kwargs["timeout"])
 
-    monkeypatch.setattr(avocado_verify.subprocess, "run", times_out)
+    monkeypatch.setattr(avocado_verify, "run_command", times_out)
     run = avocado_verify._run_claude(["claude", "--print", "prompt"], 7)
     assert run.timed_out and run.transcript_path is None
     assert commands[0][:3] == ["claude", "--print", "prompt"]
