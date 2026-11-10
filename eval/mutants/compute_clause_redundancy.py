@@ -42,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from eval.mutants.mutate_specification import ClauseMutant, get_clause_mutants
 from eval.mutants.util import (
+    CLAUSE_DROP_MARKER,
     check_expected_cbmc_return_code,
     create_mutant_file,
     get_bounded_mutant_file_name,
@@ -504,7 +505,7 @@ def _get_path_to_source_with_removed_clause(
     return path_to_original_source.with_name(
         get_bounded_mutant_file_name(
             get_mutant_file_stem(path_to_original_source),
-            "clause_drop",
+            CLAUSE_DROP_MARKER,
             function,
             index,
             path_to_original_source.suffix,
