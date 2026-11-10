@@ -1272,10 +1272,12 @@ def _merge_and_verify(
                 else:
                     # If the canonical file is a symlink, its target is replaced rather than the
                     # link itself, so that the link keeps pointing to the file with the merged
-                    # edits. The target keeps its permission bits.
+                    # edits. The target keeps its owner, group and permission bits; the bits are
+                    # copied after the owner, because changing the owner can clear some of them.
                     staged = destination.with_name(f"{destination.name}.avocado-merge")
                     try:
                         staged.write_bytes(merged)
+                        _copy_owner(destination, staged)
                         shutil.copymode(destination, staged)
                         staged.replace(destination)
                     except OSError as e:
@@ -1339,6 +1341,27 @@ def _merge_and_verify(
     finally:
         shutil.rmtree(scratch_root, ignore_errors=True)
     return report, cbmc, reverified
+
+
+def _copy_owner(source: Path, target: Path) -> None:
+    """Give `target` the owner and group of `source`, if this process is permitted to.
+
+    A merge replaces the canonical file with a new file. Without this, the new file would be owned
+    by whoever runs the harness: root, in a container, against a file that the host owns. A
+    process that is not permitted to change the owner leaves it as it is, and logs a warning.
+    An `OSError` from reading the owner of `source` propagates.
+
+    Args:
+        source (Path): A file whose owner and group to copy.
+        target (Path): The file to give them to.
+    """
+    status = source.stat()
+    if (status.st_uid, status.st_gid) == (os.getuid(), os.getgid()):
+        return
+    try:
+        os.chown(target, status.st_uid, status.st_gid)
+    except OSError as error:
+        logger.warning(f"cannot give {target} the owner and group of {source}: {error}")
 
 
 def _report_stray_edits(session: _Session, canonical_file: Path) -> list[str]:

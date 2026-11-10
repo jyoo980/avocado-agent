@@ -532,6 +532,30 @@ def test_merge_and_verify_keeps_the_permission_bits_of_the_canonical_file(
     assert stat.S_IMODE(canonical.stat().st_mode) == 0o640
 
 
+def test_merge_and_verify_gives_the_merged_file_the_owner_of_the_canonical_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = _stripped_quicksort(tmp_path)
+    owner = canonical.stat()
+    chowned: list[tuple[str, int, int]] = []
+    # Run as another user, as a harness that runs as root in a container does.
+    monkeypatch.setattr(avocado_verify.os, "getuid", lambda: owner.st_uid + 1)
+    monkeypatch.setattr(
+        avocado_verify.os,
+        "chown",
+        lambda path, uid, gid: chowned.append((Path(path).name, uid, gid)),
+    )
+    monkeypatch.setattr(avocado_verify, "verify_function", _FakeVerify())
+    session = _fork_session("swap", canonical)
+    try:
+        _write_contract(session.file, "swap", _CONTRACTS["swap"])
+        report, _cbmc, _reverified = _merge_and_verify(session, canonical, include_dirs=[])
+    finally:
+        shutil.rmtree(session.directory, ignore_errors=True)
+    assert report.merged, report
+    assert chowned == [(f"{canonical.name}.avocado-merge", owner.st_uid, owner.st_gid)]
+
+
 class _FakeVerify:
     """A `verify_function` stand-in that fails the functions named in `failing` and records calls."""
 
