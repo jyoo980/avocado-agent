@@ -27,6 +27,22 @@ from tools.util import get_call_graph
 # partially written file.
 _CALL_GRAPH_LOCK = threading.Lock()
 
+# What replaces a source file's suffix in the name of its cached call graph: the call graph of
+# `foo.c` is cached in `foo-callgraph.json`.
+CALL_GRAPH_FILE_SUFFIX = "-callgraph.json"
+
+
+def get_call_graph_path(source_path: Path) -> Path:
+    """Return the path at which `construct_call_graph` caches the call graph of a C file.
+
+    Args:
+        source_path (Path): The path to a C file, such as `/src/foo.c`.
+
+    Returns:
+        Path: The path of the cached call graph, such as `/src/foo-callgraph.json`.
+    """
+    return source_path.with_name(f"{source_path.stem}{CALL_GRAPH_FILE_SUFFIX}")
+
 
 def main() -> None:
     """Construct a call graph comprising functions in a given file."""
@@ -53,7 +69,7 @@ def construct_call_graph(
         str: The path to the file to which the call graph is written.
     """
     source_path = Path(path_to_file_to_verify)
-    path_to_call_graph = source_path.with_name(f"{source_path.stem}-callgraph.json")
+    path_to_call_graph = get_call_graph_path(source_path)
     with _CALL_GRAPH_LOCK:
         if path_to_call_graph.exists():
             return str(path_to_call_graph)
