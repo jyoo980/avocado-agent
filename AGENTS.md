@@ -177,9 +177,11 @@ session.
 3. **The function you were asked to verify is intact.** It must still be defined, as many times
    as it was when your session started (once, unless it is defined per preprocessor branch).
    *Why:* a contract can only be kept on a function that is still there to carry it.
-4. **New names carry the reserved prefix.** Every new top-level item must introduce a name that
-   starts with `AVOCADO_SPEC_` (macros) or `avocado_spec_` (functions, variables, types) and is not
-   already defined in the file. Do not add definitions of unprefixed names, `#undef`, `#pragma` or
+4. **New names carry the reserved prefix.** Every name that a new top-level item introduces must
+   start with `AVOCADO_SPEC_` (macros) or `avocado_spec_` (functions, variables, types) and must
+   not already be defined in the file. That includes each declarator, `struct`/`union`/`enum` tag
+   and enumerator, in every preprocessor branch. Do not define a new function twice unless the
+   definitions are in different branches of one conditional. Do not add definitions of unprefixed names, `#undef`, `#pragma` or
    `#include`. A new `#if`/`#ifdef`
    block is allowed only if everything inside it is new and prefixed.
    *Why:* a prefixed addition cannot redefine or switch off existing code. An unprefixed one can:

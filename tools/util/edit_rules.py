@@ -11,8 +11,11 @@ A session's job is to add specifications. `check_edits` compares the session's f
    body.
 3. The session's function is intact: it is defined as many times as it was when the session
    started (once, unless it is defined per preprocessor branch).
-4. New names carry the reserved prefix and do not already exist in the file. No new `#undef`,
-   `#pragma` or `#include`, and a new `#if` block may enclose only new items.
+4. New names carry the reserved prefix and do not already exist in the file. That holds for
+   every name a new item introduces, in every branch of its conditionals: each declarator, tag
+   and enumerator of a declaration, and each header of a definition. No new function is defined
+   twice where both definitions are compiled together. No new `#undef`, `#pragma` or
+   `#include`, and a new `#if` block may enclose only new items.
 5. No `__CPROVER_assume` in new text.
 8. No literally false precondition.
 
@@ -45,6 +48,7 @@ from bisect import bisect_left, bisect_right
 from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from itertools import starmap
 from operator import itemgetter
 from typing import TYPE_CHECKING
 
@@ -232,6 +236,33 @@ class _Token:
         return self.text.startswith("#")
 
 
+def _directive_keyword(text: str) -> str:
+    """Return the keyword of the given directive, such as `define` for `#define N 8`.
+
+    Args:
+        text (str): A directive, normalized.
+
+    Returns:
+        str: The keyword, or "" when there is none.
+    """
+    match = _DIRECTIVE_HEAD.match(text)
+    return match.group(1) if match else ""
+
+
+@dataclass(frozen=True)
+class _Name:
+    """A name that an item introduces, and where the item introduces it.
+
+    Attributes:
+        text (str): The name, such as `avocado_spec_max`.
+        index (int): The index, among the item's tokens, of the token that is the name. For a
+            name in a function header, it is that header's token.
+    """
+
+    text: str
+    index: int
+
+
 @dataclass(frozen=True)
 class _Item:
     """One top-level construct of a file: a directive, a function definition or a declaration.
@@ -243,9 +274,11 @@ class _Item:
         kind (str): `directive`, `function`, `declaration`, `linkage` for the opening or closing
             of an `extern "C" { ... }` block, or `incomplete` for trailing tokens that end the
             file without a terminator.
-        name (str | None): The name the item introduces, when it can be told: the function a
-            definition defines, the name a declaration declares, or the macro that a `#define`
-            or `#undef` names. None for every other directive.
+        name (str | None): The item's main name, when it can be told: the function that the
+            first header of a definition defines, the name that the first declarator of a
+            declaration declares (or the tag of a `struct`, `union` or `enum` declared with no
+            declarator), or the macro that a `#define` or `#undef` names. None for every other
+            directive.
         start (int): The byte offset the item starts at in its source.
         end (int): The byte offset just past the item, contract clauses included.
         body_offsets (tuple[int, ...]): For a function, the offset of each `{` that opens its
@@ -254,6 +287,16 @@ class _Item:
         body_names (tuple[str | None, ...]): For a function, the name that the header before
             each of `body_offsets` defines, in the same order. Branches of a conditional can give
             one body different names. Empty for every other kind.
+        names (tuple[_Name, ...]): Every name the item introduces, each once, in source order.
+            For a function, the name that each header defines, such as `f` and `g` for
+            `#ifdef X` / `int f(int a) {` / `#else` / `int g(int a) {` / `#endif`. For a
+            declaration, the name of each declarator, and each tag and enumerator that it
+            defines, in every combination of the branches of its conditionals: `int a, b;`
+            introduces `a` and `b`, and `enum e { RED };` introduces `e` and `RED`. For a
+            `#define` or `#undef`, the macro.
+        unnamed (bool): True if some header or declarator of the item, in some combination of
+            the branches of its conditionals, introduces a name that cannot be told, so that
+            `names` can be incomplete.
     """
 
     tokens: tuple[str, ...]
@@ -264,6 +307,8 @@ class _Item:
     end: int
     body_offsets: tuple[int, ...] = ()
     body_names: tuple[str | None, ...] = ()
+    names: tuple[_Name, ...] = ()
+    unnamed: bool = False
 
     @property
     def line(self) -> int:
@@ -271,40 +316,56 @@ class _Item:
         return self.lines[0]
 
     @property
-    def names(self) -> tuple[str, ...]:
-        """The names the item introduces.
-
-        For a function, they are every name that one of its headers defines, such as `f` and
-        `g` for `#ifdef X` / `int f(int a) {` / `#else` / `int g(int a) {` / `#endif`. For every
-        other item, they are `name` when it is not None.
-        """
-        if self.kind == "function":
-            return tuple(dict.fromkeys(name for name in self.body_names if name is not None))
-        return (self.name,) if self.name is not None else ()
-
-    @property
     def directive(self) -> str:
         """The directive's keyword (`define`, `if`, ...), or "" for other items."""
-        if self.kind != "directive":
-            return ""
-        match = _DIRECTIVE_HEAD.match(self.tokens[0])
-        return match.group(1) if match else ""
+        return _directive_keyword(self.tokens[0]) if self.kind == "directive" else ""
 
-    def describe(self) -> str:
-        """Return a short description of the item for a message.
+    def introduces(self, name: str) -> bool:
+        """Return True if the item introduces the given name.
+
+        Args:
+            name (str): A name, such as `swap`.
+
+        Returns:
+            bool: True if `name` is among `names`.
+        """
+        return any(introduced.text == name for introduced in self.names)
+
+    def describe(self, name: str | None = None) -> str:
+        """Return a short description of the item, or of one name it introduces, for a message.
+
+        Args:
+            name (str | None): One of `names`, or None for the item's main name.
 
         Returns:
             str: For example `function swap`, `macro CAP` or `the declaration of table`.
         """
-        if self.kind == "function" and self.name:
-            return f"function {self.name}"
+        name = name or self.name
+        if self.kind == "function" and name:
+            return f"function {name}"
         if self.kind == "directive":
-            if self.directive == "define" and self.name:
-                return f"macro {self.name}"
+            if self.directive == "define" and name:
+                return f"macro {name}"
             return f"`{_quote(self.tokens)}`"
-        if self.name:
-            return f"the declaration of {self.name}"
+        if name:
+            return f"the declaration of {name}"
         return f"`{_quote(self.tokens)}`"
+
+
+@dataclass(frozen=True)
+class _Part:
+    """A part of an item that holds the contract of at most one header, which a merge takes whole.
+
+    Attributes:
+        start (int): The byte offset the part starts at in its source.
+        end (int): The byte offset just past the part.
+        names (tuple[str, ...]): The names that the part's header introduces, such as `("swap",)`;
+            empty for the body of a function.
+    """
+
+    start: int
+    end: int
+    names: tuple[str, ...]
 
 
 def check_edits(base: bytes, snapshot: bytes, function: str) -> list[Violation]:
@@ -349,6 +410,8 @@ def merge_copy(
       such edit is kept), the item is frozen (a live session is working on it), or the
       item's contract also changed in the canonical file since the fork. In those cases the
       edit is left out and named in `MergeReport.dropped`; the rest of the copy still merges.
+      A definition whose header differs between preprocessor branches is decided header by
+      header, because each header holds the contract of the function it names.
     - Items the session added are inserted after the original item they followed in the copy,
       after the items other sessions added right after that original item, and after the
       original comments that preceded them in the copy. A new conditional block, from
@@ -391,7 +454,9 @@ def merge_copy(
         return canonical, MergeReport(
             False, f"the session copy breaks {len(rendered)} edit rule(s)", violations=rendered
         )
-    if not any(item.kind == "function" and item.name == function for item in mine.snapshot.items):
+    if not any(
+        item.kind == "function" and item.introduces(function) for item in mine.snapshot.items
+    ):
         return canonical, MergeReport(
             False,
             f"{function} could not be found as a function definition in the session copy, so its "
@@ -419,38 +484,41 @@ def merge_copy(
         current = theirs_items[theirs_index[base_index]]
         if edited.kind == "directive":
             continue
-        base_text = _code_text(fork_base[original.start : original.end])
-        my_text = _code_text(snapshot[edited.start : edited.end])
-        their_text = _code_text(canonical[current.start : current.end])
-        if (
-            their_text != base_text
-            and current.kind == "function"
-            and current.name
-            and current.name not in changed_since_fork
+        # Each header of a definition whose header differs between preprocessor branches holds
+        # the contract of its own function, which can be another session's.
+        for base_part, my_part, their_part in zip(
+            _parts(original), _parts(edited), _parts(current), strict=True
         ):
-            changed_since_fork.append(current.name)
-        # The session's own function takes its contract from the copy even when the copy left
-        # that contract as it was at the fork.
-        if my_text == their_text or (my_text == base_text and edited.name != function):
-            continue
-        if edited.name is None:
-            return canonical, MergeReport(
-                False,
-                f"the copy changes the contract of an item at line {edited.line} that the merge "
-                f"cannot name, so it cannot tell whether that is the contract of {function}; "
-                "nothing was merged",
-                dropped=dropped,
-            )
-        if edited.name != function:
-            reason = _reason_not_carried(
-                edited.name, frozen_functions, their_changed=their_text != base_text
-            )
-            if reason is not None:
-                dropped.append(f"function:{edited.name}{reason}")
+            base_text = _code_text(fork_base[base_part.start : base_part.end])
+            my_text = _code_text(snapshot[my_part.start : my_part.end])
+            their_text = _code_text(canonical[their_part.start : their_part.end])
+            if their_text != base_text and current.kind == "function":
+                changed_since_fork += [
+                    name for name in their_part.names if name not in changed_since_fork
+                ]
+            # The session's own function takes its contract from the copy even when the copy
+            # left that contract as it was at the fork.
+            is_own = function in my_part.names
+            if my_text == their_text or (my_text == base_text and not is_own):
                 continue
-            if edited.name not in carried:
-                carried.append(edited.name)
-        edits.append((current.start, current.end, snapshot[edited.start : edited.end]))
+            if not my_part.names:
+                line = snapshot.count(b"\n", 0, my_part.start) + 1
+                return canonical, MergeReport(
+                    False,
+                    f"the copy changes the contract of an item at line {line} that the merge "
+                    f"cannot name, so it cannot tell whether that is the contract of {function}; "
+                    "nothing was merged",
+                    dropped=dropped,
+                )
+            if not is_own:
+                reason = _reason_not_carried(
+                    my_part.names, frozen_functions, their_changed=their_text != base_text
+                )
+                if reason is not None:
+                    dropped += [f"function:{name}{reason}" for name in my_part.names]
+                    continue
+                carried += [name for name in my_part.names if name not in carried]
+            edits.append((their_part.start, their_part.end, snapshot[my_part.start : my_part.end]))
 
     their_new = set(theirs.new_indices)
     their_units = [unit for run in _runs(theirs.new_indices) for unit in _units(theirs_items, run)]
@@ -458,7 +526,7 @@ def merge_copy(
     their_by_name: dict[str, list[_Item]] = {}
     for index in sorted(their_new):
         for name in theirs_items[index].names:
-            their_by_name.setdefault(name, []).append(theirs_items[index])
+            their_by_name.setdefault(name.text, []).append(theirs_items[index])
     snapshot_to_base = {snapshot_index: base_index for base_index, snapshot_index in mine.pairs}
     transplanted: list[str] = []
     skipped: list[str] = []
@@ -506,16 +574,17 @@ def merge_copy(
             else:
                 clash = next(
                     (
-                        item
+                        (item, name.text)
                         for item in items
-                        if any(_clashes(item, their_by_name.get(name)) for name in item.names)
+                        for name in item.names
+                        if _clashes(item, their_by_name.get(name.text))
                     ),
                     None,
                 )
                 if clash is not None:
                     return canonical, MergeReport(
                         False,
-                        f"{_render_new_item(clash)} is already defined differently in the "
+                        f"{_render_new_item(*clash)} is already defined differently in the "
                         "canonical file",
                         dropped=dropped,
                     )
@@ -572,10 +641,12 @@ def functions_with_changed_contracts(before: bytes, after: bytes) -> list[str]:
     for before_index, after_index in comparison.pairs:
         old = comparison.base.items[before_index]
         new = comparison.snapshot.items[after_index]
-        if old.kind != "function" or not old.name or old.name in changed:
+        if old.kind != "function":
             continue
-        if _code_text(before[old.start : old.end]) != _code_text(after[new.start : new.end]):
-            changed.append(old.name)
+        for old_part, new_part in zip(_parts(old), _parts(new), strict=True):
+            old_text = _code_text(before[old_part.start : old_part.end])
+            if old_text != _code_text(after[new_part.start : new_part.end]):
+                changed += [name for name in old_part.names if name not in changed]
     return changed
 
 
@@ -637,24 +708,25 @@ def _definitions(source: bytes, function: str) -> list[tuple[int, int]]:
 
 
 def _reason_not_carried(
-    name: str, frozen_functions: Collection[str] | None, *, their_changed: bool
+    names: tuple[str, ...], frozen_functions: Collection[str] | None, *, their_changed: bool
 ) -> str | None:
     """Return why a contract edit to another item is left out of a merge, or None to keep it.
 
     Args:
-        name (str): The item's name.
+        names (tuple[str, ...]): The names of the functions that the edited contract belongs to,
+            such as `("clamp",)`.
         frozen_functions (Collection[str] | None): Functions the session may not change; None
             means it may change no other function.
-        their_changed (bool): True iff the item's contract changed in the canonical file since
-            the fork.
+        their_changed (bool): True iff the contract changed in the canonical file since the
+            fork.
 
     Returns:
-        str | None: A parenthesized reason to append to the item's label ("" when the caller
-            simply allows no such edit), or None when the edit is kept.
+        str | None: A parenthesized reason to append to the label of each of `names` ("" when
+            the caller simply allows no such edit), or None when the edit is kept.
     """
     if frozen_functions is None:
         return ""
-    if name in frozen_functions:
+    if any(name in frozen_functions for name in names):
         return " (a live session is working on it)"
     if their_changed:
         return " (changed in the canonical file since the fork)"
@@ -902,9 +974,30 @@ def function_line(source: bytes, function: str) -> int | None:
         int | None: The line of its first definition, or None when it is not found.
     """
     for item in _split_items(_tokenize(source)[0]):
-        if item.kind == "function" and item.name == function:
+        if item.kind == "function" and item.introduces(function):
             return item.line
     return None
+
+
+def _parts(item: _Item) -> list[_Part]:
+    """Return the parts of the given item that a merge takes whole, each from one version.
+
+    The whole item is one part, unless it is a function whose header differs between
+    preprocessor branches. Then each header is a part that ends at the brace that opens its
+    body, and the last part, from the last such brace to the end, is code only.
+
+    Args:
+        item (_Item): An item.
+
+    Returns:
+        list[_Part]: The parts, in order; items with the same tokens have the same number.
+    """
+    if len(item.body_offsets) < 2:
+        return [_Part(item.start, item.end, tuple(name.text for name in item.names))]
+    starts = (item.start, *item.body_offsets)
+    ends = (*item.body_offsets, item.end)
+    names = [(name,) if name is not None else () for name in item.body_names] + [()]
+    return list(starmap(_Part, zip(starts, ends, names, strict=True)))
 
 
 @dataclass(frozen=True)
@@ -1041,11 +1134,12 @@ def _comments(text: bytes, start: int = 0, end: int | None = None) -> list[re.Ma
     return [match for match in matches if not match.group("literal")]
 
 
-def _render_new_item(item: _Item) -> str:
-    """Return a short `kind:name` form of an added item for the run log.
+def _render_new_item(item: _Item, name: str | None = None) -> str:
+    """Return a short `kind:name` form of an added item or of one of its names, for the run log.
 
     Args:
         item (_Item): An item the session added.
+        name (str | None): One of the item's `names`, or None for its main name.
 
     Returns:
         str: For example `function:avocado_spec_ok` or `macro:AVOCADO_SPEC_MAX`.
@@ -1054,7 +1148,7 @@ def _render_new_item(item: _Item) -> str:
         category = "macro" if item.directive == "define" else item.directive
     else:
         category = item.kind
-    return f"{category}:{item.name or _quote(item.tokens)}"
+    return f"{category}:{name or item.name or _quote(item.tokens)}"
 
 
 def stray_file_violations(stray_files: list[str]) -> list[Violation]:
@@ -1476,10 +1570,13 @@ def _make_item(
     """
     texts = tuple(token.text for token in tokens)
     body_names: tuple[str | None, ...] = ()
+    names: list[_Name] = []
+    unnamed = False
     if kind == "directive":
         match = _DIRECTIVE_HEAD.match(texts[0])
         # `#ifdef X` tests X and `#if defined(X)` would give `defined`; neither introduces a name.
         name = match.group(2) or None if match and match.group(1) in _NAMING_DIRECTIVES else None
+        names = [_Name(name, 0)] if name else []
     elif kind == "function":
         # The parameter list is the last parenthesized group before the body, once attributes
         # and trailing macro calls are removed; in a K&R definition, it is the identifier list
@@ -1488,21 +1585,47 @@ def _make_item(
         # header, which ends just before it: with `#ifdef X` / `int f(...) {` / `#else` /
         # `int g(...) {` / `#endif`, the first brace opens `f` and the second `g`.
         if header_end is not None:
-            name = _name_before_last_group(_without_attributes(list(texts[: header_end + 1])))
-            body_names = (name,) * len(body_offsets)
+            header_ends = [header_end + 1] * len(body_offsets)
         else:
-            body_indexes = [
+            header_ends = [
                 index for index, token in enumerate(tokens) if token.offset in body_offsets
             ]
-            body_names = tuple(
-                _name_before_last_group(_without_attributes(list(texts[:index])))
-                for index in body_indexes
-            )
-            name = body_names[0]
+        body_names = tuple(
+            _name_before_last_group(_without_attributes(list(texts[:index])))
+            for index in header_ends
+        )
+        name = body_names[0]
+        names = [
+            _Name(body_name, _last_index(texts, body_name, index))
+            for body_name, index in zip(body_names, header_ends, strict=True)
+            if body_name is not None
+        ]
+        unnamed = None in body_names
     elif kind == "declaration":
-        name = _declared_name(texts)
+        # A conditional inside the declaration can give it different names in different
+        # branches, as in `int` / `#ifdef X` / `h` / `#else` / `avocado_spec_h` / `#endif` /
+        # `(int a);`, so the names of every combination of branches count.
+        variants = _branch_variants(texts[:-1])
+        unnamed = variants is None
+        if variants is None:
+            variants = [
+                [index for index, text in enumerate(texts[:-1]) if not text.startswith("#")]
+            ]
+        name = None
+        for number, variant in enumerate(variants):
+            variant_texts = [texts[index] for index in variant]
+            declarators = _declarator_names(variant_texts)
+            if number == 0 and declarators:
+                name = declarators[0]
+            unnamed = unnamed or None in declarators
+            for text in _aggregate_names(variant_texts) + declarators:
+                if text is not None:
+                    names.append(_Name(text, next(i for i in variant if texts[i] == text)))
     else:
         name = None
+    unique = {}
+    for introduced in sorted(names, key=lambda introduced: introduced.index):
+        unique.setdefault(introduced.text, introduced)
     return _Item(
         tokens=texts,
         lines=tuple(token.line for token in tokens),
@@ -1512,7 +1635,23 @@ def _make_item(
         end=tokens[-1].end,
         body_offsets=body_offsets,
         body_names=body_names,
+        names=tuple(unique.values()),
+        unnamed=unnamed,
     )
+
+
+def _last_index(texts: Sequence[str], text: str, end: int) -> int:
+    """Return the index of the last occurrence of the given token before an index.
+
+    Args:
+        texts (Sequence[str]): Tokens.
+        text (str): A token that occurs among `texts[:end]`.
+        end (int): The index to search before.
+
+    Returns:
+        int: The largest index less than `end` at which `texts` holds `text`.
+    """
+    return next(index for index in range(end - 1, -1, -1) if texts[index] == text)
 
 
 def _name_before_last_group(texts: Sequence[str]) -> str | None:
@@ -1558,51 +1697,197 @@ def _name_before_last_group(texts: Sequence[str]) -> str | None:
     return candidate if _IDENTIFIER.match(candidate) else None
 
 
-def _declared_name(texts: tuple[str, ...]) -> str | None:
-    """Return the name a file-scope declaration introduces, when it can be told.
+# The most combinations of the branches of its conditionals that a declaration's names are
+# computed for; a declaration with more is treated as one whose names cannot all be told.
+_MAX_BRANCH_COMBINATIONS = 64
 
-    Handles the shapes agents write for helpers: a tagged `struct`/`union`/`enum` definition, a
-    `typedef`, a function prototype, and a variable with or without an initializer.
+
+def _branch_variants(texts: Sequence[str]) -> list[list[int]] | None:
+    """Return the token sequences that the preprocessor can make of an item's tokens.
+
+    There is one sequence per combination of a branch of each conditional among `texts`; a
+    conditional without `#else` can also contribute none of its branches. Every branch is taken
+    to be live, even the first branch of an `#if 0`.
 
     Args:
-        texts (tuple[str, ...]): The declaration's tokens, ending with `;`.
+        texts (Sequence[str]): An item's tokens, directives included.
 
     Returns:
-        str | None: The name, or None when the shape is not recognised.
+        list[list[int]] | None: Each sequence, as the indices into `texts` of its tokens, which
+            are not directives; or None when the conditionals among `texts` are not balanced or
+            have more than `_MAX_BRANCH_COMBINATIONS` combinations.
     """
-    body = _without_attributes([text for text in texts[:-1] if not text.startswith("#")])
+    current: list[list[int]] = [[]]
+    # For each enclosing conditional: the sequences before it, the sequences of its branches
+    # that have ended, and True if one of those branches is an `#else`.
+    enclosing: list[tuple[list[list[int]], list[list[int]], bool]] = []
+    for index, text in enumerate(texts):
+        if not text.startswith("#"):
+            for sequence in current:
+                sequence.append(index)
+            continue
+        keyword = _directive_keyword(text)
+        if keyword in _CONDITIONAL_OPENERS:
+            enclosing.append((current, [], False))
+            current = [[]]
+        elif keyword in _CONDITIONAL_BRANCHES:
+            if not enclosing:
+                return None
+            before, ended, has_else = enclosing[-1]
+            enclosing[-1] = (before, ended + current, has_else or keyword == "else")
+            current = [[]]
+        elif keyword == "endif":
+            if not enclosing:
+                return None
+            before, ended, has_else = enclosing.pop()
+            branches = dict.fromkeys(tuple(sequence) for sequence in ended + current)
+            if not has_else:
+                branches[()] = None
+            if len(before) * len(branches) > _MAX_BRANCH_COMBINATIONS:
+                return None
+            current = [sequence + list(branch) for sequence in before for branch in branches]
+    return None if enclosing else current
+
+
+def _declarator_names(texts: list[str]) -> list[str | None]:
+    """Return the names that the declarators of a file-scope declaration declare.
+
+    Handles the shapes agents write for helpers: a tagged `struct`/`union`/`enum` definition, a
+    `typedef`, a function prototype, and variables with or without initializers.
+
+    Args:
+        texts (list[str]): A declaration's tokens, without directives and without its final `;`.
+
+    Returns:
+        list[str | None]: One entry per declarator, in order: its name, or None when the shape is
+            not recognised. A `struct`, `union` or `enum` declared with no declarator, as in
+            `struct S { int a; };`, gives its tag, or nothing when it has none.
+    """
+    body = _without_attributes(texts)
     if not body:
-        return None
+        return [None]
     top_level = _without_brace_groups(body)
     # A tag, possibly after attribute macros, as in `struct ALIGNED(8) S { int a; };`.
     if top_level and top_level[0] in _AGGREGATE_KEYWORDS and _is_aggregate_head(top_level[1:]):
         tag = top_level[-1]
-        return tag if len(top_level) > 1 and _IDENTIFIER.match(tag) else None
-    if "=" in top_level:
-        top_level = top_level[: top_level.index("=")]
+        return [tag] if len(top_level) > 1 and _IDENTIFIER.match(tag) else []
+    typedef = body[0] == "typedef"
+    return [
+        _declarator_name(declarator, typedef=typedef)
+        for declarator in _split_declarators(top_level)
+    ]
+
+
+def _split_declarators(texts: list[str]) -> list[list[str]]:
+    """Return the tokens of a declaration that has no brace groups, split at its declarators.
+
+    Args:
+        texts (list[str]): A declaration's tokens, without brace groups.
+
+    Returns:
+        list[list[str]]: The tokens between the commas that are outside every parenthesized
+            and bracketed group, such as `int a [ 2 ]` and `* b` for `int a[2], *b`.
+    """
+    declarators: list[list[str]] = [[]]
+    depth = 0
+    for text in texts:
+        if depth == 0 and text == ",":
+            declarators.append([])
+            continue
+        depth += (text in ("(", "[")) - (text in (")", "]"))
+        declarators[-1].append(text)
+    return declarators
+
+
+def _declarator_name(texts: list[str], *, typedef: bool) -> str | None:
+    """Return the name that one declarator of a file-scope declaration declares.
+
+    Args:
+        texts (list[str]): The declarator's tokens, such as `* b = 0`; for the first declarator,
+            preceded by the declaration's specifiers, as in `int a [ 2 ]`.
+        typedef (bool): True if the declaration is a `typedef`.
+
+    Returns:
+        str | None: The name, or None when the shape is not recognised.
+    """
+    if "=" in texts:
+        texts = texts[: texts.index("=")]
     # A pointer declarator `( * name )` outside every parameter list, as in `int (*fp)(int);`.
     parentheses = 0
-    for index, text in enumerate(top_level):
+    for index, text in enumerate(texts):
         if (
             parentheses == 0
-            and top_level[index : index + 2] == ["(", "*"]
-            and top_level[index + 3 : index + 4] == [")"]
+            and texts[index : index + 2] == ["(", "*"]
+            and texts[index + 3 : index + 4] == [")"]
         ):
-            return top_level[index + 2] if _IDENTIFIER.match(top_level[index + 2]) else None
+            return texts[index + 2] if _IDENTIFIER.match(texts[index + 2]) else None
         if text == "(":
             parentheses += 1
         elif text == ")":
             parentheses = max(parentheses - 1, 0)
-    if body[0] != "typedef" and "(" in top_level:
+    if not typedef and "(" in texts:
         # A prototype is named like a definition, so `int (*get(void))(int);` declares `get`.
-        return _name_before_last_group(top_level)
-    if "[" in top_level:
-        top_level = top_level[: top_level.index("[")]
-    candidate = top_level[-1] if top_level else ""
+        return _name_before_last_group(texts)
+    if "[" in texts:
+        texts = texts[: texts.index("[")]
+    candidate = texts[-1] if texts else ""
     # An anonymous `enum { ... };` has no name.
     if candidate in _AGGREGATE_KEYWORDS:
         return None
     return candidate if _IDENTIFIER.match(candidate) else None
+
+
+def _aggregate_names(texts: list[str]) -> list[str]:
+    """Return the tags and enumerators that the `struct`, `union` and `enum` bodies define.
+
+    Bodies nested in other bodies count, because C gives their tags and enumerators file scope
+    too. A tag with no body, as in `struct S *p`, is not defined here.
+
+    Args:
+        texts (list[str]): A declaration's tokens, without directives.
+
+    Returns:
+        list[str]: The tags and enumerators, in order; for `enum E { RED, GREEN = 2 }`, they
+            are `E`, `RED` and `GREEN`.
+    """
+    texts = _without_attributes(texts)
+    names: list[str] = []
+    for keyword, text in enumerate(texts):
+        if text not in _AGGREGATE_KEYWORDS:
+            continue
+        # Skip attribute macros, as in `struct ALIGNED(8) S {`, then the tag.
+        index = keyword + 1
+        tag = None
+        while index < len(texts) and _IDENTIFIER.match(texts[index]):
+            if texts[index + 1 : index + 2] == ["("]:
+                closing = _group_end(texts, index + 1)
+                if closing is None:
+                    break
+                index = closing + 1
+            else:
+                tag = texts[index]
+                index += 1
+                break
+        if texts[index : index + 1] != ["{"]:
+            continue
+        if tag is not None:
+            names.append(tag)
+        if text != "enum":
+            continue
+        # Each enumerator is the first token of an element of the body.
+        depth = 0
+        starts_element = True
+        for element_text in texts[index + 1 :]:
+            if depth == 0 and element_text == "}":
+                break
+            if depth == 0 and element_text == ",":
+                starts_element = True
+                continue
+            if starts_element and _IDENTIFIER.match(element_text):
+                names.append(element_text)
+            starts_element = False
+            depth += (element_text in ("(", "[", "{")) - (element_text in (")", "]", "}"))
+    return names
 
 
 def _without_attributes(texts: list[str]) -> list[str]:
@@ -1889,7 +2174,7 @@ def _count_definitions(items: list[_Item], function: str) -> int:
     Returns:
         int: The number of definitions.
     """
-    return sum(1 for item in items if item.kind == "function" and item.name == function)
+    return sum(1 for item in items if item.kind == "function" and item.introduces(function))
 
 
 def _check_new_items(
@@ -1906,7 +2191,7 @@ def _check_new_items(
         list[Violation]: The violations.
     """
     new = set(new_indices)
-    existing_names = {name for item in base_items for name in item.names}
+    existing_names = {name.text for item in base_items for name in item.names}
     violations: list[Violation] = []
     for index in new_indices:
         item = snapshot_items[index]
@@ -1923,7 +2208,71 @@ def _check_new_items(
                         line,
                     )
                 )
-    return violations + _check_conditional_nesting(snapshot_items, new)
+    return (
+        violations
+        + _check_new_functions_defined_once(snapshot_items, new)
+        + _check_conditional_nesting(snapshot_items, new)
+    )
+
+
+def _check_new_functions_defined_once(items: list[_Item], new: set[int]) -> list[Violation]:
+    """Check that the session defines no function twice where both definitions are compiled.
+
+    Two definitions of one name are compiled together unless they are in different branches of
+    one conditional. Compiling the file checks only the branches that its configuration selects,
+    so this also covers the others, such as the second header of `#ifdef X` /
+    `int avocado_spec_j(int a) {` / `#else` / `int avocado_spec_k(int a) {` / `#endif` beside
+    another definition of `avocado_spec_k`.
+
+    Args:
+        items (list[_Item]): The snapshot's items.
+        new (set[int]): Indices of the items the session added.
+
+    Returns:
+        list[Violation]: One violation per definition of a name that an earlier added
+            definition, compiled together with it, already defines.
+    """
+    violations: list[Violation] = []
+    # For each enclosing conditional: a number that identifies it, and the number of the branch.
+    enclosing: list[tuple[int, int]] = []
+    conditionals = 0
+    # For each name an added function defines: the branches that each definition is in.
+    defined: dict[str, list[dict[int, int]]] = {}
+    for index, item in enumerate(items):
+        wanted = (
+            {name.index: name.text for name in item.names}
+            if index in new and item.kind == "function"
+            else {}
+        )
+        for position, text in enumerate(item.tokens):
+            if position in wanted:
+                branches = dict(enclosing)
+                earlier = defined.setdefault(wanted[position], [])
+                if any(
+                    all(other.get(key, branch) == branch for key, branch in branches.items())
+                    for other in earlier
+                ):
+                    violations.append(
+                        Violation(
+                            4,
+                            f"{item.describe(wanted[position])} is already defined by another "
+                            "definition that the session added and that is compiled together "
+                            "with this one; define it once",
+                            item.lines[position],
+                        )
+                    )
+                earlier.append(branches)
+            if not text.startswith("#"):
+                continue
+            keyword = _directive_keyword(text)
+            if keyword in _CONDITIONAL_OPENERS:
+                conditionals += 1
+                enclosing.append((conditionals, 0))
+            elif keyword in _CONDITIONAL_BRANCHES and enclosing:
+                enclosing[-1] = (enclosing[-1][0], enclosing[-1][1] + 1)
+            elif keyword == "endif" and enclosing:
+                enclosing.pop()
+    return violations
 
 
 def _check_new_item(item: _Item, existing_names: set[str]) -> list[Violation]:
@@ -1946,7 +2295,7 @@ def _check_new_item(item: _Item, existing_names: set[str]) -> list[Violation]:
                 item.line,
             )
         ]
-    if item.name is None or (item.kind == "function" and None in item.body_names):
+    if item.unnamed or not item.names:
         return [
             Violation(
                 4,
@@ -1955,16 +2304,11 @@ def _check_new_item(item: _Item, existing_names: set[str]) -> list[Violation]:
                 item.line,
             )
         ]
-    # A definition whose header differs between preprocessor branches introduces every name
-    # that one of its headers defines.
     return [
         violation
         for name in item.names
         for violation in _check_new_name(
-            name,
-            f"function {name}" if item.kind == "function" else item.describe(),
-            item.line,
-            existing_names,
+            name.text, item.describe(name.text), item.lines[name.index], existing_names
         )
     ]
 
