@@ -1200,7 +1200,8 @@ def _get_goto_cc_command(
         function (str): The function used as the goto-binary entry point.
         file_containing_function (str): Path to the C source file.
         stub_paths (list[str] | None): Extra `.c` stub files compiled in alongside the source.
-        include_dirs (list[str] | None): Directories forwarded as `-I` flags.
+        include_dirs (list[str] | None): Directories forwarded as `-I` flags. An element that
+            appears more than once is forwarded once, at its first occurrence.
         prevent_macro_expansion (bool): If True, disable macros that CBMC cannot model.
 
     Returns:
@@ -1211,7 +1212,7 @@ def _get_goto_cc_command(
         f"{' '.join(_DISABLE_MACRO_FLAGS)}" if prevent_macro_expansion else ""
     )
     extra_stub_args = " ".join(shlex.quote(p) for p in stub_paths) if stub_paths else ""
-    include_flags = " ".join(f"-I {shlex.quote(d)}" for d in include_dirs) if include_dirs else ""
+    include_flags = " ".join(f"-I {shlex.quote(d)}" for d in dict.fromkeys(include_dirs or []))
     return " ".join(
         (
             f"goto-cc {flags_disabling_macro_expansion}",
