@@ -16,23 +16,23 @@ _CBMC_RETURN_CODES_SUCCESS_FAILURE_TIMEOUT = frozenset({0, 10, 124})
 _MAX_FILE_NAME_BYTES = 255
 
 # The marker in the names of the source files that mutation testing generates.
-MUTANT_MARKER = "mutant"
+MUTANT_FILENAME_MARKER = "mutant"
 # The marker in the names of the source files that clause-redundancy scoring generates.
-CLAUSE_DROP_MARKER = "clause_drop"
+CLAUSE_DROP_FILENAME_MARKER = "clause_drop"
 # The markers in the names of generated mutant source files, as passed to
 # `get_bounded_mutant_file_name()`. The globs in the Makefile's `clean-mutants` target repeat them.
-MUTANT_MARKERS = (MUTANT_MARKER, CLAUSE_DROP_MARKER)
+MUTANT_FILENAME_MARKERS = (MUTANT_FILENAME_MARKER, CLAUSE_DROP_FILENAME_MARKER)
 
 # Matches the stem of a generated mutant source file: `<stem>__<marker>_[<function>_]<index>`,
 # optionally followed by `-<attempt>` (see `get_bounded_mutant_file_name()`), where the marker is
-# one of `MUTANT_MARKERS`. The function is optional, so a stem such as `foo__mutant_3` also
-# matches.
-_MUTANT_ARTIFACT_STEM_RE = re.compile(
-    rf"__(?:{'|'.join(map(re.escape, MUTANT_MARKERS))})_(?:.+_)?\d+(?:-\d+)?$"
+# one of `MUTANT_FILENAME_MARKERS`. The function is optional, so a stem such as `foo__mutant_3`
+# also matches.
+_MUTANT_FILENAME_STEM_RE = re.compile(
+    rf"__(?:{'|'.join(map(re.escape, MUTANT_FILENAME_MARKERS))})_(?:.+_)?\d+(?:-\d+)?$"
 )
 
 
-def is_mutant_artifact(path: Path) -> bool:
+def is_mutant_filename(path: Path) -> bool:
     """Return True if the path names a generated mutant source file.
 
     Mutation testing and clause-redundancy scoring generate such files.
@@ -43,7 +43,7 @@ def is_mutant_artifact(path: Path) -> bool:
     Returns:
         bool: True if the path names a generated mutant source file.
     """
-    return _MUTANT_ARTIFACT_STEM_RE.search(path.stem) is not None
+    return _MUTANT_FILENAME_STEM_RE.search(path.stem) is not None
 
 
 def get_mutant_file_stem(path_to_original_source: Path) -> str:
@@ -119,7 +119,7 @@ def get_bounded_mutant_file_name(
     name is replaced by a short digest of the full (stem, function) pair, and the stem is truncated
     if needed. The name then stays bounded but is still distinct for each function, index and
     attempt. It always contains `__<marker>_`, so it still matches the patterns that
-    `make clean-mutants` removes, and `is_mutant_artifact()` recognizes it.
+    `make clean-mutants` removes, and `is_mutant_filename()` recognizes it.
 
     Byte lengths are measured with `os.fsencode`, which counts name bytes the way the filesystem
     does. It uses surrogateescape, so basenames that are not valid UTF-8 do not raise.
@@ -192,7 +192,7 @@ def get_files_with_extension(path_str: str, extension: str) -> list[Path]:
     """Return the path(s) to the file(s) with the given extension at the path.
 
     If the path resolves to a directory, recursively collect files, skipping generated mutant
-    sources (see `is_mutant_artifact()`), such as those retained by `--keep-artifacts`.
+    sources (see `is_mutant_filename()`), such as those retained by `--keep-artifacts`.
 
     Args:
         path_str (str): Path to a file or directory.
@@ -206,5 +206,5 @@ def get_files_with_extension(path_str: str, extension: str) -> list[Path]:
         msg = f"{path} does not exist; double-check for full or relative paths"
         raise RuntimeError(msg)
     if path.is_dir():
-        return sorted(p for p in path.rglob(f"*{extension}") if not is_mutant_artifact(p))
+        return sorted(p for p in path.rglob(f"*{extension}") if not is_mutant_filename(p))
     return [path] if path.suffix == extension else []
