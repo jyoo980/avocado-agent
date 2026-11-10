@@ -379,7 +379,7 @@ def merge_copy(
         return canonical, MergeReport(
             False, f"the session copy breaks {len(rendered)} edit rule(s)", violations=rendered
         )
-    if not any(_defines(item, function) for item in mine.snapshot.items):
+    if not any(item.kind == "function" and item.name == function for item in mine.snapshot.items):
         return canonical, MergeReport(
             False,
             f"{function} could not be found as a function definition in the session copy, so its "
@@ -419,10 +419,9 @@ def merge_copy(
             changed_since_fork.append(current.name)
         # The session's own function takes its contract from the copy even when the copy left
         # that contract as it was at the fork.
-        own = _defines(edited, function)
-        if my_text == their_text or (my_text == base_text and not own):
+        if my_text == their_text or (my_text == base_text and edited.name != function):
             continue
-        if not own and edited.name is None:
+        if edited.name is None:
             return canonical, MergeReport(
                 False,
                 f"the copy changes the contract of an item at line {edited.line} that the merge "
@@ -430,7 +429,7 @@ def merge_copy(
                 "nothing was merged",
                 dropped=dropped,
             )
-        if not own and edited.name is not None:
+        if edited.name != function:
             reason = _reason_not_carried(
                 edited.name, frozen_functions, their_changed=their_text != base_text
             )
@@ -1874,23 +1873,7 @@ def _count_definitions(items: list[_Item], function: str) -> int:
     Returns:
         int: The number of definitions.
     """
-    return sum(1 for item in items if _defines(item, function))
-
-
-def _defines(item: _Item, function: str) -> bool:
-    """Return True if `item` is a definition of `function`.
-
-    A definition whose header differs between preprocessor branches defines every name its
-    headers give (`_Item.body_names`), not only the first one (`_Item.name`).
-
-    Args:
-        item (_Item): An item.
-        function (str): A function name.
-
-    Returns:
-        bool: True iff `item` is a function definition one of whose headers names `function`.
-    """
-    return item.kind == "function" and (item.name == function or function in item.body_names)
+    return sum(1 for item in items if item.kind == "function" and item.name == function)
 
 
 def _check_new_items(

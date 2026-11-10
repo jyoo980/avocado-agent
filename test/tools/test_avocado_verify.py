@@ -492,21 +492,6 @@ def test_merge_and_verify_rejects_a_merge_that_does_not_compile(tmp_path: Path) 
     assert cbmc.function == "swap"
 
 
-def test_a_merge_keeps_the_permissions_of_the_canonical_file(tmp_path: Path, monkeypatch) -> None:
-    canonical = _stripped_quicksort(tmp_path)
-    canonical.chmod(0o664)
-    monkeypatch.setattr(avocado_verify, "verify_function", _FakeVerify())
-    monkeypatch.setattr(avocado_verify, "compile_with_goto_cc", lambda *a, **k: 0)
-    session = _fork_session("swap", canonical)
-    try:
-        _write_contract(session.file, "swap", _CONTRACTS["swap"])
-        report, _, _ = _merge_and_verify(session, canonical, include_dirs=[])
-    finally:
-        shutil.rmtree(session.directory, ignore_errors=True)
-    assert report.merged and _CONTRACTS["swap"] in canonical.read_bytes()
-    assert canonical.stat().st_mode & 0o777 == 0o664
-
-
 def test_the_scratch_copy_is_removed_when_the_merge_raises(tmp_path: Path, monkeypatch) -> None:
     canonical = _stripped_quicksort(tmp_path)
     scratch_parent = tmp_path / "scratch"

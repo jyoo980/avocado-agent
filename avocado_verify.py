@@ -1295,8 +1295,7 @@ def _merge_and_verify_in(
             else:
                 staged = canonical_file.with_name(f"{canonical_file.name}.avocado-merge")
                 staged.write_bytes(merged)
-                _copy_ownership_and_mode(canonical_file, staged)
-                staged.replace(canonical_file)
+                Path(staged).replace(canonical_file)
     if report.merged:
         if report.transplanted:
             logger.info(f"{function}: transplanted {', '.join(report.transplanted)}")
@@ -1343,35 +1342,6 @@ def _merge_and_verify_in(
             state.active.discard(function)
             state.record(function, cbmc)
     return report, cbmc, reverified
-
-
-def _copy_ownership_and_mode(source: Path, target: Path) -> None:
-    """Give `target` the owner, group and permission bits of `source`, as far as allowed.
-
-    A merge replaces the canonical file with a new file. Without this, the replacement would be
-    owned by whoever runs the harness (root, in a container, against a file the host owns) and
-    would get the default permissions, so the host could lose the right to write its own file.
-    A process that is not permitted to change the owner leaves it as it is; the permission bits
-    are copied after the owner, because changing the owner can clear some of them.
-
-    Args:
-        source (Path): The file whose owner and permissions to copy.
-        target (Path): The file to give them to.
-    """
-    try:
-        status = source.stat()
-    except OSError as error:
-        logger.warning(f"cannot read the owner and permissions of {source}: {error}")
-        return
-    if status.st_uid != os.getuid() or status.st_gid != os.getgid():
-        try:
-            os.chown(target, status.st_uid, status.st_gid)
-        except OSError as error:
-            logger.warning(f"cannot give {target} the owner of {source}: {error}")
-    try:
-        shutil.copymode(source, target)
-    except OSError as error:
-        logger.warning(f"cannot give {target} the permissions of {source}: {error}")
 
 
 def _report_stray_edits(session: _Session, canonical_dir: Path) -> list[str]:
