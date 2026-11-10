@@ -60,6 +60,24 @@ def test_mutation_feedback_of_each_passing_run_is_logged_beside_the_file(tmp_pat
     assert not (tmp_path / "quicksort-verification-attempts.jsonl").exists()
 
 
+def test_mutation_feedback_with_no_decided_mutant_has_a_null_kill_score(tmp_path: Path) -> None:
+    src = tmp_path / "quicksort.c"
+    src.write_text("int f(void) { return 0; }\n")
+    score = MutationScore(
+        file=str(src),
+        target_function="partition",
+        num_mutants=2,
+        outcome_counts=Counter({MutantOutcome.TIMED_OUT: 2}),
+        kill_score=0.0,
+    )
+    _log_mutation_feedback(str(src), "partition", score, attempt_id="attempt0", seconds=1.0)
+    log = tmp_path / "quicksort-mutation-feedback.jsonl"
+    (record,) = [json.loads(line) for line in log.read_text().splitlines()]
+    # A score that no mutant decided does not measure the spec.
+    assert record["was_mutation_tested"] is True and record["kill_score"] is None
+    assert record["timed_out"] == 2
+
+
 def test_agent_tool_uses_a_shorter_mutant_budget_than_the_metric() -> None:
     # The evaluation metric keeps the full pipeline timeout; only the agent-facing tool trims it.
     assert DEFAULT_MUTANT_TIMEOUT_SEC == _DEFAULT_RUN_CBMC_TIMEOUT_SEC

@@ -607,7 +607,7 @@ def test_format_mutation_success_section_renders_kill_score_and_survivor_diff() 
 
     section = get_mutation_testing_results_for_client(score)
 
-    # Kill-score line, formatted to 4 decimals like summary().
+    # Kill-score line, formatted to 4 decimals.
     assert "Mutation kill score: 0.5000 (killed 1/2; 1 survived" in section
     # Clickable file:line reference plus operator context for the survivor.
     assert "quicksort.c:1 (RELATIONAL: < -> <=)" in section
@@ -798,7 +798,20 @@ def test_mutation_score_summary_reports_each_undecided_count() -> None:
     assert summary["timed_out"] == 1
     assert summary["compile_failed"] == 2
     assert summary["instrumentation_failed"] == 1
-    assert summary["kill_score"] == "0.5000"
+    assert summary["kill_score"] == 0.5
+
+
+def test_mutation_score_summary_has_null_kill_score_without_decided_mutants() -> None:
+    """A summary has no kill score when every mutant timed out."""
+    score = MutationScore(
+        file="quicksort.c",
+        target_function="f",
+        num_mutants=2,
+        outcome_counts=Counter({MutantOutcome.TIMED_OUT: 2}),
+        kill_score=0.0,
+    )
+
+    assert score.summary()["kill_score"] is None
 
 
 ALLOCATING_SOURCE = """#include <stdlib.h>

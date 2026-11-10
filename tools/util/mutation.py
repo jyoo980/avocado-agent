@@ -154,12 +154,17 @@ class MutationScore(MutationTestingResult):
     kill_score: float
     results: list[MutantVerificationResult] = field(default_factory=list)
 
-    def summary(self) -> dict[str, str | int | float]:
+    def summary(self) -> dict[str, str | int | float | None]:
         """Return a summary of this mutation score.
 
         Returns:
-            dict[str, str | int | float]: A summary of this mutation score.
+            dict[str, str | int | float | None]: A summary of this mutation score.  Its
+                `kill_score` is None if no mutant was decided, because then the kill score does not
+                measure the spec.
         """
+        num_decided = (
+            self.outcome_counts[MutantOutcome.KILLED] + self.outcome_counts[MutantOutcome.SURVIVED]
+        )
         return {
             "kind": "mutation_summary",
             "was_mutation_tested": True,
@@ -167,7 +172,7 @@ class MutationScore(MutationTestingResult):
             "function": self.target_function,
             "total": self.num_mutants,
             **{outcome.value: self.outcome_counts[outcome] for outcome in MutantOutcome},
-            "kill_score": f"{self.kill_score:.4f}",
+            "kill_score": self.kill_score if num_decided else None,
         }
 
 
