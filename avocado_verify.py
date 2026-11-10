@@ -59,7 +59,13 @@ from tools.run_cbmc_and_mutation_testing import (
     VERIFICATION_ATTEMPTS_LOG_SUFFIX,
     verify_function,
 )
-from tools.util import get_in_file_callees_for, get_in_file_callers_of, run_command
+from tools.util import (
+    autodetect_include_dirs,
+    get_in_file_callees_for,
+    get_in_file_callers_of,
+    resolve_parent,
+    run_command,
+)
 from tools.util.callgraph import CallGraph
 from tools.util.edit_rules import (
     MergeReport,
@@ -246,8 +252,8 @@ class FunctionVerificationResult:
         stray_files (list[str]): Files other than the source file that the agent added or changed
             in its private copy; they are never merged, only reported.
         reverified (dict[str, RunCbmcResult]): Ground-truth verdicts of the other functions this
-            merge had to re-verify because it carried edits to them or to their callees (see
-            `_merge_and_verify`); empty when it carried none.
+            merge had to re-verify because it carried edits to them or to their callees, on the
+            file it wrote (see `_merge_and_verify`); empty when it carried none.
         merge_reruns (int): How many times the function was given another session on a fresh
             copy because a merge left out edits its proof depended on, or because another
             session changed the contract of a function it calls
@@ -376,12 +382,15 @@ def main() -> None:
     if args.jobs < 1:
         parser.error("--jobs must be at least 1.")
 
-    file_path = Path(args.file).resolve()
+    # A symlinked file is not followed. Therefore, it is compiled, and its mutants are written, in
+    # the directory that contains the symlink, which is also where `autodetect_include_dirs` looks
+    # for the `include/` directory.
+    file_path = resolve_parent(args.file)
     if not file_path.is_file():
         logger.error(f"No such file: {file_path}")
         sys.exit(1)
 
-    if include_dirs := _autodetect_include_dirs(str(file_path)):
+    if include_dirs := autodetect_include_dirs(str(file_path)):
         logger.info(f"[auto-include] using {include_dirs}")
 
     path_to_call_graph = construct_call_graph(str(file_path))
@@ -823,7 +832,7 @@ def _verify_via_agent(
                 function, new_sessions, canonical_file
             )
             attempts += new_attempts
-            stray_files = _report_stray_edits(session, canonical_file.parent)
+            stray_files = _report_stray_edits(session, canonical_file)
             _mirror_tool_logs(session, canonical_file)
             report, cbmc, newly_reverified = _merge_and_verify(
                 session,
@@ -1101,9 +1110,10 @@ def _merge_and_verify(
     Under `_CANONICAL_LOCK`: read the canonical file, compute the merge
     (`tools.util.edit_rules.merge_copy`), copy the canonical directory to a scratch
     directory, write the merged bytes into that copy and check that `goto-cc` still accepts the
-    file. Only then is the canonical file replaced (atomically, via `os.replace`); a merge that
-    does not compile is rejected and the canonical file left untouched. The lock is released
-    before the function's own CBMC run, on the scratch copy, so other sessions can merge meanwhile.
+    file. Only then is the canonical file (or, if it is a symlink, its target) replaced
+    (atomically, via `os.replace`); a merge that does not compile is rejected and the canonical
+    file left untouched. The lock is released before the function's own CBMC run, on the
+    scratch copy, so other sessions can merge meanwhile.
 
     One of those merges may change the contract of a function this one calls: only the functions
     live sessions work on are frozen, not their callees, and this function is not yet in
@@ -1121,7 +1131,9 @@ def _merge_and_verify(
     lock; if a function that verified before would stop verifying, or the file no
     longer compiles, the merge is redone without the carried edits and the reason is appended to
     `MergeReport.dropped`. A merge therefore never turns a verified function into an unverified
-    one, and the re-verification verdicts are returned for the run log. A vacuous caller is
+    one. The re-verification verdicts are returned for the run log only if the merge that
+    carries the edits is written; verdicts on a file without which the merge was redone, or that
+    could not be written, are not returned, since they do not describe the file. A vacuous caller is
     re-verified so that its verdict is not left stale, but is not protected: if the kept edits
     make it fail, its new verdict is recorded.
 
@@ -1138,140 +1150,168 @@ def _merge_and_verify(
     Returns:
         tuple[MergeReport, RunCbmcResult, dict[str, RunCbmcResult]]: What the merge did, the
             ground-truth verdict for the function on the canonical file as it is when this
-            returns, and the verdicts of the functions re-verified because of carried edits
-            (empty when there were none).
+            returns, and the verdicts of the functions re-verified because of carried edits that
+            were written to the canonical file (empty when there were none).
     """
     function = session.function
     absolute_include_dirs = [str(Path(directory).resolve()) for directory in include_dirs]
+    # Verdicts of the functions re-verified on the merged file; they are recorded in `state` and
+    # returned only once that file has been written, so they are never verdicts on a file that
+    # was discarded.
     reverified: dict[str, RunCbmcResult] = {}
-    with _CANONICAL_LOCK:
-        canonical = canonical_file.read_bytes()
-        try:
-            snapshot = session.file.read_bytes()
-        except OSError as error:
-            snapshot = None
-            merged, report = canonical, MergeReport(False, f"session copy unreadable: {error}")
-        else:
-            violations = [
-                str(violation)
-                for violation in (
-                    *check_edits(session.fork_base, snapshot, function),
-                    *stray_file_violations(stray_files or []),
-                )
-            ]
-            if violations:
-                merged, report = (
-                    canonical,
-                    MergeReport(
-                        False,
-                        f"the session copy breaks {len(violations)} edit rule(s)",
-                        violations=violations,
-                    ),
-                )
+    scratch_root = Path(tempfile.mkdtemp(prefix=_GROUND_TRUTH_DIR_PREFIX))
+    try:
+        with _CANONICAL_LOCK:
+            # The file that is read is the file that is written: if the canonical file is a
+            # symlink, it is resolved once, so that the merge does not write the bytes of one
+            # target to another should the link change in between.
+            destination = canonical_file.resolve()
+            canonical = destination.read_bytes()
+            try:
+                snapshot = session.file.read_bytes()
+            except OSError as error:
+                snapshot = None
+                merged, report = canonical, MergeReport(False, f"session copy unreadable: {error}")
             else:
-                merged, report = merge_copy(
+                violations = [
+                    str(violation)
+                    for violation in (
+                        *check_edits(session.fork_base, snapshot, function),
+                        *stray_file_violations(stray_files or []),
+                    )
+                ]
+                if violations:
+                    merged, report = (
+                        canonical,
+                        MergeReport(
+                            False,
+                            f"the session copy breaks {len(violations)} edit rule(s)",
+                            violations=violations,
+                        ),
+                    )
+                else:
+                    merged, report = merge_copy(
+                        canonical=canonical,
+                        snapshot=snapshot,
+                        fork_base=session.fork_base,
+                        function=function,
+                        frozen_functions=None
+                        if state is None
+                        else frozen_functions_for(function, state.active),
+                    )
+            scratch_dir = scratch_root / canonical_file.parent.name
+            shutil.copytree(canonical_file.parent, scratch_dir, ignore=_SNAPSHOT_IGNORE)
+            scratch_file = scratch_dir / canonical_file.name
+
+            def compiles(candidate: bytes) -> int:
+                scratch_file.write_bytes(candidate)
+                return compile_with_goto_cc(
+                    function,
+                    str(scratch_file),
+                    include_dirs=absolute_include_dirs,
+                    cwd=str(scratch_dir),
+                )
+
+            def without_carried(why: str) -> tuple[bytes, MergeReport]:
+                assert snapshot is not None
+                logger.warning(
+                    f"{function}: reverting carried edits to {', '.join(report.carried)}: {why}"
+                )
+                strict, strict_report = merge_copy(
                     canonical=canonical,
                     snapshot=snapshot,
                     fork_base=session.fork_base,
                     function=function,
-                    frozen_functions=None
-                    if state is None
-                    else frozen_functions_for(function, state.active),
                 )
-        scratch_root = Path(tempfile.mkdtemp(prefix=_GROUND_TRUTH_DIR_PREFIX))
-        scratch_dir = scratch_root / canonical_file.parent.name
-        shutil.copytree(canonical_file.parent, scratch_dir, ignore=_SNAPSHOT_IGNORE)
-        scratch_file = scratch_dir / canonical_file.name
+                note = f"edits to {', '.join(report.carried)} reverted: {why}"
+                return strict, replace(strict_report, dropped=[*strict_report.dropped, note])
 
-        def compiles(candidate: bytes) -> int:
-            scratch_file.write_bytes(candidate)
-            return compile_with_goto_cc(
-                function,
-                str(scratch_file),
-                include_dirs=absolute_include_dirs,
-                cwd=str(scratch_dir),
-            )
-
-        def without_carried(why: str) -> tuple[bytes, MergeReport]:
-            assert snapshot is not None
-            logger.warning(
-                f"{function}: reverting carried edits to {', '.join(report.carried)}: {why}"
-            )
-            strict, strict_report = merge_copy(
-                canonical=canonical,
-                snapshot=snapshot,
-                fork_base=session.fork_base,
-                function=function,
-            )
-            note = f"edits to {', '.join(report.carried)} reverted: {why}"
-            return strict, replace(strict_report, dropped=[*strict_report.dropped, note])
-
-        if report.merged:
-            returncode = compiles(merged)
-            if returncode != 0 and report.carried:
-                merged, report = without_carried("the merged file does not compile with them")
+            # Verdicts on the merged file, kept only if that file is written.
+            pending: dict[str, RunCbmcResult] = {}
+            if report.merged:
                 returncode = compiles(merged)
-            if returncode == 0 and report.carried:
-                assert state is not None
-                affected = functions_affected_by(
-                    report.carried,
-                    call_graph=call_graph,
-                    candidates=state.rechecked_on_change(),
-                    exclude=function,
-                )
-                logger.info(
-                    f"{function}: carried edits to {', '.join(report.carried)}; re-verifying "
-                    f"{', '.join(affected)}"
-                )
-                reverified = {
-                    other: verify_function(other, str(scratch_file), include_dirs=include_dirs)
-                    for other in affected
-                }
-                regressed = [
-                    other
-                    for other in affected
-                    if other in state.verified and not reverified[other].is_function_verified
-                ]
-                if regressed:
-                    merged, report = without_carried(
-                        f"{', '.join(regressed)} would no longer verify"
-                    )
+                if returncode != 0 and report.carried:
+                    merged, report = without_carried("the merged file does not compile with them")
                     returncode = compiles(merged)
+                if returncode == 0 and report.carried:
+                    assert state is not None
+                    affected = functions_affected_by(
+                        report.carried,
+                        call_graph=call_graph,
+                        candidates=state.rechecked_on_change(),
+                        exclude=function,
+                    )
+                    logger.info(
+                        f"{function}: carried edits to {', '.join(report.carried)}; re-verifying "
+                        f"{', '.join(affected)}"
+                    )
+                    pending = {
+                        other: verify_function(other, str(scratch_file), include_dirs=include_dirs)
+                        for other in affected
+                    }
+                    regressed = [
+                        other
+                        for other in affected
+                        if other in state.verified and not pending[other].is_function_verified
+                    ]
+                    if regressed:
+                        merged, report = without_carried(
+                            f"{', '.join(regressed)} would no longer verify"
+                        )
+                        # The verdicts are on the file with the carried edits, which is discarded.
+                        pending = {}
+                        returncode = compiles(merged)
+                if returncode != 0:
+                    report = replace(
+                        report,
+                        merged=False,
+                        reason=(
+                            f"merged file does not compile with goto-cc (exit code {returncode})"
+                        ),
+                    )
+                    scratch_file.write_bytes(canonical)
                 else:
-                    for other, result in reverified.items():
-                        state.record(other, result)
-            if returncode != 0:
-                report = replace(
-                    report,
-                    merged=False,
-                    reason=f"merged file does not compile with goto-cc (exit code {returncode})",
+                    # If the canonical file is a symlink, its target is replaced rather than the
+                    # link itself, so that the link keeps pointing to the file with the merged
+                    # edits. The target keeps its permission bits.
+                    staged = destination.with_name(f"{destination.name}.avocado-merge")
+                    try:
+                        staged.write_bytes(merged)
+                        shutil.copymode(destination, staged)
+                        staged.replace(destination)
+                    except OSError as e:
+                        staged.unlink(missing_ok=True)
+                        report = replace(
+                            report,
+                            merged=False,
+                            reason=f"could not write the merged file to {destination}: {e}",
+                        )
+                        scratch_file.write_bytes(canonical)
+                    else:
+                        reverified = pending
+                        if state is not None:
+                            for other, result in reverified.items():
+                                state.record(other, result)
+        if report.merged:
+            if report.transplanted:
+                logger.info(f"{function}: transplanted {', '.join(report.transplanted)}")
+            if report.carried:
+                logger.info(f"{function}: carried edits to {', '.join(report.carried)}")
+            if report.dropped:
+                logger.warning(
+                    f"{function}: dropped edits outside the function: {', '.join(report.dropped)}"
                 )
-                scratch_file.write_bytes(canonical)
-            else:
-                staged = canonical_file.with_name(f"{canonical_file.name}.avocado-merge")
-                staged.write_bytes(merged)
-                Path(staged).replace(canonical_file)
-    if report.merged:
-        if report.transplanted:
-            logger.info(f"{function}: transplanted {', '.join(report.transplanted)}")
-        if report.carried:
-            logger.info(f"{function}: carried edits to {', '.join(report.carried)}")
-        if report.dropped:
-            logger.warning(
-                f"{function}: dropped edits outside the function: {', '.join(report.dropped)}"
-            )
-    else:
-        logger.warning(f"{function}: merge rejected: {report.reason}")
-        for violation in report.violations:
-            logger.warning(f"{function}:   {violation}")
-    # What the scratch copy holds, and so what the function's verdict is a verdict on.
-    verified_on = merged if report.merged else canonical
-    callees = (
-        call_graph.get_callees(function).internal
-        if call_graph is not None and function in call_graph
-        else []
-    )
-    try:
+        else:
+            logger.warning(f"{function}: merge rejected: {report.reason}")
+            for violation in report.violations:
+                logger.warning(f"{function}:   {violation}")
+        # What the scratch copy holds, and so what the function's verdict is a verdict on.
+        verified_on = merged if report.merged else canonical
+        callees = (
+            call_graph.get_callees(function).internal
+            if call_graph is not None and function in call_graph
+            else []
+        )
         cbmc = verify_function(function, str(scratch_file), include_dirs=include_dirs)
         with _CANONICAL_LOCK:
             current = canonical_file.read_bytes()
@@ -1302,21 +1342,21 @@ def _merge_and_verify(
     return report, cbmc, reverified
 
 
-def _report_stray_edits(session: _Session, canonical_dir: Path) -> list[str]:
+def _report_stray_edits(session: _Session, canonical_file: Path) -> list[str]:
     """Return the files other than the source file that the agent added or changed in its copy.
 
     Headers, other sources and new files the agent created in the private copy are never merged;
     they are named here so the run log shows when a contract depended on one. A file is compared
-    to the canonical directory's copy of it, which no session ever writes.
+    as `tools.util.session_state.find_stray_files` describes.
 
     Args:
         session (_Session): The finished session.
-        canonical_dir (Path): The canonical source directory.
+        canonical_file (Path): The canonical source file.
 
     Returns:
         list[str]: Relative paths tagged `added:` or `modified:`, in sorted order.
     """
-    stray = find_stray_files(session.file, canonical_dir)
+    stray = find_stray_files(session.file, canonical_file, session.fork_base)
     if stray:
         logger.warning(
             f"{session.function}: files changed in the session copy are not merged: {stray}"
@@ -2247,23 +2287,6 @@ def _log_summary(results: list[FunctionVerificationResult], log_path: Path) -> N
         f"{verified}/{len(results)} function(s) verified ({vacuous_count} vacuously); log written "
         f"to {log_path}"
     )
-
-
-def _autodetect_include_dirs(source_file: str) -> list[str]:
-    """Return `[<source>/../include]` if that directory exists, else an empty list.
-
-    Many CMake projects keep public headers in `<project>/include/` while sources live in
-    `<project>/src/`. When that layout holds, returning the sibling `include/` directory lets
-    CBMC resolve `#include "foo.h"` without the caller having to configure paths by hand.
-
-    Args:
-        source_file (str): Path to a `.c` file.
-
-    Returns:
-        list[str]: `[<resolved include dir>]` when present, else `[]`.
-    """
-    candidate = Path(source_file).resolve().parent.parent / "include"
-    return [str(candidate)] if candidate.is_dir() else []
 
 
 if __name__ == "__main__":

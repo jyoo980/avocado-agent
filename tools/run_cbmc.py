@@ -25,6 +25,7 @@ from tools.util import (
     get_in_file_callees_for,
     get_stub_paths_for,
     get_unstubbed_external_callees_for,
+    resolve_parent,
     run_command,
 )
 from tools.util.callgraph import CallGraph
@@ -116,8 +117,9 @@ class RunCbmcResult:
 
     Attributes:
         function (str): The function under verification.
-        failed_step (CbmcStep | None): The pipeline step that failed, or None on success.
-        timed_out (bool): True iff any step hit the per-attempt timeout.
+        failed_step (CbmcStep | None): The pipeline step that failed or timed out,
+            or None on success.
+        timed_out (bool): True iff any subprocess in the `run_cbmc` pipeline timed out.
         returncode (int): 0 on success, `_TIMEOUT_RETURNCODE` on timeout, otherwise the
             exit code of the failing subprocess (cbmc's verification exit code when
             `failed_step` is CBMC).
@@ -202,17 +204,21 @@ class RunCbmcResult:
 
 @dataclass(frozen=True)
 class _SubprocessResult:
-    """Outcome of running one subprocess step.
+    """Outcome of a single subprocess invocation (one command).
+
+    A `CbmcStep` may comprise several subprocess invocations (e.g. `goto-instrument` runs
+    more than once); this object captures exactly one of them, so it has exactly one exit
+    code.
 
     Attributes:
-        step (CbmcStep): The logical step in the CBMC verification pipeline this subprocess belongs
-            to.
+        step (CbmcStep): The logical pipeline step this single subprocess belongs to. The
+            step may span several subprocesses; this is one of them.
         command (str): The shell command that was run.
-        returncode (int): The subprocess exit code, or `_TIMEOUT_RETURNCODE` on timeout.
+        returncode (int): This subprocess's exit code, or `_TIMEOUT_RETURNCODE` on timeout.
         stdout (str): Captured stdout (empty on timeout).
         stderr (str): Captured stderr (empty on timeout).
-        timed_out (bool): True iff the subprocess hit the per-step timeout.
-        timeout_sec (int): The per-step timeout that applied, for the timeout diagnostic.
+        timed_out (bool): True iff the subprocess hit the per-subprocess timeout.
+        timeout_sec (int): The per-subprocess timeout that applied, for the timeout diagnostic.
     """
 
     step: CbmcStep
@@ -285,11 +291,11 @@ def run_cbmc(
     """Run CBMC on the given function with loop unwinding = `_CBMC_UNWIND` and `--depth depth`.
 
     The pipeline is split into three logical steps — `goto-cc`, `goto-instrument`, and
-    `cbmc` — each run as its own subprocess so that failures can be attributed to a
+    `cbmc` — each run as one or more subprocesses so that failures can be attributed to a
     specific step. Up to three pipeline attempts are made: an initial run, a retry
     when an apparent recursive-inlining error is detected, and a retry when a missing
-    callee body is detected. The timeout is per CBMC subprocess attempt, not a total
-    budget; a timeout in any single step terminates the whole call.
+    callee body is detected. The timeout is per subprocess, not a total
+    budget; a timeout in any single step terminates the whole call, with no further retries.
 
     The pipeline's subprocesses run in a fresh private temporary directory, which receives the
     intermediate `<function>.goto` / `checking-<function>-contracts.goto` files and is removed
@@ -300,7 +306,9 @@ def run_cbmc(
 
     Args:
         function_to_verify (str): Name of the function to verify.
-        file_containing_function_to_verify (str): Path to the C file defining the function.
+        file_containing_function_to_verify (str): Path to the C file defining the function. A
+            symlink is not followed, so a quoted `#include` is looked up in the directory that
+            contains the symlink.
         include_dirs (list[str] | None): Directories to add to the C preprocessor's include
             search path. Forwarded to `goto-cc` as `-I` flags.
         call_graph (CallGraph | None): When provided, this pre-built call graph is used instead
@@ -365,8 +373,11 @@ def _run_cbmc_in_directory(
     """
     # The pipeline's commands are executed relative to `cwd`, so relative paths given by the
     # caller (which are relative to the process's working directory) must be resolved first. The
-    # invocation log still records the path as the caller gave it.
-    resolved_file = str(Path(file_containing_function_to_verify).resolve())
+    # invocation log still records the path as the caller gave it. A symlinked source file is not
+    # followed, so the preprocessor finds quoted `#include`s next to the symlink, as a compiler
+    # given the symlink would, and as mutation testing, which writes mutants next to the symlink,
+    # assumes.
+    resolved_file = str(resolve_parent(file_containing_function_to_verify))
     include_dirs = [str(Path(d).resolve()) for d in include_dirs or []]
 
     if call_graph is None:
@@ -642,7 +653,7 @@ def _run_command(
     cwd: str | None = None,
     timeout_sec: int = _DEFAULT_RUN_CBMC_TIMEOUT_SEC,
 ) -> _SubprocessResult:
-    """Run one pipeline step as a subprocess with the per-step timeout.
+    """Run one command of a pipeline step as a subprocess with the per-subprocess timeout.
 
     Args:
         step (CbmcStep): The logical step this subprocess belongs to.
@@ -1170,11 +1181,12 @@ def _list_goto_functions(
         tuple[set[str], set[str]] | None: The functions with a body, and the functions with a
             contract, in the compiled program; None when it could not be compiled or listed.
     """
-    # The commands run in a scratch directory, so paths are resolved first.
+    # The commands run in a scratch directory, so paths are made absolute first. As in
+    # `run_cbmc`, a symlinked source file is not followed.
     include_flags = " ".join(
         f"-I {shlex.quote(str(Path(d).resolve()))}" for d in include_dirs or []
     )
-    source = shlex.quote(str(Path(file_path).resolve()))
+    source = shlex.quote(str(resolve_parent(file_path)))
     try:
         with tempfile.TemporaryDirectory(prefix="avocado-compiled-") as scratch_dir:
             commands = (
