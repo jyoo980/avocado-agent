@@ -777,6 +777,17 @@ def test_each_branch_header_gives_its_own_body_brace_its_own_name() -> None:
     assert function_body_offsets(source, "g") == [source.index(b"{", source.index(b"int g"))]
 
 
+def test_the_contract_of_a_later_branch_header_name_is_merged() -> None:
+    base = b"#ifdef X\nint f(int a) {\n#else\nint g(int a) {\n#endif\n  return a;\n}\n"
+    snapshot = base.replace(b"int g(int a) {", b"int g(int a)\n__CPROVER_requires(a > 0)\n{")
+    assert check_edits(base, snapshot, "g") == []
+    merged, report = merge_copy(
+        canonical=base, snapshot=snapshot, fork_base=base, function="g", frozen_functions=set()
+    )
+    assert report.merged, report.reason
+    assert merged == snapshot and report.carried == []
+
+
 _TWO_HEADERS = b"#ifdef X\nint f(int a) {\n#else\nint g(int a) {\n#endif\n  return a;\n}\n"
 
 
@@ -816,6 +827,36 @@ def test_an_edit_to_the_other_header_of_the_sessions_definition_is_another_funct
         canonical=base, snapshot=snapshot, fork_base=base, function="f", frozen_functions=set()
     )
     assert merged == snapshot and report.carried == ["g"]
+
+
+def test_merging_a_later_header_keeps_the_canonical_contract_of_the_first_header() -> None:
+    base = _TWO_HEADERS
+    merged, report = merge_copy(
+        canonical=_with_f_contract(base),
+        snapshot=_with_g_contract(base),
+        fork_base=base,
+        function="g",
+        frozen_functions=set(),
+    )
+    assert report.merged, report.reason
+    assert merged == _with_f_contract(_with_g_contract(base))
+    assert report.changed_since_fork == ["f"] and report.carried == []
+
+
+def test_a_later_header_sessions_edit_to_the_first_header_is_another_functions() -> None:
+    base = _TWO_HEADERS
+    snapshot = _with_f_contract(_with_g_contract(base))
+    merged, report = merge_copy(
+        canonical=base, snapshot=snapshot, fork_base=base, function="g", frozen_functions={"f"}
+    )
+    assert report.merged, report.reason
+    assert merged == _with_g_contract(base)
+    assert report.dropped == ["function:f (a live session is working on it)"]
+    assert report.carried == []
+    merged, report = merge_copy(
+        canonical=base, snapshot=snapshot, fork_base=base, function="g", frozen_functions=set()
+    )
+    assert merged == snapshot and report.carried == ["f"]
 
 
 def test_a_canonical_change_to_a_later_header_names_its_function() -> None:
