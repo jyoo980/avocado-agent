@@ -34,6 +34,7 @@ from tools.run_cbmc import (
     compile_with_goto_cc,
     max_concurrent_subprocesses,
     run_cbmc,
+    run_goto_cc,
     run_shell_command,
 )
 from tools.util.mutation import MutantVerificationResult, MutationScore, _MAX_MUTATION_SECTION_CHARS, _print_mutation_progress, get_mutation_testing_results_for_client
@@ -135,6 +136,24 @@ def test_compile_with_goto_cc_returns_zero_for_valid_c(tmp_path: Path) -> None:
     assert result == 0
 
 
+def test_run_goto_cc_runs_through_run_shell_command(tmp_path: Path, monkeypatch) -> None:
+    # Like every pipeline subprocess, `goto-cc` runs through `run_shell_command`, which takes a
+    # subprocess slot and kills the whole process tree on timeout.
+    calls: list[tuple[str, str | None]] = []
+    run_shell_command_ = run_cbmc_module.run_shell_command
+
+    def recording_run_shell_command(command: str, *args, **kwargs):
+        calls.append((command, kwargs.get("cwd")))
+        return run_shell_command_(command, *args, **kwargs)
+
+    monkeypatch.setattr(run_cbmc_module, "run_shell_command", recording_run_shell_command)
+    src = Path("test/data/no_callees.c").resolve()
+    result = run_goto_cc("baz", str(src), cwd=str(tmp_path))
+    assert result is not None and result.returncode == 0, result
+    assert [(command.split()[0], cwd) for command, cwd in calls] == [("goto-cc", str(tmp_path))]
+    assert (tmp_path / "baz.goto").exists()
+
+
 def test_compile_with_goto_cc_returns_nonzero_for_invalid_c(tmp_path: Path) -> None:
     # Pointer addition is illegal in C; goto-cc rejects it. This mirrors what happens
     # when `mutate_function.py` swaps `-` for `+` on two pointers.
@@ -220,6 +239,9 @@ def test_run_command_waits_for_a_slot_used_by_another_thread(monkeypatch, tmp_pa
     for thread in threads:
         thread.join()
     assert all(result.succeeded for result in results), "commands overlapped despite one slot"
+    # One command queued behind the other, and its record says so rather than inflating `seconds`.
+    assert max(record["wait_seconds"] for record in records) >= 0.2
+    assert all(record["seconds"] < 1 for record in records)
 
 
 def test_a_process_that_runs_commands_back_to_back_does_not_starve_another(
@@ -275,7 +297,7 @@ def test_a_caller_that_waits_for_a_slot_logs_warnings(monkeypatch, tmp_path: Pat
 def test_a_command_is_limited_to_its_timeout_in_cpu_time(monkeypatch, tmp_path: Path) -> None:
     # The limit ends a command that outlives the process that enforces its timeout.
     monkeypatch.setattr(run_cbmc_module, "_SLOT_DIR", tmp_path / "slots")
-    completed = run_shell_command("ulimit -t", timeout=7.5)
+    completed = run_shell_command("ulimit -t", timeout=7.5).completed
     assert completed is not None
     assert completed.stdout.strip() == str(8 + run_cbmc_module._CPU_LIMIT_GRACE_SEC)
 
@@ -305,7 +327,7 @@ def test_run_shell_command_waits_for_a_slot_used_by_another_process(tmp_path: Pa
     command = _exclusive_command(tmp_path / "busy")
     script = (
         "import sys; from tools.run_cbmc import run_shell_command; "
-        f"sys.exit(run_shell_command({command!r}, timeout=30).returncode)"
+        f"sys.exit(run_shell_command({command!r}, timeout=30).completed.returncode)"
     )
     # Both processes put their slot files under the same temporary directory.
     env = os.environ | {"TMPDIR": str(tmp_path), "AVOCADO_MAX_CONCURRENT_CBMC": "1"}
