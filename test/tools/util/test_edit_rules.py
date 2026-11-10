@@ -508,9 +508,12 @@ def _parser_without_the_struct_parameter_fix(prefix) -> bool:
 
 def test_a_session_function_the_parser_cannot_find_fails_the_merge(monkeypatch) -> None:
     # With the old parser, everything from `abFree` on is one unnamed item.
-    monkeypatch.setattr(edit_rules, "_opens_function_body", _parser_without_the_struct_parameter_fix)
+    monkeypatch.setattr(
+        edit_rules, "_opens_function_body", _parser_without_the_struct_parameter_fix
+    )
     snapshot = STRUCT_PARAMETERS.replace(
-        b"int after(int v) {", b"int after(int v)\n__CPROVER_ensures(__CPROVER_return_value == v)\n{"
+        b"int after(int v) {",
+        b"int after(int v)\n__CPROVER_ensures(__CPROVER_return_value == v)\n{",
     )
     merged, report = merge_copy(
         canonical=STRUCT_PARAMETERS,
@@ -527,7 +530,9 @@ def test_a_session_function_the_parser_cannot_find_fails_the_merge(monkeypatch) 
 def test_a_contract_edit_to_an_item_the_merge_cannot_name_fails_the_merge(monkeypatch) -> None:
     # `pick` is defined twice. With the old parser the first definition is found, but the second
     # is in an unnamed item, and its contract would once have been left out without a word.
-    monkeypatch.setattr(edit_rules, "_opens_function_body", _parser_without_the_struct_parameter_fix)
+    monkeypatch.setattr(
+        edit_rules, "_opens_function_body", _parser_without_the_struct_parameter_fix
+    )
     base = (
         b"struct abuf { char *b; int len; };\n"
         b"#ifdef FAST\nint pick(int x) {\n    return x;\n}\n#endif\n"
@@ -610,7 +615,10 @@ def test_a_conditional_block_both_sessions_add_is_skipped_whole() -> None:
     merged, report = _merge_onto(TAIL + block, TAIL + block)
     assert report.merged, report.reason
     assert merged == TAIL + block and report.transplanted == []
-    assert report.skipped_duplicates == ["ifdef:#ifdef AVOCADO_SPEC_G", "declaration:avocado_spec_a"]
+    assert report.skipped_duplicates == [
+        "ifdef:#ifdef AVOCADO_SPEC_G",
+        "declaration:avocado_spec_a",
+    ]
 
 
 def test_conditional_blocks_with_different_conditions_both_merge() -> None:
@@ -775,6 +783,164 @@ def test_each_branch_header_gives_its_own_body_brace_its_own_name() -> None:
     source = b"#ifdef X\nint f(int a) {\n#else\nint g(int a) {\n#endif\n  return a;\n}\n"
     assert function_body_offsets(source, "f") == [source.index(b"{")]
     assert function_body_offsets(source, "g") == [source.index(b"{", source.index(b"int g"))]
+
+
+BRANCH_HEADERS = (
+    b"#ifdef X\nint avocado_spec_j(int a) {\n#else\nint avocado_spec_k(int a) {\n#endif\n"
+    b"  return a;\n}\n"
+)
+
+
+def test_a_later_header_name_of_a_new_definition_clashes_with_a_canonical_new_item() -> None:
+    base = b"int s(int a) {\n  return a;\n}\n"
+    canonical = base + b"int avocado_spec_k(int a) {\n  return a + 1;\n}\n"
+    snapshot = base + BRANCH_HEADERS
+    assert check_edits(base, snapshot, "s") == []
+    merged, report = merge_copy(
+        canonical=canonical, snapshot=snapshot, fork_base=base, function="s", frozen_functions=set()
+    )
+    assert not report.merged and merged == canonical
+    assert report.reason == (
+        "function:avocado_spec_k is already defined differently in the canonical file"
+    )
+
+
+def test_a_new_item_clashes_with_a_later_header_name_of_a_canonical_new_definition() -> None:
+    base = b"int s(int a) {\n  return a;\n}\n"
+    canonical = base + BRANCH_HEADERS
+    snapshot = base + b"int avocado_spec_k(int a) {\n  return a + 1;\n}\n"
+    assert check_edits(base, snapshot, "s") == []
+    merged, report = merge_copy(
+        canonical=canonical, snapshot=snapshot, fork_base=base, function="s", frozen_functions=set()
+    )
+    assert not report.merged and merged == canonical
+    assert report.reason == (
+        "function:avocado_spec_k is already defined differently in the canonical file"
+    )
+
+
+def _name_violations(base: bytes, addition: bytes) -> list[edit_rules.Violation]:
+    snapshot = base.replace(b"/* swap two ints */", addition)
+    return [
+        violation
+        for violation in check_edits(base, snapshot, "swap")
+        if "conditional" not in violation.message
+    ]
+
+
+def test_rule_4_applies_to_every_header_of_a_new_definition() -> None:
+    helper = (
+        b"#ifdef X\nint avocado_spec_h(int a) {\n#else\nint h(int a) {\n#endif\n  return a;\n}\n"
+    )
+    violations = _name_violations(BASE, helper)
+    assert [violation.message.split(" is ")[0] for violation in violations] == ["function h"]
+    # Line 11 holds `#ifdef X` and line 12 `int avocado_spec_h`, so `int h` is on line 14.
+    assert violations[0].line == 14
+    taken = helper.replace(b"int h(", b"int avocado_spec_k(")
+    assert _name_violations(BASE, taken) == []
+    base = BASE.replace(b"/* swap two ints */", b"int avocado_spec_k(int a);\n/* swap two ints */")
+    violations = _name_violations(base, taken)
+    assert len(violations) == 1 and "redefines a name" in violations[0].message, violations
+
+
+def test_rule_4_applies_to_every_branch_of_a_new_declaration() -> None:
+    prototype = b"int\n#ifdef X\nh\n#else\navocado_spec_h\n#endif\n(int a);\n"
+    violations = _name_violations(BASE, prototype)
+    assert [violation.message.split(" is ")[0] for violation in violations] == [
+        "the declaration of h"
+    ]
+    assert violations[0].line == 13
+    assert _name_violations(BASE, prototype.replace(b"\nh\n", b"\navocado_spec_g\n")) == []
+    # A conditional without `#else` can also leave out its branch.
+    optional = b"int avocado_spec_x\n#ifdef X\n, y\n#endif\n;\n"
+    assert [
+        violation.message.split(" is ")[0] for violation in _name_violations(BASE, optional)
+    ] == ["the declaration of y"]
+
+
+def test_rule_4_applies_to_every_declarator_of_a_new_declaration() -> None:
+    violations = _name_violations(BASE, b"int y, avocado_spec_x;\n")
+    assert [violation.message.split(" is ")[0] for violation in violations] == [
+        "the declaration of y"
+    ]
+    for addition in (
+        b"int avocado_spec_a = 1, *avocado_spec_b, avocado_spec_c[2] = { 1, 2 };\n",
+        b"int avocado_spec_f(int a, int b), (*avocado_spec_g)(int);\n",
+        b"typedef struct avocado_spec_s { int a; } avocado_spec_t, *avocado_spec_p;\n",
+    ):
+        assert _name_violations(BASE, addition) == [], addition
+    names = [name.text for name in _items(b"struct S { int a; } x, y;\n")[0].names]
+    assert names == ["S", "x", "y"]
+
+
+def test_rule_4_applies_to_the_tags_and_enumerators_of_a_new_declaration() -> None:
+    violations = _name_violations(BASE, b"enum avocado_spec_e { RED, GREEN = 2 };\n")
+    assert [violation.message.split(" is ")[0] for violation in violations] == [
+        "the declaration of RED",
+        "the declaration of GREEN",
+    ]
+    violations = _name_violations(BASE, b"struct avocado_spec_s { struct t { int a; } b; };\n")
+    assert [violation.message.split(" is ")[0] for violation in violations] == [
+        "the declaration of t"
+    ]
+    for addition in (
+        b"enum { AVOCADO_SPEC_RED, AVOCADO_SPEC_GREEN = (1, 2), };\n",
+        b"typedef enum avocado_spec_e { AVOCADO_SPEC_A } avocado_spec_t;\n",
+    ):
+        assert _name_violations(BASE, addition) == [], addition
+    base = BASE.replace(b"/* swap two ints */", b"#define AVOCADO_SPEC_RED 1\n/* swap two ints */")
+    violations = _name_violations(base, b"enum avocado_spec_e { AVOCADO_SPEC_RED };\n")
+    assert len(violations) == 1 and "redefines a name" in violations[0].message, violations
+
+
+def test_rule_4_rejects_a_second_definition_compiled_with_a_later_header() -> None:
+    twice = b"int avocado_spec_k(int a) {\n  return a + 1;\n}\n" + BRANCH_HEADERS
+    violations = _name_violations(BASE, twice)
+    assert len(violations) == 1 and "already defined by another" in violations[0].message
+    assert violations[0].line == 17
+    # Definitions in different branches of one conditional are never compiled together.
+    per_branch = (
+        b"#ifdef X\nint avocado_spec_k(int a) {\n  return a;\n}\n#else\n"
+        b"int avocado_spec_k(int a) {\n  return a + 1;\n}\n#endif\n"
+    )
+    assert _name_violations(BASE, per_branch) == []
+    nested = (
+        b"#ifdef Y\nint avocado_spec_k(int a) {\n  return a;\n}\n#else\n"
+        + BRANCH_HEADERS
+        + b"#endif\n"
+    )
+    assert _name_violations(BASE, nested) == []
+
+
+def test_a_session_working_on_a_later_header_merges_its_contract() -> None:
+    base = (
+        b"#ifdef X\nint f(int a) {\n#else\nint g(int a) {\n#endif\n  return a;\n}\n"
+        b"int h(int a) {\n  return a;\n}\n"
+    )
+    snapshot = base.replace(b"int g(int a) {", b"int g(int a) __CPROVER_requires(a > 0) {")
+    assert check_edits(base, snapshot, "g") == []
+    assert function_line(base, "g") == 2
+    assert functions_with_changed_contracts(base, snapshot) == ["g"]
+    merged, report = merge_copy(
+        canonical=base, snapshot=snapshot, fork_base=base, function="g", frozen_functions=set()
+    )
+    assert report.merged and merged == snapshot, report.reason
+    # A session working on `f` meanwhile keeps its own contract, and `g`'s is not lost.
+    with_f = base.replace(b"int f(int a) {", b"int f(int a) __CPROVER_requires(a < 9) {")
+    merged, report = merge_copy(
+        canonical=snapshot, snapshot=with_f, fork_base=base, function="f", frozen_functions={"g"}
+    )
+    assert report.merged, report.reason
+    assert b"int f(int a) __CPROVER_requires(a < 9) {" in merged
+    assert b"int g(int a) __CPROVER_requires(a > 0) {" in merged
+    assert report.changed_since_fork == ["g"] and report.dropped == []
+    # An edit to the contract of `g` by the session for `h` is left out while `g` is frozen.
+    for_h = snapshot.replace(b"int h(int a) {", b"int h(int a) __CPROVER_requires(a != 0) {")
+    merged, report = merge_copy(
+        canonical=base, snapshot=for_h, fork_base=base, function="h", frozen_functions={"g"}
+    )
+    assert report.merged and b"requires(a > 0)" not in merged, report.reason
+    assert report.dropped == ["function:g (a live session is working on it)"]
 
 
 def test_a_function_followed_by_macros_is_found_under_its_own_name() -> None:
