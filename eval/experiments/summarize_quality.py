@@ -23,8 +23,9 @@ mean, spread (min..max), and standard deviation of both aggregates and of the co
 which is the noise floor for agent-time experiments.  A file without the aggregates is left out of
 their statistics in that block.  A file with no mutation summary records, such as the output of a
 failed run, is reported, left out of that block, and makes the script exit with a non-zero status.
-The script rejects a file whose name ends in `.failed`, which `measure_quality.sh` gives to the
-JSONL file of a failed or interrupted run.
+The script rejects a file whose name ends in `.failed` or `.not-measured`, which
+`measure_quality.sh` gives to the JSONL file of a failed or interrupted run and of a run with no
+mutation summary records, respectively.
 
 Usage:
     % eval/experiments/summarize_quality.py <JSONL> [<JSONL> ...] [--quiet]
@@ -33,6 +34,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import math
 import statistics
 import sys
 from pathlib import Path
@@ -60,6 +62,13 @@ def main() -> None:
     failed_runs = [path for path in args.jsonl if path.endswith(".failed")]
     if failed_runs:
         parser.error(f"output of a failed run: {', '.join(failed_runs)}")
+    # `measure_quality.sh` renames the JSONL file of a run with no mutation summary records to end
+    # in `.not-measured`.
+    unmeasured_runs = [path for path in args.jsonl if path.endswith(".not-measured")]
+    if unmeasured_runs:
+        parser.error(
+            f"output of a run with no mutation summary records: {', '.join(unmeasured_runs)}"
+        )
 
     aggregates: list[dict[str, float | int | None]] = []
     files_without_records: list[str] = []
@@ -194,15 +203,32 @@ def _is_well_formed(record: dict) -> bool:
 
     Returns:
         bool: True if "killed" and "survived" are non-negative integers and "kill_score" is a
-            number.
+            finite number or a string that denotes one.
     """
     counts = (record.get("killed"), record.get("survived"))
-    kill_score = record.get("kill_score")
-    return (
-        all(isinstance(c, int) and not isinstance(c, bool) and c >= 0 for c in counts)
-        and isinstance(kill_score, (int, float))
-        and not isinstance(kill_score, bool)
-    )
+    if not all(isinstance(c, int) and not isinstance(c, bool) and c >= 0 for c in counts):
+        return False
+    return _is_finite_number(record.get("kill_score"))
+
+
+def _is_finite_number(value: object) -> bool:
+    """Return True if the given value is a finite number or a string that denotes one.
+
+    `MutationScore.summary()` writes `kill_score` as a string such as "0.7500".
+
+    Args:
+        value (object): a value parsed from the JSONL, such as 0.75 or "0.7500".
+
+    Returns:
+        bool: True if the value is a non-bool int or float, or a string, that `float()` converts
+            to a finite number.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (ValueError, OverflowError):
+        return False
 
 
 def _num_decided(record: dict) -> int:
