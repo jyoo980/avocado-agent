@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --quiet python3
 
-"""Summarize one or more `evaluate_specification_quality.py --mutation` JSONL files.
+"""Summarize one or more JSONL files written by `evaluate_specification_quality.py --mutation`.
 
 For each JSONL file, prints the per-function kill scores and two aggregates:
 

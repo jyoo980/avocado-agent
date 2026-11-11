@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Measure specification quality (mutation kill score) and harness time for a benchmark.
 #
-# Runs `eval/mutants/evaluate_specification_quality.py --mutation` over one benchmark directory,
-# writing the JSONL record stream to `avocado-experimental-data/<label>-<benchmark>.jsonl`, and a
-# header line (date, commit), the `time -p` output (real/user/sys), and a status line to
-# `avocado-experimental-data/<label>-<benchmark>.time`.  The evaluation's own log and error output
-# go to the terminal.
+# Runs `eval/mutants/evaluate_specification_quality.py --mutation` over one benchmark directory.
+# It writes file `avocado-experimental-data/<label>-<benchmark>.{jsonl,time}`
+# and appends to file `avocado-experimental-data/<label>-<benchmark>.time`.
+# The evaluation's own log and error output go to the terminal.
 #
 # Usage:
 #   eval/experiments/measure_quality.sh <label> <benchmark-dir> [<benchmark-dir> ...]
@@ -16,17 +15,19 @@
 # Setting `AVOCADO_DATA_DIR` writes the `.jsonl` and `.time` files there instead of to this
 # checkout's `avocado-experimental-data/`.
 #
-# The benchmark name used in output file names is the directory's basename (e.g. `quicksort`), so
-# the benchmark directories must have distinct basenames, and the label must not contain `/`.
-# Benchmarks are processed sequentially so timings are not perturbed by one another.  If the
-# evaluation of a benchmark fails, its status line says `status=failed`, its JSONL file (if any) is
-# renamed to `<label>-<benchmark>.jsonl.failed`, the remaining benchmarks are still measured, and
-# the script exits with a non-zero status.  If the evaluation succeeds but writes no mutation
-# summary records (as for a benchmark with no CBMC-annotated functions), the status line says
-# `status=not-measured`, the JSONL file is renamed to `<label>-<benchmark>.jsonl.not-measured`, and
-# the script likewise goes on and exits with a non-zero status.  An interrupt (Ctrl-C) or SIGTERM
-# stops the script after the evaluation of the current benchmark exits and the script records its
-# status.
+# The benchmark name used in output file names is the directory's basename (e.g. `quicksort`).
+# Benchmarks within a directory are processed sequentially so timings are not perturbed by one
+# another.
+#
+# If an error occurs while processing one benchmark, the remaining benchmarks are still measured,
+# and the script exits with a non-zero status.  The error conditions sare:
+# * If the evaluation of a benchmark fails, it writes `status=failed` to the `.time` file, and its
+#   JSONL file (if any) is renamed to `<label>-<benchmark>.jsonl.failed`.
+# * If the evaluation succeeds but writes no mutation summary records (as for a benchmark with no
+#   CBMC-annotated functions), the status line says `status=not-measured`, the JSONL file is renamed
+#   to `<label>-<benchmark>.jsonl.not-measured`.
+# * An interrupt (Ctrl-C) or SIGTERM stops the script after the evaluation of the current benchmark
+#   exits and the script records its status.
 #
 # Before each benchmark, the script deletes the mutant sources (`*__mutant_*.c`,
 # `*__clause_drop_*.c`) in the benchmark directory that git does not track:  an interrupted run
@@ -45,7 +46,6 @@ fi
 
 label="$1"
 shift
-# The label is part of the output file names, so a `/` would put them outside the output directory.
 if [[ "${label}" == */* ]]; then
   echo "$0: label must not contain '/': ${label}" >&2
   exit 2
@@ -54,8 +54,7 @@ fi
 # Resolve the benchmark directories before changing directory, so that relative paths are relative
 # to the directory the script was invoked from.
 benchmark_dirs=()
-# Maps each benchmark name (a directory's basename) to the directory that has it.  Two benchmarks
-# with the same name would write the same output files.
+# Maps each benchmark name (a directory's basename) to the directory that has it.
 declare -A benchmark_name_dirs=()
 for benchmark_dir in "$@"; do
   if [ ! -d "${benchmark_dir}" ]; then
@@ -65,7 +64,7 @@ for benchmark_dir in "$@"; do
   resolved_dir="$(realpath -- "${benchmark_dir}")"
   benchmark="$(basename "${resolved_dir}")"
   if [ -n "${benchmark_name_dirs["${benchmark}"]+set}" ]; then
-    echo "$0: benchmarks ${benchmark_name_dirs["${benchmark}"]} and ${resolved_dir} have the same name: ${benchmark}" >&2
+    echo "$0: two benchmarks with the same name: ${benchmark_name_dirs["${benchmark}"]} and ${resolved_dir}" >&2
     exit 2
   fi
   benchmark_name_dirs["${benchmark}"]="${resolved_dir}"
@@ -80,7 +79,7 @@ out_dir="${AVOCADO_DATA_DIR:-${repo_root}/avocado-experimental-data}"
 mkdir -p "${out_dir}"
 # Absolute, because the script changes directory before writing there.
 out_dir="$(realpath -- "${out_dir}")"
-# `--dirty` marks a measurement of uncommitted changes.  The commit is `unknown` if the checkout has
+# Set the commit to `unknown` if the checkout has
 # no git metadata, as in a Docker image built without `.git`.
 commit="$(git -C "${repo_root}" describe --always --dirty 2>/dev/null || echo unknown)"
 
@@ -91,6 +90,7 @@ find_evaluation_outputs() {
 }
 
 # Deletes the mutant sources under directory $1 that git does not track.
+# $1 is a benchmark directory.
 remove_leftover_mutants() {
   if git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     # In a pathspec, `*` also matches `/`, so these patterns match in subdirectories too.
@@ -162,6 +162,7 @@ for benchmark_dir in "${benchmark_dirs[@]}"; do
   rm -f -- "${jsonl}" "${jsonl}.failed" "${jsonl}.not-measured"
   remove_leftover_mutants "${benchmark_dir}"
   record_preexisting_outputs "${benchmark_dir}"
+  # The global variable `current_benchmark_dir` is used by the `cleanup` function.
   current_benchmark_dir="${benchmark_dir}"
   echo "== ${label}/${benchmark}: $(date -u +%FT%TZ) commit=${commit}" | tee "${time_log}"
   # `time -p` prints POSIX real/user/sys lines to the group's stderr, which goes to the time log.
