@@ -8,6 +8,16 @@ Each metric is a separate flag so the user can specify the ones they want, namel
     - --mutation: Mutation scores for specifications that can "kill" a mutant function.
     - --redundancy: Clause redundancy.
 
+Mutation scoring of different functions is independent, so with `--jobs N` up to N functions are
+scored concurrently, each in its own thread; the mutants of all functions additionally fan out in
+one shared thread pool. Machine-wide load is bounded by the subprocess cap in `tools.run_cbmc`
+(`AVOCADO_MAX_CONCURRENT_CBMC`), which is also the default for `--jobs`. Records are still emitted
+in the sequential order (files sorted, functions sorted within each file, and each function's
+mutation record before its redundancy record), so the JSONL output is identical to a `--jobs 1`
+run. Clause-redundancy scoring is not parallelized: it runs in the main thread, for each function
+once that function's mutation record has been written. If scoring any function raises an
+exception, the run stops promptly, even while earlier functions are still being scored.
+
 Usage:
     % ./eval/mutants/evaluate_specification_quality.py <PATH_TO_C_FILE_OR_DIR> \
             [--auto-include] \
@@ -15,6 +25,7 @@ Usage:
             [--mutation] \
             [--redundancy] \
             [--keep-artifacts] \
+            [--jobs N] \
             [--jsonl PATH]
 """
 
@@ -23,8 +34,17 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    Future,
+    InvalidStateError,
+    ThreadPoolExecutor,
+    wait,
+)
+from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
 from loguru import logger
 
@@ -33,6 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from eval.mutants.compute_clause_redundancy import compute_clause_redundancy_score
 from eval.mutants.generate_mutants_and_compute_score import generate_mutants_and_compute_score
 from eval.mutants.util import get_files_with_extension
+from tools.run_cbmc import max_concurrent_subprocesses
 from tools.util import (
     AUTO_INCLUDE_HELP,
     existing_include_dir,
@@ -74,8 +95,22 @@ def main() -> None:
         action="store_true",
         help="Retain mutant .c files after evaluation. Defaults to False.",
     )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        # More functions than subprocess slots could only wait for a slot.
+        default=max_concurrent_subprocesses(),
+        metavar="N",
+        help=(
+            "Score up to N functions concurrently (mutation metric only). Defaults to the "
+            "subprocess cap (the CPU count, limited by `AVOCADO_MAX_CONCURRENT_CBMC` or else by "
+            "32); use 1 for a fully sequential run."
+        ),
+    )
     parser.add_argument("--jsonl", default=None, help="Write records to this JSONL file.")
     args = parser.parse_args()
+    if args.jobs < 1:
+        parser.error("--jobs must be at least 1.")
 
     logger.remove()
     logger.add(sys.stderr, level="INFO")
@@ -95,78 +130,196 @@ def main() -> None:
     )
     try:
         include_dirs_from_cli = args.include_dirs or []
-        for source in input_files:
-            _process_file(
-                source=source,
-                out=output_stream,
-                auto_include=args.auto_include,
-                include_dirs=include_dirs_from_cli,
-                run_mutation=args.mutation,
-                run_redundancy=args.redundancy,
-                keep_artifacts=args.keep_artifacts,
-            )
+        # Completed with an exception as soon as scoring any function raises one.
+        failure: Future[None] = Future()
+        with ThreadPoolExecutor(max_workers=args.jobs) as executor:
+            try:
+                # Submit every file's mutation-scoring tasks up front so the pool is never idle
+                # while one file's stragglers finish, then drain results file by file in the
+                # original order.
+                submitted = [
+                    _submit_file(
+                        source=source,
+                        auto_include=args.auto_include,
+                        include_dirs=include_dirs_from_cli,
+                        run_mutation=args.mutation,
+                        keep_artifacts=args.keep_artifacts,
+                        executor=executor,
+                        failure=failure,
+                    )
+                    for source in input_files
+                ]
+                for submitted_file in submitted:
+                    _write_file_records(
+                        submitted_file,
+                        out=output_stream,
+                        run_redundancy=args.redundancy,
+                        keep_artifacts=args.keep_artifacts,
+                        failure=failure,
+                    )
+            finally:
+                # If we exit early (an unexpected error or a Ctrl-C), stop scoring functions that
+                # haven't started yet; the `with` block still waits for functions in progress.
+                executor.shutdown(cancel_futures=True)
     finally:
         if args.jsonl:
             output_stream.close()
     return sys.exit(0)
 
 
-def _process_file(
+@dataclass(frozen=True)
+class _SubmittedFile:
+    """The in-progress mutation-scoring work for one source file.
+
+    Attributes:
+        source (Path): The path to the file under evaluation.
+        functions (list[str]): The file's annotated functions, sorted.
+        mutation_futures (list[Future[dict]]): One pending `mutation_summary` record per function,
+            in `functions` order; empty when mutation scoring is disabled.
+    """
+
+    source: Path
+    functions: list[str]
+    mutation_futures: list[Future[dict]]
+
+
+def _submit_file(
     source: Path,
-    out: IO[str],
     auto_include: bool,
     include_dirs: list[str],
     run_mutation: bool,
-    run_redundancy: bool,
     keep_artifacts: bool,
-) -> None:
-    """Run all enabled metrics for a single source file and write JSONL records to `out`.
+    executor: ThreadPoolExecutor,
+    failure: Future[None],
+) -> _SubmittedFile:
+    """Submit mutation scoring for every annotated function in `source` to `executor`.
 
     Arguments:
         source (Path): The path to the file for evaluation.
-        out (IO[str]): The output.
         auto_include (bool): True iff the auto-detected include directory (see
             `get_include_dirs()`) should be added to CBMC's include search path.
         include_dirs (list[str]): List of directories containing files (e.g., headers) that should
             be included in verification.
         run_mutation (bool): True iff mutation testing should be reported.
-        run_redundancy (bool): True iff redundancy scoring should be reported.
         keep_artifacts (bool): True iff the mutant files should be retained after evaluation.
+        executor (ThreadPoolExecutor): Pool in which per-function mutation scoring runs.
+        failure (Future[None]): Completed with the exception of the first scoring task that
+            raises one.
+
+    Returns:
+        _SubmittedFile: The file's functions and their pending mutation records.
     """
     logger.info(f"Processing {source}")
     functions_with_cprover_annotations = sorted(get_functions_with_cprover_annotations(str(source)))
-
     if not functions_with_cprover_annotations:
         logger.warning(f"{source} had no functions with CBMC annotations")
-        return
+        return _SubmittedFile(source, [], [])
 
     include_dirs = get_include_dirs(str(source), include_dirs, auto_include=auto_include)
 
-    for function in functions_with_cprover_annotations:
-        if run_mutation:
-            mutation_testing_result = generate_mutants_and_compute_score(
-                str(source), function, keep_artifacts=keep_artifacts, include_dirs=include_dirs
+    futures: list[Future[dict]] = []
+    if run_mutation:
+        futures = [
+            executor.submit(
+                _mutation_record,
+                source,
+                function,
+                include_dirs=include_dirs,
+                keep_artifacts=keep_artifacts,
             )
-            if isinstance(mutation_testing_result, MutationScore):
-                out.write(json.dumps(mutation_testing_result.summary()) + "\n")
-            else:
-                result = {
-                    "kind": "mutation_summary",
-                    "was_mutation_tested": False,
-                    "file": str(source.resolve()),
-                    "function": function,
-                    "metadata": str(mutation_testing_result),
-                }
-                out.write(json.dumps(result) + "\n")
-        if run_redundancy:
-            if clause_redundancy_score := compute_clause_redundancy_score(
-                str(source), function, keep_artifacts=keep_artifacts
-            ):
-                out.write(json.dumps(clause_redundancy_score.summary()) + "\n")
-            else:
-                logger.warning(
-                    f"No redundancy score calculation reported for: '{source!s}#{function}'"
-                )
+            for function in functions_with_cprover_annotations
+        ]
+        for future in futures:
+            future.add_done_callback(lambda done: _record_failure(done, failure))
+    return _SubmittedFile(source, functions_with_cprover_annotations, futures)
+
+
+def _record_failure(done: Future[dict], failure: Future[None]) -> None:
+    """Complete `failure` with the exception of `done`, if it raised one and `failure` is pending.
+
+    Arguments:
+        done (Future[dict]): A finished scoring task.
+        failure (Future[None]): The future that records the first scoring failure.
+    """
+    if done.cancelled() or (exception := done.exception()) is None:
+        return
+    with suppress(InvalidStateError):  # An earlier task already failed.
+        failure.set_exception(exception)
+
+
+def _write_file_records(
+    submitted: _SubmittedFile,
+    out: IO[str],
+    run_redundancy: bool,
+    keep_artifacts: bool,
+    failure: Future[None],
+) -> None:
+    """Write one file's metric records to `out`, function by function.
+
+    For each function in order, its mutation summary is written once its future completes, and
+    then its redundancy score (when enabled) is computed in the calling thread and written.
+
+    Arguments:
+        submitted (_SubmittedFile): The file's pending mutation work.
+        out (IO[str]): The output.
+        run_redundancy (bool): True iff redundancy scoring should be reported.
+        keep_artifacts (bool): True iff the mutant files should be retained after evaluation.
+        failure (Future[None]): Completed with the exception of the first scoring task that
+            raises one. Waiting for a mutation summary stops as soon as `failure` completes.
+
+    Raises:
+        Exception: The exception of the first failed scoring task, as soon as one fails, even if
+            it belongs to a later function or file.
+    """
+    for index, function in enumerate(submitted.functions):
+        if submitted.mutation_futures:
+            future = submitted.mutation_futures[index]
+            awaited: list[Future[Any]] = [future, failure]
+            wait(awaited, return_when=FIRST_COMPLETED)
+            if failure.done():
+                failure.result()
+            out.write(json.dumps(future.result()) + "\n")
+            out.flush()
+        if not run_redundancy:
+            continue
+        if clause_redundancy_score := compute_clause_redundancy_score(
+            str(submitted.source), function, keep_artifacts=keep_artifacts
+        ):
+            out.write(json.dumps(clause_redundancy_score.summary()) + "\n")
+            out.flush()
+        else:
+            logger.warning(
+                f"No redundancy score calculation reported for: '{submitted.source!s}#{function}'"
+            )
+
+
+def _mutation_record(
+    source: Path, function: str, *, include_dirs: list[str], keep_artifacts: bool
+) -> dict:
+    """Return the mutation-summary JSONL record for one function.
+
+    Arguments:
+        source (Path): The path to the file containing the function.
+        function (str): The function to mutation test.
+        include_dirs (list[str]): Directories forwarded to CBMC as include paths.
+        keep_artifacts (bool): True iff the mutant files should be retained after evaluation.
+
+    Returns:
+        dict: The `mutation_summary` record: the `MutationScore` summary when the function was
+            mutation tested, else a record whose `metadata` explains why it was not.
+    """
+    mutation_testing_result = generate_mutants_and_compute_score(
+        str(source), function, keep_artifacts=keep_artifacts, include_dirs=include_dirs
+    )
+    if isinstance(mutation_testing_result, MutationScore):
+        return mutation_testing_result.summary()
+    return {
+        "kind": "mutation_summary",
+        "was_mutation_tested": False,
+        "file": str(source.resolve()),
+        "function": function,
+        "metadata": str(mutation_testing_result),
+    }
 
 
 if __name__ == "__main__":
