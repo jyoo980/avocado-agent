@@ -11,6 +11,7 @@ from __future__ import annotations
 import shutil
 from typing import TYPE_CHECKING
 
+from eval.mutants.util import MUTANT_MARKERS
 from tools.run_cbmc import VACUOUS_VERDICT
 
 if TYPE_CHECKING:
@@ -34,8 +35,7 @@ SNAPSHOT_IGNORE = shutil.ignore_patterns(
     "*-callgraph.json",
     "*.jsonl",
     f"*{TRANSCRIPTS_DIR_SUFFIX}",
-    "*__mutant_*.c",
-    "*__clause_drop_*.c",
+    *(f"*__{marker}_*.c" for marker in MUTANT_MARKERS),
     "mutation_compile_failures.log",
 )
 
@@ -87,22 +87,28 @@ def rechecked_on_change(verified: Iterable[str], unverified: Mapping[str, str]) 
     return set(verified) | {name for name, why in unverified.items() if is_vacuous_status(why)}
 
 
-def find_stray_files(session_file: Path, canonical_dir: Path) -> list[str]:
+def find_stray_files(session_file: Path, canonical_file: Path, fork_base: bytes) -> list[str]:
     """Return the files other than the source file that were added or changed in a session copy.
 
     Headers, other sources and new files in the private copy are never merged. A file is compared
-    to the canonical directory's copy of it, which no session ever writes; logs, caches, CBMC
+    to the canonical directory's copy of it, which no session writes; logs, caches, CBMC
     intermediates and mutant sources (`SNAPSHOT_IGNORE`) do not count.
+
+    The exception is a file whose canonical copy is the canonical source file itself, such as the
+    target `foo_impl.c` of a canonical source file `foo.c -> foo_impl.c`. Merges of other sessions
+    write that file, so it is compared to `fork_base` instead.
 
     Args:
         session_file (Path): The session's private copy of the source file.
-        canonical_dir (Path): The canonical source directory.
+        canonical_file (Path): The canonical source file, in the canonical source directory.
+        fork_base (bytes): The contents of `canonical_file` when the session copy was made.
 
     Returns:
         list[str]: Relative paths tagged `added:` or `modified:`, in sorted order.
     """
     stray: list[str] = []
     session_dir = session_file.parent
+    canonical_dir = canonical_file.parent
     for path in sorted(session_dir.rglob("*")):
         if not path.is_file() or path == session_file:
             continue
@@ -112,6 +118,8 @@ def find_stray_files(session_file: Path, canonical_dir: Path) -> list[str]:
         original = canonical_dir / relative
         if not original.is_file():
             stray.append(f"added:{relative}")
-        elif original.read_bytes() != path.read_bytes():
+        elif path.read_bytes() != (
+            fork_base if original.samefile(canonical_file) else original.read_bytes()
+        ):
             stray.append(f"modified:{relative}")
     return stray

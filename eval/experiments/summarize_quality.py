@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --quiet python3
 
-"""Summarize one or more `evaluate_specification_quality.py --mutation` JSONL files.
+"""Summarize one or more JSONL files written by `evaluate_specification_quality.py --mutation`.
 
 For each JSONL file, prints the per-function kill scores and two aggregates:
 
@@ -15,14 +15,17 @@ Functions that were not mutation tested (did not verify, or had no mutants) are 
 so a treatment cannot look better merely by verifying fewer functions.  So are functions whose
 mutants were all undecided (timed out, failed to compile, or failed instrumentation):  their
 `kill_score` of 0.0 does not mean that a mutant survived, so it is not part of `mean_kill_score`.
+A mutation-tested function's record that lacks a usable `killed`, `survived`, or `kill_score`
+field, as in a truncated or hand-edited file, is skipped with a warning.
 
 When several JSONL files are given (e.g. three independent agent runs), a final block reports the
 mean, spread (min..max), and standard deviation of both aggregates and of the counts across files,
 which is the noise floor for agent-time experiments.  A file without the aggregates is left out of
 their statistics in that block.  A file with no mutation summary records, such as the output of a
 failed run, is reported, left out of that block, and makes the script exit with a non-zero status.
-The script rejects a file whose name ends in `.failed`, which `measure_quality.sh` gives to the
-JSONL file of a failed or interrupted run.
+The script rejects a file whose name ends in `.failed` or `.not-measured`, which
+`measure_quality.sh` gives to the JSONL file of a failed or interrupted run and of a run with no
+mutation summary records, respectively.
 
 Usage:
     % eval/experiments/summarize_quality.py <JSONL> [<JSONL> ...] [--quiet]
@@ -31,6 +34,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import math
 import statistics
 import sys
 from pathlib import Path
@@ -58,6 +62,13 @@ def main() -> None:
     failed_runs = [path for path in args.jsonl if path.endswith(".failed")]
     if failed_runs:
         parser.error(f"output of a failed run: {', '.join(failed_runs)}")
+    # `measure_quality.sh` renames the JSONL file of a run with no mutation summary records to end
+    # in `.not-measured`.
+    unmeasured_runs = [path for path in args.jsonl if path.endswith(".not-measured")]
+    if unmeasured_runs:
+        parser.error(
+            f"output of a run with no mutation summary records: {', '.join(unmeasured_runs)}"
+        )
 
     aggregates: list[dict[str, float | int | None]] = []
     files_without_records: list[str] = []
@@ -121,8 +132,17 @@ def summarize(path: Path, *, verbose: bool) -> dict[str, float | int | None] | N
     if not records:
         print("  no mutation summary records")
         return None
-    tested = [r for r in records if r.get("was_mutation_tested") and _num_decided(r) > 0]
-    undecided = [r for r in records if r.get("was_mutation_tested") and _num_decided(r) == 0]
+    # A record from a truncated or hand-edited file can lack a field that the aggregates need.
+    malformed = [r for r in records if r.get("was_mutation_tested") and not _is_well_formed(r)]
+    for r in malformed:
+        print(
+            f"warning: {path}: skipping a malformed mutation summary record for "
+            f"{r.get('file')}#{r.get('function')}",
+            file=sys.stderr,
+        )
+    well_formed = [r for r in records if r.get("was_mutation_tested") and _is_well_formed(r)]
+    tested = [r for r in well_formed if _num_decided(r) > 0]
+    undecided = [r for r in well_formed if _num_decided(r) == 0]
     untested = [r for r in records if not r.get("was_mutation_tested")]
     scores = [float(r["kill_score"]) for r in tested]
     killed = sum(int(r["killed"]) for r in tested)
@@ -141,14 +161,14 @@ def summarize(path: Path, *, verbose: bool) -> dict[str, float | int | None] | N
             print(
                 f"  {Path(r['file']).name}#{r['function']:35s} "
                 f"{int(r['killed']):3d}/{_num_decided(r):3d} decided "
-                f"(timed_out={r['timed_out']} compile_failed={r['compile_failed']}) "
+                f"(timed_out={r.get('timed_out')} compile_failed={r.get('compile_failed')}) "
                 f"kill_score={float(r['kill_score']):.4f}"
             )
         for r in undecided:
             print(
                 f"  {Path(r['file']).name}#{r['function']:35s} -- no decided mutants "
-                f"(timed_out={r['timed_out']} compile_failed={r['compile_failed']} "
-                f"instrumentation_failed={r['instrumentation_failed']})"
+                f"(timed_out={r.get('timed_out')} compile_failed={r.get('compile_failed')} "
+                f"instrumentation_failed={r.get('instrumentation_failed')})"
             )
         for r in untested:
             reason = "did not verify" if "did not verify" in r.get("metadata", "") else "no mutants"
@@ -172,6 +192,43 @@ def _format_score(score: float | None) -> str:
         str: The formatted kill score, such as "0.7500".
     """
     return "n/a" if score is None else f"{score:.4f}"
+
+
+def _is_well_formed(record: dict) -> bool:
+    """Return True if the given record has usable "killed", "survived", and "kill_score" fields.
+
+    Args:
+        record (dict): a mutation-tested function's `mutation_summary` record, as a dict parsed
+            from the JSONL.
+
+    Returns:
+        bool: True if "killed" and "survived" are non-negative integers and "kill_score" is a
+            finite number or a string that denotes one.
+    """
+    counts = (record.get("killed"), record.get("survived"))
+    if not all(isinstance(c, int) and not isinstance(c, bool) and c >= 0 for c in counts):
+        return False
+    return _is_finite_number(record.get("kill_score"))
+
+
+def _is_finite_number(value: object) -> bool:
+    """Return True if the given value is a finite number or a string that denotes one.
+
+    `MutationScore.summary()` writes `kill_score` as a string such as "0.7500".
+
+    Args:
+        value (object): a value parsed from the JSONL, such as 0.75 or "0.7500".
+
+    Returns:
+        bool: True if the value is a non-bool int or float, or a string, that `float()` converts
+            to a finite number.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (ValueError, OverflowError):
+        return False
 
 
 def _num_decided(record: dict) -> int:

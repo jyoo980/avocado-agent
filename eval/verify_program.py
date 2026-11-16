@@ -20,14 +20,18 @@ from pathlib import Path
 from loguru import logger
 
 from tools.util import (
+    AUTO_INCLUDE_HELP,
     build_stub_index,
+    existing_include_dir,
     get_call_graph,
     get_functions_with_cprover_annotations,
+    get_include_dirs,
     get_unstubbed_external_callees_for,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from eval.mutants.util import get_files_with_extension
 from tools.run_cbmc import RunCbmcResult, verify_function
 
 
@@ -91,15 +95,14 @@ def main() -> int:
     )
     parser.add_argument(
         "--auto-include",
-        help=(
-            "For each .c file, look for a sibling include/ directory at "
-            "<source>/../include and pass it to CBMC as an include path. "
-            "Fits projects whose headers live next to their src/ tree."
-        ),
+        help=AUTO_INCLUDE_HELP,
         action="store_true",
     )
     parser.add_argument(
-        "--include-dirs", action="append", help="Path(s) to stubs to use in verification."
+        "--include-dirs",
+        action="append",
+        type=existing_include_dir,
+        help="Path(s) to stubs to use in verification.",
     )
     args = parser.parse_args()
 
@@ -107,7 +110,7 @@ def main() -> int:
     debug_level = "DEBUG" if args.v else "INFO"
     logger.add(sys.stderr, level=debug_level)
 
-    files = _get_files_for_verification(args.path)
+    files = get_files_with_extension(args.path, ".c") if Path(args.path).exists() else []
     if not files:
         logger.info(f"No .c files found at: {args.path}")
         return 1
@@ -131,26 +134,6 @@ def main() -> int:
     )
 
 
-def _get_files_for_verification(path_str: str) -> list[Path]:
-    """Return the list of C files to verify for a given path.
-
-    If the path is a directory, recursively collects all `.c` files underneath it, including
-    sub-directories.
-
-    Args:
-        path_str (str): Path to a C file or a directory containing C files.
-
-    Returns:
-        list[Path]: Sorted list of paths to verify.
-    """
-    path = Path(path_str)
-    if not path.exists():
-        return []
-    if path.is_dir():
-        return sorted(path.rglob("*.c"))
-    return [path] if path.suffix == ".c" else []
-
-
 def _verify_program(
     file: str,
     skip_unannotated_functions: bool,
@@ -165,8 +148,8 @@ def _verify_program(
             (i.e., CBMC should not be run on them).
         include_dirs (list[str]): List of directories containing files (e.g., headers) that should
             be included in verification.
-        auto_include (bool): True iff `<file>/../include` should be added to CBMC's include
-            search path when that directory exists. Defaults to False.
+        auto_include (bool): True iff the auto-detected include directory (see
+            `get_include_dirs()`) should be added to CBMC's include search path. Defaults to False.
 
     Returns:
         ProgramVerificationResult: The verification result for the given file.
@@ -180,11 +163,7 @@ def _verify_program(
         names_of_functions_to_verify = get_functions_with_cprover_annotations(file)
         skipped_functions = set(call_graph.keys()).difference(names_of_functions_to_verify)
 
-    include_dirs = (
-        [*_autodetect_include_dirs(file), *include_dirs] if auto_include else include_dirs
-    )
-    if include_dirs:
-        logger.debug(f"[auto-include] using {include_dirs}")
+    include_dirs = get_include_dirs(file, include_dirs, auto_include=auto_include)
 
     results: list[FunctionVerificationResult] = []
     for function in names_of_functions_to_verify:
@@ -203,23 +182,6 @@ def _verify_program(
             logger.error(f"     {failure}")
         results.append(result)
     return ProgramVerificationResult(file, list(skipped_functions), results)
-
-
-def _autodetect_include_dirs(source_file: str) -> list[str]:
-    """Return `[<source>/../include]` if that directory exists, else an empty list.
-
-    Many CMake projects keep public headers in `<project>/include/` while sources live in
-    `<project>/src/`. When that layout holds, returning the sibling `include/` directory lets
-    CBMC resolve `#include "foo.h"` without the caller having to configure paths by hand.
-
-    Args:
-        source_file (str): Path to a `.c` file.
-
-    Returns:
-        list[str]: `[<resolved include dir>]` when present, else `[]`.
-    """
-    candidate = Path(source_file).resolve().parent.parent / "include"
-    return [str(candidate)] if candidate.is_dir() else []
 
 
 def _verify_function(
