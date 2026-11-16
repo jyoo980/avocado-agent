@@ -7,6 +7,8 @@ time. Consumers should `from tools.util.mutation import ...` directly.
 """
 
 from .callgraph import CallGraph, CallGraphCallees
+from .include_dirs import AUTO_INCLUDE_HELP, existing_include_dir, get_include_dirs
+from .paths import resolve_parent
 from .stubs import (
     build_stub_index,
     get_in_file_callees_for,
@@ -14,6 +16,7 @@ from .stubs import (
     get_stub_paths_for,
     get_unstubbed_external_callees_for,
 )
+from .subprocesses import run_command
 from .tree_sitter_utils import (
     FunctionSloc,
     get_call_graph,
@@ -23,16 +26,21 @@ from .tree_sitter_utils import (
 )
 
 __all__ = [
+    "AUTO_INCLUDE_HELP",
     "CallGraph",
     "CallGraphCallees",
     "FunctionSloc",
     "build_stub_index",
+    "existing_include_dir",
     "get_call_graph",
     "get_function_definition",
     "get_function_sloc",
     "get_functions_with_cprover_annotations",
     "get_in_file_callees_for",
     "get_in_file_callers_of",
+    "get_include_dirs",
     "get_stub_paths_for",
     "get_unstubbed_external_callees_for",
+    "resolve_parent",
+    "run_command",
 ]

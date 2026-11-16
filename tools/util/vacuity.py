@@ -41,6 +41,7 @@ from tools.run_cbmc import (
     run_cbmc,
 )
 from tools.util.edit_rules import function_body_offsets
+from tools.util.paths import resolve_parent
 from tools.util.vacuity_check_result import VACUOUS_KINDS, Vacuity, VacuityCheckResult
 
 # The message of the assertion added as the first statement of the body. CBMC prints it on the
@@ -78,7 +79,9 @@ def check_vacuity(
     Returns:
         VacuityCheckResult: The result of checking the function specification for vacuity.
     """
-    source_path = Path(file_path).resolve()
+    # As in `run_cbmc`, a symlinked file is not followed, so the probed copy finds the headers
+    # beside the symlink.
+    source_path = resolve_parent(file_path)
     try:
         source = source_path.read_bytes()
     except OSError as error:

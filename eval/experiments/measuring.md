@@ -1,7 +1,7 @@
 # Measuring Avocado Agent
 
-Scripts for measuring Avocado Agent while changing it: scoring specifications,
-running agent experiments, and summarizing and comparing runs.
+Scripts for measuring different variants of Avocado Agent: scoring
+specifications, running agent experiments, and summarizing and comparing runs.
 
 ## Which launcher to use
 
@@ -48,18 +48,18 @@ program (see [Step 4 of the README](README.md#step-4-read-the-results)).
 
 ## Where the data goes
 
-By default, everything the host-side scripts write lands in
-`avocado-experimental-data/` at the repository root, which **`.gitignore`
-excludes**. Every JSONL and `.time` file they produce is therefore local to the
-machine that produced it: a fresh clone has the scripts but none of the data.
-To re-derive the data, re-run the scripts. Setting `AVOCADO_DATA_DIR` sends the
-output elsewhere; `.gitignore` does not cover such a directory, so keep it out
-of version control yourself.
+The host-side scripts write into `avocado-experimental-data/`
+at the repository root, which **`.gitignore` excludes**.
+A fresh
+clone has the scripts but none of the data. To re-derive the data, re-run the
+scripts. Setting `AVOCADO_DATA_DIR` sends the output elsewhere.
 
 ## Deterministic measurement, no agent involved
 
-- `measure_quality.sh <label> <benchmark-dir>...` scores the specifications a
-  benchmark already carries and records wall/user/sys time. Use it for any
+- `measure_quality.sh <label> <benchmark-dir>...` reports mutation kill
+  scores for scores the specifications a
+  benchmark already carries and records wall/user/sys time. Use it to test
+  an Avocado
   change that cannot alter a score, and to prove that it did not.
 - `summarize_quality.py <jsonl>...` prints per-function kill scores plus the
   mean and pooled aggregates, and their mean, spread, and standard deviation
