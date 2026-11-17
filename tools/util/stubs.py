@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -9,7 +10,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tools.util.callgraph import CallGraph
 
-_STUBS_DIR = Path(__file__).resolve().parents[2] / "stubs"
+# The checkout's `stubs/`, unless `AVOCADO_STUBS_DIR` names another directory. The experiment
+# scripts set it when scoring a run, so the scorer uses the stubs that run's agent pass left behind
+# (saved with the run) rather than whatever the scoring checkout's `stubs/` holds.
+_STUBS_DIR = (
+    Path(os.environ["AVOCADO_STUBS_DIR"]).resolve()
+    if os.environ.get("AVOCADO_STUBS_DIR")
+    else Path(__file__).resolve().parents[2] / "stubs"
+)
 
 # CBMC stub files mark each modeled symbol with a `/* FUNCTION: <name> */` comment immediately
 # preceding the C function definition. In the C function definition, the C identifier itself is

@@ -9,7 +9,9 @@
 #   2. Run `avocado-verify --file` on every `.c` file in the copy (in sorted order), timing the
 #      whole pass with `time -p`. Agent time and cost per function come from the
 #      `<stem>-avocado-verify.jsonl` logs that `avocado-verify` writes next to each file.
-#   3. Score the resulting specifications with `evaluate_specification_quality.py --mutation`,
+#   3. Save the harness checkout's `stubs/` (including any stubs the agent added) to
+#      `avocado-experimental-data/stubs/<label>/<run-id>/<benchmark>/`, then score the resulting
+#      specifications against those stubs with `evaluate_specification_quality.py --mutation`,
 #      writing `avocado-experimental-data/<label>-<run-id>-<benchmark>.jsonl`.
 #
 # Usage:
@@ -37,7 +39,9 @@
 #                       `*/polarssl/*` for mkey, whose committed specifications cover only its own
 #                       three source files.
 #   AVOCADO_SCORER_ROOT Checkout whose `evaluate_specification_quality.py` scores the resulting
-#                       specifications. Defaults to `AVOCADO_REPO_ROOT`. Set it to one checkout for
+#                       specifications; the scorer runs from that checkout, with its `.venv`, and
+#                       uses the stubs saved with the run (step 3), not that checkout's `stubs/`.
+#                       Defaults to `AVOCADO_REPO_ROOT`. Set it to one checkout for
 #                       every arm of an experiment so both arms are scored by the same code: the
 #                       metric is identical either way, but a checkout with the parallel scorer
 #                       finishes in a fraction of the time.
@@ -158,14 +162,29 @@ for benchmark_dir in "${benchmark_dirs[@]}"; do
   } 2>>"${time_log}"
   tail -n 3 "${time_log}"
 
+  # Save the stub set this agent pass leaves in the harness checkout (its tracked stubs plus any
+  # the agent added), so scoring -- now and any later rescoring by `rescore_run.sh` -- verifies
+  # the specifications against the same stubs, whichever checkout the scorer runs from.
+  stubs_dir="${data_dir}/stubs/${label}/${run_id}/${benchmark}"
+  rm -rf -- "${stubs_dir}"
+  mkdir -p "${stubs_dir}"
+  cp -a -- "${repo_root}/stubs/." "${stubs_dir}/"
+
   echo "== ${label}/${run_id}/${benchmark}: scoring $(date -u +%FT%TZ)" | tee -a "${time_log}"
   find "${work_dir}" \( -name '*.goto' -o -name '*-callgraph.json' -o -name '*__mutant_*.c' \) -delete
   # Write to a temporary file and publish it only once the scorer succeeds, so a failed or
   # interrupted scoring pass never leaves a partial result under the final name.
   jsonl="${data_dir}/${label}-${run_id}-${benchmark}.jsonl"
   {
-    time -p "${scorer_root}/eval/mutants/evaluate_specification_quality.py" "${work_dir}" \
-      --auto-include --mutation --jsonl "${jsonl}.tmp"
+    # Run the scorer from its own checkout and toolchain, so `uv` resolves the scorer's modules
+    # rather than the arm's.
+    (
+      cd "${scorer_root}"
+      export PATH="${scorer_root}/.venv/bin:${PATH}"
+      export AVOCADO_STUBS_DIR="${stubs_dir}"
+      time -p "${scorer_root}/eval/mutants/evaluate_specification_quality.py" "${work_dir}" \
+        --auto-include --mutation --jsonl "${jsonl}.tmp"
+    )
   } 2>>"${time_log}"
   mv -f -- "${jsonl}.tmp" "${jsonl}"
   tail -n 3 "${time_log}"

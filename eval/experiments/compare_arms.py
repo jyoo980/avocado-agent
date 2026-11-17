@@ -13,9 +13,10 @@ Given a baseline label and a treatment label plus the run ids they share, report
   bound.
 
 A run's benchmarks are read from `<data-dir>/<label>-<run-id>-<benchmark>.jsonl` (scores) and
-`<data-dir>/runs/<label>/<run-id>/` (agent logs), the layout `run_agent_experiment.sh` produces.
-The comparison stops if any run lacks a score file for a named benchmark or has no agent logs, so
-a run that never ran or failed cannot contribute zeros to an arm's means.
+`<data-dir>/runs/<label>/<run-id>/<benchmark>/` (agent logs), the layout `run_agent_experiment.sh`
+produces. Only the named benchmarks' scores and agent logs are read. The comparison stops if any
+run lacks a score file or agent logs for a named benchmark, so a run that never ran or failed
+cannot contribute zeros to an arm's means.
 
 Because the arms are run in paired batches (one run of each arm at a time, on the same machine),
 the per-batch difference is the meaningful quantity; the report prints it alongside the arm means.
@@ -66,6 +67,7 @@ def main() -> None:
         "decided",
         "tested",
         "unscored",
+        "unspecified",
         "verified",
         "functions",
         "timed_out_sessions",
@@ -116,11 +118,13 @@ def _run_metrics(
 ) -> dict[str, float]:
     """Return one run's pooled quality metrics and agent cost.
 
-    Quality is pooled over every benchmark named, so an arm cannot look better by specifying fewer
-    functions: `unscored` counts functions that were annotated but not mutation tested (they did
-    not verify), and `functions`/`verified` come from the harness's own run log. A function none of
-    whose mutants was decided (each timed out or failed to compile or instrument) is skipped: its
-    kill score does not measure the spec.
+    Quality is pooled over every function the harness processed in the benchmarks named, so an arm
+    cannot look better by specifying fewer functions: `unscored` counts functions that were
+    annotated but not mutation tested (they did not verify), `unspecified` counts functions the
+    harness processed but that carry no contract (the scorer writes no record for them), and both
+    score 0. `functions`/`verified` come from the harness's own run log. A function none of whose
+    mutants was decided (each timed out or failed to compile or instrument) is skipped: its kill
+    score does not measure the spec.
 
     Args:
         data_dir (Path): Directory holding `<label>-<run-id>-<benchmark>.jsonl` and `runs/`.
@@ -134,18 +138,27 @@ def _run_metrics(
         dict[str, float]: The run's metrics.
     """
     scores: list[float] = []
-    killed = decided = tested = unscored = 0
+    killed = decided = tested = unscored = unspecified = 0
+    functions = verified = timed_out_sessions = 0
+    agent_ms = 0.0
+    cost = 0.0
+    run_dir = data_dir / "runs" / label / run_id
     for benchmark in benchmarks:
         path = data_dir / f"{label}-{run_id}-{benchmark}.jsonl"
         if not path.is_file():
             # A missing run would otherwise contribute zeros that look measured.
             raise SystemExit(f"compare_arms.py: missing score file for {label} run {run_id}: {path}")
+        # Each (source file, function) the scorer wrote a record for.
+        recorded: set[tuple[str, str]] = set()
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             record = json.loads(line)
             if record.get("kind") != "mutation_summary":
                 continue
+            recorded.add(
+                (_benchmark_relative(record["file"], label, run_id, benchmark), record["function"])
+            )
             if record.get("was_mutation_tested"):
                 record_killed = int(record["killed"])
                 record_decided = record_killed + int(record["survived"])
@@ -161,28 +174,40 @@ def _run_metrics(
                 scores.append(0.0)
                 unscored += 1
 
-    functions = verified = timed_out_sessions = 0
-    agent_ms = 0.0
-    cost = 0.0
-    run_dir = data_dir / "runs" / label / run_id
-    logs = sorted(run_dir.rglob("*-avocado-verify.jsonl"))
-    if not logs:
-        raise SystemExit(f"compare_arms.py: no agent logs for {label} run {run_id} in {run_dir}")
-    for log in logs:
-        for line in log.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            record = json.loads(line)
-            if "type" in record:
-                continue
-            functions += 1
-            verified += record["outcome"] == "VERIFIED"
-            timed_out_sessions += sum(1 for s in record["claude"] if s.get("timed_out"))
-            agent_ms += sum(
-                timeout_seconds * 1000 if s.get("timed_out") else (s.get("duration_ms") or 0)
-                for s in record["claude"]
+        # Read only this benchmark's logs, so the agent metrics cover the same functions as the
+        # scores.
+        benchmark_dir = run_dir / benchmark
+        logs = sorted(benchmark_dir.rglob("*-avocado-verify.jsonl"))
+        if not logs:
+            raise SystemExit(
+                f"compare_arms.py: no agent logs for {label} run {run_id} in {benchmark_dir}"
             )
-            cost += float(record.get("total_cost_to_verify_usd") or 0)
+        # Each (source file, function) the harness processed. A log sits next to its source file.
+        logged: set[tuple[str, str]] = set()
+        for log in logs:
+            source = log.with_name(log.name.removesuffix("-avocado-verify.jsonl") + ".c")
+            source_key = source.relative_to(benchmark_dir).as_posix()
+            for line in log.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                record = json.loads(line)
+                if "type" in record:
+                    continue
+                logged.add((source_key, record["function"]))
+                functions += 1
+                verified += record["outcome"] == "VERIFIED"
+                timed_out_sessions += sum(1 for s in record["claude"] if s.get("timed_out"))
+                agent_ms += sum(
+                    timeout_seconds * 1000 if s.get("timed_out") else (s.get("duration_ms") or 0)
+                    for s in record["claude"]
+                )
+                cost += float(record.get("total_cost_to_verify_usd") or 0)
+
+        # The scorer writes a record only for a function that carries a contract. A function the
+        # harness processed but left without one scores 0.
+        missing = logged - recorded
+        scores.extend(0.0 for _ in missing)
+        unspecified += len(missing)
 
     return {
         "mean_kill_score": statistics.fmean(scores) if scores else 0.0,
@@ -191,12 +216,37 @@ def _run_metrics(
         "decided": float(decided),
         "tested": float(tested),
         "unscored": float(unscored),
+        "unspecified": float(unspecified),
         "verified": float(verified),
         "functions": float(functions),
         "timed_out_sessions": float(timed_out_sessions),
         "agent_seconds": agent_ms / 1000,
         "cost_usd": cost,
     }
+
+
+def _benchmark_relative(file: str, label: str, run_id: str, benchmark: str) -> str:
+    """Return a score record's source path relative to the run's copy of the benchmark.
+
+    The scorer records the path it was given, which may be absolute or relative depending on how
+    the data directory was named, so the path is matched on its `runs/<label>/<run-id>/<benchmark>/`
+    component rather than on a prefix.
+
+    Args:
+        file (str): The `file` field of a score record.
+        label (str): The arm's label.
+        run_id (str): The run id.
+        benchmark (str): The benchmark name.
+
+    Returns:
+        str: The path of the source file relative to the benchmark directory.
+    """
+    marker = f"runs/{label}/{run_id}/{benchmark}/"
+    path = Path(file).as_posix()
+    index = path.rfind(marker)
+    if index < 0 or (index > 0 and path[index - 1] != "/"):
+        raise SystemExit(f"compare_arms.py: score record for {file} is not under {marker}")
+    return path[index + len(marker) :]
 
 
 if __name__ == "__main__":

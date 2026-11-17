@@ -6,7 +6,9 @@
 arms finished. When a run is cut short -- an account usage limit is the usual cause -- the arms
 stop at different functions, and pooling then rewards whichever arm happened to stop earlier or on
 easier functions. This script restricts both arms to the intersection of the functions that appear
-in both score files, so the remaining comparison is like-for-like.
+in both score files, so the remaining comparison is like-for-like. A function is identified by its
+source file's path within the benchmark and its name (`<benchmark>/<path>#<function>`), so
+same-named functions in different files stay distinct.
 
 A function that carries a contract which does not verify contributes a kill score of 0, exactly as
 in `compare_arms.py`; a function with no mutants, or with no decided mutant (each timed out or
@@ -94,7 +96,8 @@ def _records(path: Path) -> dict[str, tuple[float | None, int, int]]:
         path (Path): The JSONL file to read.
 
     Returns:
-        dict[str, tuple[float | None, int, int]]: Per-function score, killed count, decided count.
+        dict[str, tuple[float | None, int, int]]: Per-function score, killed count, decided count,
+            keyed by `<benchmark>/<path>#<function>`.
     """
     out: dict[str, tuple[float | None, int, int]] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -103,7 +106,9 @@ def _records(path: Path) -> dict[str, tuple[float | None, int, int]]:
         record = json.loads(line)
         if record.get("kind") != "mutation_summary":
             continue
-        name = record["function"]
+        name = f"{_benchmark_relative(record['file'])}#{record['function']}"
+        if name in out:
+            raise SystemExit(f"compare_on_intersection.py: {path} scores {name} twice")
         if record.get("was_mutation_tested"):
             killed = int(record["killed"])
             decided = killed + int(record["survived"])
@@ -116,6 +121,28 @@ def _records(path: Path) -> dict[str, tuple[float | None, int, int]]:
         else:
             out[name] = (None, 0, 0)
     return out
+
+
+def _benchmark_relative(file: str) -> str:
+    """Return a score record's source path with the arm's run root removed.
+
+    Each arm's specifications live under `<data-dir>/runs/<label>/<run-id>/<benchmark>/`, so the
+    same source file has a different path in each arm. Dropping everything before `<benchmark>/`
+    leaves a key that is equal across arms for the same file and distinct for different files. The
+    last `runs/` component followed by at least three more directories is the run root; a path
+    with none is returned unchanged.
+
+    Args:
+        file (str): The `file` field of a score record.
+
+    Returns:
+        str: `<benchmark>/<path within the benchmark>`, or `file` if it is not under a run root.
+    """
+    parts = Path(file).parts
+    for index in range(len(parts) - 5, -1, -1):
+        if parts[index] == "runs":
+            return "/".join(parts[index + 3 :])
+    return file
 
 
 if __name__ == "__main__":

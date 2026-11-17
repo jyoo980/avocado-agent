@@ -48,10 +48,16 @@ scripts. Setting `AVOCADO_DATA_DIR` sends the output elsewhere.
 
 ## Traps
 
-- `AVOCADO_SCORER_ROOT` changes which *script* scores a run, but `uv` still
-  resolves the *modules* from the arm's own checkout. Mixing them crashed two
-  scoring passes. To score arms identically, run `rescore_run.sh` from a single
-  checkout afterwards.
+- `AVOCADO_SCORER_ROOT` must name a checkout with its own `.venv` (from
+  `uv sync`): `run_agent_experiment.sh` runs the scorer from that checkout, so
+  `uv` resolves the scorer's modules there. (Earlier versions ran it from the
+  arm's checkout, mixing the scorer script with the arm's modules; that crashed
+  two scoring passes.)
+- Scoring uses the stubs saved with the run in
+  `avocado-experimental-data/stubs/<label>/<run-id>/<benchmark>/`, not the
+  scoring checkout's `stubs/`, so a rescore verifies against the same stubs the
+  agent pass left. Runs saved before this was added have no saved stubs;
+  `rescore_run.sh` warns and uses the checkout's `stubs/` for them.
 - Do not run `make clean-mutants` from the repository root while an experiment
   is running: it deletes in-progress artifacts under `avocado-experimental-data/`.
 - Claude Code's auto-memory gives each agent session a persistent notes

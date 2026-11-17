@@ -10,7 +10,9 @@
 #
 # Reads `<data-dir>/runs/<label>/<run-id>/<benchmark>/` and overwrites
 # `<data-dir>/<label>-<run-id>-<benchmark>.jsonl`. AVOCADO_DATA_DIR defaults to this checkout's
-# `avocado-experimental-data`.
+# `avocado-experimental-data`. The scorer uses the stubs `run_agent_experiment.sh` saved in
+# `<data-dir>/stubs/<label>/<run-id>/<benchmark>/`; for a run saved before that existed, it warns
+# and falls back to this checkout's `stubs/`.
 set -euo pipefail
 
 if [ "$#" -lt 3 ]; then
@@ -32,6 +34,15 @@ for benchmark in "$@"; do
   jsonl="${data_dir}/${label}-${run_id}-${benchmark}.jsonl"
   find "${work_dir}" \( -name '*.goto' -o -name '*-callgraph.json' -o -name '*__mutant_*' \) -delete
   echo "== rescoring ${label}/${run_id}/${benchmark}"
+  # Score against the stubs the run's agent pass left behind, as the original scoring did.
+  stubs_dir="${data_dir}/stubs/${label}/${run_id}/${benchmark}"
+  if [ -d "${stubs_dir}" ]; then
+    export AVOCADO_STUBS_DIR="${stubs_dir}"
+  else
+    unset AVOCADO_STUBS_DIR
+    echo "$0: warning: no saved stubs in ${stubs_dir}; using ${repo_root}/stubs," \
+      "which may differ from the stubs the run's agent pass used" >&2
+  fi
   # Publish the result only once the scorer succeeds, so a failed or interrupted pass keeps the
   # previous complete file.
   ./eval/mutants/evaluate_specification_quality.py "${work_dir}" --auto-include --mutation \
