@@ -1147,6 +1147,18 @@ def _tail_section(label: str, content: str, budget: int) -> str:
     return f"--- {label} ---\n{body}\n"
 
 
+def get_cbmc_run_log_path(source_path: Path) -> Path:
+    """Return the path of the log to which `run_cbmc` appends its runs on a C file.
+
+    Args:
+        source_path (Path): The path to a C file, such as `/src/foo.c`.
+
+    Returns:
+        Path: The path of the run log, such as `/src/foo-cbmc-runs.jsonl`.
+    """
+    return source_path.with_name(f"{source_path.stem}-cbmc-runs.jsonl")
+
+
 def _log_invocation(
     file_under_verification: str,
     result: RunCbmcResult,
@@ -1163,8 +1175,7 @@ def _log_invocation(
         nondet_callees (list[str]): The list of callees that CBMC treated as non-deterministic
             during verification.
     """
-    source_path = Path(file_under_verification)
-    log_path = source_path.with_name(f"{source_path.stem}-cbmc-runs.jsonl")
+    log_path = get_cbmc_run_log_path(Path(file_under_verification))
     record = {
         "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "function": result.function,

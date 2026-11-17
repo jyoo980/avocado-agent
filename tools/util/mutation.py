@@ -273,23 +273,21 @@ def generate_mutants_and_compute_score(
     target_function: str,
     *,
     include_dirs: list[str] | None = None,
-    workspace: Path | None = None,
     keep_artifacts: bool = False,
     is_function_already_verified: bool = False,
     mutant_timeout_sec: int = DEFAULT_MUTANT_TIMEOUT_SEC,
 ) -> MutationTestingResult:
     """Return the mutation testing result for `target_function` in `file_path`.
 
-    Mutant `.c` files are written next to the original source by default to simplify compilation
-    and instrumentation with CBMC. Mutants are removed unless keep_artifacts is set to `True`.
+    Mutant `.c` files are written next to the original source, so that a quoted `#include` finds
+    the same header for a mutant as for the original source. Mutants are removed unless
+    keep_artifacts is set to `True`.
 
     Args:
         file_path (str): Path to the C source defining the function.
         target_function (str): The function for which to generate mutants.
         include_dirs (list[str] | None): Directories forwarded to `run_cbmc()` as `-I` flags
             for both the original-function verification and every mutant run.
-        workspace (Path | None): Directory to write mutant files into. Defaults to the
-            source file's directory.
         keep_artifacts (bool): When True, mutant `.c` files are kept for inspection.
         is_function_already_verified (bool): When True, proceed with mutation testing,
             otherwise, check if it verifies, first.
@@ -309,9 +307,6 @@ def generate_mutants_and_compute_score(
     mutants = get_mutants(str(source_path), target_function)
     if not mutants:
         return NoMutantsGenerated(file_path, target_function)
-
-    workspace = workspace or source_path.parent
-    workspace.mkdir(parents=True, exist_ok=True)
 
     if not is_function_already_verified:
         cbmc_result = run_cbmc(target_function, file_path, include_dirs=include_dirs)
@@ -337,7 +332,7 @@ def generate_mutants_and_compute_score(
     try:
         for i, mutant in enumerate(mutants):
             path = create_mutant_file(
-                partial(_get_path_for_mutated_source, workspace, source_path, target_function, i),
+                partial(_get_path_for_mutated_source, source_path, target_function, i),
                 mutant.mutant_source,
             )
             paths_to_mutants[path] = mutant
@@ -560,15 +555,12 @@ def _verify_mutant(
 
 
 def _get_path_for_mutated_source(
-    workspace_path: Path,
-    path_to_original_source: Path,
-    function: str,
-    index: int,
-    attempt: int = 0,
+    path_to_original_source: Path, function: str, index: int, attempt: int = 0
 ) -> Path:
     """Return the path to which to write a mutated source file.
 
-    For example, given the path `/app/test/data/foo.c` and function `bar`, return
+    The mutated source file is in the same directory as the original source file. For example,
+    given the path `/app/test/data/foo.c`, function `bar`, and the index 1, return
     `/app/test/data/foo__mutant_bar_1.c`. The function name is part of the file name so that
     mutants of different functions in the same file -- which may be scored concurrently -- do not
     share names; mutant files still match the `*__mutant_*.c` pattern that `make clean-mutants`
@@ -584,8 +576,7 @@ def _get_path_for_mutated_source(
     is shortened; see `get_bounded_mutant_file_name`.
 
     Args:
-        workspace_path (Path): The directory under which mutation testing occurs.
-        path_to_original_source (Path): The path to the original source file.
+        path_to_original_source (Path): A path to an original source file.
         function (str): The function the mutant belongs to.
         index (int): The index of the mutant, used as a identifier for the mutant source path.
         attempt (int): The attempt number, nonzero if the paths of earlier attempts were taken;
@@ -594,11 +585,13 @@ def _get_path_for_mutated_source(
     Returns:
         Path: The path to which to write a mutated source file.
     """
-    return workspace_path / get_bounded_mutant_file_name(
-        get_mutant_file_stem(path_to_original_source),
-        MUTANT_MARKER,
-        function,
-        index,
-        path_to_original_source.suffix,
-        attempt,
+    return path_to_original_source.with_name(
+        get_bounded_mutant_file_name(
+            get_mutant_file_stem(path_to_original_source),
+            MUTANT_MARKER,
+            function,
+            index,
+            path_to_original_source.suffix,
+            attempt,
+        )
     )

@@ -7,6 +7,7 @@ from collections.abc import Callable
 from itertools import count
 from pathlib import Path
 
+from tools.construct_call_graph import CALL_GRAPH_FILE_SUFFIX
 from tools.run_cbmc import RunCbmcResult
 
 # 0 indicates success, 10 indicates failure, 124 indicates timeout.
@@ -115,11 +116,12 @@ def get_bounded_mutant_file_name(
     For a nonzero `attempt` (see `create_mutant_file`), `<index>` is followed by `-<attempt>`, as
     in `foo__mutant_bar_0-1.c`.
 
-    If the readable name would exceed the filesystem's per-component length limit, the function
-    name is replaced by a short digest of the full (stem, function) pair, and the stem is truncated
-    if needed. The name then stays bounded but is still distinct for each function, index and
-    attempt. It always contains `__<marker>_`, so it still matches the patterns that
-    `make clean-mutants` removes, and `is_mutant_artifact()` recognizes it.
+    If the readable name, or the name of the call graph that `construct_call_graph` caches for it,
+    would exceed the filesystem's per-component length limit, the function name is replaced by a
+    short digest of the full (stem, function) pair, and the stem is truncated if needed. The name
+    then stays bounded but is still distinct for each function, index and attempt. It always
+    contains `__<marker>_`, so it still matches the patterns that `make clean-mutants` removes,
+    and `is_mutant_artifact()` recognizes it.
 
     Byte lengths are measured with `os.fsencode`, which counts name bytes the way the filesystem
     does. It uses surrogateescape, so basenames that are not valid UTF-8 do not raise.
@@ -135,16 +137,21 @@ def get_bounded_mutant_file_name(
     Returns:
         str: The mutant file name (a single path component).
     """
+    # Verifying a mutant may cache its call graph next to it, under a name in which the call-graph
+    # suffix replaces `suffix`; that name must fit too.
+    max_name_bytes = _MAX_FILE_NAME_BYTES - max(
+        0, len(CALL_GRAPH_FILE_SUFFIX) - len(os.fsencode(suffix))
+    )
     index_part = f"{index}-{attempt}" if attempt else str(index)
     name = f"{stem}__{marker}_{function}_{index_part}{suffix}"
-    if len(os.fsencode(name)) <= _MAX_FILE_NAME_BYTES:
+    if len(os.fsencode(name)) <= max_name_bytes:
         return name
 
     # Too long: replace the function name with a digest of the full (stem, function) pair, so that
     # truncating the stem cannot make two distinct inputs collide.
     digest = hashlib.sha256(os.fsencode(f"{stem}\0{function}")).hexdigest()[:16]
     tail = f"__{marker}_{digest}_{index_part}{suffix}"
-    stem_budget = max(0, _MAX_FILE_NAME_BYTES - len(os.fsencode(tail)))
+    stem_budget = max(0, max_name_bytes - len(os.fsencode(tail)))
     # Truncate at character boundaries so that a multibyte character is never split.
     truncated_stem = ""
     used = 0
