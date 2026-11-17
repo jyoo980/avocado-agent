@@ -528,8 +528,11 @@ def test_a_result_records_the_pipeline_variant_that_produced_it(
 
     monkeypatch.setattr(run_cbmc_module, "_run_pipeline", recording_run_pipeline)
     variant = PipelineVariant(prevent_macro_expansion=True)
-    assert run_cbmc("swap", str(src), variant=variant).variant == variant
+    variant_result = run_cbmc("swap", str(src), variant=variant)
+    assert variant_result.variant == variant
     assert macro_expansion_flags == [True]
+    # The run's timings are totals over its subprocesses, as for a run without a variant.
+    assert variant_result.run_seconds > 0
 
 
 def test_format_failure_response_leads_with_failure_lines_for_cbmc_step() -> None:

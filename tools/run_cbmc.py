@@ -692,7 +692,7 @@ def _run_cbmc_in_directory(
             cwd=cwd,
             timeout_sec=timeout_sec,
         )
-        result = replace(result, variant=variant)
+        result = _with_timings(replace(result, variant=variant), subprocess_results)
         _log_invocation(
             file_containing_function_to_verify, result, subprocess_results, nondet_callees
         )
