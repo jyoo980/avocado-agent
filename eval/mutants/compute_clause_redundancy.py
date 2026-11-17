@@ -51,7 +51,7 @@ from eval.mutants.util import (
     is_valid_mutation_candidate,
 )
 from tools.construct_call_graph import construct_call_graph, get_call_graph_path
-from tools.run_cbmc import RunCbmcResult, run_cbmc
+from tools.run_cbmc import RunCbmcResult, get_cbmc_run_log_path, run_cbmc
 from tools.util import (
     AUTO_INCLUDE_HELP,
     existing_include_dir,
@@ -326,16 +326,16 @@ def compute_clause_redundancy_score(
     """Score clause redundancy for `function_name` in `file_path`.
 
     Mutant `.c` files are written next to the original source, so that a quoted `#include` finds
-    the same header for a mutant as for the original source. Mutants, and the call graphs cached
-    for them, are removed unless keep_artifacts is set to `True`.
+    the same header for a mutant as for the original source. Mutants, and the call graphs and CBMC
+    run logs written for them, are removed unless keep_artifacts is set to `True`.
 
     If the unmutated function does not verify, return None.
 
     Args:
         file_path (str): Path to the C source defining the function.
         function_name (str): The function whose contract clauses should be tested.
-        keep_artifacts (bool): When True, mutant `.c` files and their cached call graphs are kept
-            for inspection.
+        keep_artifacts (bool): When True, mutant `.c` files and their cached call graphs and CBMC
+            run logs are kept for inspection.
         include_dirs (list[str] | None): Directories forwarded to `run_cbmc()` as `-I` flags
             for the baseline verification and for every mutant and caller verification.
 
@@ -396,9 +396,14 @@ def compute_clause_redundancy_score(
     finally:
         if not keep_artifacts:
             for path in paths_to_removed_clauses:
-                path.unlink(missing_ok=True)
-                # `run_cbmc` cached the call graph of the removed-clause source next to it.
+                # `run_cbmc` cached the call graph of the removed-clause source next to it, and
+                # appended its runs to a log next to it. These are removed before the source, so
+                # that the source keeps its name reserved until then: otherwise a concurrent
+                # scoring run could create a source of the same name, and these deletions would
+                # remove its files.
                 get_call_graph_path(path).unlink(missing_ok=True)
+                get_cbmc_run_log_path(path).unlink(missing_ok=True)
+                path.unlink(missing_ok=True)
 
     return _aggregate_clause_redundancy_score(
         in_isolation_results,
