@@ -75,6 +75,7 @@ def main() -> None:
             "killed": raw_result.killed,
             "timed_out": raw_result.timed_out,
             "returncode": raw_result.returncode,
+            "seconds": raw_result.seconds,
         }
         if args.keep_artifacts:
             result |= {"path_to_mutant": raw_result.path_to_mutant}
