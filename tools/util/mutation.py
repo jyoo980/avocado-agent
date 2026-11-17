@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass, field
 from functools import cache, partial
 from pathlib import Path
@@ -366,13 +366,16 @@ def generate_mutants_and_compute_score(
         # downstream. stderr (not stdout) is used so progress never contaminates the kill-score
         # result.
         executor = _shared_mutant_executor()
-        future_to_index = {
-            executor.submit(
-                _verify_mutant, path, mutant, include_dirs, call_graph, mutant_timeout_sec
-            ): index
-            for index, (path, mutant) in enumerate(paths_to_mutants.items())
-        }
+        future_to_index: dict[Future[MutantVerificationResult], int] = {}
         try:
+            # Submit inside the `try` so that, if a submission fails partway through (or is
+            # interrupted), the `finally` below still cancels and waits for those already submitted
+            # before their mutant files are removed.
+            for index, (path, mutant) in enumerate(paths_to_mutants.items()):
+                future = executor.submit(
+                    _verify_mutant, path, mutant, include_dirs, call_graph, mutant_timeout_sec
+                )
+                future_to_index[future] = index
             for done, future in enumerate(as_completed(future_to_index), start=1):
                 mutant_vresults[future_to_index[future]] = future.result()
                 _print_mutation_progress(done, total, [r for r in mutant_vresults if r is not None])
