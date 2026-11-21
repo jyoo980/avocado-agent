@@ -34,7 +34,9 @@ Usage:
 """
 
 import argparse
+import shlex
 import subprocess
+import sys
 
 from pathlib import Path
 
@@ -60,8 +62,8 @@ TREATMENT_NAMES = [
 def main() -> None:
     """Clone the requested treatment branches into a directory named after the backend model."""
     args = _get_args()
-    clone_cmds = _get_clone_commands(args.model, args.treatment)
-    _create_treatment_dir(args.model, clone_cmds)
+    treatments = TREATMENT_NAMES if args.treatment is None else [args.treatment]
+    _create_treatment_dirs(args.model, treatments)
 
 def _get_args() -> argparse.Namespace:
     """Parse the command-line arguments.
@@ -85,52 +87,58 @@ def _get_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
-def _get_clone_commands(backend_model: str, treatment: str | None) -> list[str]:
-    """Build the git clone commands for a backend model's treatments.
+def _get_clone_command(backend_model: str, treatment: str) -> list[str]:
+    """Build the git clone command for one of a backend model's treatments.
 
-    Each command clones the treatment's branch into ``<backend_model>/<treatment>``.
+    The command clones the treatment's branch into ``<backend_model>/<treatment>``.
 
     Args:
-        backend_model: The backend model the treatments are for.
-        treatment: The treatment to clone, or None to clone every treatment in TREATMENT_NAMES.
+        backend_model: The backend model the treatment is for.
+        treatment: The treatment to clone.
 
     Returns:
-        One shell command string per treatment.
+        The command, as an argument vector.
     """
-    clone_cmds = []
-    if treatment is None:
-        clone_cmds = [
-            f"git clone -b {TREATMENT_PREFIX}/{treatment} {AVOCADO_AGENT_GIT_URL} {backend_model}/{treatment}"
-            for treatment in TREATMENT_NAMES
-        ]
-    else:
-        clone_cmds.append(
-            f"git clone -b {TREATMENT_PREFIX}/{treatment} {AVOCADO_AGENT_GIT_URL} {backend_model}/{treatment}"
-        )
-    return clone_cmds
+    return [
+        "git",
+        "clone",
+        "-b",
+        f"{TREATMENT_PREFIX}/{treatment}",
+        AVOCADO_AGENT_GIT_URL,
+        f"{backend_model}/{treatment}",
+    ]
 
-def _create_treatment_dir(backend_model: str, clone_cmds: list[str]) -> None:
-    """Create the backend model's directory under the working directory and run the clone commands.
+def _create_treatment_dirs(backend_model: str, treatments: list[str]) -> None:
+    """Clone each treatment into ``<backend_model>/<treatment>`` under the working directory.
+
+    The backend model's directory may already exist, for example from setting up another
+    treatment for the same model, but none of the treatments' directories may.
 
     Args:
         backend_model: The backend model, used as the directory name.
-        clone_cmds: Shell commands that clone each treatment into the new directory.
+        treatments: The treatments to clone.
 
     Raises:
-        Exception: If the backend model's directory already exists.
+        SystemExit: If a treatment's directory already exists or a clone fails.
     """
-    working_dir = Path.cwd()
+    model_dir = Path.cwd() / backend_model
+    existing = [str(model_dir / t) for t in treatments if (model_dir / t).exists()]
+    if existing:
+        message = f"Treatment directories already exist: {', '.join(existing)}"
+        raise SystemExit(message)
 
-    treatment_dir = working_dir / backend_model
-    if treatment_dir.exists():
-        raise Exception(f"A treatment directory named '{treatment_dir}' already exists")
+    model_dir.mkdir(parents=True, exist_ok=True)
 
-    treatment_dir.mkdir(parents=True, exist_ok=True)
-
-    for cmd in clone_cmds:
-        clone_result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+    failed = []
+    for treatment in treatments:
+        cmd = _get_clone_command(backend_model, treatment)
+        clone_result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if clone_result.returncode != 0:
-            print(f"Error while running: {cmd}\n{clone_result.stderr}")
-    
+            print(f"Error while running: {shlex.join(cmd)}\n{clone_result.stderr}", file=sys.stderr)
+            failed.append(treatment)
+    if failed:
+        message = f"Failed to clone treatments: {', '.join(failed)}"
+        raise SystemExit(message)
+
 if __name__ == "__main__":
     main()
