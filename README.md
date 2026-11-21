@@ -62,6 +62,11 @@ For example, to generate and verify specifications for a file `test.c` located i
 
 from the application root of the container (i.e., `/app`)
 
+`avocado-verify` gives each Claude Code session it starts the agent's settings,
+`docker/claude.settings.json`, with `--settings`.
+The checkout's own `.claude/settings.json` holds the settings for developers working on Avocado
+    Agent.
+
 ### Container Configuration
 
 There may be instances where the container requires additional memory or swap (e.g.,

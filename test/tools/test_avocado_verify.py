@@ -3,6 +3,7 @@
 import pytest
 
 from avocado_verify import (
+    _AGENT_SETTINGS_FILE,
     ClaudeRun,
     _build_claude_command,
     _build_prompt,
@@ -46,11 +47,12 @@ def test_prompt_reports_none_for_leaf_functions_without_include_dirs() -> None:
     assert "you write): partition" in prompt
 
 
-def test_claude_command_leaves_auto_memory_enabled() -> None:
-    # Memory across functions and runs is a deliberate feature of the harness; no `--settings`
-    # override may switch it off.
+def test_claude_command_passes_the_agent_settings_and_leaves_auto_memory_enabled() -> None:
     command = _build_claude_command("prompt", file_path="/src/q.c", include_dirs=["/src/inc"])
-    assert "--settings" not in command
+    assert command[command.index("--settings") + 1] == str(_AGENT_SETTINGS_FILE)
+    # Memory across functions and runs is a deliberate feature of the harness; the agent's
+    # settings must not switch it off.
+    assert "autoMemory" not in _AGENT_SETTINGS_FILE.read_text(encoding="utf-8")
     assert command[:3] == ["claude", "--print", "prompt"]
     assert command.count("--add-dir") == 2
 
