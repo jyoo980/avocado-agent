@@ -38,8 +38,8 @@ Or,
 
 The container entrypoint runs `uv sync --frozen` and prepends `.venv/bin` to
 `PATH` automatically, so the avocado tools (`avocado-construct-call-graph`,
-`avocado-topological-order`, `avocado-run-cbmc`) are directly callable in
-the shell. Validate that `cbmc` and `claude` are also on `PATH`.
+`avocado-topological-order`, `avocado-run-cbmc`, `avocado-validate`) are
+directly callable in the shell. Validate that `cbmc` and `claude` are also on `PATH`.
 
 Running outside Docker still requires manually invoking `uv sync` and
 either activating the venv or prefixing tool calls with `uv run`.
