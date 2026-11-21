@@ -130,6 +130,20 @@ def test_edits_cannot_check_when_goto_cc_does_not_run(
     assert "rule 7 (the file compiles) is unchecked" in result.render()
 
 
+def test_edits_cannot_check_when_goto_cc_cannot_be_started(swap_session, monkeypatch) -> None:
+    _canonical, session = swap_session
+    monkeypatch.setattr(validate.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    def no_slot(*args, **kwargs):
+        msg = "no subprocess slot"
+        raise PermissionError(msg)
+
+    monkeypatch.setattr(validate, "run_goto_cc", no_slot)
+    result = check_copy_edits(session.file)
+    assert result.exit_code == EXIT_CANNOT_CHECK, result
+    assert "goto-cc could not be run: no subprocess slot" in result.render()
+
+
 def test_edits_cannot_check_outside_a_session(tmp_path: Path) -> None:
     outside = tmp_path / "loose.c"
     outside.write_text("int f(void) { return 0; }\n")

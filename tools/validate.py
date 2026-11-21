@@ -156,24 +156,31 @@ def check_copy_edits(session_file: Path, *, include_dirs: list[str] | None = Non
     if shutil.which("goto-cc") is None:
         unchecked = "goto-cc is not on PATH"
     else:
-        with tempfile.TemporaryDirectory(prefix=_SCRATCH_DIR_PREFIX) as scratch_dir:
-            compiled = run_goto_cc(
-                info.function,
-                str(session_file.resolve()),
-                include_dirs=[str(Path(directory).resolve()) for directory in include_dirs or []],
-                cwd=scratch_dir,
-            )
-        if compiled is None:
-            unchecked = "goto-cc timed out"
-        elif compiled.returncode != 0:
-            violations.append(
-                Violation(
-                    7,
-                    f"the file does not compile with goto-cc (exit code {compiled.returncode}); "
-                    "goto-cc's messages follow",
+        try:
+            with tempfile.TemporaryDirectory(prefix=_SCRATCH_DIR_PREFIX) as scratch_dir:
+                compiled = run_goto_cc(
+                    info.function,
+                    str(session_file.resolve()),
+                    include_dirs=[
+                        str(Path(directory).resolve()) for directory in include_dirs or []
+                    ],
+                    cwd=scratch_dir,
                 )
-            )
-            notes = _compiler_messages(compiled.stderr + compiled.stdout)
+        except OSError as error:
+            # For example, no machine-wide subprocess slot could be taken.
+            unchecked = f"goto-cc could not be run: {error}"
+        else:
+            if compiled is None:
+                unchecked = "goto-cc timed out"
+            elif compiled.returncode != 0:
+                violations.append(
+                    Violation(
+                        7,
+                        "the file does not compile with goto-cc "
+                        f"(exit code {compiled.returncode}); goto-cc's messages follow",
+                    )
+                )
+                notes = _compiler_messages(compiled.stderr + compiled.stdout)
 
     rendered = [str(entry) for entry in ordered_violations(violations)]
     if unchecked is not None:
