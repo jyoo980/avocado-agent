@@ -47,9 +47,7 @@ def main() -> None:
     args = parser.parse_args()
 
     record_summary_groups = group_by_summary_type(yield_records(args.jsonl))
-    records = (
-        record_summary_groups.get(SpecificationQualitySummary.SUMMARY_FOR_CLAUSE_REDUNDANCY) or []
-    )
+    records = record_summary_groups[SpecificationQualitySummary.SUMMARY_FOR_CLAUSE_REDUNDANCY]
 
     if not records:
         print("No clause_redundancy_summary records found; nothing to plot.", file=sys.stderr)
